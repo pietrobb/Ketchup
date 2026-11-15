@@ -46,6 +46,7 @@ mod rule_program_named_topology;
 mod rule_program_nested;
 mod rule_program_operations;
 mod rule_program_review;
+mod rule_program_sheet_annotations;
 mod rule_program_split_union;
 mod rule_program_support;
 mod rule_program_tapped_holes;

@@ -6,6 +6,9 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 ## Unreleased
 
 - On a Mac the apps are named `Ketchup.app` and `Ketchup Viewer.app`, as the product; 0.3.3 installed them as `Kečup.app` and `Kečup Viewer.app`. They are the same apps to macOS (bundle identifiers and programs unchanged), so documents still open in them. Drag the new app into Applications and delete the old one. An AI client set up for `/Applications/Kečup.app` is then named when the window opens, and **Use this Ketchup** sets it up to start the new one.
+- Annotate a mechanical drawing sheet from the drawings window, a connected AI or a rule program: angular, radius and diameter dimensions, datum symbols and GD&T frames refer to geometry in the exact projected view. Each edit is one Undo step, and annotations survive Save/Open. Programs declare sheets with `drawing_sheet()` and annotations with `sheet_annotation()`.
+- Generate hole and cosmetic metric-thread callouts from the exact part, with diameter, cylindrical depth and the number of equal holes (`4×`). Each callout is placed beside its hole with a leader to the hole's circle in the view, also in SVG, DXF, PDF and DWG; holes that no view shows as a circle are reported instead. Changing one source refuses export of its old callout until it is regenerated. Unsupported cuts and modeled threads are reported, not silently labeled as plain holes; cylindrical depth does not assert a blind bottom or a through condition. Documents with generated callouts use format 113, which older versions refuse as newer.
+- Export an individual drawing sheet as SVG or PDF from the drawings window or `file action=export_drawings sheet_id=...`, as well as DXF and DWG. Existing-file protection is unchanged.
 
 ## 0.3.3 — 2026-11-12
 

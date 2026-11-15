@@ -10,14 +10,18 @@ use ketchup_model::document::InstancePath;
 #[test]
 fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_sheet_as_pdf() {
     let directory = tempfile::tempdir().unwrap();
-    let (dxf, dwg, pdf) = (
+    let (dxf, dwg, svg, sheet_pdf, pdf) = (
         directory.path().join("block.dxf"),
         directory.path().join("block.dwg"),
+        directory.path().join("block.svg"),
+        directory.path().join("block.pdf"),
         directory.path().join("house.pdf"),
     );
     let dialogs = dialogs::ScriptedFileDialogs::new()
         .queue_export(&dxf)
         .queue_export(&dwg)
+        .queue_export(&svg)
+        .queue_export(&sheet_pdf)
         .queue_export(&pdf);
     let script = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
@@ -63,6 +67,10 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
     );
     assert_eq!(harness.state().digest, exported);
 
+    export_from_the_window(&mut harness, "drawings-export-sheet-svg");
+    assert!(String::from_utf8_lossy(&std::fs::read(&svg).unwrap()).contains("<svg"));
+    export_from_the_window(&mut harness, "drawings-export-sheet-pdf");
+    assert!(std::fs::read(&sheet_pdf).unwrap().starts_with(b"%PDF-"));
     export_from_the_window(&mut harness, "drawings-export-pdf");
     assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-"));
     assert_eq!(
@@ -71,7 +79,7 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
             .iter()
             .map(|request| request.extension.as_str())
             .collect::<Vec<_>>(),
-        ["dxf", "dwg", "pdf"]
+        ["dxf", "dwg", "svg", "pdf", "pdf"]
     );
 
     let app = harness.state();

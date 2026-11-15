@@ -262,10 +262,15 @@ fn plan_evaluated(
                 Some(old) => std::borrow::Cow::Borrowed(old),
                 None => std::borrow::Cow::Owned(evaluate_by(current, deadline, cancel)?),
             };
+            let previous = document.current();
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
             let mut commands =
                 crate::rule_motion::commands(&baseline.current(), old.reference_model(), false)?;
+            commands.extend(crate::rule_sheets::remove_owned(
+                &previous,
+                old.reference_model(),
+            )?);
             if !commands.is_empty() {
                 baseline
                     .apply_batch(&CommandBatch::new(commands.clone()))
@@ -287,6 +292,8 @@ fn plan_evaluated(
             };
             let batch = crate::rule_support::append(document, reference, Some(old), batch)?;
             let batch = crate::rule_motion::append_pose(document, reference, batch)?;
+            let batch =
+                crate::rule_sheets::append(document, &previous, reference, Some(old), batch)?;
             commands.extend(prepared.commands);
             commands.extend(batch.commands().iter().cloned());
             let batch = CommandBatch::new(commands);

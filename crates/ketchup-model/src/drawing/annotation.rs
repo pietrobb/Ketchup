@@ -3,6 +3,48 @@
 
 use super::*;
 
+impl DrawingNote {
+    pub fn new(
+        id: DrawingNoteId,
+        position_page_mm: [f64; 2],
+        text_template: impl Into<String>,
+    ) -> Result<Self, DrawingError> {
+        let text_template = text_template.into();
+        if id.0 == 0
+            || position_page_mm.into_iter().any(|coordinate| {
+                !coordinate.is_finite() || !(0.0..=MAX_COORDINATE_MM).contains(&coordinate)
+            })
+            || text_template.trim().is_empty()
+            || !valid_drawing_template(&text_template)
+        {
+            return Err(DrawingError::InvalidAnnotation);
+        }
+        Ok(Self {
+            id,
+            position_bits: position_page_mm
+                .map(canonical_view_component)
+                .map(f64::to_bits),
+            text_template,
+            generated_hole_callout: None,
+        })
+    }
+
+    #[must_use]
+    pub const fn id(&self) -> DrawingNoteId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn position_page_mm(&self) -> [f64; 2] {
+        self.position_bits.map(f64::from_bits)
+    }
+
+    #[must_use]
+    pub fn text_template(&self) -> &str {
+        &self.text_template
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AnnotationTolerance {

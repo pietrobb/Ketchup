@@ -167,7 +167,6 @@ fn wrong_sheet_requests_are_refused_by_name() {
             json!({"sheet_id": id + 1}),
             "drawing_sheet_not_found",
         ),
-        (file("sheet.pdf"), json!({"sheet_id": id}), "invalid_path"),
         (file("sheet.txt"), json!({"sheet_id": id}), "invalid_path"),
         (
             file("sheet.dxf"),

@@ -20,7 +20,9 @@
 //! §5.3), 110 the code page the user chose to read an underlay's drawing in (review
 //! 2026-11-09 UL-303), 111 a mesh sheet, an open mesh such as a SketchUp face (U4c,
 //! [`crate::document::MESH_SHEET_SCHEMA_V1`]), 112 a mesh that shows a picture, an imported
-//! SketchUp texture (U4e, [`crate::document::MeshLook`]); an older
+//! SketchUp texture (U4e, [`crate::document::MeshLook`]); 113 adds source-bound
+//! hole callout notes. Older files have no generated ownership and need no
+//! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
@@ -37,7 +39,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 112;
+pub(super) const SNAPSHOT_FORMAT: u16 = 113;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -83,8 +85,15 @@ fn format_of(product: &ProductModel) -> u16 {
                 _ => None,
             })
     };
-    if meshes().any(|mesh| mesh.look.is_some()) {
+    if product.drawing_sheets.values().any(|sheet| {
+        sheet
+            .notes()
+            .iter()
+            .any(|note| note.hole_callout_sources().is_some())
+    }) {
         SNAPSHOT_FORMAT
+    } else if meshes().any(|mesh| mesh.look.is_some()) {
+        112
     } else if meshes().any(crate::document::MeshBodySpec::is_sheet) {
         111
     } else if product

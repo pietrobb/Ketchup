@@ -87,6 +87,10 @@ mod scale_grips;
 mod scene_tabs_tests;
 mod section;
 mod selection;
+mod sheet_annotations;
+#[cfg(test)]
+mod sheet_annotations_tests;
+mod sheet_annotations_ui;
 mod shell;
 pub(crate) mod skp_import;
 pub(crate) mod spaces_ui;

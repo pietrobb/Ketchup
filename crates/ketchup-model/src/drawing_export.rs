@@ -588,6 +588,12 @@ fn validate_annotations(
             || !valid_text(&note.text)
             || !valid_point(note.position_mm)
             || !page_contains(page_size, note.position_mm)
+            || note.leader_line_mm.is_some() != note.target_circle_id.is_some()
+            || note
+                .leader_line_mm
+                .iter()
+                .flatten()
+                .any(|point| !valid_point(*point) || !page_contains(page_size, *point))
         {
             return Err(DrawingExportError::InvalidDrawing);
         }
@@ -622,6 +628,7 @@ fn collect_page_content(
         .and_then(|count| count.checked_add(drawing.layout.datum_symbols.len() * 8))
         .and_then(|count| count.checked_add(drawing.layout.feature_control_frames.len() * 9))
         .and_then(|count| count.checked_add(drawing.layout.bom_balloons.len() * 17))
+        .and_then(|count| count.checked_add(drawing.layout.notes.len()))
         .ok_or(DrawingExportError::ResourceLimit)?;
     if line_count > MAX_EXPORT_LINES {
         return Err(DrawingExportError::ResourceLimit);
@@ -696,6 +703,14 @@ fn collect_page_content(
     }
     let notes = texts.len()..texts.len() + drawing.layout.notes.len();
     for note in &drawing.layout.notes {
+        if let Some([start, end]) = note.leader_line_mm {
+            lines.push(PageLine {
+                id: format!("{}/leader", note.stable_note_id),
+                start,
+                end,
+                style: LineStyle::Dimension,
+            });
+        }
         texts.push(PageText {
             id: note.stable_note_id.clone(),
             position: note.position_mm,

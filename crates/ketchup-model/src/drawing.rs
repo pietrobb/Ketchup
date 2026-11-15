@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 pub mod annotation;
 mod bom_item;
+pub mod hole_callouts;
 mod polyline_curves;
 pub use bom_item::{BomItem, BomItems};
 pub use polyline_curves::ProjectedPolylineCurve;
@@ -39,7 +40,7 @@ const MAX_DRAWING_OCCLUSION_TESTS: usize = 4_000_000;
 const MAX_DRAWING_SPLITS: usize = 1_000_000;
 const MAX_DRAWING_OUTPUT_LINES: usize = 1_000_000;
 pub(crate) const MAX_DRAWING_VIEWS: usize = 32;
-pub(crate) const MAX_DRAWING_DIMENSIONS: usize = 256;
+pub const MAX_DRAWING_DIMENSIONS: usize = 256;
 pub(crate) const MAX_DRAWING_NOTES: usize = 256;
 pub(crate) const MAX_DRAWING_BOM_BALLOONS: usize = 256;
 const MAX_DRAWING_TEXT_BYTES: usize = 256;
@@ -1156,47 +1157,8 @@ pub struct DrawingNote {
     id: DrawingNoteId,
     position_bits: [u64; 2],
     text_template: String,
-}
-
-impl DrawingNote {
-    pub fn new(
-        id: DrawingNoteId,
-        position_page_mm: [f64; 2],
-        text_template: impl Into<String>,
-    ) -> Result<Self, DrawingError> {
-        let text_template = text_template.into();
-        if id.0 == 0
-            || position_page_mm.into_iter().any(|coordinate| {
-                !coordinate.is_finite() || !(0.0..=MAX_COORDINATE_MM).contains(&coordinate)
-            })
-            || text_template.trim().is_empty()
-            || !valid_drawing_template(&text_template)
-        {
-            return Err(DrawingError::InvalidAnnotation);
-        }
-        Ok(Self {
-            id,
-            position_bits: position_page_mm
-                .map(canonical_view_component)
-                .map(f64::to_bits),
-            text_template,
-        })
-    }
-
-    #[must_use]
-    pub const fn id(&self) -> DrawingNoteId {
-        self.id
-    }
-
-    #[must_use]
-    pub fn position_page_mm(&self) -> [f64; 2] {
-        self.position_bits.map(f64::from_bits)
-    }
-
-    #[must_use]
-    pub fn text_template(&self) -> &str {
-        &self.text_template
-    }
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generated_hole_callout: Option<Vec<hole_callouts::HoleCalloutSource>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2194,6 +2156,10 @@ pub struct DrawingNoteLayout {
     pub stable_note_id: String,
     pub position_mm: [f64; 2],
     pub text: String,
+    /// Generated hole callouts only: from the note to the nearest rim of its
+    /// holes, `target_circle_id`, recomputed from the views on every layout.
+    pub leader_line_mm: Option<[[f64; 2]; 2]>,
+    pub target_circle_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2251,6 +2217,7 @@ pub enum DrawingError {
     /// A length dimension names an edge its detail view shows only a piece of.
     DimensionClipped,
     AnnotationSourceLost,
+    HoleThread(ketchup_geometry::tapping::TappedHoleMismatch),
     LayoutOverflow,
     SourceLost,
     UnresolvedInstance(OccurrenceId, Box<CanonicalError>),
@@ -2310,6 +2277,7 @@ impl fmt::Display for DrawingError {
                 "drawing dimension source edge runs out of its detail view, so the view shows only a piece of it; dimension the edge on the parent view, or an edge that lies inside the detail circle"
             }
             Self::AnnotationSourceLost => "drawing annotation source line is lost",
+            Self::HoleThread(error) => return write!(formatter, "drawing hole callout: {error}"),
             Self::LayoutOverflow => {
                 "drawing views or dimensions do not fit inside the selected sheet layout"
             }
@@ -2331,6 +2299,7 @@ impl std::error::Error for DrawingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::UnresolvedInstance(_, error) => Some(error.as_ref()),
+            Self::HoleThread(error) => Some(error),
             Self::AssemblyNotSolved(error) => Some(error.as_ref()),
             Self::ScaledPlacement(error) => Some(error),
             Self::Classification(error) => Some(error),
@@ -2431,8 +2400,9 @@ pub fn project_orthographic_drawing_in(
     for &kind in sheet.views() {
         views.push(project_view(sheet.id(), kind, &instances)?);
     }
+    let callout_rims = hole_callouts::validate_owned(snapshot, sheet, &instances, &views)?;
     let result_digest = drawing_result_digest(&stable_source_identity, &views);
-    let layout = layout_drawing_sheet(snapshot, sheet, &views, words)?;
+    let layout = layout_drawing_sheet(snapshot, sheet, &views, &callout_rims, words)?;
     Ok(OrthographicDrawing {
         schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,
         sheet_id: sheet.id(),
@@ -3543,6 +3513,7 @@ fn layout_drawing_sheet(
     snapshot: &Snapshot,
     sheet: &DrawingSheet,
     views: &[OrthographicView],
+    callout_rims: &BTreeMap<DrawingNoteId, std::collections::BTreeSet<(String, u32)>>,
     words: &PartsListWords,
 ) -> Result<DrawingSheetLayout, DrawingError> {
     let page = sheet.page();
@@ -3695,10 +3666,25 @@ fn layout_drawing_sheet(
             {
                 return Err(DrawingError::LayoutOverflow);
             }
+            let (target_circle_id, leader_line_mm) = match callout_rims.get(&note.id()) {
+                Some(rims) => {
+                    let (id, leader) = hole_callouts::callout_leader(
+                        sheet,
+                        views,
+                        &view_placements,
+                        rims,
+                        position_mm,
+                    )?;
+                    (Some(id), Some(leader))
+                }
+                None => (None, None),
+            };
             Ok(DrawingNoteLayout {
                 stable_note_id: format!("sheet-{}/note-{}", sheet.id().0, note.id().0),
                 position_mm,
                 text: resolve_drawing_template(note.text_template(), sheet.name(), &source_name)?,
+                leader_line_mm,
+                target_circle_id,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -4741,6 +4727,13 @@ pub(crate) fn drawing_layout_digest(
             digest.update(coordinate.to_bits().to_le_bytes());
         }
         push_digest(&mut digest, note.text.as_bytes());
+        // Absent for plain notes, so their layout digests are unchanged.
+        if let (Some(leader), Some(target)) = (note.leader_line_mm, &note.target_circle_id) {
+            for coordinate in leader.into_iter().flatten() {
+                digest.update(coordinate.to_bits().to_le_bytes());
+            }
+            push_digest(&mut digest, target.as_bytes());
+        }
     }
     digest
         .finalize()

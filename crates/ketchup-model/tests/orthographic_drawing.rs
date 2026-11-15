@@ -1,4 +1,5 @@
 mod annotation_authoring;
+mod hole_callouts;
 
 use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,

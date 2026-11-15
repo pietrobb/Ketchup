@@ -108,7 +108,7 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 - Sketches on any plane with lines, arcs, circles, polygons, ellipses and splines, and constraints (horizontal, vertical, coincident, distance, radius, parallel, perpendicular, tangent, angle, equal, symmetric, concentric, collinear, midpoint, point on curve).
 - Exact solids: Push/Pull, pockets, holes with ISO metric threads, revolve, sweep, loft, helix, shell, fillet, chamfer, draft, offset, and Boolean cut, union, intersect and split, with an ordered, editable feature history.
 - Assemblies with mates, fixed, revolute, prismatic and helical joints, travel limits, gear, belt, chain, rack and lead-screw couplings, swept collision checks and motion studies. The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) example is a drawer on real runners you can open and pull.
-- Drawing sheets with front, top, right, isometric, auxiliary, section and detail views, associative dimensions with tolerances, notes and BOM balloons, exported as DXF or DWG.
+- Drawing sheets with front, top, right, isometric, auxiliary, section and detail views. Place angular, radius and diameter dimensions, datums and GD&T frames, or generate grouped hole and cosmetic-thread callouts, from the drawing window, MCP or a rule program. Sheets keep their annotations through Save/Open and edits can be undone; export as SVG, DXF, PDF or DWG.
 - Measurement of distances, volume, mass, centre of mass and moments of inertia, and a small linear-static FEA for a first look at stiffness.
 - Exchange: STEP and IGES in and out as exact geometry (STEP keeps assembly structure, names and colours), STL, 3MF, Blender GLB, SketchUp `.skp` files (read, 2013 and newer) without SketchUp installed, COLLADA for SketchUp, and the `.kscene` SketchUp bridge.
 
@@ -219,7 +219,7 @@ Manual tools, rule programs, plugins and AI all change the model through one com
 
 Honest limits, so you know where it stands next to a mature mechanical CAD such as SolidWorks:
 
-- **Drawings for machined parts are not complete.** The drawing format holds angular, radius and diameter dimensions, datums and GD&T feature control frames, but no tool places them yet; linear dimensions with tolerances, notes and BOM balloons work. There are no automatic hole and thread callouts.
+- **Automatic hole callouts have a limited scope.** They cover intact circular cuts and cosmetic metric threads, grouping equal holes as `4×`. Depth is the verified cylindrical span, not a blind/through designation. Each callout has a leader to one of its holes in a view that shows the hole as a circle, and the leader follows that view; a hole no view shows as a circle gets no callout and is reported. Modeled threads, altered bores and other unsupported cuts are reported rather than guessed; use reviewed manual notes for them. After a source changes, regenerate its callouts before exporting.
 - **No native SolidWorks or Parasolid files, and no writing of SketchUp `.skp`.** Use STEP or IGES (exact) for CAD exchange; SketchUp `.skp` files are read, and COLLADA or `.kscene` take a model back to SketchUp.
 - **No catalogue of standard mechanical parts** such as bearings, linear rails, ball screws or aluminium profiles. The program library has standard fasteners, dowels and hinges; other supplier parts come in as STEP.
 - **Simulation is basic.** Load paths, EC5 timber checks and a small linear-static FEA (trusses and tetrahedra, up to 4,096 elements) — not nonlinear, thermal, dynamic or fatigue analysis.
@@ -234,7 +234,7 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 
 The next steps that would move Ketchup furthest toward a full production CAD:
 
-1. Tools to place angular, radial and diameter dimensions, GD&T frames and hole/thread callouts on drawing sheets.
+1. Broader automatic hole/thread callouts, including modeled threads and complex bores.
 2. A library of standard parts (bearings, linear rails, ball screws, aluminium profiles, motors) as rule-program components with exact geometry.
 3. General CAM: 2.5D toolpaths (contours, pockets, drilling) with post-processors for common controllers, beyond woodWOP and BTLx.
 4. Broader exact modeling: more fillet and shell cases, variable-radius fillets and surfaces.

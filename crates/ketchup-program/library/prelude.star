@@ -5,6 +5,50 @@
 # the program documentation an AI reads lists the topics with their helpers
 # and returns one topic (docs and code) by its id.
 
+#@topic sheet_annotations: Exact drawing sheets and manufacturing annotations
+# drawing_sheet(name, source=part_name, hole_callouts=False) declares a program-owned sheet.
+# sheet_annotation(name, sheet=sheet_name, view="front", mark={...}) adds one typed mark;
+# declare the sheet first. Mark kind is angular, radius, diameter, datum or feature_control_frame.
+# Prefer the helpers below: they provide the mark fields and defaults.
+# sheet_angular(name, sheet, view, lines, arc_radius_page_mm=8, tolerance=None)
+# sheet_radius(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None)
+# sheet_diameter(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None)
+# sheet_datum(name, sheet, view, line, label, offset_page_mm=[0, -8])
+# sheet_feature_control_frame(name, sheet, view, line, characteristic, tolerance_mm,
+#     offset_page_mm=[10, -12], datum_labels=[], diameter_zone=False, material_condition="None")
+# Datum labels referenced by a frame must be declared on this sheet. Material condition is
+# None, MaximumMaterial or LeastMaterial; characteristic names include flatness and position.
+# hole_callouts=True groups equal, intact circular Pad/Boolean cuts and cosmetic metric threads.
+# Depth is the finished cylinder's axial span, not cutter travel or a blind/through claim.
+# Threads require sufficient blind-hole runout; modeled threads and unsupported cuts are refused.
+# Applying publishes geometry and sheets atomically, with one Undo step and Save/Open support.
+# Example (an existing 40 x 30 x 10 box named bracket):
+#   drawing_sheet("Detail", source="bracket")
+#   sheet_datum("base", sheet="Detail", view="front",
+#       line={"direction": [1, 0], "through_mm": [20, 0]}, label="A")
+# Selectors use model millimetres in the projected view, not paper coordinates.
+# line={"direction": [dx, dy], "through_mm": [x, y]} must match one visible segment.
+# circle={"center_mm": [x, y], "radius_mm": r} must match one exact circular edge.
+# Ambiguous selectors are rejected: choose a different view or a point on one segment.
+# view is front, top, right, back, bottom or left. Offsets are paper millimetres.
+# tolerance is a symmetric deviation (degrees for angular dimensions, mm for circles).
+# Reapplying regenerates program sheets; removing a declaration removes its sheet.
+def sheet_angular(name, sheet, view, lines, arc_radius_page_mm=8, tolerance=None):
+    sheet_annotation(name, sheet=sheet, view=view, mark={"kind": "angular", "lines": lines, "arc_radius_page_mm": arc_radius_page_mm, "tolerance": tolerance})
+
+def sheet_radius(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None):
+    sheet_annotation(name, sheet=sheet, view=view, mark={"kind": "radius", "circle": circle, "leader_angle_degrees": leader_angle_degrees, "offset_page_mm": offset_page_mm, "tolerance": tolerance})
+
+def sheet_diameter(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None):
+    sheet_annotation(name, sheet=sheet, view=view, mark={"kind": "diameter", "circle": circle, "leader_angle_degrees": leader_angle_degrees, "offset_page_mm": offset_page_mm, "tolerance": tolerance})
+
+def sheet_datum(name, sheet, view, line, label, offset_page_mm=[0, -8]):
+    sheet_annotation(name, sheet=sheet, view=view, mark={"kind": "datum", "line": line, "label": label, "offset_page_mm": offset_page_mm})
+
+def sheet_feature_control_frame(name, sheet, view, line, characteristic, tolerance_mm, offset_page_mm=[10, -12], datum_labels=[], diameter_zone=False, material_condition="None"):
+    characteristics = {"straightness": "Straightness", "flatness": "Flatness", "circularity": "Circularity", "cylindricity": "Cylindricity", "profile_of_line": "ProfileOfLine", "profile_of_surface": "ProfileOfSurface", "parallelism": "Parallelism", "perpendicularity": "Perpendicularity", "angularity": "Angularity", "position": "Position", "concentricity": "Concentricity", "symmetry": "Symmetry", "circular_runout": "CircularRunout", "total_runout": "TotalRunout"}
+    sheet_annotation(name, sheet=sheet, view=view, mark={"kind": "feature_control_frame", "line": line, "characteristic": characteristics.get(characteristic, characteristic), "tolerance_mm": tolerance_mm, "offset_page_mm": offset_page_mm, "datum_labels": datum_labels, "diameter_zone": diameter_zone, "material_condition": material_condition})
+
 #@topic basics: Parts, frames, faces, parameters, numbers
 #
 #   param(name, default, min=, max=, doc=, unit="mm", whole=False)  -> number the user can

@@ -40,6 +40,7 @@ mod rule_metadata;
 mod rule_motion;
 mod rule_operations;
 mod rule_program;
+mod rule_sheets;
 mod rule_support;
 mod rule_tags;
 mod rule_threads;

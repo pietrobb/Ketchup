@@ -4,6 +4,7 @@
 //! mirrors or scales objects or adds such copies of them; each is one Undo step, and
 //! everything that draws, snaps to or asks about the underlay then sees the edited drawing.
 
+pub(super) mod sheet_annotations;
 use super::*;
 use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::app::underlay_export::{ClientUnderlayExport, UnderlayExportError};
@@ -38,6 +39,8 @@ impl Request {
                 | Self::DrawingDiscardRefused(_)
                 | Self::DrawingDraw { .. }
                 | Self::DrawingRooms(_)
+                | Self::DrawingSheet(_)
+                | Self::DrawingAnnotate(_)
                 | Self::DrawingMove { .. }
                 | Self::DrawingTrim { .. }
                 | Self::DrawingExtend { .. }
@@ -96,6 +99,12 @@ impl LiveBridge {
                 ))
             }
             Request::DrawingDraw { .. } => self.drawing_draw(app, request, ui_busy, cancelled),
+            Request::DrawingSheet(request) => {
+                Self::drawing_sheet(app, request, ui_busy).map_err(sheet_annotations::record)
+            }
+            Request::DrawingAnnotate(request) => self
+                .drawing_annotate(app, request, ui_busy, cancelled)
+                .map_err(sheet_annotations::record),
             Request::DrawingRooms(rooms) => self
                 .drawing_rooms(app, rooms, ui_busy, cancelled)
                 .map_err(refused_area),

@@ -88,7 +88,7 @@ FROZEN_MODULES = {
     "crates/ketchup-assistant/src/sidecar.rs": 4284,
     "crates/ketchup-geometry/src/sketch.rs": 3058,
     "crates/ketchup-headless/src/protocol.rs": 3373,
-    "crates/ketchup-model/src/drawing.rs": 4814,
+    "crates/ketchup-model/src/drawing.rs": 4780,
     "crates/ketchup-model/src/exact_product.rs": 4316,
     "crates/ketchup-model/src/persistence.rs": 4323,
     "crates/ketchup-model/src/persistence/legacy.rs": 4721,

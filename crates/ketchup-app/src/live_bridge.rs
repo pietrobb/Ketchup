@@ -63,7 +63,6 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-
 mod admission;
 pub mod bootstrap;
 mod busy;
@@ -85,7 +84,7 @@ pub use program_variant_export::CsvDecimal;
 mod mcp_config;
 pub(crate) use mcp_config::write_keeping_file;
 pub mod mcp_setup;
-mod measurement;
+pub(crate) mod measurement;
 mod plugin;
 pub(crate) mod plugin_consent;
 mod plugin_files;
@@ -136,7 +135,6 @@ const fn default_apply_verify_timeout_ms() -> u64 {
     DEFAULT_APPLY_VERIFY_TIMEOUT_MS
 }
 pub const IMAGE_PROTOCOL_VERSION: u32 = 4;
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Stamp {
@@ -460,6 +458,8 @@ pub enum Request {
     },
     /// Writes the areas of rooms back into an underlay's drawing ([`room_areas`]).
     DrawingRooms(room_areas::RoomsRequest),
+    DrawingSheet(drawing_edit::sheet_annotations::SheetRequest),
+    DrawingAnnotate(drawing_edit::sheet_annotations::AnnotateRequest),
     /// Moves top-level objects of an underlay's drawing, or adds moved copies of them with
     /// `copy`, one Undo step: scaled by `scale` and turned by `rotate_deg` about
     /// `about_mm`, mirrored across the line through `mirror_line_mm`, then moved by

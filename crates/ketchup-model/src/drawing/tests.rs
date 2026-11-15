@@ -158,6 +158,7 @@ fn typed_angular_radius_and_diameter_dimensions_layout_export_and_tamper_fail_cl
             &snapshot,
             sheet,
             &parallel_views,
+            &Default::default(),
             &PartsListWords::default()
         ),
         Err(DrawingError::InvalidGeometry)
@@ -169,12 +170,19 @@ fn typed_angular_radius_and_diameter_dimensions_layout_export_and_tamper_fail_cl
             &snapshot,
             sheet,
             &missing_circle_views,
+            &Default::default(),
             &PartsListWords::default()
         ),
         Err(DrawingError::DimensionSourceLost)
     );
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     assert_eq!(layout.angular_dimensions[0].value_degrees, 90.0);
     assert_eq!(layout.angular_dimensions[0].label, "90 ±0.5°");
     assert_eq!(layout.circular_dimensions[0].label, "R5 mm");
@@ -323,8 +331,14 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
         circles: Vec::new(),
         polyline_curves: Vec::new(),
     }];
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     assert_eq!(layout.datum_symbols[0].label, "A");
     assert_eq!(
         layout.feature_control_frames[0].label,
@@ -354,6 +368,7 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
             &snapshot,
             sheet,
             &missing_source_views,
+            &Default::default(),
             &PartsListWords::default()
         ),
         Err(DrawingError::AnnotationSourceLost)
@@ -433,8 +448,14 @@ fn bom_balloon_flips_preferred_offset_inward_at_view_cell_boundary() {
         polyline_curves: Vec::new(),
     }];
 
-    let layout =
-        layout_drawing_sheet(&snapshot, &sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        &sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     let balloon = &layout.bom_balloons[0];
     assert!(balloon.circle_center_mm[0] < balloon.leader_line_mm[0][0]);
     assert_eq!(sheet.bom_balloons()[0].offset_page_mm(), [8.0, 8.0]);
@@ -600,8 +621,14 @@ fn export_parts_list(names: [&str; 2]) -> crate::drawing_export::DrawingExportBu
         circles: Vec::new(),
         polyline_curves: Vec::new(),
     }];
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     let stable_source_identity = "assembly".to_owned();
     let drawing = OrthographicDrawing {
         schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,
@@ -658,8 +685,14 @@ fn export_notes(
         circles: Vec::new(),
         polyline_curves: Vec::new(),
     }];
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     let stable_source_identity = "definition-1".to_owned();
     let drawing = OrthographicDrawing {
         schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,

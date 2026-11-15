@@ -176,7 +176,7 @@ impl LiveBridge {
         let Some(format) = format else {
             return Err(failure(
                 "invalid_path",
-                "A drawing sheet is written to a local absolute path ending in .dxf or .dwg (no network share, device or stream).",
+                "A drawing sheet is written to a local absolute path ending in .dxf, .dwg, .svg or .pdf (no network share, device or stream).",
                 json!({"path": path}),
             ));
         };
