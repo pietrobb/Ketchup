@@ -517,6 +517,13 @@ mod ffi {
             tool: &NativeOperationResult,
             operation: u8,
         ) -> UniquePtr<NativeOperationResult>;
+        fn cut_axial_sweeps_native(
+            target: &NativeOperationResult,
+            motions: &[NativeSegment],
+            radius: f64,
+            axial_length: f64,
+            matrix: &[f64],
+        ) -> UniquePtr<NativeOperationResult>;
         fn named_prism_native(
             segments: &[NativeSegment],
             base_z: f64,

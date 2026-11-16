@@ -82,7 +82,8 @@ From the same model you get a numbered drawing set (**File → Drawings (PDF, DX
 
 - Cut lists, hardware lists, bar schedules and material takeoff as CSV or XLSX.
 - Cutting plans of every piece on bars and sheets, with kerf, trim and offcuts (`bar_stock`, `sheet_stock`), and quotes from a `price_list`. Ketchup has no prices of its own.
-- HOMAG woodWOP programs, one per piece in a ZIP; Hundegger BTLx for timber; a reviewed ISO metric CAM program.
+- HOMAG woodWOP programs, one per piece in a ZIP; Hundegger BTLx for timber.
+- 2.5D CAM programs for metal and plastic parts: select a face of the part in the window (File → Manufacturing), or name it from a connected AI or a script, and Ketchup reads the outline, pocket or hole from the exact model, then plans an outside or inside contour one cutter radius off it, a pocket cleared around its islands, or drilling to the hole's depth. You give the tool, feeds and stock. Each program is checked by an exact material-removal simulation before it is written, for ISO, FANUC, Grbl or LinuxCNC controllers. The controllers are data in `crates/ketchup-model/library/cam-gcode-dialects.json`, so another controller is one more entry there, not new code.
 - Every flat part as an AutoCAD R12 DXF in a ZIP, with its outline, cut-outs, holes and pockets on named layers, for any CNC router.
 - Sheet-metal flat patterns with bend tables, and weldment cut lists.
 - Exports for production refuse to write a file from stale or failed geometry, and say what to fix.
@@ -223,7 +224,7 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 - **No native SolidWorks or Parasolid files, and no writing of SketchUp `.skp`.** Use STEP or IGES (exact) for CAD exchange; SketchUp `.skp` files are read, and COLLADA or `.kscene` take a model back to SketchUp.
 - **The catalogue of standard mechanical parts is small.** Rule programs can place deep-groove ball bearings 6000 to 6012 and 6200 to 6212, HIWIN MGN9, MGN12 and MGN15 carriages and the mounting holes of their rails, and DIN 69051 ball screw nuts and shafts, NEMA 17 and 23 stepper motors and Motedis 20, 30 and 40 mm slot profiles, with the supplier's dimensions. The library has no rail cross-section: HIWIN's catalogue does not dimension it and HIWIN's terms of use do not allow its CAD files to be published, so you supply it from HIWIN's CAD file. Ball tracks and seals are not modelled, and other sizes and suppliers come in as STEP.
 - **Simulation is basic.** Load paths, EC5 timber checks and a small linear-static FEA (trusses and tetrahedra, up to 4,096 elements) — not nonlinear, thermal, dynamic or fatigue analysis.
-- **CAM is limited.** woodWOP programs that drill and mill rectangular blind pockets from the top, BTLx for timber, R12 DXF outlines for CNC routers and one reviewed ISO metric program; no general toolpath generation or post-processors for arbitrary machines. woodWOP has no contour milling, round pockets or through cuts yet.
+- **CAM is 2.5D.** Contours, pockets and drilling are cut from the top with one tool per program; there is no 3D surface machining, no adaptive clearing and no tool library. The window's CAM review machines one selected face per program; a connected AI or the headless SDK can list several. Faces bounded by B-spline or ellipse edges are refused, and so is an inside corner whose radius equals the cutter's. woodWOP has no contour milling, round pockets or through cuts yet.
 - **Exact operations are bounded.** Fillet, shell, sweep, loft and Booleans cover tested cases and fail with an explanation rather than produce doubtful geometry. Freeform surfaces are lofts through sections and patches filled into one closed loop of curves; there is no surface network of several curve sets, curvature-continuous blending between surfaces or control-point editing.
 - **Undo history lives in memory** for the session and reaches back 30 edits; Save writes only the current revision. A work-recovery copy keeps your edits and their Undo steps through a crash.
 - **One memory limit per kind of background job**, not for the whole window: several large imports and exports at once can use more memory than the computer has.
@@ -235,9 +236,8 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 The next steps that would move Ketchup furthest toward a full production CAD:
 
 1. Broader automatic hole/thread callouts, including modeled threads and complex bores.
-2. General CAM: 2.5D toolpaths (contours, pockets, drilling) with post-processors for common controllers, beyond woodWOP and BTLx.
-3. Broader exact modeling: more fillet and shell cases, and freeform surfaces.
-4. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
+2. Broader exact modeling: more fillet and shell cases, and freeform surfaces beyond lofts and filled patches.
+3. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
 
 With these, Ketchup could design a machine like its own CNC router end to end: frame from aluminium profiles, ball screws and linear-guide carriages from the parts library (a first set of sizes is there) on rails whose cross-section comes from the supplier's CAD file, drawings with tolerances for the machined plates, and toolpaths to make those plates.
 

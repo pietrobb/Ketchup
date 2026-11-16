@@ -1,8 +1,9 @@
 use ketchup_model::cam::{
-    CamFixture, CamOperation, CamPlanId, CamPlannerError, CamPostprocessorDialect,
-    CamPostprocessorOutput, CamSimulationEvidence, CamToolpath,
+    CamError, CamFixture, CamOperation, CamPlan, CamPlanId, CamPlannerError,
+    CamPostprocessorDialect, CamPostprocessorOutput, CamSimulationEvidence, CamToolpath,
 };
 use ketchup_model::document::{DocumentId, Snapshot};
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{VecDeque, hash_map::RandomState};
 use std::hash::BuildHasher;
@@ -153,15 +154,8 @@ impl CamReviewWorkflow {
         let plan = snapshot
             .cam_plan(request.plan_id)
             .ok_or(CamReviewError::PlanMissing)?;
-        let toolpath = CamToolpath::plan(snapshot, plan, &request.operations)
-            .map_err(CamReviewError::Planning)?;
-        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
-            self.worker_path
-                .as_deref()
-                .ok_or(CamReviewError::WorkerUnavailable)?,
-            cancelled,
-        )
-        .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+        let (mut worker, toolpath) =
+            self.plan_toolpath(snapshot, plan, &request.operations, cancelled)?;
         let simulation = worker
             .simulate_cam(snapshot, plan, &toolpath, &request.fixtures, cancelled)
             .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
@@ -170,7 +164,7 @@ impl CamReviewWorkflow {
             plan,
             &toolpath,
             &simulation,
-            request.dialect,
+            request.dialect.clone(),
         )
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         let id = self.next_id;
@@ -196,7 +190,7 @@ impl CamReviewWorkflow {
             toolpath_digest: toolpath.toolpath_digest.clone(),
             simulation_fingerprint: simulation.result_fingerprint.clone(),
             content_digest: output.content_digest.clone(),
-            dialect: request.dialect,
+            dialect: request.dialect.clone(),
             units: output.program.units.clone(),
             work_offset: output.program.work_offset.clone(),
             tool_number: output.program.tool_number,
@@ -247,15 +241,8 @@ impl CamReviewWorkflow {
         let plan = snapshot
             .cam_plan(review.request.plan_id)
             .ok_or(CamReviewError::StaleReview)?;
-        let toolpath = CamToolpath::plan(snapshot, plan, &review.request.operations)
-            .map_err(CamReviewError::Planning)?;
-        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
-            self.worker_path
-                .as_deref()
-                .ok_or(CamReviewError::WorkerUnavailable)?,
-            cancelled,
-        )
-        .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+        let (mut worker, toolpath) =
+            self.plan_toolpath(snapshot, plan, &review.request.operations, cancelled)?;
         let simulation = worker
             .simulate_cam(
                 snapshot,
@@ -270,7 +257,7 @@ impl CamReviewWorkflow {
             plan,
             &toolpath,
             &simulation,
-            review.request.dialect,
+            review.request.dialect.clone(),
         )
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         if toolpath != review.toolpath
@@ -302,5 +289,50 @@ impl CamReviewWorkflow {
         })?;
         self.pending.remove(index);
         Ok(review.summary)
+    }
+
+    /// Starts the exact worker and plans the toolpath, first reading every
+    /// face an operation names from the evaluated target.
+    fn plan_toolpath(
+        &self,
+        snapshot: &Snapshot,
+        plan: &CamPlan,
+        operations: &[CamOperation],
+        cancelled: &AtomicBool,
+    ) -> Result<(ExactWorkerSupervisor, CamToolpath), CamReviewError> {
+        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
+            self.worker_path
+                .as_deref()
+                .ok_or(CamReviewError::WorkerUnavailable)?,
+            cancelled,
+        )
+        .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+        let resolved;
+        let operations = if operations.iter().any(CamOperation::names_face) {
+            let target = plan.target();
+            let graph =
+                ExactBRepGraph::from_snapshot(snapshot, target.definition_id, target.feature_id)
+                    .map_err(|error| {
+                        CamReviewError::Planning(CamError::TargetGraph(error).into())
+                    })?;
+            let package = worker
+                .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+                    &graph,
+                    &[],
+                    cancelled,
+                )
+                .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+            resolved = operations
+                .iter()
+                .map(|operation| operation.resolve_face(&package, plan))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CamReviewError::Planning)?;
+            resolved.as_slice()
+        } else {
+            operations
+        };
+        let toolpath =
+            CamToolpath::plan(snapshot, plan, operations).map_err(CamReviewError::Planning)?;
+        Ok((worker, toolpath))
     }
 }

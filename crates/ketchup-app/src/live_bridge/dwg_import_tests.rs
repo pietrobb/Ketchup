@@ -50,14 +50,16 @@ fn import_underlay(path: &Path) -> Request {
 }
 
 fn export_profiles(path: &Path) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: "dxf".to_owned(),
         drawing_scale: None,
         image: None,
+        cam_dialect: None,
+        cam_operations: None,
         overwrite: false,
-    }
+    })
 }
 
 #[test]

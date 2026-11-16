@@ -681,18 +681,7 @@ pub enum Request {
         thickness_mm: Option<f64>,
     },
     /// Writes the visible model in one File menu export format.
-    Export {
-        #[serde(default)]
-        expected: Option<Stamp>,
-        path: String,
-        export_format: String,
-        /// For dxf: N of the scale 1:N the annotations are drawn at.
-        drawing_scale: Option<f64>,
-        image: Option<interchange::PresentationImage>,
-        /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
-        #[serde(default)]
-        overwrite: bool,
-    },
+    Export(interchange::ExportRequest),
     Selection {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -3368,7 +3357,7 @@ impl LiveBridge {
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),
             request @ Request::UnderlayRegions { .. } => Self::underlay_regions(app, &request),
             request @ Request::UnderlayParallel { .. } => Self::underlay_parallel(app, &request),
-            request @ Request::Export { .. } => Self::export_file(app, request, ui_busy, cancelled),
+            request @ Request::Export(_) => Self::export_file(app, request, ui_busy, cancelled),
             Request::Open { expected, path } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;

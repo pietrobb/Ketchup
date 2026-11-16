@@ -14,6 +14,7 @@ use ketchup_application::pdm_workflow::{
 };
 use ketchup_model::tolerance::limits;
 use ketchup_rejection::{Reason, dropped};
+mod cam_input;
 mod model_tools;
 mod production;
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
@@ -29,7 +30,8 @@ use ketchup_application::{
 };
 use ketchup_assistant::sidecar::AssistantCadEditProgram;
 use ketchup_model::cam::{
-    CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId, CamPostprocessorDialect,
+    CamContourSide, CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId,
+    CamPostprocessorDialect,
 };
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
@@ -386,65 +388,6 @@ struct Request {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum CamOperationInput {
-    Face {
-        id: u64,
-        minimum_mm: [f64; 2],
-        maximum_mm: [f64; 2],
-        target_z_mm: f64,
-    },
-    Pocket {
-        id: u64,
-        minimum_mm: [f64; 2],
-        maximum_mm: [f64; 2],
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-    },
-    Contour {
-        id: u64,
-        center_path: CamPathInput,
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-        applied_radial_allowance_mm: f64,
-    },
-    Drill {
-        id: u64,
-        points_mm: Vec<[f64; 2]>,
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CamPathInput {
-    start_mm: [f64; 2],
-    segments: Vec<CamPathSegmentInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum CamPathSegmentInput {
-    Line {
-        to_mm: [f64; 2],
-    },
-    Arc {
-        to_mm: [f64; 2],
-        center_mm: [f64; 2],
-        clockwise: bool,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CamFixtureInput {
-    id: u64,
-    minimum_mm: [f64; 3],
-    maximum_mm: [f64; 3],
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FeaReviewInput {
     definition_id: u64,
@@ -497,79 +440,6 @@ struct PdmAuditInput {
     actor: String,
     created_unix_ms: u64,
     note: String,
-}
-
-impl From<CamOperationInput> for CamOperation {
-    fn from(operation: CamOperationInput) -> Self {
-        match operation {
-            CamOperationInput::Face {
-                id,
-                minimum_mm,
-                maximum_mm,
-                target_z_mm,
-            } => Self::Face {
-                id,
-                minimum_mm,
-                maximum_mm,
-                target_z_mm,
-            },
-            CamOperationInput::Pocket {
-                id,
-                minimum_mm,
-                maximum_mm,
-                top_z_mm,
-                bottom_z_mm,
-            } => Self::Pocket {
-                id,
-                minimum_mm,
-                maximum_mm,
-                top_z_mm,
-                bottom_z_mm,
-            },
-            CamOperationInput::Contour {
-                id,
-                center_path,
-                top_z_mm,
-                bottom_z_mm,
-                applied_radial_allowance_mm,
-            } => Self::Contour {
-                id,
-                center_path: CamPath2d {
-                    start_mm: center_path.start_mm,
-                    segments: center_path
-                        .segments
-                        .into_iter()
-                        .map(|segment| match segment {
-                            CamPathSegmentInput::Line { to_mm } => CamPathSegment2d::Line { to_mm },
-                            CamPathSegmentInput::Arc {
-                                to_mm,
-                                center_mm,
-                                clockwise,
-                            } => CamPathSegment2d::Arc {
-                                to_mm,
-                                center_mm,
-                                clockwise,
-                            },
-                        })
-                        .collect(),
-                },
-                top_z_mm,
-                bottom_z_mm,
-                applied_radial_allowance_mm,
-            },
-            CamOperationInput::Drill {
-                id,
-                points_mm,
-                top_z_mm,
-                bottom_z_mm,
-            } => Self::Drill {
-                id,
-                points_mm,
-                top_z_mm,
-                bottom_z_mm,
-            },
-        }
-    }
 }
 
 struct BatchJob {
@@ -1123,7 +993,7 @@ impl Server {
                 Ok(result)
             }
             "cam_preview" => {
-                let request = cam_review_request(p)?;
+                let request = cam_input::cam_review_request(p)?;
                 let snapshot = self.session.snapshot();
                 let mutation_epoch = self.session.mutation_epoch();
                 let cancelled = AtomicBool::new(false);
@@ -1434,39 +1304,6 @@ fn ids(p: &Map<String, Value>, key: &str, empty: bool) -> Result<Vec<u64>> {
     }
     Ok(ids)
 }
-fn cam_review_request(p: &Map<String, Value>) -> Result<CamReviewRequest> {
-    let operations: Vec<CamOperationInput> = serde_json::from_value(
-        p.get("operations")
-            .cloned()
-            .ok_or_else(|| Error::invalid("missing operations"))?,
-    )
-    .map_err(|error| Error::invalid_because(&error))?;
-    let fixtures: Vec<CamFixtureInput> = serde_json::from_value(
-        p.get("fixtures")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )
-    .map_err(|error| Error::invalid_because(&error))?;
-    let dialect = match string(p, "dialect")? {
-        "iso_metric_gcode" => CamPostprocessorDialect::IsoMetricGCode,
-        "controller_neutral_json" => CamPostprocessorDialect::ControllerNeutralJson,
-        _ => return Err(Error::invalid("unsupported CAM postprocessor dialect")),
-    };
-    Ok(CamReviewRequest {
-        plan_id: CamPlanId(uint(p, "plan_id")?),
-        operations: operations.into_iter().map(Into::into).collect(),
-        fixtures: fixtures
-            .into_iter()
-            .map(|fixture| CamFixture {
-                id: fixture.id,
-                minimum_mm: fixture.minimum_mm,
-                maximum_mm: fixture.maximum_mm,
-            })
-            .collect(),
-        dialect,
-    })
-}
-
 fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
     let mut payload = Map::new();
     for field in [
@@ -1696,7 +1533,7 @@ fn cam_review_value(review: &CamReviewSummary) -> Value {
         "toolpath_digest":review.toolpath_digest,
         "simulation_fingerprint":review.simulation_fingerprint,
         "content_digest":review.content_digest,
-        "dialect":match review.dialect { CamPostprocessorDialect::IsoMetricGCode => "iso_metric_gcode", CamPostprocessorDialect::ControllerNeutralJson => "controller_neutral_json" },
+        "dialect":review.dialect.id(),
         "units":review.units,
         "work_offset":review.work_offset,
         "tool_number":review.tool_number,
@@ -1852,6 +1689,7 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod cam_faces;
 
     #[test]
     fn underlay_binding_rejection_keeps_its_structured_repair_and_cause() {
@@ -2962,7 +2800,10 @@ mod tests {
                 "fixtures":[],"dialect":"iso_metric_gcode"
             }),
         );
-        assert_eq!(gouge["error"]["code"], "cam_postprocessing_rejected");
+        assert_eq!(
+            gouge["error"]["code"], "cam_postprocessing_rejected",
+            "{gouge}"
+        );
         let malformed = request(
             &mut server,
             "cam_preview",

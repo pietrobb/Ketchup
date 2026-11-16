@@ -2018,11 +2018,6 @@ enum BtlxProfileStrategy {
     EdgeSawCutsThenMillContour,
 }
 
-struct CamExportDialog {
-    plan_id: CamPlanId,
-    review: Option<CamReviewSummary>,
-}
-
 struct PdmReviewDialog {
     source: PdmSourceIdentity,
     repository: String,

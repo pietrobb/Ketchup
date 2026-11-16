@@ -52,7 +52,7 @@ impl KetchupApp {
     /// The current references of the selected faces, or `None` when nothing or
     /// anything other than current faces is selected. Whether they belong to the
     /// clicked part is the planner's check.
-    fn selected_face_references(&self) -> Option<Vec<TopologicalElementRef>> {
+    pub(super) fn selected_face_references(&self) -> Option<Vec<TopologicalElementRef>> {
         let snapshot = self.document.current();
         let topology_results = self.topology_results_for_snapshot(&snapshot)?;
         let faces = self

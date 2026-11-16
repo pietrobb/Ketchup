@@ -8,14 +8,16 @@ use crate::live_bridge::program_check::ProgramCheckJob;
 use crate::live_bridge::program_dry_run::QueuedReply;
 
 fn export(path: &Path, export_format: &str) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: export_format.to_owned(),
         drawing_scale: None,
         image: None,
+        cam_dialect: None,
+        cam_operations: None,
         overwrite: false,
-    }
+    })
 }
 
 fn exporting(bridge: &LiveBridge) -> bool {

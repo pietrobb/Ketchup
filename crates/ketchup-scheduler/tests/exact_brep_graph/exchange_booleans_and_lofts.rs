@@ -235,7 +235,7 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
         &plan,
         &toolpath,
         &clean,
-        CamPostprocessorDialect::IsoMetricGCode,
+        CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
     )
     .unwrap();
     let neutral = CamPostprocessorOutput::generate(
@@ -246,7 +246,15 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
         CamPostprocessorDialect::ControllerNeutralJson,
     )
     .unwrap();
-    assert_eq!(iso.parse().unwrap(), neutral.parse().unwrap());
+    // ISO writes on a 1e-6 mm grid, JSON on 1e-9 mm, so the two agree within 1e-6 mm.
+    let (iso_program, neutral_program) = (iso.parse().unwrap(), neutral.parse().unwrap());
+    assert_eq!(iso_program.motions.len(), neutral_program.motions.len());
+    for (written, exact) in iso_program.motions.iter().zip(&neutral_program.motions) {
+        assert_eq!(written.kind, exact.kind);
+        for (value, exact) in written.end_mm.iter().zip(exact.end_mm) {
+            assert!((value - exact).abs() <= 1.0e-6, "{value} vs {exact}");
+        }
+    }
     iso.verify(&document.current(), &plan, &toolpath, &clean)
         .unwrap();
     neutral
@@ -289,7 +297,7 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
             &plan,
             &toolpath,
             &collision,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );

@@ -229,7 +229,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::Mass { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // A large document loads; imports and exports run the exact worker.
         Request::Import { path, .. } => ketchup_mcp::import_response_wait(path),
-        Request::Open { .. } | Request::Export { .. } | Request::DrawingExport { .. } => {
+        Request::Open { .. } | Request::Export(_) | Request::DrawingExport { .. } => {
             ketchup_mcp::OPEN_RESPONSE_WAIT
         }
         Request::ExportDrawings(_) => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
@@ -305,7 +305,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingExtrude { .. }
         | Request::DrawingView { .. }
         | Request::DrawingSolidFromViews { .. }
-        | Request::Export { .. }
+        | Request::Export(_)
         | Request::Selection { .. }
         | Request::View { .. }
         | Request::SaveView { .. }

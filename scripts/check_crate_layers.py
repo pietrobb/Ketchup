@@ -69,7 +69,7 @@ OVERSIZED = {}
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
-    "crates/ketchup-app/src/lib.rs": 2352,
+    "crates/ketchup-app/src/lib.rs": 2347,
     "crates/ketchup-model/src/document.rs": 514,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
     "crates/ketchup-manufacturing/src/fabrication.rs": 4628,
@@ -82,19 +82,19 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/app/viewport.rs": 4857,
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
-    "crates/ketchup-app/src/live_bridge.rs": 3466,
+    "crates/ketchup-app/src/live_bridge.rs": 3455,
     "crates/ketchup-application/src/planner.rs": 4334,
     "crates/ketchup-application/src/validation.rs": 4053,
     "crates/ketchup-assistant/src/sidecar.rs": 4261,
     "crates/ketchup-geometry/src/sketch.rs": 3055,
-    "crates/ketchup-headless/src/protocol.rs": 3373,
+    "crates/ketchup-headless/src/protocol.rs": 3214,
     "crates/ketchup-model/src/drawing.rs": 4477,
     "crates/ketchup-model/src/exact_product.rs": 4316,
     "crates/ketchup-model/src/persistence.rs": 4323,
     "crates/ketchup-model/src/persistence/legacy.rs": 4721,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4628,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4339,
     "crates/ketchup-scheduler/src/lib.rs": 3268,
 }
 

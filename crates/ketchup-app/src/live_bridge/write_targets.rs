@@ -16,7 +16,7 @@ use super::*;
 fn written_path(request: &Request) -> Option<&str> {
     match request {
         Request::SaveAs { path, .. }
-        | Request::Export { path, .. }
+        | Request::Export(crate::live_bridge::interchange::ExportRequest { path, .. })
         | Request::DrawingExport { path, .. }
         | Request::ExportProgramVariants { path, .. } => Some(path),
         Request::ExportDrawings(export) => Some(&export.path),
