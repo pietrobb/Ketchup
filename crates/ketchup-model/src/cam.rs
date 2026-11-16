@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-pub use crate::cam_region::{CamContourSide, CamRegion2d};
+pub use crate::cam_region::{CamContourSide, CamHole, CamRegion2d};
 
 pub const CAM_PLAN_SCHEMA_V1: &str = "ketchup.cam-plan.v1";
 pub const CAM_TOOLPATH_SCHEMA_V1: &str = "ketchup.cam-toolpath.v1";
@@ -438,6 +438,7 @@ pub enum CamPlannerError {
     CuttingDepthExceedsFlute,
     UnsupportedTool,
     UnsupportedRegion,
+    UnsupportedHole,
     StaleToolpath,
 }
 
@@ -466,6 +467,10 @@ impl std::fmt::Display for CamPlannerError {
             Self::UnsupportedRegion => formatter.write_str(
                 "CAM region is not one planar face bounded by lines and circular arcs, \
                  or the cutter does not fit in it",
+            ),
+            Self::UnsupportedHole => formatter.write_str(
+                "CAM hole is not a straight round hole along the setup Z axis, \
+                 or the drill is not its diameter",
             ),
             Self::StaleToolpath => formatter.write_str(
                 "CAM toolpath is malformed or does not match the current plan and exact target",

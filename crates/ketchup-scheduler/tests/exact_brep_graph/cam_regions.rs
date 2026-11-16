@@ -1,5 +1,5 @@
 use super::*;
-use ketchup_model::cam::{CamContourSide, CamMotion, CamMotionPath, CamRegion2d};
+use ketchup_model::cam::{CamContourSide, CamHole, CamMotion, CamMotionPath, CamRegion2d};
 
 const DEFINITION: DefinitionId = DefinitionId(96);
 const PLATE_PROFILE: FeatureId = FeatureId(960);
@@ -372,6 +372,211 @@ fn an_outside_contour_from_an_exact_face_runs_one_tool_radius_off_the_part() {
         (simulation.removed_stock_mm3 - band_mm3).abs() <= 1.0e-3,
         "{simulation:?}"
     );
+}
+
+const DRILL_RADIUS: f64 = 3.0;
+const THROUGH_HOLE: [f64; 2] = [10.0, 15.0];
+const BLIND_HOLE: [f64; 2] = [30.0, 15.0];
+const WIDE_HOLE: [f64; 2] = [20.0, 22.0];
+
+/// A 40 x 30 x 10 plate with a 6 mm hole through it, a 6 mm hole 4 deep and a
+/// 4 mm-radius hole 4 deep. Nothing in it is named for CAM.
+fn plate_with_holes() -> (DocumentStore, CamPlan, FeatureId) {
+    let sketch = SketchSpec {
+        workplane: WORKPLANE,
+        entities: vec![
+            SketchEntity::Circle {
+                id: SketchEntityId(1),
+                center_mm: THROUGH_HOLE,
+                radius_mm: DRILL_RADIUS,
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(2),
+                center_mm: BLIND_HOLE,
+                radius_mm: DRILL_RADIUS,
+            },
+            SketchEntity::Circle {
+                id: SketchEntityId(3),
+                center_mm: WIDE_HOLE,
+                radius_mm: 4.0,
+            },
+        ],
+        constraints: Vec::new(),
+    };
+    let regions = sketch.solved_regions().unwrap();
+    let region_of = |circle: u64| {
+        regions
+            .iter()
+            .find(|region| region.outer_entity_ids == [SketchEntityId(circle)])
+            .unwrap()
+            .id
+    };
+    // A through hole runs from the sketch plane through all; a blind one
+    // starts at the target's face.
+    let cut = |id: u64, name: &str, circle: u64, depth: Option<f64>, target: FeatureId| {
+        let (extent, start) = match depth {
+            Some(depth) => (FeatureExtent::Blind(dimension(depth)), CutStart::TargetFace),
+            None => (FeatureExtent::ThroughAll, CutStart::ProfilePlane),
+        };
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(id),
+            definition_id: DEFINITION,
+            name: name.into(),
+            kind: FeatureKind::Pad(PadSpec {
+                profile: PadProfile::SketchRegion {
+                    sketch: SKETCH,
+                    region: region_of(circle),
+                },
+                direction: FeatureDirection::AlongNormal,
+                extent,
+                operation: PadOperation::Cut { target, start },
+            }),
+        }
+    };
+    let last = FeatureId(967);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Plate with holes".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PLATE_PROFILE,
+                definition_id: DEFINITION,
+                name: "Plate outline".into(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PLATE,
+                definition_id: DEFINITION,
+                name: "Plate".into(),
+                kind: FeatureKind::extrusion(PLATE_PROFILE, dimension(10.0)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: SKETCH,
+                definition_id: DEFINITION,
+                name: "Hole centres".into(),
+                kind: FeatureKind::Sketch(sketch),
+            },
+            cut(965, "Through hole", 1, None, PLATE),
+            cut(966, "Blind hole", 2, Some(4.0), FeatureId(965)),
+            cut(967, "Wide hole", 3, Some(4.0), FeatureId(966)),
+        ]))
+        .unwrap();
+    let plan = CamPlan::new(
+        &document.current(),
+        CamPlanId(97),
+        "Drill the plate",
+        CamStock {
+            minimum_mm: [0.0, 0.0, 0.0],
+            maximum_mm: [40.0, 30.0, 10.0],
+        },
+        CamTool {
+            number: 3,
+            kind: CamToolKind::Drill,
+            diameter_mm: 2.0 * DRILL_RADIUS,
+            flute_length_mm: 12.0,
+            overall_length_mm: 30.0,
+            holder_diameter_mm: 10.0,
+            holder_length_mm: 20.0,
+            spindle_rpm: 3_000,
+            feed_mm_per_min: 300.0,
+            plunge_mm_per_min: 100.0,
+        },
+        CamSetup {
+            work_offset: CamWorkOffset::G54,
+            origin_mm: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 1.0, 0.0],
+            safe_height_mm: 15.0,
+        },
+        CamCutParameters {
+            maximum_stepdown_mm: 2.0,
+            stepover_ratio: 0.5,
+            radial_allowance_mm: 0.0,
+            axial_allowance_mm: 0.0,
+        },
+        DEFINITION,
+        last,
+    )
+    .unwrap();
+    (document, plan, last)
+}
+
+#[test]
+fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_cannot_make() {
+    let _turn = crate::integration_support::file_turn();
+    let (document, plan, last) = plate_with_holes();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, last).unwrap();
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+
+    let holes: Vec<CamHole> = package
+        .face_evidence
+        .iter()
+        .filter(|face| face.surface_kind == "cylinder")
+        .map(|face| {
+            CamHole::from_cylindrical_face(&package, face.face_ordinal, plan.setup()).unwrap()
+        })
+        .collect();
+    assert_eq!(holes.len(), 3);
+    let hole_at = |center: [f64; 2]| {
+        holes
+            .iter()
+            .find(|hole| distance(hole.center_mm, center) <= 1.0e-6)
+            .unwrap()
+    };
+    let through = hole_at(THROUGH_HOLE);
+    assert!((through.radius_mm - DRILL_RADIUS).abs() <= 1.0e-6);
+    assert!((through.top_z_mm - 10.0).abs() <= 1.0e-6);
+    assert!(through.bottom_z_mm.abs() <= 1.0e-6);
+    let blind = hole_at(BLIND_HOLE);
+    assert!((blind.top_z_mm - 10.0).abs() <= 1.0e-6);
+    assert!((blind.bottom_z_mm - 6.0).abs() <= 1.0e-6);
+    let wide = hole_at(WIDE_HOLE);
+    assert!((wide.radius_mm - 4.0).abs() <= 1.0e-6);
+
+    // A drill makes only a hole of its own diameter.
+    assert!(CamOperation::drill_hole(3, wide, plan.tool()).is_err());
+    let operations = [
+        CamOperation::drill_hole(1, through, plan.tool()).unwrap(),
+        CamOperation::drill_hole(2, blind, plan.tool()).unwrap(),
+    ];
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &operations).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let simulation = worker
+        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .unwrap();
+    let drilled_mm3 = std::f64::consts::PI * DRILL_RADIUS.powi(2) * (10.0 + 4.0);
+    assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    assert!(simulation.collisions.is_empty(), "{simulation:?}");
+    assert!(
+        (simulation.removed_stock_mm3 - drilled_mm3).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+
+    // The round island of the pocket part stands up out of its floor: it is a
+    // boss, not a hole, and no drill makes it.
+    let (pocket_document, pocket_plan) = plate_with_island_pocket();
+    let pocket_graph =
+        ExactBRepGraph::from_snapshot(&pocket_document.current(), DEFINITION, POCKET).unwrap();
+    let pocket = worker.evaluate_exact_brep_graph(&pocket_graph).unwrap();
+    let island_wall = pocket
+        .face_evidence
+        .iter()
+        .find(|face| face.surface_kind == "cylinder")
+        .unwrap()
+        .face_ordinal;
+    assert!(CamHole::from_cylindrical_face(&pocket, island_wall, pocket_plan.setup()).is_err());
 }
 
 fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {

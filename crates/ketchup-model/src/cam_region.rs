@@ -1,6 +1,8 @@
 //! Planar regions a CAM operation machines, read from an exact face of the
 //! part, and the cutter-centre paths that clear or follow them.
-use crate::cam::{CamPath2d, CamPathSegment2d, CamPlannerError, CamSetup};
+use crate::cam::{
+    CamOperation, CamPath2d, CamPathSegment2d, CamPlannerError, CamSetup, CamTool, CamToolKind,
+};
 use crate::cam_offset::{
     LOOP_TOLERANCE_MM, Point, Segment, degenerate_lane, distance, intersections, lane_crossings,
     loops_meet, offset_right, oriented, reversed, signed_area,
@@ -108,6 +110,132 @@ impl CamRegion2d {
     pub(crate) fn bounds(&self) -> Result<[Point; 2], CamPlannerError> {
         let (outer, islands) = self.loops()?;
         Ok(loop_bounds(std::iter::once(&outer).chain(&islands)))
+    }
+}
+
+/// A straight round hole along the setup's Z axis, read from an exact part.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CamHole {
+    /// Axis position in setup XY.
+    pub center_mm: [f64; 2],
+    pub radius_mm: f64,
+    /// Setup Z of the rim the drill enters through.
+    pub top_z_mm: f64,
+    /// Setup Z of the far rim: the floor of a blind hole, the exit of a through one.
+    pub bottom_z_mm: f64,
+}
+
+impl CamHole {
+    /// The hole whose wall is the cylindrical face `face_ordinal`. Its two
+    /// rims must be whole circles square to the setup's Z axis, and the upper
+    /// rim must be an island of the flat face around it; a round boss or
+    /// anything else is refused.
+    pub fn from_cylindrical_face(
+        package: &ExactBRepGraphPackage,
+        face_ordinal: u32,
+        setup: &CamSetup,
+    ) -> Result<Self, CamPlannerError> {
+        let refused = || CamPlannerError::UnsupportedHole;
+        let face = package
+            .face_evidence
+            .iter()
+            .find(|face| face.face_ordinal == face_ordinal)
+            .ok_or_else(refused)?;
+        if face.surface_kind != "cylinder" {
+            return Err(refused());
+        }
+        let z_axis = cross(setup.x_axis, setup.y_axis);
+        let square = |direction: [f64; 3]| dot(direction, z_axis).abs() >= 1.0 - 1.0e-9;
+        let in_setup = |point: [f64; 3]| {
+            let relative = [0, 1, 2].map(|axis| point[axis] - setup.origin_mm[axis]);
+            [
+                dot(relative, setup.x_axis),
+                dot(relative, setup.y_axis),
+                dot(relative, z_axis),
+            ]
+        };
+        let mut rims = Vec::new();
+        for edge in package
+            .edge_evidence
+            .iter()
+            .filter(|edge| edge.adjacent_face_ordinals.contains(&face_ordinal))
+        {
+            match (edge.curve_kind.as_str(), edge.circle_radius_mm) {
+                ("circle", Some(radius)) => {
+                    let (Some(origin), Some(direction)) =
+                        (edge.axis_origin_mm, edge.unit_axis_direction)
+                    else {
+                        return Err(refused());
+                    };
+                    if !edge.closed || !square(direction) {
+                        return Err(refused());
+                    }
+                    rims.push((in_setup(origin), radius, edge));
+                }
+                // The seam where the cylinder closes on itself.
+                ("line", None) => {}
+                _ => return Err(refused()),
+            }
+        }
+        if rims.len() != 2 {
+            return Err(refused());
+        }
+        rims.sort_by(|left, right| left.0[2].total_cmp(&right.0[2]));
+        let (lower, upper) = (&rims[0], &rims[1]);
+        let center = [upper.0[0], upper.0[1]];
+        if distance(center, [lower.0[0], lower.0[1]]) > LOOP_TOLERANCE_MM
+            || (upper.1 - lower.1).abs() > LOOP_TOLERANCE_MM
+            || upper.0[2] - lower.0[2] <= LOOP_TOLERANCE_MM
+            || face.unit_axis_direction.is_some_and(|axis| !square(axis))
+        {
+            return Err(refused());
+        }
+        // Material lies outside a hole's wall, so its upper rim is a hole in
+        // the flat face around it; a boss's upper rim bounds its own cap.
+        let around = upper
+            .2
+            .adjacent_face_ordinals
+            .iter()
+            .find(|ordinal| **ordinal != face_ordinal)
+            .ok_or_else(refused)?;
+        // A rim on anything but a machinable flat face is not a drillable hole.
+        let Ok(region) = CamRegion2d::from_planar_face(package, *around, setup) else {
+            return Err(refused());
+        };
+        let rim_is_island = region.islands.iter().any(|island| {
+            (distance(island.start_mm, center) - upper.1).abs() <= LOOP_TOLERANCE_MM
+                && island.segments.iter().all(|segment| {
+                    matches!(segment, CamPathSegment2d::Arc { center_mm, .. }
+                        if distance(*center_mm, center) <= LOOP_TOLERANCE_MM)
+                })
+        });
+        if !rim_is_island {
+            return Err(refused());
+        }
+        Ok(Self {
+            center_mm: center,
+            radius_mm: upper.1,
+            top_z_mm: upper.0[2],
+            bottom_z_mm: lower.0[2],
+        })
+    }
+}
+
+impl CamOperation {
+    /// Drills `hole` from its rim to its far rim with `tool`, which must be a
+    /// drill of the hole's diameter.
+    pub fn drill_hole(id: u64, hole: &CamHole, tool: &CamTool) -> Result<Self, CamPlannerError> {
+        if tool.kind != CamToolKind::Drill
+            || (tool.diameter_mm * 0.5 - hole.radius_mm).abs() > LOOP_TOLERANCE_MM
+        {
+            return Err(CamPlannerError::UnsupportedHole);
+        }
+        Ok(Self::Drill {
+            id,
+            points_mm: vec![hole.center_mm],
+            top_z_mm: hole.top_z_mm,
+            bottom_z_mm: hole.bottom_z_mm,
+        })
     }
 }
 
