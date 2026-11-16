@@ -7,6 +7,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+use crate::cam_gcode::CONTROLLER_NEUTRAL_JSON;
+pub use crate::cam_gcode::{
+    CAM_GCODE_DIALECT_SCHEMA_V1, CamDecimalPoint, CamGCodeDialect, CamGCodeDialectError,
+    CamLineNumbers,
+};
 pub use crate::cam_region::{CamContourSide, CamHole, CamRegion2d};
 
 pub const CAM_PLAN_SCHEMA_V1: &str = "ketchup.cam-plan.v1";
@@ -14,7 +19,6 @@ pub const CAM_TOOLPATH_SCHEMA_V1: &str = "ketchup.cam-toolpath.v1";
 pub const CAM_SIMULATION_SCHEMA_V1: &str = "ketchup.cam-simulation.v1";
 pub const CAM_POSTPROCESSOR_SCHEMA_V1: &str = "ketchup.cam-postprocessor.v1";
 const MAX_CAM_POSTPROCESSOR_BYTES: usize = 16 * 1024 * 1024;
-const CAM_POSTPROCESSOR_RESOLUTION_MM: f64 = ROUNDING;
 const MAX_RPM: u32 = 200_000;
 const MAX_FEED_MM_PER_MIN: f64 = 1.0e6;
 const MAX_CAM_OPERATIONS: usize = 1_024;
@@ -331,10 +335,57 @@ impl CamSimulationEvidence {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CamPostprocessorDialect {
-    IsoMetricGCode,
+    /// A controller's G-code, from the library or from the caller's own description.
+    GCode(std::sync::Arc<CamGCodeDialect>),
+    /// The program as JSON, for a controller interface that reads it.
     ControllerNeutralJson,
+}
+
+impl CamPostprocessorDialect {
+    /// The library dialect `id`: a G-code dialect or `controller_neutral_json`.
+    pub fn library(id: &str) -> Result<Self, CamGCodeDialectError> {
+        if id == CONTROLLER_NEUTRAL_JSON {
+            return Ok(Self::ControllerNeutralJson);
+        }
+        CamGCodeDialect::library()?
+            .into_iter()
+            .find(|dialect| dialect.id() == id)
+            .map(|dialect| Self::GCode(dialect.into()))
+            .ok_or_else(|| CamGCodeDialectError::UnknownLibraryDialect { id: id.to_owned() })
+    }
+
+    /// The ids `library` accepts.
+    pub fn library_ids() -> Result<Vec<String>, CamGCodeDialectError> {
+        let mut ids = CamGCodeDialect::library()?
+            .iter()
+            .map(|dialect| dialect.id().to_owned())
+            .collect::<Vec<_>>();
+        ids.push(CONTROLLER_NEUTRAL_JSON.to_owned());
+        Ok(ids)
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::GCode(dialect) => dialect.id(),
+            Self::ControllerNeutralJson => CONTROLLER_NEUTRAL_JSON,
+        }
+    }
+
+    /// The step lengths and feeds are written in.
+    #[must_use]
+    pub fn resolution_mm(&self) -> f64 {
+        1.0 / self.scale()
+    }
+
+    fn scale(&self) -> f64 {
+        match self {
+            Self::GCode(dialect) => dialect.scale(),
+            Self::ControllerNeutralJson => 1.0 / ROUNDING,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1143,11 +1194,9 @@ impl CamPostprocessorOutput {
     ) -> Result<Self, CamPostprocessorError> {
         toolpath.validate(snapshot, plan)?;
         validate_simulation_for_postprocessing(plan, toolpath, simulation)?;
-        let program = canonical_postprocessed_program(plan, toolpath, simulation)?;
-        let content = match dialect {
-            CamPostprocessorDialect::IsoMetricGCode => {
-                render_iso_metric_gcode(&program).into_bytes()
-            }
+        let program = canonical_postprocessed_program(plan, toolpath, simulation, dialect.scale())?;
+        let content = match &dialect {
+            CamPostprocessorDialect::GCode(gcode) => gcode.render(&program)?.into_bytes(),
             CamPostprocessorDialect::ControllerNeutralJson => {
                 serde_json::to_vec_pretty(&program).map_err(|error| malformed(error.to_string()))?
             }
@@ -1180,12 +1229,12 @@ impl CamPostprocessorOutput {
         if self.content_digest != content_digest(&self.content) {
             return Err(CamPostprocessorError::DigestMismatch);
         }
-        let mut parsed = match self.dialect {
-            CamPostprocessorDialect::IsoMetricGCode => parse_iso_metric_gcode(&self.content)?,
+        let mut parsed = match &self.dialect {
+            CamPostprocessorDialect::GCode(gcode) => gcode.parse(&self.content)?,
             CamPostprocessorDialect::ControllerNeutralJson => serde_json::from_slice(&self.content)
                 .map_err(|error| malformed(error.to_string()))?,
         };
-        canonicalize_postprocessed_program(&mut parsed);
+        canonicalize_postprocessed_program(&mut parsed, self.dialect.scale());
         validate_postprocessed_program(&parsed)?;
         Ok(parsed)
     }
@@ -1199,7 +1248,8 @@ impl CamPostprocessorOutput {
     ) -> Result<(), CamPostprocessorError> {
         toolpath.validate(snapshot, plan)?;
         validate_simulation_for_postprocessing(plan, toolpath, simulation)?;
-        let expected = canonical_postprocessed_program(plan, toolpath, simulation)?;
+        let expected =
+            canonical_postprocessed_program(plan, toolpath, simulation, self.dialect.scale())?;
         let parsed = self.parse()?;
         if self.program != expected || parsed != expected {
             return Err(CamPostprocessorError::RoundtripMismatch);
@@ -1259,7 +1309,9 @@ fn canonical_postprocessed_program(
     plan: &CamPlan,
     toolpath: &CamToolpath,
     simulation: &CamSimulationEvidence,
+    scale: f64,
 ) -> Result<CamPostprocessedProgram, CamPostprocessorError> {
+    let number = |value| canonical_postprocessor_number(value, scale);
     let last = toolpath
         .motions
         .last()
@@ -1281,9 +1333,9 @@ fn canonical_postprocessed_program(
                     CamMotionKind::Cut => CamPostprocessedMotionKind::Cut,
                     CamMotionKind::Retract => CamPostprocessedMotionKind::Retract,
                 },
-                end_mm: end_mm.map(canonical_postprocessor_number),
+                end_mm: end_mm.map(number),
                 center_offset_mm: None,
-                feed_mm_per_min: motion.feed_mm_per_min.map(canonical_postprocessor_number),
+                feed_mm_per_min: motion.feed_mm_per_min.map(number),
             },
             CamMotionPath::Arc {
                 start_mm,
@@ -1296,12 +1348,12 @@ fn canonical_postprocessed_program(
                 } else {
                     CamPostprocessedMotionKind::ArcCounterclockwise
                 },
-                end_mm: end_mm.map(canonical_postprocessor_number),
+                end_mm: end_mm.map(number),
                 center_offset_mm: Some([
-                    canonical_postprocessor_number(center_mm[0] - start_mm[0]),
-                    canonical_postprocessor_number(center_mm[1] - start_mm[1]),
+                    number(center_mm[0] - start_mm[0]),
+                    number(center_mm[1] - start_mm[1]),
                 ]),
-                feed_mm_per_min: motion.feed_mm_per_min.map(canonical_postprocessor_number),
+                feed_mm_per_min: motion.feed_mm_per_min.map(number),
             },
         })
         .collect();
@@ -1314,9 +1366,9 @@ fn canonical_postprocessed_program(
         work_offset: work_offset_code(plan.setup.work_offset).to_owned(),
         tool_number: plan.tool.number,
         spindle_rpm: plan.tool.spindle_rpm,
-        cutting_feed_mm_per_min: canonical_postprocessor_number(plan.tool.feed_mm_per_min),
-        plunge_feed_mm_per_min: canonical_postprocessor_number(plan.tool.plunge_mm_per_min),
-        safe_retract_z_mm: canonical_postprocessor_number(plan.setup.safe_height_mm),
+        cutting_feed_mm_per_min: number(plan.tool.feed_mm_per_min),
+        plunge_feed_mm_per_min: number(plan.tool.plunge_mm_per_min),
+        safe_retract_z_mm: number(plan.setup.safe_height_mm),
         motions,
     })
 }
@@ -1402,236 +1454,27 @@ fn validate_postprocessed_program(
     Ok(())
 }
 
-fn render_iso_metric_gcode(program: &CamPostprocessedProgram) -> String {
-    let mut lines = vec![
-        "%".to_owned(),
-        ";KETCHUP_CAM_POSTPROCESSOR_V1".to_owned(),
-        format!(";PLAN_DIGEST={}", program.plan_digest),
-        format!(";TOOLPATH_DIGEST={}", program.toolpath_digest),
-        format!(";SIMULATION_FINGERPRINT={}", program.simulation_fingerprint),
-        "G21".to_owned(),
-        "G90".to_owned(),
-        "G17".to_owned(),
-        program.work_offset.clone(),
-        format!("T{} M6", program.tool_number),
-        format!("S{} M3", program.spindle_rpm),
-        format!(
-            ";CUTTING_FEED_MM_PER_MIN={}",
-            format_cam_number(program.cutting_feed_mm_per_min)
-        ),
-        format!(
-            ";PLUNGE_FEED_MM_PER_MIN={}",
-            format_cam_number(program.plunge_feed_mm_per_min)
-        ),
-        format!(
-            ";SAFE_RETRACT_Z_MM={}",
-            format_cam_number(program.safe_retract_z_mm)
-        ),
-    ];
-    for motion in &program.motions {
-        let code = match motion.kind {
-            CamPostprocessedMotionKind::Rapid | CamPostprocessedMotionKind::Retract => "G0",
-            CamPostprocessedMotionKind::Plunge | CamPostprocessedMotionKind::Cut => "G1",
-            CamPostprocessedMotionKind::ArcClockwise => "G2",
-            CamPostprocessedMotionKind::ArcCounterclockwise => "G3",
-        };
-        let mut line = format!(
-            "{code} X{} Y{} Z{}",
-            format_cam_number(motion.end_mm[0]),
-            format_cam_number(motion.end_mm[1]),
-            format_cam_number(motion.end_mm[2])
-        );
-        if let Some(offset) = motion.center_offset_mm {
-            line.push_str(&format!(
-                " I{} J{}",
-                format_cam_number(offset[0]),
-                format_cam_number(offset[1])
-            ));
-        }
-        if let Some(feed) = motion.feed_mm_per_min {
-            line.push_str(&format!(" F{}", format_cam_number(feed)));
-        }
-        line.push_str(match motion.kind {
-            CamPostprocessedMotionKind::Rapid => " ;RAPID",
-            CamPostprocessedMotionKind::Plunge => " ;PLUNGE",
-            CamPostprocessedMotionKind::Cut => " ;CUT",
-            CamPostprocessedMotionKind::Retract => " ;RETRACT",
-            CamPostprocessedMotionKind::ArcClockwise
-            | CamPostprocessedMotionKind::ArcCounterclockwise => " ;CUT_ARC",
-        });
-        lines.push(line);
-    }
-    lines.extend(["M5".to_owned(), "M30".to_owned(), "%".to_owned()]);
-    let mut output = lines.join("\n");
-    output.push('\n');
-    output
-}
-
-fn parse_iso_metric_gcode(bytes: &[u8]) -> Result<CamPostprocessedProgram, CamPostprocessorError> {
-    let text = std::str::from_utf8(bytes).map_err(|error| malformed(error.to_string()))?;
-    let lines = text.lines().collect::<Vec<_>>();
-    if lines.len() < 18
-        || lines[0] != "%"
-        || lines[1] != ";KETCHUP_CAM_POSTPROCESSOR_V1"
-        || lines[5] != "G21"
-        || lines[6] != "G90"
-        || lines[7] != "G17"
-        || !matches!(lines[8], "G54" | "G55" | "G56" | "G57" | "G58" | "G59")
-        || lines[lines.len() - 3..] != ["M5", "M30", "%"]
-    {
-        return Err(malformed(
-            "G-code preamble or trailer does not match the Ketchup V1 layout",
-        ));
-    }
-    let plan_digest = prefixed_value(lines[2], ";PLAN_DIGEST=")?.to_owned();
-    let toolpath_digest = prefixed_value(lines[3], ";TOOLPATH_DIGEST=")?.to_owned();
-    let simulation_fingerprint = prefixed_value(lines[4], ";SIMULATION_FINGERPRINT=")?.to_owned();
-    let tool_line = lines[9]
-        .strip_prefix('T')
-        .and_then(|line| line.strip_suffix(" M6"))
-        .ok_or_else(|| malformed(format!("tool line {:?} is not T<n> M6", lines[9])))?;
-    let tool_number = parse_u32(tool_line)?;
-    let spindle_line = lines[10]
-        .strip_prefix('S')
-        .and_then(|line| line.strip_suffix(" M3"))
-        .ok_or_else(|| malformed(format!("spindle line {:?} is not S<rpm> M3", lines[10])))?;
-    let spindle_rpm = parse_u32(spindle_line)?;
-    let cutting_feed_mm_per_min =
-        parse_f64(prefixed_value(lines[11], ";CUTTING_FEED_MM_PER_MIN=")?)?;
-    let plunge_feed_mm_per_min = parse_f64(prefixed_value(lines[12], ";PLUNGE_FEED_MM_PER_MIN=")?)?;
-    let safe_retract_z_mm = parse_f64(prefixed_value(lines[13], ";SAFE_RETRACT_Z_MM=")?)?;
-    let motions = lines[14..lines.len() - 3]
-        .iter()
-        .map(|line| parse_iso_motion(line))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(CamPostprocessedProgram {
-        schema: CAM_POSTPROCESSOR_SCHEMA_V1.to_owned(),
-        plan_digest,
-        toolpath_digest,
-        simulation_fingerprint,
-        units: "mm".to_owned(),
-        work_offset: lines[8].to_owned(),
-        tool_number,
-        spindle_rpm,
-        cutting_feed_mm_per_min,
-        plunge_feed_mm_per_min,
-        safe_retract_z_mm,
-        motions,
-    })
-}
-
-fn parse_iso_motion(line: &str) -> Result<CamPostprocessedMotion, CamPostprocessorError> {
-    let (words, label) = line
-        .rsplit_once(" ;")
-        .ok_or_else(|| malformed(format!("motion {line:?} has no ; label")))?;
-    let mut words = words.split_whitespace();
-    let code = words
-        .next()
-        .ok_or_else(|| malformed(format!("motion {line:?} has no G code")))?;
-    let x = parse_axis(words.next(), 'X')?;
-    let y = parse_axis(words.next(), 'Y')?;
-    let z = parse_axis(words.next(), 'Z')?;
-    let kind = match (code, label) {
-        ("G0", "RAPID") => CamPostprocessedMotionKind::Rapid,
-        ("G0", "RETRACT") => CamPostprocessedMotionKind::Retract,
-        ("G1", "PLUNGE") => CamPostprocessedMotionKind::Plunge,
-        ("G1", "CUT") => CamPostprocessedMotionKind::Cut,
-        ("G2", "CUT_ARC") => CamPostprocessedMotionKind::ArcClockwise,
-        ("G3", "CUT_ARC") => CamPostprocessedMotionKind::ArcCounterclockwise,
-        _ => {
-            return Err(malformed(format!(
-                "motion {line:?} has an unknown code and label"
-            )));
-        }
-    };
-    let is_arc = matches!(
-        kind,
-        CamPostprocessedMotionKind::ArcClockwise | CamPostprocessedMotionKind::ArcCounterclockwise
-    );
-    let center_offset_mm = if is_arc {
-        Some([
-            parse_axis(words.next(), 'I')?,
-            parse_axis(words.next(), 'J')?,
-        ])
-    } else {
-        None
-    };
-    let needs_feed = !matches!(
-        kind,
-        CamPostprocessedMotionKind::Rapid | CamPostprocessedMotionKind::Retract
-    );
-    let feed_mm_per_min = if needs_feed {
-        Some(parse_axis(words.next(), 'F')?)
-    } else {
-        None
-    };
-    if words.next().is_some() {
-        return Err(malformed(format!("motion {line:?} has extra words")));
-    }
-    Ok(CamPostprocessedMotion {
-        kind,
-        end_mm: [x, y, z],
-        center_offset_mm,
-        feed_mm_per_min,
-    })
-}
-
-fn prefixed_value<'a>(line: &'a str, prefix: &str) -> Result<&'a str, CamPostprocessorError> {
-    line.strip_prefix(prefix)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| malformed(format!("line {line:?} is not {prefix}<value>")))
-}
-
-fn parse_axis(word: Option<&str>, axis: char) -> Result<f64, CamPostprocessorError> {
-    let word = word.ok_or_else(|| malformed(format!("motion is missing its {axis} word")))?;
-    let value = word
-        .strip_prefix(axis)
-        .ok_or_else(|| malformed(format!("motion word {word:?} is not {axis}<number>")))?;
-    parse_f64(value)
-}
-
-fn parse_f64(value: &str) -> Result<f64, CamPostprocessorError> {
-    value
-        .parse()
-        .map_err(|error| malformed(format!("{value:?} is not a number: {error}")))
-}
-
-fn parse_u32(value: &str) -> Result<u32, CamPostprocessorError> {
-    value
-        .parse()
-        .map_err(|error| malformed(format!("{value:?} is not an unsigned integer: {error}")))
-}
-
-fn malformed(reason: impl Into<String>) -> CamPostprocessorError {
+pub(crate) fn malformed(reason: impl Into<String>) -> CamPostprocessorError {
     CamPostprocessorError::Parse(reason.into())
 }
 
-fn canonicalize_postprocessed_program(program: &mut CamPostprocessedProgram) {
-    program.cutting_feed_mm_per_min =
-        canonical_postprocessor_number(program.cutting_feed_mm_per_min);
-    program.plunge_feed_mm_per_min = canonical_postprocessor_number(program.plunge_feed_mm_per_min);
-    program.safe_retract_z_mm = canonical_postprocessor_number(program.safe_retract_z_mm);
+fn canonicalize_postprocessed_program(program: &mut CamPostprocessedProgram, scale: f64) {
+    let number = |value| canonical_postprocessor_number(value, scale);
+    program.cutting_feed_mm_per_min = number(program.cutting_feed_mm_per_min);
+    program.plunge_feed_mm_per_min = number(program.plunge_feed_mm_per_min);
+    program.safe_retract_z_mm = number(program.safe_retract_z_mm);
     for motion in &mut program.motions {
-        motion.end_mm = motion.end_mm.map(canonical_postprocessor_number);
-        motion.center_offset_mm = motion
-            .center_offset_mm
-            .map(|offset| offset.map(canonical_postprocessor_number));
-        motion.feed_mm_per_min = motion.feed_mm_per_min.map(canonical_postprocessor_number);
+        motion.end_mm = motion.end_mm.map(number);
+        motion.center_offset_mm = motion.center_offset_mm.map(|offset| offset.map(number));
+        motion.feed_mm_per_min = motion.feed_mm_per_min.map(number);
     }
 }
 
-fn canonical_postprocessor_number(value: f64) -> f64 {
-    let rounded =
-        (value / CAM_POSTPROCESSOR_RESOLUTION_MM).round() * CAM_POSTPROCESSOR_RESOLUTION_MM;
+/// `value` on the grid of `1 / scale` millimetres, written once so that a program read
+/// back lands on the very same numbers.
+fn canonical_postprocessor_number(value: f64, scale: f64) -> f64 {
+    let rounded = (value * scale).round() / scale;
     if rounded == 0.0 { 0.0 } else { rounded }
-}
-
-fn format_cam_number(value: f64) -> String {
-    if value == 0.0 {
-        "0".to_owned()
-    } else {
-        value.to_string()
-    }
 }
 
 fn work_offset_code(offset: CamWorkOffset) -> &'static str {

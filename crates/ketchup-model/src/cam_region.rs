@@ -8,6 +8,7 @@ use crate::cam_offset::{
     loops_meet, offset_right, oriented, reversed, signed_area,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBRepGraphPackage};
+use crate::tolerance::ROUNDING;
 use ketchup_geometry::linalg::{cross, dot};
 
 /// Most boundary segments one region holds.
@@ -52,7 +53,7 @@ impl CamRegion2d {
             .find(|face| face.face_ordinal == face_ordinal)
             .ok_or_else(refused)?;
         let z_axis = cross(setup.x_axis, setup.y_axis);
-        if face.surface_kind != "plane" || dot(face.unit_normal, z_axis).abs() < 1.0 - 1.0e-9 {
+        if face.surface_kind != "plane" || dot(face.unit_normal, z_axis).abs() < 1.0 - ROUNDING {
             return Err(refused());
         }
         let to_setup = |point: [f64; 3]| {
@@ -145,7 +146,7 @@ impl CamHole {
             return Err(refused());
         }
         let z_axis = cross(setup.x_axis, setup.y_axis);
-        let square = |direction: [f64; 3]| dot(direction, z_axis).abs() >= 1.0 - 1.0e-9;
+        let square = |direction: [f64; 3]| dot(direction, z_axis).abs() >= 1.0 - ROUNDING;
         let in_setup = |point: [f64; 3]| {
             let relative = [0, 1, 2].map(|axis| point[axis] - setup.origin_mm[axis]);
             [
@@ -199,8 +200,10 @@ impl CamHole {
             .find(|ordinal| **ordinal != face_ordinal)
             .ok_or_else(refused)?;
         // A rim on anything but a machinable flat face is not a drillable hole.
-        let Ok(region) = CamRegion2d::from_planar_face(package, *around, setup) else {
-            return Err(refused());
+        let region = match CamRegion2d::from_planar_face(package, *around, setup) {
+            Ok(region) => region,
+            Err(CamPlannerError::UnsupportedRegion) => return Err(refused()),
+            Err(other) => return Err(other),
         };
         let rim_is_island = region.islands.iter().any(|island| {
             (distance(island.start_mm, center) - upper.1).abs() <= LOOP_TOLERANCE_MM

@@ -743,6 +743,8 @@ impl KetchupApp {
                 let operation = plan
                     .default_facing_operation(&snapshot, 1)
                     .map_err(|error| failed("cam.operation", error))?;
+                let dialect = CamPostprocessorDialect::library("iso_metric_gcode")
+                    .map_err(|error| failed("cam.dialect", error))?;
                 let worker_path = self.exact_worker_executable()?;
                 self.reviews.cam_reviews.set_worker_path(worker_path);
                 self.reviews
@@ -754,7 +756,7 @@ impl KetchupApp {
                             plan_id: pending.plan_id,
                             operations: vec![operation],
                             fixtures: Vec::new(),
-                            dialect: CamPostprocessorDialect::IsoMetricGCode,
+                            dialect,
                         },
                         &AtomicBool::new(false),
                     )

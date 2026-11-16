@@ -2,13 +2,14 @@
 //! radius, intersections, and scanline crossings. Every result is exact
 //! line/arc geometry; nothing is sampled into polylines.
 use crate::cam::CamPlannerError;
+use crate::tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
 use std::f64::consts::TAU;
 
 pub(crate) type Point = [f64; 2];
 
 /// Two points closer than this are the same point.
-pub(crate) const LOOP_TOLERANCE_MM: f64 = 1.0e-6;
-const PARALLEL: f64 = 1.0e-12;
+pub(crate) const LOOP_TOLERANCE_MM: f64 = APPROXIMATION;
+const PARALLEL: f64 = NEGLIGIBLE;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Segment {
@@ -571,7 +572,7 @@ pub(crate) fn loops_meet(left: &[Segment], right: &[Segment]) -> bool {
 /// of an arc's circle, where counting crossings is ambiguous.
 pub(crate) fn degenerate_lane(loops: &[Vec<Segment>], y: f64) -> bool {
     loops.iter().flatten().any(|segment| {
-        let near = |value: f64| (value - y).abs() <= LOOP_TOLERANCE_MM * 1.0e-3;
+        let near = |value: f64| (value - y).abs() <= ROUNDING;
         near(segment.start()[1])
             || near(segment.end()[1])
             || matches!(segment, Segment::Arc { start, center, .. }

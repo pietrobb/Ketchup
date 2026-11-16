@@ -581,15 +581,20 @@ class Document:
 
     def cam_preview(self, plan_id, operations, *, fixtures=(),
                     dialect="iso_metric_gcode"):
-        """Plan, exact-simulate and review a current CAM program without mutation."""
+        """Plan, exact-simulate and review a current CAM program without mutation.
+
+        ``dialect`` names a library postprocessor dialect: ``iso_metric_gcode``,
+        ``fanuc``, ``grbl``, ``linuxcnc`` or ``controller_neutral_json``; Ketchup
+        refuses any other.
+        """
         if type(plan_id) is not int or plan_id <= 0:
             raise ValueError("plan_id must be a positive integer")
         if not isinstance(operations, (list, tuple)) or not operations:
             raise ValueError("operations must be a nonempty list or tuple")
         if not isinstance(fixtures, (list, tuple)):
             raise ValueError("fixtures must be a list or tuple")
-        if dialect not in {"iso_metric_gcode", "controller_neutral_json"}:
-            raise ValueError("unsupported CAM postprocessor dialect")
+        if not isinstance(dialect, str) or not dialect:
+            raise ValueError("dialect must be a library postprocessor dialect id")
         return self._call("cam_preview", {
             "plan_id": plan_id,
             "operations": [dict(operation) for operation in operations],

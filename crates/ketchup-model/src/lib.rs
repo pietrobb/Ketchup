@@ -6,6 +6,7 @@ pub mod assembly;
 pub mod assembly_joint;
 pub mod assembly_recipe;
 pub mod cam;
+mod cam_gcode;
 mod cam_offset;
 mod cam_region;
 pub mod document;

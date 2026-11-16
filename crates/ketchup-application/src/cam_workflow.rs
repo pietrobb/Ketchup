@@ -170,7 +170,7 @@ impl CamReviewWorkflow {
             plan,
             &toolpath,
             &simulation,
-            request.dialect,
+            request.dialect.clone(),
         )
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         let id = self.next_id;
@@ -196,7 +196,7 @@ impl CamReviewWorkflow {
             toolpath_digest: toolpath.toolpath_digest.clone(),
             simulation_fingerprint: simulation.result_fingerprint.clone(),
             content_digest: output.content_digest.clone(),
-            dialect: request.dialect,
+            dialect: request.dialect.clone(),
             units: output.program.units.clone(),
             work_offset: output.program.work_offset.clone(),
             tool_number: output.program.tool_number,
@@ -270,7 +270,7 @@ impl CamReviewWorkflow {
             plan,
             &toolpath,
             &simulation,
-            review.request.dialect,
+            review.request.dialect.clone(),
         )
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         if toolpath != review.toolpath

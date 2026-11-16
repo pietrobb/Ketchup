@@ -1447,11 +1447,8 @@ fn cam_review_request(p: &Map<String, Value>) -> Result<CamReviewRequest> {
             .unwrap_or_else(|| Value::Array(Vec::new())),
     )
     .map_err(|error| Error::invalid_because(&error))?;
-    let dialect = match string(p, "dialect")? {
-        "iso_metric_gcode" => CamPostprocessorDialect::IsoMetricGCode,
-        "controller_neutral_json" => CamPostprocessorDialect::ControllerNeutralJson,
-        _ => return Err(Error::invalid("unsupported CAM postprocessor dialect")),
-    };
+    let dialect = CamPostprocessorDialect::library(string(p, "dialect")?)
+        .map_err(|error| Error::invalid_because(&error))?;
     Ok(CamReviewRequest {
         plan_id: CamPlanId(uint(p, "plan_id")?),
         operations: operations.into_iter().map(Into::into).collect(),
@@ -1696,7 +1693,7 @@ fn cam_review_value(review: &CamReviewSummary) -> Value {
         "toolpath_digest":review.toolpath_digest,
         "simulation_fingerprint":review.simulation_fingerprint,
         "content_digest":review.content_digest,
-        "dialect":match review.dialect { CamPostprocessorDialect::IsoMetricGCode => "iso_metric_gcode", CamPostprocessorDialect::ControllerNeutralJson => "controller_neutral_json" },
+        "dialect":review.dialect.id(),
         "units":review.units,
         "work_offset":review.work_offset,
         "tool_number":review.tool_number,
