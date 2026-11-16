@@ -581,8 +581,8 @@ from the Motedis product pages
 `bore_mm` remain `None`. The slot lips, fillets, cavities and bore exist only in
 the Motedis CAD files, and Motedis does not allow them to be passed on: clause 5
 of the [Motedis AGB](https://www.motedis.com/en/conditions-of-use:_:3.html)
-reserves all rights in its drawings and designs ("Der Kunde darf diese Dritten
-nicht zugänglich machen"), and the [imprint](https://www.motedis.com/en/imprint:_:4.html)
+reserves all rights in its drawings and designs and says the customer may not make
+them available to third parties, and the [imprint](https://www.motedis.com/en/imprint:_:4.html)
 forbids copying the site's content or storing it in other electronic media
 without written permission (both read 2026-11-16; the CAD ZIPs carry no licence).
 So the library ships no section, as for the HIWIN rail.
