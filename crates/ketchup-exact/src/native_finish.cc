@@ -1,5 +1,6 @@
 #include "native_common.hxx"
 
+#include <BRepAlgoAPI_Defeaturing.hxx>
 #include <BRepAlgoAPI_Section.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepTools_ReShape.hxx>
@@ -9,6 +10,7 @@
 #include <Geom_ElementarySurface.hxx>
 #include <TopAbs.hxx>
 #include <TopoDS_Iterator.hxx>
+#include <gp_Ax3.hxx>
 
 namespace ketchup::exact {
 
@@ -77,6 +79,102 @@ TopoDS_Shape offset_solid(BRepOffsetAPI_MakeOffsetShape& offset, const TopoDS_Sh
   return shape;
 }
 
+// A convex round (cylinder, sphere or torus tube curving away from the
+// material) whose radius is no larger than `distance`.
+bool convex_round_within(const TopoDS_Face& face, double distance) {
+  const BRepAdaptor_Surface surface(face);
+  double u0, u1, v0, v1;
+  BRepTools::UVBounds(face, u0, u1, v0, v1);
+  gp_Pnt point;
+  gp_Vec along_u, along_v;
+  surface.D1((u0 + u1) * 0.5, (v0 + v1) * 0.5, point, along_u, along_v);
+  gp_Vec normal = along_u.Crossed(along_v);
+  if (normal.Magnitude() <= tolerances().approximation) return false;
+  if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+  gp_Pnt centre;
+  double radius = 0.0;
+  switch (surface.GetType()) {
+    case GeomAbs_Cylinder: {
+      const gp_Ax1 axis = surface.Cylinder().Axis();
+      const gp_Vec direction(axis.Direction());
+      centre = axis.Location().Translated(
+          direction * gp_Vec(axis.Location(), point).Dot(direction));
+      radius = surface.Cylinder().Radius();
+      break;
+    }
+    case GeomAbs_Sphere:
+      centre = surface.Sphere().Location();
+      radius = surface.Sphere().Radius();
+      break;
+    case GeomAbs_Torus: {
+      const gp_Ax3 frame = surface.Torus().Position();
+      const gp_Vec axis(frame.Direction());
+      gp_Vec across(frame.Location(), point);
+      across -= axis * across.Dot(axis);
+      if (across.Magnitude() <= tolerances().approximation) return false;
+      centre = frame.Location().Translated(
+          across.Normalized() * surface.Torus().MajorRadius());
+      radius = surface.Torus().MinorRadius();
+      break;
+    }
+    default:
+      return false;
+  }
+  return radius <= distance + tolerances().linear_mm
+      && normal.Dot(gp_Vec(centre, point)) > 0.0;
+}
+
+// The body an inward offset of `distance` starts from. No point inside a
+// convex round of radius r ≤ t lies t from it: eroding a round by the wall
+// erodes its sharp edge, so such rounds are taken back to the edge their
+// neighbours meet at. `defeaturing` stays empty when there are none.
+TopoDS_Shape inward_offset_source(
+    const TopoDS_Shape& body, double distance,
+    std::unique_ptr<BRepAlgoAPI_Defeaturing>& defeaturing) {
+  NCollection_List<TopoDS_Shape> rounds;
+  for (TopExp_Explorer faces(body, TopAbs_FACE); faces.More(); faces.Next()) {
+    if (convex_round_within(TopoDS::Face(faces.Current()), distance)) rounds.Append(faces.Current());
+  }
+  if (rounds.IsEmpty()) return body;
+  defeaturing = std::make_unique<BRepAlgoAPI_Defeaturing>();
+  defeaturing->SetShape(body);
+  defeaturing->AddFacesToRemove(rounds);
+  defeaturing->SetToFillHistory(true);
+  defeaturing->Build();
+  if (!defeaturing->IsDone() || defeaturing->HasErrors() || defeaturing->Shape().IsNull()
+      || !BRepCheck_Analyzer(defeaturing->Shape()).IsValid()
+      || count_subshapes(defeaturing->Shape(), TopAbs_SOLID) != 1) {
+    return {};
+  }
+  return defeaturing->Shape();
+}
+
+// A body face's images on an offset made from `inward_offset_source`.
+NCollection_List<TopoDS_Shape> offset_images(
+    const TopoDS_Shape& face,
+    const std::unique_ptr<BRepAlgoAPI_Defeaturing>& defeaturing,
+    BRepOffsetAPI_MakeOffsetShape& offset) {
+  NCollection_List<TopoDS_Shape> sources;
+  if (!defeaturing) {
+    sources.Append(face);
+  } else if (!defeaturing->IsDeleted(face)) {
+    sources = defeaturing->Modified(face);
+    if (sources.IsEmpty()) sources.Append(face);
+  }
+  NCollection_List<TopoDS_Shape> images;
+  for (NCollection_List<TopoDS_Shape>::Iterator source(sources); source.More(); source.Next()) {
+    for (NCollection_List<TopoDS_Shape>::Iterator image(offset.Modified(source.Value()));
+         image.More(); image.Next()) {
+      images.Append(image.Value());
+    }
+    for (NCollection_List<TopoDS_Shape>::Iterator image(offset.Generated(source.Value()));
+         image.More(); image.Next()) {
+      images.Append(image.Value());
+    }
+  }
+  return images;
+}
+
 // OCCT can report an open shell as done yet hand back the body unchanged,
 // e.g. when the wall is thicker than the body or a round cannot be offset.
 // An inward wall must remove volume; an outward one must change it.
@@ -99,9 +197,16 @@ std::unique_ptr<NativeOperationResult> open_shell_by_offset(
     const NCollection_List<TopoDS_Shape>& openings,
     rust::Slice<const std::uint32_t> opening_ordinals,
     double offset) {
+  std::unique_ptr<BRepAlgoAPI_Defeaturing> defeaturing;
+  const TopoDS_Shape source = offset < 0.0
+      ? inward_offset_source(body.impl().shape, -offset, defeaturing)
+      : body.impl().shape;
+  if (source.IsNull()) {
+    return error_result(STATUS_INVALID_SHAPE, OFFSET_FAILED);
+  }
   BRepOffsetAPI_MakeOffsetShape offset_body;
   offset_body.PerformByJoin(
-      body.impl().shape,
+      source,
       offset,
       tolerances().approximation,
       BRepOffset_Skin,
@@ -170,9 +275,10 @@ std::unique_ptr<NativeOperationResult> open_shell_by_offset(
     GProp_GProps mouth_area;
     BRepGProp::SurfaceProperties(mouth, mouth_area);
     const double expected = mouth_area.Mass() * thickness;
+    // Both volumes are measured by the kernel, so they agree to its approximation.
     if (!crossing.IsDone() || crossing.HasErrors() || crossing.Shape().IsNull()
         || !(std::abs(volume_of(crossing.Shape()) - expected)
-             <= tolerances().rounding * std::max(expected, 1.0))) {
+             <= tolerances().approximation * std::max(expected, 1.0))) {
       return error_result(
           STATUS_NO_GEOMETRIC_CHANGE,
           "Shell opening would cut through a neighbouring wall: its walls lean over "
@@ -180,12 +286,22 @@ std::unique_ptr<NativeOperationResult> open_shell_by_offset(
     }
     tools.Append(sweep.Shape());
   }
-  NCollection_List<TopoDS_Shape> arguments;
-  arguments.Append(outer);
+  // One tool: the cavity and its openings fused, the faces they share in a
+  // plane merged, so the cut meets no face lying on another.
+  NCollection_List<TopoDS_Shape> fuse_arguments;
+  fuse_arguments.Append(cavity);
+  tools.RemoveFirst();
+  BRepAlgoAPI_Fuse fuse;
+  fuse.SetArguments(fuse_arguments);
+  fuse.SetTools(tools);
+  fuse.SetNonDestructive(true);
+  fuse.Build();
+  if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) {
+    return error_result(STATUS_INVALID_SHAPE, "OCCT shell opening fuse did not complete");
+  }
+  fuse.SimplifyResult();
   BRepAlgoAPI_Cut cut;
-  cut.SetArguments(arguments);
-  cut.SetTools(tools);
-  cut.SetNonDestructive(true);
+  configure_boolean(cut, outer, fuse.Shape());
   cut.Build();
   if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()
       || count_subshapes(cut.Shape(), TopAbs_SOLID) != 1
@@ -198,30 +314,46 @@ std::unique_ptr<NativeOperationResult> open_shell_by_offset(
   const ShapeIndex result_index(result);
   const std::string prefix = inward ? "shell_inward" : "shell_outward";
   std::vector<HistoryRecord> history;
+  // A face of the outer body as it is, or of the cavity as it is in the tool.
+  const auto before_cut = [&](const TopoDS_Shape& face, bool in_cavity) {
+    NCollection_List<TopoDS_Shape> faces;
+    if (!in_cavity) {
+      faces.Append(face);
+    } else if (!fuse.IsDeleted(face)) {
+      faces = fuse.Modified(face);
+      if (faces.IsEmpty()) faces.Append(face);
+    }
+    return faces;
+  };
   // A face of the body or of its offset, carried through the cut.
-  const auto carry = [&](const HistoryRecord& source, const TopoDS_Shape& face,
+  const auto carry = [&](const HistoryRecord& source, const TopoDS_Shape& face, bool in_cavity,
                          const std::string& relation) {
     const std::string role =
         source.semantic_role.empty() ? "" : relation + "(" + source.semantic_role + ")";
-    const NCollection_List<TopoDS_Shape>& modified = cut.Modified(face);
-    for (NCollection_List<TopoDS_Shape>::Iterator image(modified); image.More(); image.Next()) {
-      history.push_back(history_record(
-          role, relation + "_modified", source.source_element_id, result_index, image.Value()));
-    }
-    if (modified.IsEmpty() && !cut.IsDeleted(face)) {
-      const HistoryRecord unchanged = history_record(
-          role, relation + "_unchanged", source.source_element_id, result_index, face);
-      if (unchanged.output_present) history.push_back(unchanged);
+    const NCollection_List<TopoDS_Shape> faces = before_cut(face, in_cavity);
+    for (NCollection_List<TopoDS_Shape>::Iterator tool_face(faces); tool_face.More();
+         tool_face.Next()) {
+      const NCollection_List<TopoDS_Shape>& modified = cut.Modified(tool_face.Value());
+      for (NCollection_List<TopoDS_Shape>::Iterator image(modified); image.More(); image.Next()) {
+        history.push_back(history_record(
+            role, relation + "_modified", source.source_element_id, result_index, image.Value()));
+      }
+      if (modified.IsEmpty() && !cut.IsDeleted(tool_face.Value())) {
+        const HistoryRecord unchanged = history_record(
+            role, relation + "_unchanged", source.source_element_id, result_index,
+            tool_face.Value());
+        if (unchanged.output_present) history.push_back(unchanged);
+      }
     }
   };
   for (const HistoryRecord& source : body.impl().history) {
     if (!source.output_present) continue;
     const TopoDS_Face face = body_index.face(source.output_ordinal);
     if (face.IsNull()) continue;
-    carry(source, face, prefix + (inward ? "_outer" : "_inner"));
-    const NCollection_List<TopoDS_Shape>& images = offset_body.Modified(face);
+    carry(source, face, !inward, prefix + (inward ? "_outer" : "_inner"));
+    const NCollection_List<TopoDS_Shape> images = offset_images(face, defeaturing, offset_body);
     for (NCollection_List<TopoDS_Shape>::Iterator image(images); image.More(); image.Next()) {
-      carry(source, image.Value(), prefix + (inward ? "_inner" : "_outer"));
+      carry(source, image.Value(), inward, prefix + (inward ? "_inner" : "_outer"));
     }
   }
   std::size_t index = 0;
@@ -229,12 +361,17 @@ std::unique_ptr<NativeOperationResult> open_shell_by_offset(
        iterator.More(); iterator.Next(), ++index) {
     const std::string source_id =
         "generated-result/face/" + std::to_string(opening_ordinals[index]);
-    const NCollection_List<TopoDS_Shape>& rims = cut.Modified(iterator.Value());
-    for (NCollection_List<TopoDS_Shape>::Iterator rim(rims); rim.More(); rim.Next()) {
-      history.push_back(history_record(
-          "", prefix + "_selected_modified", source_id, result_index, rim.Value()));
+    std::size_t rims = 0;
+    const NCollection_List<TopoDS_Shape> faces = before_cut(iterator.Value(), !inward);
+    for (NCollection_List<TopoDS_Shape>::Iterator tool_face(faces); tool_face.More();
+         tool_face.Next()) {
+      const NCollection_List<TopoDS_Shape>& modified = cut.Modified(tool_face.Value());
+      for (NCollection_List<TopoDS_Shape>::Iterator rim(modified); rim.More(); rim.Next(), ++rims) {
+        history.push_back(history_record(
+            "", prefix + "_selected_modified", source_id, result_index, rim.Value()));
+      }
     }
-    if (rims.IsEmpty()) {
+    if (rims == 0) {
       history.push_back(HistoryRecord{"", prefix + "_selected_removed", source_id, 0, false});
     }
   }
@@ -317,9 +454,15 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
     if (face_ordinals.empty()) {
       BRepOffsetAPI_MakeOffsetShape inward_offset;
       BRepOffsetAPI_MakeOffsetShape outward_offset;
+      std::unique_ptr<BRepAlgoAPI_Defeaturing> inward_defeaturing;
+      std::unique_ptr<BRepAlgoAPI_Defeaturing> outward_defeaturing;
       const auto build_offset = [&](BRepOffsetAPI_MakeOffsetShape& operation, double offset) {
+        const TopoDS_Shape source = offset < 0.0
+            ? inward_offset_source(body.impl().shape, -offset, inward_defeaturing)
+            : body.impl().shape;
+        if (source.IsNull()) return TopoDS_Shape();
         operation.PerformByJoin(
-            body.impl().shape,
+            source,
             offset,
             tolerances().approximation,
             BRepOffset_Skin,
@@ -403,18 +546,15 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
       };
       const auto append_offset = [&](
           BRepOffsetAPI_MakeOffsetShape& offset,
+          const std::unique_ptr<BRepAlgoAPI_Defeaturing>& defeaturing,
           const std::string& relation_prefix) {
         for (const HistoryRecord& source : body.impl().history) {
           if (!source.output_present) continue;
           const TopoDS_Face source_face = body_index.face(source.output_ordinal);
           if (source_face.IsNull()) continue;
-          const NCollection_List<TopoDS_Shape>& modified = offset.Modified(source_face);
-          const NCollection_List<TopoDS_Shape>& generated = offset.Generated(source_face);
-          for (NCollection_List<TopoDS_Shape>::Iterator iterator(modified);
-               iterator.More(); iterator.Next()) {
-            map_intermediate(history, source, iterator.Value(), relation_prefix);
-          }
-          for (NCollection_List<TopoDS_Shape>::Iterator iterator(generated);
+          const NCollection_List<TopoDS_Shape> images =
+              offset_images(source_face, defeaturing, offset);
+          for (NCollection_List<TopoDS_Shape>::Iterator iterator(images);
                iterator.More(); iterator.Next()) {
             map_intermediate(history, source, iterator.Value(), relation_prefix);
           }
@@ -422,13 +562,13 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
       };
       if (direction == 0) {
         append_direct("shell_closed_inward_outer");
-        append_offset(inward_offset, "shell_closed_inward_inner");
+        append_offset(inward_offset, inward_defeaturing, "shell_closed_inward_inner");
       } else if (direction == 1) {
-        append_offset(outward_offset, "shell_closed_outward_outer");
+        append_offset(outward_offset, outward_defeaturing, "shell_closed_outward_outer");
         append_direct("shell_closed_outward_inner");
       } else {
-        append_offset(outward_offset, "shell_closed_symmetric_outer");
-        append_offset(inward_offset, "shell_closed_symmetric_inner");
+        append_offset(outward_offset, outward_defeaturing, "shell_closed_symmetric_outer");
+        append_offset(inward_offset, inward_defeaturing, "shell_closed_symmetric_inner");
       }
       return success_result(result, std::move(history));
     }

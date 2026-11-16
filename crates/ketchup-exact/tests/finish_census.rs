@@ -682,8 +682,9 @@ fn census_of_shells_of_filleted_bodies() {
                     - 38.0 * 28.0 * 2.0,
             ),
         ),
-        // Rounds smaller than the wall would vanish inside it; OCCT turns them
-        // inside out instead, so the offset is refused.
+        // Rounds smaller than the wall vanish inside it: every point at least
+        // the wall from the 1 mm rounds lies in the sharp block inset by the
+        // wall, so the inside is that block with sharp corners.
         (
             "shell filleted block open top, fillet below wall",
             shell(
@@ -693,7 +694,7 @@ fn census_of_shells_of_filleted_bodies() {
                 2.0,
                 ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_OFFSET),
+            Expect::Volume(rounded_box_volume(LENGTH, WIDTH, HEIGHT, 1.0) - 36.0 * 26.0 * 18.0),
         ),
         (
             "shell filleted block closed, fillet below wall",
@@ -704,7 +705,7 @@ fn census_of_shells_of_filleted_bodies() {
                 2.0,
                 ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_COMPLETED),
+            Expect::Volume(rounded_box_volume(LENGTH, WIDTH, HEIGHT, 1.0) - 36.0 * 26.0 * 16.0),
         ),
         // The rounds stop at the open top; the wall still swallows them.
         (
@@ -716,7 +717,7 @@ fn census_of_shells_of_filleted_bodies() {
                 2.0,
                 ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_OFFSET),
+            Expect::Volume(small_vertical.body.topology.volume_mm3 - 36.0 * 26.0 * 18.0),
         ),
         (
             "shell variable-filleted block open top",

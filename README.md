@@ -236,7 +236,7 @@ The next steps that would move Ketchup furthest toward a full production CAD:
 
 1. Broader automatic hole/thread callouts, including modeled threads and complex bores.
 2. General CAM: 2.5D toolpaths (contours, pockets, drilling) with post-processors for common controllers, beyond woodWOP and BTLx.
-3. Broader exact modeling: more fillet and shell cases, variable-radius fillets and surfaces.
+3. Broader exact modeling: more fillet and shell cases, and freeform surfaces.
 4. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
 
 With these, Ketchup could design a machine like its own CNC router end to end: frame from aluminium profiles, ball screws and linear-guide carriages from the parts library (a first set of sizes is there) on rails whose cross-section comes from the supplier's CAD file, drawings with tolerances for the machined plates, and toolpaths to make those plates.
