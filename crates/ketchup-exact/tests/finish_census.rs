@@ -290,7 +290,7 @@ fn filleted(backend: &ExactBackend, body: &ExactBody, edges: &[u32], radius: f64
 }
 
 const NOT_COMPLETED: &str = "did not complete";
-const NOT_HOLLOWED: &str = "Shell left the body solid";
+const NOT_OFFSET: &str = "Shell could not offset the body by the wall thickness";
 const STEPPED_CLOSED_RUN: &str = "closed run of edges must end with the radius it starts with";
 /// What one 2 mm round takes off a straight edge, per mm of its length.
 const ROUND_2_PER_MM: f64 = (1.0 - std::f64::consts::FRAC_PI_4) * 4.0;
@@ -300,6 +300,17 @@ const CYLINDER_VOLUME: f64 = std::f64::consts::PI * 100.0 * HEIGHT;
 const ELL_VOLUME: f64 = 600.0 * HEIGHT;
 const PLATE_VOLUME: f64 = (1200.0 - std::f64::consts::PI * 36.0) * 10.0;
 const ROUNDED_VOLUME: f64 = (1200.0 - (4.0 - std::f64::consts::PI) * 25.0) * HEIGHT;
+
+/// An `x` × `y` × `z` box with every edge rounded to `r`: its flat-faced core,
+/// the slabs on its faces, the quarter cylinders on its edges and the sphere
+/// its eight corners make up.
+fn rounded_box_volume(x: f64, y: f64, z: f64, r: f64) -> f64 {
+    let (a, b, c) = (x - 2.0 * r, y - 2.0 * r, z - 2.0 * r);
+    a * b * c
+        + 2.0 * r * (a * b + b * c + a * c)
+        + std::f64::consts::PI * r * r * (a + b + c)
+        + 4.0 / 3.0 * std::f64::consts::PI * r.powi(3)
+}
 
 /// Made, taking off at most a tenth of `volume`.
 fn below(volume: f64) -> Expect {
@@ -555,7 +566,8 @@ fn census_of_shells_of_sharp_bodies() {
             ),
             Expect::Volume(BLOCK_VOLUME - 36.0 * 26.0 * HEIGHT),
         ),
-        // OCCT handed the solid block back as if it were shelled.
+        // OCCT handed the solid block back as if it were shelled; its offset
+        // by the wall does not exist.
         (
             "shell block thicker than half its width",
             shell(
@@ -565,7 +577,7 @@ fn census_of_shells_of_sharp_bodies() {
                 16.0,
                 ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_HOLLOWED),
+            Expect::Refused(NOT_OFFSET),
         ),
         (
             "shell cylinder open top",
@@ -634,9 +646,11 @@ fn census_of_shells_of_filleted_bodies() {
         )
         .expect("variable rounded base");
     let variable_rounded_volume = variable_rounded.body.topology.volume_mm3;
+    let small_vertical = filleted(&backend, block_body, &vertical_block_edges(block_body), 1.0);
     assert_census(&[
-        // These rounds are larger than the wall, so the offset exists; OCCT
-        // still hands the solid back today.
+        // The top blends into its rounds, which OCCT's thick solid cannot open.
+        // The rounds are larger than the wall, so the inside is the block
+        // inset by the wall with 1 mm rounds; the opening is the flat of the top.
         (
             "shell filleted block open top, fillet above wall",
             shell(
@@ -646,9 +660,30 @@ fn census_of_shells_of_filleted_bodies() {
                 2.0,
                 ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_HOLLOWED),
+            Expect::Volume(
+                rounded_box_volume(LENGTH, WIDTH, HEIGHT, 3.0)
+                    - rounded_box_volume(36.0, 26.0, 16.0, 1.0)
+                    - 34.0 * 24.0 * 2.0,
+            ),
         ),
-        // Rounds smaller than the wall vanish inside it.
+        // The outside is the block grown by the wall with 3 mm rounds.
+        (
+            "shell filleted block outward, fillet below wall",
+            shell(
+                &backend,
+                &thin_rounded.body,
+                &[thin_top],
+                2.0,
+                ShellDirection::Outward,
+            ),
+            Expect::Volume(
+                rounded_box_volume(44.0, 34.0, 24.0, 3.0)
+                    - rounded_box_volume(LENGTH, WIDTH, HEIGHT, 1.0)
+                    - 38.0 * 28.0 * 2.0,
+            ),
+        ),
+        // Rounds smaller than the wall would vanish inside it; OCCT turns them
+        // inside out instead, so the offset is refused.
         (
             "shell filleted block open top, fillet below wall",
             shell(
@@ -658,7 +693,7 @@ fn census_of_shells_of_filleted_bodies() {
                 2.0,
                 ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_HOLLOWED),
+            Expect::Refused(NOT_OFFSET),
         ),
         (
             "shell filleted block closed, fillet below wall",
@@ -671,17 +706,17 @@ fn census_of_shells_of_filleted_bodies() {
             ),
             Expect::Refused(NOT_COMPLETED),
         ),
-        // An outward offset of a convex round always exists.
+        // The rounds stop at the open top; the wall still swallows them.
         (
-            "shell filleted block outward, fillet below wall",
+            "shell block with small vertical rounds open top",
             shell(
                 &backend,
-                &thin_rounded.body,
-                &[thin_top],
+                &small_vertical.body,
+                &[top_face(&small_vertical.body, HEIGHT)],
                 2.0,
-                ShellDirection::Outward,
+                ShellDirection::Inward,
             ),
-            Expect::Refused(NOT_HOLLOWED),
+            Expect::Refused(NOT_OFFSET),
         ),
         (
             "shell variable-filleted block open top",

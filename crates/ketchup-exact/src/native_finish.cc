@@ -12,6 +12,237 @@
 
 namespace ketchup::exact {
 
+namespace {
+
+constexpr const char* NOT_HOLLOWED =
+    "Shell left the body solid: the wall is too thick for the body, or a curved face "
+    "cannot be offset by that thickness";
+
+constexpr const char* OFFSET_FAILED =
+    "Shell could not offset the body by the wall thickness: the wall is thicker than "
+    "the body allows, or a round or curved face is tighter than the wall";
+
+double volume_of(const TopoDS_Shape& shape) {
+  GProp_GProps properties;
+  BRepGProp::VolumeProperties(shape, properties);
+  return properties.Mass();
+}
+
+// The solid an offset encloses. OCCT hands back the offset of a body with
+// rounds as a closed shell rather than a solid; it is made one here.
+// OCCT also offsets a round tighter than the distance, turning it inside out
+// instead of letting it vanish; every face of the offset must lie the offset
+// distance from the body's surface.
+bool offset_faces_at_distance(
+    const TopoDS_Shape& offset_shape, const TopoDS_Shape& source, double distance) {
+  TopExp_Explorer shells(source, TopAbs_SHELL);
+  if (!shells.More()) return false;
+  const TopoDS_Shape surface = shells.Current();
+  const double tolerance = std::max(tolerances().approximation, tolerances().rounding * distance);
+  for (TopExp_Explorer faces(offset_shape, TopAbs_FACE); faces.More(); faces.Next()) {
+    const TopoDS_Face face = TopoDS::Face(faces.Current());
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    const occ::handle<Geom_Surface> geometry = BRep_Tool::Surface(face);
+    constexpr int SAMPLES = 3;
+    for (int i = 1; i <= SAMPLES; ++i) {
+      for (int j = 1; j <= SAMPLES; ++j) {
+        const gp_Pnt2d uv(u0 + (u1 - u0) * i / (SAMPLES + 1), v0 + (v1 - v0) * j / (SAMPLES + 1));
+        BRepClass_FaceClassifier inside(face, uv, tolerances().linear_mm);
+        if (inside.State() != TopAbs_IN) continue;
+        const TopoDS_Vertex sample = BRepBuilderAPI_MakeVertex(geometry->Value(uv.X(), uv.Y()));
+        BRepExtrema_DistShapeShape measure(sample, surface);
+        if (!measure.IsDone() || std::abs(measure.Value() - distance) > tolerance) return false;
+      }
+    }
+  }
+  return true;
+}
+
+TopoDS_Shape offset_solid(BRepOffsetAPI_MakeOffsetShape& offset, const TopoDS_Shape& source,
+                          double distance) {
+  if (!offset.IsDone() || offset.Shape().IsNull()) return {};
+  TopoDS_Shape shape = offset.Shape();
+  if (shape.ShapeType() == TopAbs_SHELL && shape.Closed()) {
+    BRepBuilderAPI_MakeSolid solid_maker(TopoDS::Shell(shape));
+    if (!solid_maker.IsDone()) return {};
+    TopoDS_Solid solid = solid_maker.Solid();
+    if (!BRepLib::OrientClosedSolid(solid)) return {};
+    shape = solid;
+  }
+  if (!BRepCheck_Analyzer(shape).IsValid() || count_subshapes(shape, TopAbs_SOLID) != 1
+      || !(volume_of(shape) > 0.0) || !offset_faces_at_distance(shape, source, distance)) {
+    return {};
+  }
+  return shape;
+}
+
+// OCCT can report an open shell as done yet hand back the body unchanged,
+// e.g. when the wall is thicker than the body or a round cannot be offset.
+// An inward wall must remove volume; an outward one must change it.
+bool shell_hollowed(const TopoDS_Shape& source, const TopoDS_Shape& shape, double offset) {
+  const double source_volume = volume_of(source);
+  const double result_volume = volume_of(shape);
+  const double tolerance = tolerances().rounding * std::max(source_volume, 1.0);
+  return std::isfinite(source_volume) && std::isfinite(result_volume)
+      && result_volume > tolerance
+      && (offset < 0.0 ? result_volume < source_volume - tolerance
+                       : std::abs(result_volume - source_volume) > tolerance);
+}
+
+// The open shell OCCT's thick solid cannot make, as where an opening blends
+// smoothly into rounds: the body less its inward offset (or its outward offset
+// less the body), each planar opening cut through by its face swept across the
+// wall. The opening keeps the outline of the face's image on the inner side.
+std::unique_ptr<NativeOperationResult> open_shell_by_offset(
+    const NativeOperationResult& body,
+    const NCollection_List<TopoDS_Shape>& openings,
+    rust::Slice<const std::uint32_t> opening_ordinals,
+    double offset) {
+  BRepOffsetAPI_MakeOffsetShape offset_body;
+  offset_body.PerformByJoin(
+      body.impl().shape,
+      offset,
+      tolerances().approximation,
+      BRepOffset_Skin,
+      false,
+      false,
+      GeomAbs_Intersection,
+      true);
+  const TopoDS_Shape offset_shape = offset_solid(offset_body, body.impl().shape, std::abs(offset));
+  if (offset_shape.IsNull()) {
+    return error_result(STATUS_INVALID_SHAPE, OFFSET_FAILED);
+  }
+  const bool inward = offset < 0.0;
+  const double thickness = std::abs(offset);
+  const TopoDS_Shape& outer = inward ? body.impl().shape : offset_shape;
+  const TopoDS_Shape& cavity = inward ? offset_shape : body.impl().shape;
+  NCollection_List<TopoDS_Shape> tools;
+  tools.Append(cavity);
+  for (NCollection_List<TopoDS_Shape>::Iterator iterator(openings);
+       iterator.More(); iterator.Next()) {
+    const TopoDS_Face face = TopoDS::Face(iterator.Value());
+    gp_Dir normal;
+    if (!oriented_planar_face_normal(face, normal)) {
+      return error_result(
+          STATUS_INVALID_PARAMETER,
+          "Shell could not open a curved face that blends into its neighbours; "
+          "open a flat face");
+    }
+    TopoDS_Face mouth = face;
+    if (inward) {
+      // The offset's face in the plane of the opening moved in by the wall.
+      const gp_Pnt on_opening = BRep_Tool::Pnt(TopExp::FirstVertex(
+          TopoDS::Edge(TopExp_Explorer(face, TopAbs_EDGE).Current())));
+      int found = 0;
+      for (TopExp_Explorer candidates(offset_shape, TopAbs_FACE); candidates.More();
+           candidates.Next()) {
+        const TopoDS_Face candidate = TopoDS::Face(candidates.Current());
+        gp_Dir candidate_normal;
+        if (!oriented_planar_face_normal(candidate, candidate_normal)
+            || candidate_normal.Dot(normal) < 1.0 - tolerances().approximation) {
+          continue;
+        }
+        const gp_Pnt on_candidate = BRep_Tool::Pnt(TopExp::FirstVertex(
+            TopoDS::Edge(TopExp_Explorer(candidate, TopAbs_EDGE).Current())));
+        const double depth = gp_Vec(on_opening, on_candidate).Dot(gp_Vec(normal));
+        if (std::abs(depth + thickness) <= tolerances().linear_mm) {
+          mouth = candidate;
+          ++found;
+        }
+      }
+      if (found != 1) {
+        return error_result(
+            STATUS_NO_GEOMETRIC_CHANGE,
+            "Shell opening has no single face on the inner side of the wall");
+      }
+    }
+    // From the inner side of the wall to one wall past its outer side.
+    BRepPrimAPI_MakePrism sweep(mouth, gp_Vec(normal) * (2.0 * thickness), true, false);
+    if (!sweep.IsDone() || sweep.Shape().IsNull()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT shell opening sweep did not complete");
+    }
+    // Across the wall the sweep must stay in the body: one that leaves it
+    // through a neighbouring wall would cut that wall as well.
+    BRepAlgoAPI_Common crossing;
+    configure_boolean(crossing, sweep.Shape(), outer);
+    crossing.Build();
+    GProp_GProps mouth_area;
+    BRepGProp::SurfaceProperties(mouth, mouth_area);
+    const double expected = mouth_area.Mass() * thickness;
+    if (!crossing.IsDone() || crossing.HasErrors() || crossing.Shape().IsNull()
+        || !(std::abs(volume_of(crossing.Shape()) - expected)
+             <= tolerances().rounding * std::max(expected, 1.0))) {
+      return error_result(
+          STATUS_NO_GEOMETRIC_CHANGE,
+          "Shell opening would cut through a neighbouring wall: its walls lean over "
+          "the opening by more than the thickness allows");
+    }
+    tools.Append(sweep.Shape());
+  }
+  NCollection_List<TopoDS_Shape> arguments;
+  arguments.Append(outer);
+  BRepAlgoAPI_Cut cut;
+  cut.SetArguments(arguments);
+  cut.SetTools(tools);
+  cut.SetNonDestructive(true);
+  cut.Build();
+  if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()
+      || count_subshapes(cut.Shape(), TopAbs_SOLID) != 1
+      || !shell_hollowed(body.impl().shape, cut.Shape(), offset)) {
+    return error_result(STATUS_NO_GEOMETRIC_CHANGE, NOT_HOLLOWED);
+  }
+
+  const TopoDS_Shape result = cut.Shape();
+  const ShapeIndex body_index(body.impl().shape);
+  const ShapeIndex result_index(result);
+  const std::string prefix = inward ? "shell_inward" : "shell_outward";
+  std::vector<HistoryRecord> history;
+  // A face of the body or of its offset, carried through the cut.
+  const auto carry = [&](const HistoryRecord& source, const TopoDS_Shape& face,
+                         const std::string& relation) {
+    const std::string role =
+        source.semantic_role.empty() ? "" : relation + "(" + source.semantic_role + ")";
+    const NCollection_List<TopoDS_Shape>& modified = cut.Modified(face);
+    for (NCollection_List<TopoDS_Shape>::Iterator image(modified); image.More(); image.Next()) {
+      history.push_back(history_record(
+          role, relation + "_modified", source.source_element_id, result_index, image.Value()));
+    }
+    if (modified.IsEmpty() && !cut.IsDeleted(face)) {
+      const HistoryRecord unchanged = history_record(
+          role, relation + "_unchanged", source.source_element_id, result_index, face);
+      if (unchanged.output_present) history.push_back(unchanged);
+    }
+  };
+  for (const HistoryRecord& source : body.impl().history) {
+    if (!source.output_present) continue;
+    const TopoDS_Face face = body_index.face(source.output_ordinal);
+    if (face.IsNull()) continue;
+    carry(source, face, prefix + (inward ? "_outer" : "_inner"));
+    const NCollection_List<TopoDS_Shape>& images = offset_body.Modified(face);
+    for (NCollection_List<TopoDS_Shape>::Iterator image(images); image.More(); image.Next()) {
+      carry(source, image.Value(), prefix + (inward ? "_inner" : "_outer"));
+    }
+  }
+  std::size_t index = 0;
+  for (NCollection_List<TopoDS_Shape>::Iterator iterator(openings);
+       iterator.More(); iterator.Next(), ++index) {
+    const std::string source_id =
+        "generated-result/face/" + std::to_string(opening_ordinals[index]);
+    const NCollection_List<TopoDS_Shape>& rims = cut.Modified(iterator.Value());
+    for (NCollection_List<TopoDS_Shape>::Iterator rim(rims); rim.More(); rim.Next()) {
+      history.push_back(history_record(
+          "", prefix + "_selected_modified", source_id, result_index, rim.Value()));
+    }
+    if (rims.IsEmpty()) {
+      history.push_back(HistoryRecord{"", prefix + "_selected_removed", source_id, 0, false});
+    }
+  }
+  return success_result(result, std::move(history));
+}
+
+}  // namespace
+
 std::unique_ptr<NativeOperationResult> shell_body_native(
     const NativeOperationResult& body,
     rust::Slice<const std::uint32_t> face_ordinals,
@@ -53,28 +284,12 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
           true);
       return operation.IsDone() && !operation.Shape().IsNull();
     };
-    // OCCT can report an open shell as done yet hand back the body unchanged,
-    // e.g. when the wall is thicker than the body or a round cannot be offset.
-    // An inward wall must remove volume; an outward one must add it.
     const auto hollowed = [&](const TopoDS_Shape& shape, double offset) {
-      GProp_GProps source_properties;
-      GProp_GProps result_properties;
-      BRepGProp::VolumeProperties(body.impl().shape, source_properties);
-      BRepGProp::VolumeProperties(shape, result_properties);
-      const double source_volume = source_properties.Mass();
-      const double result_volume = result_properties.Mass();
-      const double tolerance = tolerances().rounding * std::max(source_volume, 1.0);
-      return std::isfinite(source_volume) && std::isfinite(result_volume)
-          && result_volume > tolerance
-          && (offset < 0.0 ? result_volume < source_volume - tolerance
-                           : std::abs(result_volume - source_volume) > tolerance);
+      return shell_hollowed(body.impl().shape, shape, offset);
     };
-    constexpr const char* NOT_HOLLOWED =
-        "Shell left the body solid: the wall is too thick for the body, or a curved face "
-        "cannot be offset by that thickness";
     const auto append_selected_history = [&](
         std::vector<HistoryRecord>& history,
-        BRepOffsetAPI_MakeThickSolid& operation,
+        auto& operation,
         const ShapeIndex& result_index,
         const std::string& relation_prefix) {
       for (const std::uint32_t ordinal : face_ordinals) {
@@ -112,28 +327,26 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
             false,
             GeomAbs_Intersection,
             true);
-        return operation.IsDone() && !operation.Shape().IsNull()
-            && BRepCheck_Analyzer(operation.Shape()).IsValid()
-            && count_subshapes(operation.Shape(), TopAbs_SOLID) == 1;
+        return offset_solid(operation, body.impl().shape, std::abs(offset));
       };
       const double inward_distance = direction == 2 ? -thickness * 0.5 : -thickness;
       const double outward_distance = direction == 2 ? thickness * 0.5 : thickness;
-      const TopoDS_Shape* inner = &body.impl().shape;
-      const TopoDS_Shape* outer = &body.impl().shape;
+      TopoDS_Shape inner = body.impl().shape;
+      TopoDS_Shape outer = body.impl().shape;
       if (direction != 1) {
-        if (!build_offset(inward_offset, inward_distance)) {
+        inner = build_offset(inward_offset, inward_distance);
+        if (inner.IsNull()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT closed Shell inward offset did not complete");
         }
-        inner = &inward_offset.Shape();
       }
       if (direction != 0) {
-        if (!build_offset(outward_offset, outward_distance)) {
+        outer = build_offset(outward_offset, outward_distance);
+        if (outer.IsNull()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT closed Shell outward offset did not complete");
         }
-        outer = &outward_offset.Shape();
       }
       BRepAlgoAPI_Cut cut;
-      configure_boolean(cut, *outer, *inner);
+      configure_boolean(cut, outer, inner);
       cut.Build();
       if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()
           || !BRepCheck_Analyzer(cut.Shape()).IsValid()
@@ -223,11 +436,8 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
     if (direction != 2) {
       BRepOffsetAPI_MakeThickSolid operation;
       const double offset = direction == 0 ? -thickness : thickness;
-      if (!build_thick(operation, offset)) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT body shell did not complete");
-      }
-      if (!hollowed(operation.Shape(), offset)) {
-        return error_result(STATUS_NO_GEOMETRIC_CHANGE, NOT_HOLLOWED);
+      if (!build_thick(operation, offset) || !hollowed(operation.Shape(), offset)) {
+        return open_shell_by_offset(body, closing_faces, face_ordinals, offset);
       }
       const TopoDS_Shape result = operation.Shape();
       const ShapeIndex result_index(result);
