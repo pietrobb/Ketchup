@@ -149,10 +149,9 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
   });
 }
 
-// Cuts `target` by the axial tool swept along each motion in turn, each sweep
-// placed by the rigid `matrix`. Only the final stock is checked and measured,
-// so a program of many motions costs its Booleans, not one full inspection of
-// the growing stock per motion.
+// Cuts `target` by the axial tool swept along every motion, each sweep placed
+// by the rigid `matrix`, in a single Boolean. Only the final stock is checked
+// and measured.
 std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
     const NativeOperationResult& target, rust::Slice<const NativeSegment> motions,
     double radius, double axial_length, rust::Slice<const double> matrix) noexcept {
@@ -170,7 +169,8 @@ std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
         matrix[0], matrix[1], matrix[2], matrix[3],
         matrix[4], matrix[5], matrix[6], matrix[7],
         matrix[8], matrix[9], matrix[10], matrix[11]);
-    TopoDS_Shape stock = target.impl().shape;
+    std::vector<TopoDS_Shape> sweeps;
+    sweeps.reserve(motions.size());
     for (const NativeSegment& motion : motions) {
       const std::unique_ptr<NativeOperationResult> sweep =
           sweep_axial_tool_native(motion, radius, axial_length);
@@ -184,16 +184,39 @@ std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
       if (!placed.IsDone()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT axial sweep placement did not complete");
       }
-      BRepAlgoAPI_Cut operation;
-      configure_boolean(operation, stock, placed.Shape());
-      operation.Build();
-      if (!operation.IsDone() || operation.HasErrors()) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT body cut did not complete");
+      sweeps.push_back(placed.Shape());
+    }
+    // The sweeps are fused pairwise, neighbour with neighbour, and faces sharing a
+    // surface merged at every level, so each Boolean meets two small solids and the
+    // stock is cut once. Cutting motion by motion instead meets a stock that gains
+    // faces with every cut, and its cost grows with the square of the motions.
+    while (sweeps.size() > 1) {
+      std::vector<TopoDS_Shape> fused;
+      fused.reserve((sweeps.size() + 1) / 2);
+      for (std::size_t index = 0; index + 1 < sweeps.size(); index += 2) {
+        BRepAlgoAPI_Fuse fuse;
+        configure_boolean(fuse, sweeps[index], sweeps[index + 1]);
+        fuse.Build();
+        if (!fuse.IsDone() || fuse.HasErrors()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT fuse of cutter sweeps did not complete");
+        }
+        fuse.SimplifyResult(true, true);
+        fused.push_back(fuse.Shape());
       }
-      stock = operation.Shape();
-      if (stock.IsNull() || count_subshapes(stock, TopAbs_SOLID) == 0) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT body Boolean produced no solid result");
+      if (sweeps.size() % 2 == 1) {
+        fused.push_back(sweeps.back());
       }
+      sweeps = std::move(fused);
+    }
+    BRepAlgoAPI_Cut operation;
+    configure_boolean(operation, target.impl().shape, sweeps.front());
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT body cut did not complete");
+    }
+    const TopoDS_Shape stock = operation.Shape();
+    if (stock.IsNull() || count_subshapes(stock, TopAbs_SOLID) == 0) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT body Boolean produced no solid result");
     }
     return success_result(stock, {}, count_subshapes(stock, TopAbs_SOLID) >= 2);
   });

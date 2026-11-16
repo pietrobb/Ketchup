@@ -16,7 +16,14 @@ const ISLAND_RADIUS: f64 = 4.0;
 /// A 40 x 30 x 10 plate with a 30 x 20 pocket 4 deep that leaves a round island
 /// of radius 4 standing in its middle. Nothing in it is named for CAM.
 fn plate_with_island_pocket() -> (DocumentStore, CamPlan) {
-    let corners = [[5.0, 5.0], [35.0, 5.0], [35.0, 25.0], [5.0, 25.0]];
+    plate_with_island_pocket_scaled(1.0)
+}
+
+/// The island-pocket plate with every length in the XY plane multiplied by
+/// `scale`; depth, tool and cut parameters stay the same.
+fn plate_with_island_pocket_scaled(scale: f64) -> (DocumentStore, CamPlan) {
+    let corners =
+        [[5.0, 5.0], [35.0, 5.0], [35.0, 25.0], [5.0, 25.0]].map(|[x, y]| [x * scale, y * scale]);
     let mut entities: Vec<SketchEntity> = (0..4)
         .map(|index| SketchEntity::Line {
             id: SketchEntityId(index as u64 + 1),
@@ -26,8 +33,8 @@ fn plate_with_island_pocket() -> (DocumentStore, CamPlan) {
         .collect();
     entities.push(SketchEntity::Circle {
         id: SketchEntityId(5),
-        center_mm: ISLAND_CENTER,
-        radius_mm: ISLAND_RADIUS,
+        center_mm: ISLAND_CENTER.map(|value| value * scale),
+        radius_mm: ISLAND_RADIUS * scale,
     });
     let sketch = SketchSpec {
         workplane: WORKPLANE,
@@ -52,7 +59,12 @@ fn plate_with_island_pocket() -> (DocumentStore, CamPlan) {
                 id: PLATE_PROFILE,
                 definition_id: DEFINITION,
                 name: "Plate outline".into(),
-                kind: FeatureKind::polygon(&[[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]),
+                kind: FeatureKind::polygon(&[
+                    [0.0, 0.0],
+                    [40.0 * scale, 0.0],
+                    [40.0 * scale, 30.0 * scale],
+                    [0.0, 30.0 * scale],
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: PLATE,
@@ -97,7 +109,7 @@ fn plate_with_island_pocket() -> (DocumentStore, CamPlan) {
         "Island pocket",
         CamStock {
             minimum_mm: [-5.0, -5.0, 0.0],
-            maximum_mm: [45.0, 35.0, 10.0],
+            maximum_mm: [40.0 * scale + 5.0, 30.0 * scale + 5.0, 10.0],
         },
         CamTool {
             number: 2,
@@ -1029,4 +1041,43 @@ fn faces_bounded_by_partial_arcs_give_contour_pocket_and_hole_of_a_rounded_machi
 
 fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
     (left[0] - right[0]).hypot(left[1] - right[1])
+}
+
+/// The island pocket scaled twice in X and Y: about twice the motions and four
+/// times the floor. Cutting motion by motion it needed 55 s in release, just
+/// under the worker's 60 s request deadline, so an export of a pocket this size
+/// would fail; cut as one fused sweep it stays well clear of the deadline.
+#[test]
+fn a_pocket_twice_as_large_simulates_inside_the_request_deadline() {
+    let _turn = crate::integration_support::file_turn();
+    let scale = 2.0;
+    let (document, plan) = plate_with_island_pocket_scaled(scale);
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, POCKET).unwrap();
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    let floor = planar_face_at(&package, 6.0, 1.0);
+    let region = CamRegion2d::from_planar_face(&package, floor, plan.setup()).unwrap();
+    let operations = [CamOperation::RegionPocket {
+        id: 1,
+        region,
+        top_z_mm: 10.0,
+        bottom_z_mm: 6.0,
+    }];
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &operations).unwrap();
+    assert!(toolpath.motions.len() > 350, "{}", toolpath.motions.len());
+    let cancelled = AtomicBool::new(false);
+    let simulation = worker
+        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .unwrap();
+    let pocket_mm3 =
+        (30.0 * 20.0 * 4.0 - std::f64::consts::PI * ISLAND_RADIUS.powi(2) * 4.0) * scale * scale;
+    let corners_mm3 = 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * TOOL_RADIUS.powi(2) * 4.0;
+    assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    assert!(simulation.collisions.is_empty(), "{simulation:?}");
+    assert!(
+        (simulation.removed_stock_mm3 - (pocket_mm3 - corners_mm3)).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
 }
