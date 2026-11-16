@@ -5,6 +5,17 @@ use crate::*;
 use ketchup_application::cam_workflow::CamReviewError;
 use ketchup_model::cam::{CamGCodeDialect, CamGCodeDialectError, CamOperation};
 
+/// The File menu's CAM program export: the plan, the controller it is written for, and
+/// the simulated review once the user asked for it.
+pub(crate) struct CamExportDialog {
+    pub(crate) plan_id: CamPlanId,
+    /// The library dialect the program is written for.
+    pub(crate) dialect_id: String,
+    /// The library's controller dialects as (id, name).
+    pub(crate) dialect_choices: Vec<(String, String)>,
+    pub(crate) review: Option<CamReviewSummary>,
+}
+
 /// The library's controller dialects as (id, name), in library order.
 pub(crate) fn cam_dialect_choices() -> Result<Vec<(String, String)>, CamGCodeDialectError> {
     Ok(CamGCodeDialect::library()?

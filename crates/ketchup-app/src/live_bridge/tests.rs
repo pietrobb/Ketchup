@@ -444,7 +444,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         version: 1,
         id: 1,
         token: credentials.token,
-        request: Request::Export {
+        request: Request::Export(crate::live_bridge::interchange::ExportRequest {
             expected: None,
             path: path.to_string_lossy().into_owned(),
             export_format: "btlx".to_owned(),
@@ -453,7 +453,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
             cam_dialect: None,
             cam_operations: None,
             overwrite: false,
-        },
+        }),
     })
     .unwrap();
     stream

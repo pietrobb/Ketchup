@@ -5,7 +5,7 @@
 //! manufacturing waits for the user's confirmation in the window as after the menu,
 //! and writes nothing if the client disconnected before the user confirmed.
 
-use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
+use super::{LiveBridge, Request, Stamp, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
 use crate::app::presentation_export::PresentationRequest;
 use crate::export_bundle::{ExportError, Written};
@@ -356,6 +356,29 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
     }
 }
 
+/// The parameters of `file action=export`: the visible model in one File menu
+/// export format.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportRequest {
+    #[serde(default)]
+    pub expected: Option<Stamp>,
+    pub path: String,
+    pub export_format: String,
+    /// For dxf: N of the scale 1:N the annotations are drawn at.
+    pub drawing_scale: Option<f64>,
+    pub image: Option<PresentationImage>,
+    /// For cam_nc: the library dialect of the controller the program is written for.
+    #[serde(default)]
+    pub cam_dialect: Option<String>,
+    /// For cam_nc: the operations of the program, each naming a face of the plan's part.
+    #[serde(default)]
+    pub cam_operations: Option<Vec<CamFaceOperationRequest>>,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 /// An export request the window takes now.
 pub(super) struct ExportTarget {
     pub(super) path: String,
@@ -530,7 +553,7 @@ impl LiveBridge {
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
         let drawing_scale = match &request {
-            Request::Export { drawing_scale, .. } => *drawing_scale,
+            Request::Export(ExportRequest { drawing_scale, .. }) => *drawing_scale,
             _ => None,
         };
         let ExportTarget {
@@ -565,7 +588,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
     ) -> Result<ExportTarget, &'static str> {
-        let Request::Export {
+        let Request::Export(ExportRequest {
             expected,
             path,
             export_format,
@@ -574,7 +597,7 @@ impl LiveBridge {
             cam_dialect,
             cam_operations,
             overwrite,
-        } = request
+        }) = request
         else {
             return Err("invalid_request");
         };

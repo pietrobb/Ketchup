@@ -77,7 +77,7 @@ fn window() -> (KetchupApp, LiveBridge, tempfile::TempDir) {
 }
 
 fn presentation(path: &Path, image: Value) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: "presentation_png".to_owned(),
@@ -86,7 +86,7 @@ fn presentation(path: &Path, image: Value) -> Request {
         cam_dialect: None,
         cam_operations: None,
         overwrite: false,
-    }
+    })
 }
 
 /// The pixels of a PNG file as RGBA rows from the top, and its size.
@@ -360,7 +360,9 @@ fn a_client_image_with_overwrite_replaces_a_file_once_the_user_agrees() {
     let existing = directory.path().join("existing.png");
     std::fs::write(&existing, b"the user's picture").unwrap();
     let mut request = presentation(&existing, json!({"width": 32, "height": 24}));
-    if let Request::Export { overwrite, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest { overwrite, .. }) =
+        &mut request
+    {
         *overwrite = true;
     }
     assert_eq!(
@@ -461,7 +463,10 @@ fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
     );
     assert!(!target.exists());
     let mut not_an_image = presentation(&directory.path().join("model.glb"), small);
-    if let Request::Export { export_format, .. } = &mut not_an_image {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+        export_format, ..
+    }) = &mut not_an_image
+    {
         "glb".clone_into(export_format);
     }
     assert_eq!(

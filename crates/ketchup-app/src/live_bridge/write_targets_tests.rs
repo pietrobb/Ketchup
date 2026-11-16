@@ -12,7 +12,7 @@ const PROFILE_DXF: &[u8] = b"0\nSECTION\n2\nENTITIES\n\
 0\nENDSEC\n0\nEOF\n";
 
 fn export(path: &Path) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: "dxf".to_owned(),
@@ -21,7 +21,7 @@ fn export(path: &Path) -> Request {
         cam_dialect: None,
         cam_operations: None,
         overwrite: false,
-    }
+    })
 }
 
 fn save_as(app: &KetchupApp, path: &Path) -> Request {

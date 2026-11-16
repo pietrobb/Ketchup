@@ -2018,15 +2018,6 @@ enum BtlxProfileStrategy {
     EdgeSawCutsThenMillContour,
 }
 
-struct CamExportDialog {
-    plan_id: CamPlanId,
-    /// The library dialect the program is written for.
-    dialect_id: String,
-    /// The library's controller dialects as (id, name).
-    dialect_choices: Vec<(String, String)>,
-    review: Option<CamReviewSummary>,
-}
-
 struct PdmReviewDialog {
     source: PdmSourceIdentity,
     repository: String,

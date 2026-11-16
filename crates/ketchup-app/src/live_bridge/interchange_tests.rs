@@ -34,7 +34,7 @@ fn import(path: &Path, unit: Option<&str>) -> Request {
 }
 
 fn export(path: &Path, export_format: &str) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: export_format.to_owned(),
@@ -43,12 +43,14 @@ fn export(path: &Path, export_format: &str) -> Request {
         cam_dialect: None,
         cam_operations: None,
         overwrite: false,
-    }
+    })
 }
 
 fn export_over(path: &Path, export_format: &str) -> Request {
     let mut request = export(path, export_format);
-    if let Request::Export { overwrite, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest { overwrite, .. }) =
+        &mut request
+    {
         *overwrite = true;
     }
     request
@@ -529,7 +531,10 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
 
     let scaled = directory.path().join("plan-20.dxf");
     let mut request = export(&scaled, "dxf");
-    if let Request::Export { drawing_scale, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+        drawing_scale, ..
+    }) = &mut request
+    {
         *drawing_scale = Some(20.0);
     }
     bridge
@@ -548,7 +553,10 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     // The same plan as DWG keeps the dimension a DIMENSION and both on the tag's layer.
     let dwg = directory.path().join("plan-20.dwg");
     let mut request = export(&dwg, "dwg");
-    if let Request::Export { drawing_scale, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+        drawing_scale, ..
+    }) = &mut request
+    {
         *drawing_scale = Some(20.0);
     }
     bridge
@@ -591,7 +599,11 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     for (format, path, scale) in [("stl", "plan.stl", 20.0), ("dxf", "tiny.dxf", 0.5)] {
         let target = directory.path().join(path);
         let mut request = export(&target, format);
-        if let Request::Export { drawing_scale, .. } = &mut request {
+        if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+            drawing_scale,
+            ..
+        }) = &mut request
+        {
             *drawing_scale = Some(scale);
         }
         assert_eq!(

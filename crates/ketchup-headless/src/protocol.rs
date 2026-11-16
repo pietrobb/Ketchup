@@ -14,6 +14,7 @@ use ketchup_application::pdm_workflow::{
 };
 use ketchup_model::tolerance::limits;
 use ketchup_rejection::{Reason, dropped};
+mod cam_input;
 mod model_tools;
 mod production;
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
@@ -387,85 +388,6 @@ struct Request {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum CamOperationInput {
-    Face {
-        id: u64,
-        minimum_mm: [f64; 2],
-        maximum_mm: [f64; 2],
-        target_z_mm: f64,
-    },
-    Pocket {
-        id: u64,
-        minimum_mm: [f64; 2],
-        maximum_mm: [f64; 2],
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-    },
-    Contour {
-        id: u64,
-        center_path: CamPathInput,
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-        applied_radial_allowance_mm: f64,
-    },
-    Drill {
-        id: u64,
-        points_mm: Vec<[f64; 2]>,
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-    },
-    FacePocket {
-        id: u64,
-        face_ordinal: u32,
-    },
-    FaceContour {
-        id: u64,
-        face_ordinal: u32,
-        side: CamContourSideInput,
-    },
-    FaceDrill {
-        id: u64,
-        face_ordinal: u32,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CamContourSideInput {
-    Outside,
-    Inside,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CamPathInput {
-    start_mm: [f64; 2],
-    segments: Vec<CamPathSegmentInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum CamPathSegmentInput {
-    Line {
-        to_mm: [f64; 2],
-    },
-    Arc {
-        to_mm: [f64; 2],
-        center_mm: [f64; 2],
-        clockwise: bool,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CamFixtureInput {
-    id: u64,
-    minimum_mm: [f64; 3],
-    maximum_mm: [f64; 3],
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FeaReviewInput {
     definition_id: u64,
@@ -518,97 +440,6 @@ struct PdmAuditInput {
     actor: String,
     created_unix_ms: u64,
     note: String,
-}
-
-impl From<CamOperationInput> for CamOperation {
-    fn from(operation: CamOperationInput) -> Self {
-        match operation {
-            CamOperationInput::Face {
-                id,
-                minimum_mm,
-                maximum_mm,
-                target_z_mm,
-            } => Self::Face {
-                id,
-                minimum_mm,
-                maximum_mm,
-                target_z_mm,
-            },
-            CamOperationInput::Pocket {
-                id,
-                minimum_mm,
-                maximum_mm,
-                top_z_mm,
-                bottom_z_mm,
-            } => Self::Pocket {
-                id,
-                minimum_mm,
-                maximum_mm,
-                top_z_mm,
-                bottom_z_mm,
-            },
-            CamOperationInput::Contour {
-                id,
-                center_path,
-                top_z_mm,
-                bottom_z_mm,
-                applied_radial_allowance_mm,
-            } => Self::Contour {
-                id,
-                center_path: CamPath2d {
-                    start_mm: center_path.start_mm,
-                    segments: center_path
-                        .segments
-                        .into_iter()
-                        .map(|segment| match segment {
-                            CamPathSegmentInput::Line { to_mm } => CamPathSegment2d::Line { to_mm },
-                            CamPathSegmentInput::Arc {
-                                to_mm,
-                                center_mm,
-                                clockwise,
-                            } => CamPathSegment2d::Arc {
-                                to_mm,
-                                center_mm,
-                                clockwise,
-                            },
-                        })
-                        .collect(),
-                },
-                top_z_mm,
-                bottom_z_mm,
-                applied_radial_allowance_mm,
-            },
-            CamOperationInput::Drill {
-                id,
-                points_mm,
-                top_z_mm,
-                bottom_z_mm,
-            } => Self::Drill {
-                id,
-                points_mm,
-                top_z_mm,
-                bottom_z_mm,
-            },
-            CamOperationInput::FacePocket { id, face_ordinal } => {
-                Self::FacePocket { id, face_ordinal }
-            }
-            CamOperationInput::FaceContour {
-                id,
-                face_ordinal,
-                side,
-            } => Self::FaceContour {
-                id,
-                face_ordinal,
-                side: match side {
-                    CamContourSideInput::Outside => CamContourSide::Outside,
-                    CamContourSideInput::Inside => CamContourSide::Inside,
-                },
-            },
-            CamOperationInput::FaceDrill { id, face_ordinal } => {
-                Self::FaceDrill { id, face_ordinal }
-            }
-        }
-    }
 }
 
 struct BatchJob {
@@ -1162,7 +993,7 @@ impl Server {
                 Ok(result)
             }
             "cam_preview" => {
-                let request = cam_review_request(p)?;
+                let request = cam_input::cam_review_request(p)?;
                 let snapshot = self.session.snapshot();
                 let mutation_epoch = self.session.mutation_epoch();
                 let cancelled = AtomicBool::new(false);
@@ -1473,36 +1304,6 @@ fn ids(p: &Map<String, Value>, key: &str, empty: bool) -> Result<Vec<u64>> {
     }
     Ok(ids)
 }
-fn cam_review_request(p: &Map<String, Value>) -> Result<CamReviewRequest> {
-    let operations: Vec<CamOperationInput> = serde_json::from_value(
-        p.get("operations")
-            .cloned()
-            .ok_or_else(|| Error::invalid("missing operations"))?,
-    )
-    .map_err(|error| Error::invalid_because(&error))?;
-    let fixtures: Vec<CamFixtureInput> = serde_json::from_value(
-        p.get("fixtures")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )
-    .map_err(|error| Error::invalid_because(&error))?;
-    let dialect = CamPostprocessorDialect::library(string(p, "dialect")?)
-        .map_err(|error| Error::invalid_because(&error))?;
-    Ok(CamReviewRequest {
-        plan_id: CamPlanId(uint(p, "plan_id")?),
-        operations: operations.into_iter().map(Into::into).collect(),
-        fixtures: fixtures
-            .into_iter()
-            .map(|fixture| CamFixture {
-                id: fixture.id,
-                minimum_mm: fixture.minimum_mm,
-                maximum_mm: fixture.maximum_mm,
-            })
-            .collect(),
-        dialect,
-    })
-}
-
 fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
     let mut payload = Map::new();
     for field in [
@@ -1888,6 +1689,7 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod cam_faces;
 
     #[test]
     fn underlay_binding_rejection_keeps_its_structured_repair_and_cause() {
@@ -3085,172 +2887,6 @@ mod tests {
             fresh_after_stale_reviews.get("error").is_none(),
             "{fresh_after_stale_reviews}"
         );
-    }
-
-    #[test]
-    fn cam_preview_machines_faces_of_the_exact_target_named_by_ordinal() {
-        use ketchup_model::cam::{
-            CamCutParameters, CamPlan, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
-        };
-        use ketchup_model::document::{Dimension, FeatureKind, Transform};
-
-        let worker_path = exact_worker_candidates()
-            .into_iter()
-            .find(|path| path.is_file())
-            .expect("build ketchup-exact-worker before the headless CAM integration test");
-        let mut server = Server::new(SessionSettings {
-            exact_worker_path: Some(worker_path),
-            ..SessionSettings::default()
-        });
-        let definition = DefinitionId(97);
-        let profile = FeatureId(970);
-        let solid = FeatureId(971);
-        let seed = server
-            .session
-            .plan_commands(CommandBatch::new(vec![
-                CanonicalCommand::CreateDefinition {
-                    id: definition,
-                    name: "CAM face target".into(),
-                },
-                CanonicalCommand::CreateFeature {
-                    id: profile,
-                    definition_id: definition,
-                    name: "20x10 profile".into(),
-                    kind: FeatureKind::polygon(&[
-                        [0.0, 0.0],
-                        [20.0, 0.0],
-                        [20.0, 10.0],
-                        [0.0, 10.0],
-                    ]),
-                },
-                CanonicalCommand::CreateFeature {
-                    id: solid,
-                    definition_id: definition,
-                    name: "20x10x5 block".into(),
-                    kind: FeatureKind::extrusion(profile, Dimension::new("5", 5.0).unwrap()),
-                },
-                CanonicalCommand::CreateOccurrence {
-                    id: OccurrenceId(972),
-                    definition_id: definition,
-                    name: "Block instance".into(),
-                    transform: Transform::identity(),
-                    parent: None,
-                    tags: Default::default(),
-                    visible: true,
-                },
-            ]))
-            .unwrap();
-        server.session.apply_proposal(&seed).unwrap();
-        let plan = CamPlan::new(
-            &server.session.snapshot(),
-            CamPlanId(97),
-            "Profile from the bottom face",
-            CamStock {
-                minimum_mm: [-3.0, -3.0, 0.0],
-                maximum_mm: [23.0, 13.0, 5.0],
-            },
-            CamTool {
-                number: 2,
-                kind: CamToolKind::FlatEndMill,
-                diameter_mm: 2.0,
-                flute_length_mm: 6.0,
-                overall_length_mm: 30.0,
-                holder_diameter_mm: 6.0,
-                holder_length_mm: 10.0,
-                spindle_rpm: 10_000,
-                feed_mm_per_min: 600.0,
-                plunge_mm_per_min: 200.0,
-            },
-            CamSetup {
-                work_offset: CamWorkOffset::G54,
-                origin_mm: [0.0, 0.0, 0.0],
-                x_axis: [1.0, 0.0, 0.0],
-                y_axis: [0.0, 1.0, 0.0],
-                safe_height_mm: 10.0,
-            },
-            CamCutParameters {
-                maximum_stepdown_mm: 2.0,
-                stepover_ratio: 0.5,
-                radial_allowance_mm: 0.0,
-                axial_allowance_mm: 0.0,
-            },
-            definition,
-            solid,
-        )
-        .unwrap();
-        let proposal = server
-            .session
-            .plan_commands(CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(
-                plan,
-            )]))
-            .unwrap();
-        server.session.apply_proposal(&proposal).unwrap();
-        let evaluated = request(&mut server, "evaluate", json!({"timeout_ms":30000}));
-        assert_eq!(evaluated["result"]["complete"], true, "{evaluated}");
-        let faces = request(
-            &mut server,
-            "query",
-            json!({"kind":"faces","limit":20,"definition_id":definition.0}),
-        );
-        let bottom = faces["result"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .min_by(|left, right| {
-                left["geometry"]["centroid_mm"][2]
-                    .as_f64()
-                    .unwrap()
-                    .total_cmp(&right["geometry"]["centroid_mm"][2].as_f64().unwrap())
-            })
-            .unwrap()["ordinal"]
-            .as_u64()
-            .unwrap();
-        let state = server.state();
-        let preview = |server: &mut Server, operation: Value| {
-            request(
-                server,
-                "cam_preview",
-                json!({
-                    "expected_revision":state["revision"],
-                    "expected_digest":state["canonical_digest"],
-                    "plan_id":97,
-                    "operations":[operation],
-                    "fixtures":[],
-                    "dialect":"iso_metric_gcode"
-                }),
-            )
-        };
-
-        // The caller names the face; Ketchup reads its boundary and depth from
-        // the exact part and cuts one tool radius outside it, down to the face.
-        let profiled = preview(
-            &mut server,
-            json!({"type":"face_contour","id":1,"face_ordinal":bottom,"side":"outside"}),
-        );
-        assert!(profiled.get("error").is_none(), "{profiled}");
-        let band_mm2 = 60.0 * 2.0 + std::f64::consts::PI * 4.0;
-        let removed = profiled["result"]["removed_stock_mm3"].as_f64().unwrap();
-        assert!((removed - band_mm2 * 5.0).abs() < 0.5, "{profiled}");
-        assert!(profiled["result"]["gouge_mm3"].as_f64().unwrap() < 1.0e-5);
-
-        // A flat face is not a hole, and a face the part does not have is refused.
-        for operation in [
-            json!({"type":"face_drill","id":2,"face_ordinal":bottom}),
-            json!({"type":"face_contour","id":3,"face_ordinal":9_999,"side":"outside"}),
-            json!({"type":"face_pocket","id":4,"face_ordinal":9_999}),
-        ] {
-            let refused = preview(&mut server, operation);
-            assert_eq!(
-                refused["error"]["code"], "cam_planning_rejected",
-                "{refused}"
-            );
-        }
-        let malformed = preview(
-            &mut server,
-            json!({"type":"face_contour","id":5,"face_ordinal":bottom,"side":"diagonal"}),
-        );
-        assert_eq!(malformed["error"]["code"], "invalid_params");
-        assert_eq!(server.state(), state);
     }
 
     #[test]

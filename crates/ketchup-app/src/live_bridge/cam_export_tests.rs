@@ -119,7 +119,7 @@ fn cam_export_of(
     cam_dialect: Option<&str>,
     cam_operations: Option<Value>,
 ) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: export_format.to_owned(),
@@ -129,7 +129,7 @@ fn cam_export_of(
         cam_operations: cam_operations
             .map(|operations| serde_json::from_value(operations).unwrap()),
         overwrite: false,
-    }
+    })
 }
 
 /// The library's own description of the dialect `id`, as the window shows it.
