@@ -1171,6 +1171,8 @@ impl KetchupApp {
                     (Some(plan_id), Ok(dialect_choices)) => {
                         self.reviews.cam_export_dialog = Some(CamExportDialog {
                             plan_id,
+                            operation: Default::default(),
+                            face: None,
                             dialect_id: dialect_choices
                                 .first()
                                 .map_or_else(String::new, |(id, _)| id.clone()),
