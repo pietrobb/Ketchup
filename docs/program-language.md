@@ -523,39 +523,37 @@ be supplied and must leave the DIN 76 tap runout. Raceways, balls, end seals and
 the lubrication port are not modelled; the BOM keeps the rail, ratings,
 catalogue weight and the caller-supplied drill depth with its basis.
 
-`slot_profile_dimensions("Motedis-20x20-I5")` and
-`slot_profile(name, designation, length, at=(0,0,0), axis=(0,0,1), tags=None)`
-use the [Motedis supplier STEP](https://www.motedis.com/shop/products_files/Motedis_Profile%2020x20%20I-Type%20slot%205.zip)
-(P20_N5_I, dated 2012-11-22), not an approximate square with rectangular slots.
-The 20 × 20 mm section retains all 72 line/circle edges, slot lips, fillets and
-Ø4.3 mm bore; section area is about 181.93618 mm². STEP end-face coordinates
-are centred on XY and rounded to 1e-9 mm, without polygon tessellation.
-These are nominal CAD dimensions, not manufacturing tolerance guarantees.
-`length` must be positive; `at` is the centre of the first cut end and `axis`
-is the extrusion direction. Use `component()` and `instance()` for repeats.
-The purchased-item BOM carries designation, cut length and supplier source;
-Save/Open and exact STEP retain the section and placement. Other designations
-are rejected as unspecified, not scaled from this one. A planar profile loop may contain up to 256 segments;
-the independent path limit remains 64 and the total per planar region remains
-4096 segments. Sketches without constraints retain their validated coordinates
-without numerical solving (up to the existing 4096-entity limit); the solver's
+`slot_profile_dimensions("Motedis-20x20-I5" | "Motedis-30x30L-I6" |
+"Motedis-40x40L-I8")` returns only the outer size (20 × 20, 30 × 30, 40 × 40 mm)
+from the Motedis product pages
+([20](https://www.motedis.com/en/Aluminium-Profile-20x20-I-Typ-slot-5),
+[30](https://www.motedis.com/en/Profile-30x30L-I-Type-slot-6),
+[40](https://www.motedis.com/en/Profile-40x40L-I-Type-slot-8)); `section` and
+`bore_mm` remain `None`. The slot lips, fillets, cavities and bore exist only in
+the Motedis CAD files, and Motedis does not allow them to be passed on: clause 5
+of the [Motedis AGB](https://www.motedis.com/en/conditions-of-use:_:3.html)
+reserves all rights in its drawings and designs and says the customer may not make
+them available to third parties, and the [imprint](https://www.motedis.com/en/imprint:_:4.html)
+forbids copying the site's content or storing it in other electronic media
+without written permission (both read 2026-11-16; the CAD ZIPs carry no licence).
+So the library ships no section, as for the HIWIN rail.
+`slot_profile(name, designation, length, section=None, section_source=None,
+cavities=None, at=(0,0,0), axis=(0,0,1), tags=None)` requires a closed section
+the caller supplies (for example from the Motedis CAD file for their own design),
+a nonempty source reference, and the list of its cavities (bore and voids, cut
+through; `[]` when there are none). The section lies in local XY centred on the
+profile axis and must span x and y = ±width/2 from the catalogue. The caller is
+responsible for the section's fidelity; a source string is provenance, not
+certification. `length` must be positive; `at` is the centre of the first cut
+end and `axis` is the extrusion direction. Use `component()` and `instance()`
+for repeats. The purchased-item BOM carries designation, cut length, catalogue
+source and the caller's section source; Save/Open and exact STEP retain the
+section, cavities and placement. Other designations are rejected as unspecified.
+A planar profile loop may contain up to 256 segments; the independent path
+limit remains 64 and the total per planar region remains 4096 segments.
+Sketches without constraints retain their validated coordinates without
+numerical solving (up to the existing 4096-entity limit); the solver's
 512-degree-of-freedom budget still applies to sketches with constraints.
-
-`slot_profile_dimensions("Motedis-30x30L-I6")` uses the separate
-[Motedis 019597 supplier STEP](https://www.motedis.com/shop/products_files/Motedis_019597.zip)
-(dated 2026-04-22), not a scaled 20 mm section. Its 30 × 30 mm outline retains
-120 line/circle edges, the Ø4.9 mm bore and all four corner cavities (eight
-edges each); net section area is about 335.18623 mm². The same cut-length,
-placement, component, BOM and STEP operations apply. These are nominal supplier
-CAD curves, not manufacturing tolerances or a claim of interchangeability
-with other suppliers' 30 mm profiles.
-
-`slot_profile_dimensions("Motedis-40x40L-I8")` uses the
-[Motedis 40x40L I-Type slot 8 supplier STEP](https://www.motedis.com/shop/products_files/40x40L%20I-Type%20slot%208.zip)
-(P40L_N8_I, dated 2013-03-20). Its 40 × 40 mm outline retains 112 line/circle
-edges, the Ø6.8 mm bore and all four corner cavities (eight edges each); net
-section area is about 657.09717 mm². Cut length, placement, components, BOM and
-STEP work as for the 20 and 30 mm sections; the same nominal-CAD caveat applies.
 
 Every made part needs a fabrication role (attribute `FABRICATION_ROLE`); the
 production export refuses a part without one and names it. The roles are
