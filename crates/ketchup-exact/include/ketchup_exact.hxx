@@ -102,6 +102,8 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const NativeSegment> segments, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
     rust::Slice<const NativeSegment> segments) noexcept;
+std::unique_ptr<NativeOperationResult> fill_boundary_surface_native(
+    rust::Slice<const NativeSegment> boundary) noexcept;
 std::unique_ptr<NativeOperationResult> trim_surface_native(
     const NativeOperationResult& target,
     const NativeOperationResult& cutter) noexcept;

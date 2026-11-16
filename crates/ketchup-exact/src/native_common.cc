@@ -679,4 +679,44 @@ TopoDS_Edge cubic_bezier_edge(const NativeSegment& segment, double z) {
   BRepBuilderAPI_MakeEdge edge_builder(curve);
   return edge_builder.IsDone() ? edge_builder.Edge() : TopoDS_Edge{};
 }
+
+TopoDS_Edge spatial_segment_edge(const NativeSegment& segment) {
+  const gp_Pnt start = spatial_point(segment.start);
+  const gp_Pnt end = spatial_point(segment.end);
+  if (segment.kind == NativeSegmentKind::Line) {
+    BRepBuilderAPI_MakeEdge builder(start, end);
+    return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
+  }
+  if (segment.kind == NativeSegmentKind::CubicBezier) {
+    TColgp_Array1OfPnt poles(1, 4);
+    poles.SetValue(1, start);
+    poles.SetValue(2, spatial_point(segment.control_1));
+    poles.SetValue(3, spatial_point(segment.control_2));
+    poles.SetValue(4, end);
+    occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
+    BRepBuilderAPI_MakeEdge builder(curve);
+    return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
+  }
+  if (segment.kind != NativeSegmentKind::CircularArc) return {};
+  const gp_Pnt center = spatial_point(segment.center);
+  const gp_Vec normal(segment.normal.x, segment.normal.y, segment.normal.z);
+  const gp_Vec start_radius(center, start);
+  const gp_Vec end_radius(center, end);
+  const double rounding = tolerances().rounding;
+  if (normal.SquareMagnitude() <= rounding * rounding
+      || start_radius.SquareMagnitude() <= rounding * rounding) {
+    return {};
+  }
+  const double signed_angle = std::atan2(
+      normal.Dot(start_radius.Crossed(end_radius)), start_radius.Dot(end_radius));
+  const double full_turn = 2.0 * std::acos(-1.0);
+  double angle = std::fmod(segment.clockwise ? -signed_angle : signed_angle, full_turn);
+  if (angle <= 0.0) angle += full_turn;
+  const gp_Vec middle_radius = start_radius.Rotated(
+      gp_Ax1(center, gp_Dir(normal)), (segment.clockwise ? -angle : angle) / 2.0);
+  GC_MakeArcOfCircle arc_builder(start, center.Translated(middle_radius), end);
+  if (!arc_builder.IsDone()) return {};
+  BRepBuilderAPI_MakeEdge builder(arc_builder.Value());
+  return builder.IsDone() ? builder.Edge() : TopoDS_Edge{};
+}
 } // namespace ketchup::exact

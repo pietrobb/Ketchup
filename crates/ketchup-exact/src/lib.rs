@@ -326,6 +326,9 @@ mod ffi {
         fn planar_surface_profile_native(
             segments: &[NativeSegment],
         ) -> UniquePtr<NativeOperationResult>;
+        fn fill_boundary_surface_native(
+            boundary: &[NativeSegment],
+        ) -> UniquePtr<NativeOperationResult>;
         fn trim_surface_native(
             target: &NativeOperationResult,
             cutter: &NativeOperationResult,
