@@ -1191,3 +1191,41 @@ fn a_sketch_released_versions_take_for_damaged_needs_format_114() {
         103
     );
 }
+
+/// No released Kečup knows a surface spanning boundary curves, so a document with one
+/// saves as 115, which they refuse as newer instead of taking it for damaged, and
+/// reopens as saved.
+#[test]
+fn a_boundary_surface_needs_format_115_and_reopens_as_saved() {
+    use ketchup_model::document::{SpatialPathSegment, SurfaceBodySpec};
+    let line = |start_mm, end_mm| SpatialPathSegment::Line { start_mm, end_mm };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Patch".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Boundary surface".into(),
+                kind: FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary {
+                    segments: vec![
+                        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+                        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+                        line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
+                        line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
+                    ],
+                }),
+            },
+        ]))
+        .unwrap();
+    let bytes = persistence::save(&document.current());
+    assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), 115);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(
+        reopened.canonical_digest(),
+        document.current().canonical_digest()
+    );
+}

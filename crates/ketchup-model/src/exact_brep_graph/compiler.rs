@@ -599,16 +599,7 @@ impl<'a> GraphCompiler<'a> {
                 continuity,
             } => ExactBRepOperation::Loft {
                 sections: self.compile_loft_sections(sections)?,
-                guide: guide
-                    .map(
-                        |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
-                            Some(FeatureKind::SpatialPath { segments }) => {
-                                spatial_path(guide, segments, self.snapshot.tolerance().linear_mm())
-                            }
-                            _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
-                        },
-                    )
-                    .transpose()?,
+                guide: self.compile_loft_guide(*guide)?,
                 continuity: (*continuity).into(),
             },
             FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
@@ -617,18 +608,18 @@ impl<'a> GraphCompiler<'a> {
                 continuity,
             }) => ExactBRepOperation::LoftSurface {
                 sections: self.compile_loft_sections(sections)?,
-                guide: guide
-                    .map(
-                        |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
-                            Some(FeatureKind::SpatialPath { segments }) => {
-                                spatial_path(guide, segments, self.snapshot.tolerance().linear_mm())
-                            }
-                            _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
-                        },
-                    )
-                    .transpose()?,
+                guide: self.compile_loft_guide(*guide)?,
                 continuity: (*continuity).into(),
             },
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments }) => {
+                ExactBRepOperation::BoundarySurface {
+                    boundary: boundary_path(
+                        feature_id,
+                        segments,
+                        self.snapshot.tolerance().linear_mm(),
+                    )?,
+                }
+            }
             FeatureKind::SheetMetal(spec) => ExactBRepOperation::SheetMetal {
                 base_mm_bits: spec
                     .base_mm
@@ -728,6 +719,22 @@ impl<'a> GraphCompiler<'a> {
             neutral: topology_selector(neutral, face, spec.target)?,
             angle_degrees_bits: spec.angle_degrees.to_bits(),
         }))
+    }
+
+    fn compile_loft_guide(
+        &self,
+        guide: Option<FeatureId>,
+    ) -> Result<Option<ExactBRepSpatialPath>, ExactBRepGraphError> {
+        guide
+            .map(
+                |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
+                    Some(FeatureKind::SpatialPath { segments }) => {
+                        spatial_path(guide, segments, self.snapshot.tolerance().linear_mm())
+                    }
+                    _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
+                },
+            )
+            .transpose()
     }
 
     pub(super) fn compile_loft_sections(

@@ -64,6 +64,8 @@ use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod surface_body_references;
+
 const MAX_AXIS_INSTANCE_OCCURRENCES: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1982,41 +1984,9 @@ fn resolve_staged_program_feature_references(
             .into();
     }
     match &mut feature {
-        AssistantCadBodyFeature::SurfaceBody { source } => match source {
-            AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
-                *profile_feature_id = staged_planning
-                    .resolve_program_feature(
-                        *profile_feature_id,
-                        AssistantCadProgramFeatureOutput::SketchFeature,
-                        operation,
-                    )?
-                    .into();
-            }
-            AssistantCadSurfaceBodySource::Loft {
-                sections,
-                guide_feature_id,
-                ..
-            } => {
-                for section in sections {
-                    section.profile_feature_id = staged_planning
-                        .resolve_program_feature(
-                            section.profile_feature_id,
-                            AssistantCadProgramFeatureOutput::SketchFeature,
-                            operation,
-                        )?
-                        .into();
-                }
-                if let Some(guide) = guide_feature_id {
-                    *guide = staged_planning
-                        .resolve_program_feature(
-                            *guide,
-                            AssistantCadProgramFeatureOutput::ConstructionFeature,
-                            operation,
-                        )?
-                        .into();
-                }
-            }
-        },
+        AssistantCadBodyFeature::SurfaceBody { source } => {
+            surface_body_references::resolve(source, staged_planning, operation)?;
+        }
         AssistantCadBodyFeature::SurfaceTrim {
             target_feature_id,
             cutter_feature_id,
