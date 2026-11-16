@@ -698,7 +698,34 @@ impl KetchupApp {
                     self.catalog.text("cam-review-plan"),
                     pending.plan_id.0
                 ));
+                let choices = std::mem::take(&mut pending.dialect_choices);
+                let chosen = pending.dialect_id.clone();
+                let label = self.catalog.text("cam-review-dialect");
+                ui.horizontal(|ui| {
+                    ui.label(&label);
+                    let response = egui::ComboBox::from_id_salt("cam-review-dialect")
+                        .selected_text(
+                            choices
+                                .iter()
+                                .find(|(id, _)| *id == chosen)
+                                .map_or(chosen.as_str(), |(_, name)| name.as_str()),
+                        )
+                        .show_ui(ui, |ui| {
+                            for (id, name) in &choices {
+                                ui.selectable_value(&mut pending.dialect_id, id.clone(), name);
+                            }
+                        });
+                    response.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
+                    });
+                });
+                pending.dialect_choices = choices;
+                // A review is of the program for one controller: another needs its own.
+                if pending.dialect_id != chosen {
+                    pending.review = None;
+                }
                 if let Some(review) = &pending.review {
+                    ui.label(super::cam_export::cam_dialect_name(&review.dialect));
                     ui.label(format!("{}: {}", review.units, review.work_offset));
                     ui.label(format!(
                         "T{} · S{} · F{} mm/min",
@@ -743,7 +770,7 @@ impl KetchupApp {
                 let operation = plan
                     .default_facing_operation(&snapshot, 1)
                     .map_err(|error| failed("cam.operation", error))?;
-                let dialect = CamPostprocessorDialect::library("iso_metric_gcode")
+                let dialect = CamPostprocessorDialect::library(&pending.dialect_id)
                     .map_err(|error| failed("cam.dialect", error))?;
                 let worker_path = self.exact_worker_executable()?;
                 self.reviews.cam_reviews.set_worker_path(worker_path);

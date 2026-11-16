@@ -8,6 +8,7 @@ pub(crate) mod annotations_view;
 mod annotations_view_tests;
 pub(crate) mod btlx_settings;
 mod cad_program;
+mod cam_export;
 mod commands;
 pub(crate) mod connect_ai;
 pub(crate) mod dimensions_ui;

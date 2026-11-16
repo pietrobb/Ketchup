@@ -17,6 +17,7 @@ use ketchup_manufacturing::presentation::{
     MAX_PRESENTATION_SIDE, PresentationError, PresentationLabel, check_labels,
     presentation_supersample,
 };
+use ketchup_model::cam::CamPostprocessorDialect;
 use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -61,7 +62,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 17] = [
     (
         "step",
         &["step", "stp"],
@@ -112,6 +113,17 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
         "workshop_package",
         &["zip"],
         KetchupApp::export_current_workshop_package_to,
+    ),
+    // The program of the CAM plan, written for the controller dialect `export_target`
+    // resolves (`export_file`).
+    (
+        "cam_nc",
+        &["nc", "ngc", "gcode", "tap", "json"],
+        |_app, _path| {
+            Err(ExportError::failed(
+                "a CAM program is written for the controller dialect its request names",
+            ))
+        },
     ),
     // Made only as a job on a thread of its own (`exchange_export::presents`); review 2026-11-13
     // P3: a synchronous copy here was taken by the tests alone.
@@ -304,6 +316,8 @@ pub(super) struct ExportTarget {
     pub(super) exporter: Exporter,
     /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
     pub(super) overwrite: bool,
+    /// The controller dialect a cam_nc program is written for, when the client named one.
+    pub(super) cam_dialect: Option<CamPostprocessorDialect>,
 }
 
 impl LiveBridge {
@@ -475,13 +489,17 @@ impl LiveBridge {
             export_format,
             exporter,
             overwrite,
+            cam_dialect,
         } = Self::export_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
         app.live.client_overwrite = overwrite;
-        let exported = match drawing_scale {
-            Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
-            None => exporter(app, Path::new(&path)),
+        let exported = match (drawing_scale, cam_dialect) {
+            (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
+            (None, Some(dialect)) => {
+                app.export_current_cam_program_to(Path::new(&path), dialect, cancelled)
+            }
+            (None, None) => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
         app.live.client_overwrite = false;
@@ -500,10 +518,48 @@ impl LiveBridge {
             export_format,
             drawing_scale,
             image,
+            cam_dialect,
             overwrite,
         } = request
         else {
             return Err("invalid_request");
+        };
+        // A cam_nc program is for the controller the client names, else the library's first.
+        let cam_dialect = match (export_format == "cam_nc", cam_dialect) {
+            (false, None) => None,
+            (false, Some(id)) => {
+                return Err(failure(
+                    "invalid_params",
+                    "cam_dialect names the controller of a cam_nc export.".to_owned(),
+                    json!({"cam_dialect": id, "export_format": export_format}),
+                ));
+            }
+            (true, id) => {
+                let unreadable = |refused: String| {
+                    failure(
+                        "export_failed",
+                        "the CAM dialect library cannot be read.".to_owned(),
+                        json!({"export_format": "cam_nc", "refused": refused}),
+                    )
+                };
+                let dialects = CamPostprocessorDialect::library_ids()
+                    .map_err(|error| unreadable(error.to_string()))?;
+                let id = match id {
+                    Some(id) => id,
+                    None => dialects
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| unreadable("it holds no dialect".to_owned()))?,
+                };
+                let dialect = CamPostprocessorDialect::library(&id).map_err(|error| {
+                    failure(
+                        "invalid_params",
+                        format!("cam_dialect is one of {}.", dialects.join(", ")),
+                        json!({"cam_dialect": id, "dialects": dialects, "refused": error.to_string()}),
+                    )
+                })?;
+                Some(dialect)
+            }
         };
         if image.is_some() && export_format != "presentation_png" {
             return Err(failure(
@@ -559,6 +615,7 @@ impl LiveBridge {
             export_format,
             exporter: *exporter,
             overwrite,
+            cam_dialect,
         })
     }
 

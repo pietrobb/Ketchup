@@ -6,6 +6,8 @@ use crate::dialogs::{
 use crate::slot::Slot;
 #[path = "busy_tests.rs"]
 mod busy_tests;
+#[path = "cam_export_tests.rs"]
+mod cam_export;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "interchange_tests.rs"]
@@ -448,6 +450,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
             export_format: "btlx".to_owned(),
             drawing_scale: None,
             image: None,
+            cam_dialect: None,
             overwrite: false,
         },
     })

@@ -18,6 +18,7 @@ fn export(path: &Path) -> Request {
         export_format: "dxf".to_owned(),
         drawing_scale: None,
         image: None,
+        cam_dialect: None,
         overwrite: false,
     }
 }

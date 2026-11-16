@@ -689,6 +689,9 @@ pub enum Request {
         /// For dxf: N of the scale 1:N the annotations are drawn at.
         drawing_scale: Option<f64>,
         image: Option<interchange::PresentationImage>,
+        /// For cam_nc: the library dialect of the controller the program is written for.
+        #[serde(default)]
+        cam_dialect: Option<String>,
         /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
         #[serde(default)]
         overwrite: bool,

@@ -83,6 +83,7 @@ fn presentation(path: &Path, image: Value) -> Request {
         export_format: "presentation_png".to_owned(),
         drawing_scale: None,
         image: Some(serde_json::from_value(image).unwrap()),
+        cam_dialect: None,
         overwrite: false,
     }
 }
