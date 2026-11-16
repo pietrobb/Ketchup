@@ -1153,17 +1153,33 @@ impl KetchupApp {
                 }
             }
             AppCommand::ReviewCamExport => {
-                self.reviews.cam_export_dialog =
-                    self.document
-                        .current()
-                        .cam_plans()
-                        .next()
-                        .map(|plan| CamExportDialog {
-                            plan_id: plan.id(),
+                let plan_id = self
+                    .document
+                    .current()
+                    .cam_plans()
+                    .next()
+                    .map(|plan| plan.id());
+                match (plan_id, super::cam_export::cam_dialect_choices()) {
+                    (None, _) => {
+                        self.reviews.cam_export_dialog = None;
+                        self.digest = self.catalog.text("cam-review-no-plan");
+                    }
+                    (Some(_), Err(error)) => {
+                        self.reviews.cam_export_dialog = None;
+                        self.digest = error.to_string();
+                    }
+                    (Some(plan_id), Ok(dialect_choices)) => {
+                        self.reviews.cam_export_dialog = Some(CamExportDialog {
+                            plan_id,
+                            operation: Default::default(),
+                            face: None,
+                            dialect_id: dialect_choices
+                                .first()
+                                .map_or_else(String::new, |(id, _)| id.clone()),
+                            dialect_choices,
                             review: None,
                         });
-                if self.reviews.cam_export_dialog.is_none() {
-                    self.digest = self.catalog.text("cam-review-no-plan");
+                    }
                 }
             }
             AppCommand::ReviewStaticFea => {

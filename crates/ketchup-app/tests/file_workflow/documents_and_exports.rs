@@ -225,10 +225,25 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
     assert!(shell.app().action_digest().contains("safe"));
     assert_eq!(canonical_state(&shell), setup_state);
     let confirm = shell.catalog().text("cam-review-confirm-export");
+    assert!(shell.button_is_enabled(&confirm));
+
+    // Choosing another controller drops the review: the program must be simulated for it again.
+    let linuxcnc = match ketchup_model::cam::CamPostprocessorDialect::library("linuxcnc").unwrap() {
+        ketchup_model::cam::CamPostprocessorDialect::GCode(dialect) => dialect.name().to_owned(),
+        ketchup_model::cam::CamPostprocessorDialect::ControllerNeutralJson => unreachable!(),
+    };
+    shell.click_role_and_label(Role::ComboBox, &shell.catalog().text("cam-review-dialect"));
+    shell.click_button_label(&linuxcnc);
+    assert!(!shell.button_is_enabled(&confirm));
+    shell.click_button_label(&preview);
+    assert!(shell.has_visible_label(&linuxcnc));
     shell.click_button_label(&confirm);
     assert!(output.is_file(), "{}", shell.app().action_digest());
     let artifact = std::fs::read_to_string(&output).unwrap();
-    assert!(artifact.contains("\nG21\nG90\nG17\nG54\nT1 M6\nS10000 M3\n"));
+    let lines = artifact.lines().collect::<Vec<_>>();
+    assert_eq!(lines.first(), Some(&"%"), "{artifact}");
+    assert!(artifact.contains("\nT1 M6\nG43 H1\n"), "{artifact}");
+    assert_eq!(lines[lines.len() - 2], "M2", "{artifact}");
     assert_eq!(canonical_state(&shell), setup_state);
 
     shell.click_menu_command("menu-edit", AppCommand::Undo);

@@ -491,6 +491,7 @@ fn generated_boolean_document(
     (document, definition, base, tool, operations)
 }
 
+mod cam_regions;
 mod exchange_booleans_and_lofts;
 mod imported_parts;
 mod sketch_sweeps_and_drafts;

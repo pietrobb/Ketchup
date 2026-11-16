@@ -32,12 +32,12 @@ pub(super) fn runs_as_job(request: &Request) -> bool {
 /// The exact format `request` exports to, which runs as a job.
 pub(super) fn exchange_format(request: &Request) -> Option<ExchangeFormat> {
     match request {
-        Request::Export { export_format, .. } if export_format == "step" => {
-            Some(ExchangeFormat::Step)
-        }
-        Request::Export { export_format, .. } if export_format == "iges" => {
-            Some(ExchangeFormat::Iges)
-        }
+        Request::Export(crate::live_bridge::interchange::ExportRequest {
+            export_format, ..
+        }) if export_format == "step" => Some(ExchangeFormat::Step),
+        Request::Export(crate::live_bridge::interchange::ExportRequest {
+            export_format, ..
+        }) if export_format == "iges" => Some(ExchangeFormat::Iges),
         _ => None,
     }
 }
@@ -160,7 +160,7 @@ pub(super) struct PresentationJob {
 
 /// Whether `request` is a presentation image, which runs as a job.
 pub(super) fn presents(request: &Request) -> bool {
-    matches!(request, Request::Export { export_format, .. } if export_format == "presentation_png")
+    matches!(request, Request::Export(crate::live_bridge::interchange::ExportRequest { export_format, .. }) if export_format == "presentation_png")
 }
 
 impl LiveBridge {
@@ -188,7 +188,9 @@ impl LiveBridge {
             return;
         }
         let image = match &request {
-            Request::Export { image, .. } => image.clone(),
+            Request::Export(crate::live_bridge::interchange::ExportRequest { image, .. }) => {
+                image.clone()
+            }
             _ => None,
         };
         let mut supersample = (0, 0);

@@ -11,6 +11,8 @@ use ketchup_model::document::{
 };
 use ketchup_model::persistence;
 
+mod dialects;
+
 const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);
 const SOLID: FeatureId = FeatureId(11);
@@ -575,7 +577,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
         &canonical,
         &toolpath,
         &simulation,
-        CamPostprocessorDialect::IsoMetricGCode,
+        CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
     )
     .unwrap();
     let iso_again = CamPostprocessorOutput::generate(
@@ -583,7 +585,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
         &canonical,
         &toolpath,
         &simulation,
-        CamPostprocessorDialect::IsoMetricGCode,
+        CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
     )
     .unwrap();
     let neutral = CamPostprocessorOutput::generate(
@@ -600,7 +602,9 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     assert_eq!(iso.schema, CAM_POSTPROCESSOR_SCHEMA_V1);
     assert_eq!(iso.content_digest.len(), 64);
     assert_eq!(iso.parse().unwrap(), iso.program);
-    assert_eq!(neutral.parse().unwrap(), iso.program);
+    // Each dialect writes on its own grid, 1e-6 mm for ISO and 1e-9 mm for JSON.
+    assert_eq!(neutral.parse().unwrap(), neutral.program);
+    assert_eq!(neutral.program.motions.len(), iso.program.motions.len());
     iso.verify(&snapshot, &canonical, &toolpath, &simulation)
         .unwrap();
     neutral
@@ -631,7 +635,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     assert_eq!(
         malformed.parse(),
         Err(CamPostprocessorError::Parse(
-            "tool line \"T1 M7\" is not T<n> M6".to_owned()
+            "line \"T1 M7\" is not the dialect's \"T{tool} M6\"".to_owned()
         ))
     );
     let mut unreadable = iso.clone();
@@ -639,7 +643,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     unreadable.content_digest = sha256_hex(&unreadable.content);
     let error = unreadable.parse().unwrap_err().to_string();
     assert!(
-        error.contains("\"12x00\" is not an unsigned integer: invalid digit"),
+        error.contains("\"12x00\" is not an unsigned integer"),
         "{error}"
     );
     for expected in [
@@ -683,7 +687,7 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             &canonical,
             &toolpath,
             &gouged,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );
@@ -696,7 +700,7 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             &canonical,
             &toolpath,
             &forged_metrics,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );
@@ -709,7 +713,7 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             &canonical,
             &toolpath,
             &incomplete,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );

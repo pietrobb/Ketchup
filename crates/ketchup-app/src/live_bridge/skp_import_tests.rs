@@ -420,14 +420,16 @@ fn a_texture_shows_in_the_presentation_image() {
     let answer = bridge
         .execute(
             &mut app,
-            Request::Export {
+            Request::Export(crate::live_bridge::interchange::ExportRequest {
                 expected: None,
                 path: image.display().to_string(),
                 export_format: "presentation_png".to_owned(),
                 drawing_scale: None,
                 image: Some(serde_json::from_value(options).unwrap()),
+                cam_dialect: None,
+                cam_operations: None,
                 overwrite: false,
-            },
+            }),
             false,
         )
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
@@ -503,14 +505,16 @@ fn imported_sheets_export_as_meshes_and_3mf_refuses_them() {
         let out = directory.path().join(format!("out.{format}"));
         let answer = bridge.execute(
             &mut app,
-            Request::Export {
+            Request::Export(crate::live_bridge::interchange::ExportRequest {
                 expected: None,
                 path: out.display().to_string(),
                 export_format: format.to_owned(),
                 drawing_scale: None,
                 image: None,
+                cam_dialect: None,
+                cam_operations: None,
                 overwrite: false,
-            },
+            }),
             false,
         );
         if format == "3mf" {

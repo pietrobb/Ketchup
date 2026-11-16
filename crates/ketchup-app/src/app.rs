@@ -8,6 +8,7 @@ pub(crate) mod annotations_view;
 mod annotations_view_tests;
 pub(crate) mod btlx_settings;
 mod cad_program;
+mod cam_export;
 mod commands;
 pub(crate) mod connect_ai;
 pub(crate) mod dimensions_ui;
@@ -151,6 +152,7 @@ mod viewport_paint;
 mod workshop_export;
 pub(crate) mod written_drawings;
 
+pub(crate) use cam_export::CamExportDialog;
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;

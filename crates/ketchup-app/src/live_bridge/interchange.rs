@@ -5,7 +5,7 @@
 //! manufacturing waits for the user's confirmation in the window as after the menu,
 //! and writes nothing if the client disconnected before the user confirmed.
 
-use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
+use super::{LiveBridge, Request, Stamp, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
 use crate::app::presentation_export::PresentationRequest;
 use crate::export_bundle::{ExportError, Written};
@@ -17,6 +17,7 @@ use ketchup_manufacturing::presentation::{
     MAX_PRESENTATION_SIDE, PresentationError, PresentationLabel, check_labels,
     presentation_supersample,
 };
+use ketchup_model::cam::{CamContourSide, CamOperation, CamPostprocessorDialect};
 use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -61,7 +62,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 17] = [
     (
         "step",
         &["step", "stp"],
@@ -113,6 +114,17 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
         &["zip"],
         KetchupApp::export_current_workshop_package_to,
     ),
+    // The program of the CAM plan, written for the controller dialect `export_target`
+    // resolves (`export_file`).
+    (
+        "cam_nc",
+        &["nc", "ngc", "gcode", "tap", "json"],
+        |_app, _path| {
+            Err(ExportError::failed(
+                "a CAM program is written for the controller dialect its request names",
+            ))
+        },
+    ),
     // Made only as a job on a thread of its own (`exchange_export::presents`); review 2026-11-13
     // P3: a synchronous copy here was taken by the tests alone.
     ("presentation_png", &["png"], |_app, _path| {
@@ -121,6 +133,53 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
         ))
     }),
 ];
+
+/// The most operations one cam_nc program of a client runs.
+const MAX_CAM_OPERATIONS: usize = 64;
+
+/// A CAM operation a client names by a face of the plan's part, numbered as `query kind=faces`
+/// numbers it; Ketchup reads the region, depth or hole from the exact part.
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum CamFaceOperationRequest {
+    /// Clears the pocket whose floor is this planar face.
+    #[serde(rename = "face_pocket")]
+    Pocket { face_ordinal: u32 },
+    /// Runs the cutter one radius off this planar face's boundary, on `side`.
+    #[serde(rename = "face_contour")]
+    Contour {
+        face_ordinal: u32,
+        side: CamContourSideRequest,
+    },
+    /// Drills the hole whose wall is this cylindrical face.
+    #[serde(rename = "face_drill")]
+    Drill { face_ordinal: u32 },
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CamContourSideRequest {
+    Outside,
+    Inside,
+}
+
+impl CamFaceOperationRequest {
+    /// The plan operation numbered `id`.
+    fn operation(self, id: u64) -> CamOperation {
+        match self {
+            Self::Pocket { face_ordinal } => CamOperation::FacePocket { id, face_ordinal },
+            Self::Contour { face_ordinal, side } => CamOperation::FaceContour {
+                id,
+                face_ordinal,
+                side: match side {
+                    CamContourSideRequest::Outside => CamContourSide::Outside,
+                    CamContourSideRequest::Inside => CamContourSide::Inside,
+                },
+            },
+            Self::Drill { face_ordinal } => CamOperation::FaceDrill { id, face_ordinal },
+        }
+    }
+}
 
 /// How a client's presentation image looks; what it leaves out is as the window shows first.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -297,6 +356,29 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
     }
 }
 
+/// The parameters of `file action=export`: the visible model in one File menu
+/// export format.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportRequest {
+    #[serde(default)]
+    pub expected: Option<Stamp>,
+    pub path: String,
+    pub export_format: String,
+    /// For dxf: N of the scale 1:N the annotations are drawn at.
+    pub drawing_scale: Option<f64>,
+    pub image: Option<PresentationImage>,
+    /// For cam_nc: the library dialect of the controller the program is written for.
+    #[serde(default)]
+    pub cam_dialect: Option<String>,
+    /// For cam_nc: the operations of the program, each naming a face of the plan's part.
+    #[serde(default)]
+    pub cam_operations: Option<Vec<CamFaceOperationRequest>>,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
 /// An export request the window takes now.
 pub(super) struct ExportTarget {
     pub(super) path: String,
@@ -304,6 +386,10 @@ pub(super) struct ExportTarget {
     pub(super) exporter: Exporter,
     /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
     pub(super) overwrite: bool,
+    /// The controller dialect a cam_nc program is written for, when the client named one.
+    pub(super) cam_dialect: Option<CamPostprocessorDialect>,
+    /// The operations of a cam_nc program, in order; none faces the stock.
+    pub(super) cam_operations: Vec<CamOperation>,
 }
 
 impl LiveBridge {
@@ -467,7 +553,7 @@ impl LiveBridge {
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
         let drawing_scale = match &request {
-            Request::Export { drawing_scale, .. } => *drawing_scale,
+            Request::Export(ExportRequest { drawing_scale, .. }) => *drawing_scale,
             _ => None,
         };
         let ExportTarget {
@@ -475,13 +561,21 @@ impl LiveBridge {
             export_format,
             exporter,
             overwrite,
+            cam_dialect,
+            cam_operations,
         } = Self::export_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
         app.live.client_overwrite = overwrite;
-        let exported = match drawing_scale {
-            Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
-            None => exporter(app, Path::new(&path)),
+        let exported = match (drawing_scale, cam_dialect) {
+            (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
+            (None, Some(dialect)) => app.export_current_cam_program_to(
+                Path::new(&path),
+                dialect,
+                cam_operations,
+                cancelled,
+            ),
+            (None, None) => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
         app.live.client_overwrite = false;
@@ -494,16 +588,76 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
     ) -> Result<ExportTarget, &'static str> {
-        let Request::Export {
+        let Request::Export(ExportRequest {
             expected,
             path,
             export_format,
             drawing_scale,
             image,
+            cam_dialect,
+            cam_operations,
             overwrite,
-        } = request
+        }) = request
         else {
             return Err("invalid_request");
+        };
+        let cam_operations = match cam_operations {
+            None => Vec::new(),
+            Some(operations)
+                if export_format == "cam_nc"
+                    && (1..=MAX_CAM_OPERATIONS).contains(&operations.len()) =>
+            {
+                (1..)
+                    .zip(operations)
+                    .map(|(id, operation)| operation.operation(id))
+                    .collect()
+            }
+            Some(operations) => {
+                return Err(failure(
+                    "invalid_params",
+                    format!(
+                        "cam_operations are 1 to {MAX_CAM_OPERATIONS} operations of a cam_nc export."
+                    ),
+                    json!({"operations": operations.len(), "export_format": export_format}),
+                ));
+            }
+        };
+        // A cam_nc program is for the controller the client names, else the library's first.
+        let cam_dialect = match (export_format == "cam_nc", cam_dialect) {
+            (false, None) => None,
+            (false, Some(id)) => {
+                return Err(failure(
+                    "invalid_params",
+                    "cam_dialect names the controller of a cam_nc export.".to_owned(),
+                    json!({"cam_dialect": id, "export_format": export_format}),
+                ));
+            }
+            (true, id) => {
+                let unreadable = |refused: String| {
+                    failure(
+                        "export_failed",
+                        "the CAM dialect library cannot be read.".to_owned(),
+                        json!({"export_format": "cam_nc", "refused": refused}),
+                    )
+                };
+                let dialects = CamPostprocessorDialect::library_ids()
+                    .map_err(|error| unreadable(error.to_string()))?;
+                let id = match id {
+                    Some(id) => id,
+                    None => dialects
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| unreadable("it holds no dialect".to_owned()))?,
+                };
+                let dialect = CamPostprocessorDialect::library(&id).map_err(|error| {
+                    failure(
+                        "invalid_params",
+                        format!("cam_dialect is one of {}.", dialects.join(", ")),
+                        json!({"cam_dialect": id, "dialects": dialects, "refused": error.to_string()}),
+                    )
+                })?;
+                Some(dialect)
+            }
         };
         if image.is_some() && export_format != "presentation_png" {
             return Err(failure(
@@ -559,6 +713,8 @@ impl LiveBridge {
             export_format,
             exporter: *exporter,
             overwrite,
+            cam_dialect,
+            cam_operations,
         })
     }
 

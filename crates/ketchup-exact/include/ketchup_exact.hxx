@@ -212,6 +212,9 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
 std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation) noexcept;
+std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
+    const NativeOperationResult& target, rust::Slice<const NativeSegment> motions,
+    double radius, double axial_length, rust::Slice<const double> matrix) noexcept;
 std::unique_ptr<NativeOperationResult> named_prism_native(
     rust::Slice<const NativeSegment> segments, double base_z, double height) noexcept;
 std::unique_ptr<NativeOperationResult> named_revol_native(
