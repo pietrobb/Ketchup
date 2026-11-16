@@ -221,7 +221,7 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 
 - **Automatic hole callouts have a limited scope.** They cover intact circular cuts and cosmetic metric threads, grouping equal holes as `4×`. Depth is the verified cylindrical span, not a blind/through designation. Each callout has a leader to one of its holes in a view that shows the hole as a circle, and the leader follows that view; a hole no view shows as a circle gets no callout and is reported. Modeled threads, altered bores and other unsupported cuts are reported rather than guessed; use reviewed manual notes for them. After a source changes, regenerate its callouts before exporting.
 - **No native SolidWorks or Parasolid files, and no writing of SketchUp `.skp`.** Use STEP or IGES (exact) for CAD exchange; SketchUp `.skp` files are read, and COLLADA or `.kscene` take a model back to SketchUp.
-- **No catalogue of standard mechanical parts** such as bearings, linear rails, ball screws or aluminium profiles. The program library has standard fasteners, dowels and hinges; other supplier parts come in as STEP.
+- **The catalogue of standard mechanical parts is small.** Rule programs can place deep-groove ball bearings 6000 to 6012 and 6200 to 6212, HIWIN MGN9, MGN12 and MGN15 carriages and the mounting holes of their rails, and DIN 69051 ball screw nuts and shafts, NEMA 17 and 23 stepper motors and Motedis 20, 30 and 40 mm slot profiles, with the supplier's dimensions. The library has no rail cross-section: HIWIN's catalogue does not dimension it and HIWIN's terms of use do not allow its CAD files to be published, so you supply it from HIWIN's CAD file. Ball tracks and seals are not modelled, and other sizes and suppliers come in as STEP.
 - **Simulation is basic.** Load paths, EC5 timber checks and a small linear-static FEA (trusses and tetrahedra, up to 4,096 elements) — not nonlinear, thermal, dynamic or fatigue analysis.
 - **CAM is limited.** woodWOP programs that drill and mill rectangular blind pockets from the top, BTLx for timber, R12 DXF outlines for CNC routers and one reviewed ISO metric program; no general toolpath generation or post-processors for arbitrary machines. woodWOP has no contour milling, round pockets or through cuts yet.
 - **Exact operations are bounded.** Fillet, shell, sweep, loft and Booleans cover tested cases and fail with an explanation rather than produce doubtful geometry. Freeform surfacing is not there.
@@ -235,12 +235,11 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 The next steps that would move Ketchup furthest toward a full production CAD:
 
 1. Broader automatic hole/thread callouts, including modeled threads and complex bores.
-2. A library of standard parts (bearings, linear rails, ball screws, aluminium profiles, motors) as rule-program components with exact geometry.
-3. General CAM: 2.5D toolpaths (contours, pockets, drilling) with post-processors for common controllers, beyond woodWOP and BTLx.
-4. Broader exact modeling: more fillet and shell cases, variable-radius fillets and surfaces.
-5. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
+2. General CAM: 2.5D toolpaths (contours, pockets, drilling) with post-processors for common controllers, beyond woodWOP and BTLx.
+3. Broader exact modeling: more fillet and shell cases, variable-radius fillets and surfaces.
+4. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
 
-With these, Ketchup could design a machine like its own CNC router end to end: frame from aluminium profiles, linear rails and ball screws from the parts library, drawings with tolerances for the machined plates, and toolpaths to make those plates.
+With these, Ketchup could design a machine like its own CNC router end to end: frame from aluminium profiles, ball screws and linear-guide carriages from the parts library (a first set of sizes is there) on rails whose cross-section comes from the supplier's CAD file, drawings with tolerances for the machined plates, and toolpaths to make those plates.
 
 ## Build and run
 

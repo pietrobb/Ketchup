@@ -187,10 +187,11 @@ pub(super) fn validate_general_revolve_profile(
             diagnostic,
         )
     };
-    if !(2..=limits::PATH_SEGMENTS).contains(&segments.len()) {
-        return Err(invalid(
-            "Revolve profile requires 2..=64 segments".to_owned(),
-        ));
+    if !(2..=limits::PLANAR_PROFILE_SEGMENTS).contains(&segments.len()) {
+        return Err(invalid(format!(
+            "Revolve profile requires 2..={} segments",
+            limits::PLANAR_PROFILE_SEGMENTS,
+        )));
     }
     validate_general_revolve_axis_angle(
         axis_start_mm,
@@ -266,10 +267,13 @@ pub(super) fn validate_mixed_profile(
     let line_only = segments
         .iter()
         .all(|segment| matches!(segment, PlanarProfileSegment::Line { .. }));
-    if !(2..=limits::PATH_SEGMENTS).contains(&segments.len()) || (line_only && segments.len() < 3) {
-        return Err(invalid(
-            "Segmented profile requires 2..=64 segments; line-only polygons require at least three lines".to_owned(),
-        ));
+    if !(2..=limits::PLANAR_PROFILE_SEGMENTS).contains(&segments.len())
+        || (line_only && segments.len() < 3)
+    {
+        return Err(invalid(format!(
+            "Segmented profile requires 2..={} segments; line-only polygons require at least three lines",
+            limits::PLANAR_PROFILE_SEGMENTS,
+        )));
     }
     let endpoints = planar_segment_endpoints;
     for (index, segment) in segments.iter().enumerate() {

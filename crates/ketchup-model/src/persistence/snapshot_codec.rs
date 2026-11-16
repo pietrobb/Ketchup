@@ -21,7 +21,9 @@
 //! 2026-11-09 UL-303), 111 a mesh sheet, an open mesh such as a SketchUp face (U4c,
 //! [`crate::document::MESH_SHEET_SCHEMA_V1`]), 112 a mesh that shows a picture, an imported
 //! SketchUp texture (U4e, [`crate::document::MeshLook`]); 113 adds source-bound
-//! hole callout notes. Older files have no generated ownership and need no
+//! hole callout notes; 114 a sketch every released Kečup takes for damaged
+//! ([`ketchup_geometry::sketch::SketchSpec::released_readers_refuse`]), such as the
+//! profile of a standard part. Older files have no generated ownership and need no
 //! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
@@ -39,7 +41,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 113;
+pub(super) const SNAPSHOT_FORMAT: u16 = 114;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -48,6 +50,8 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 113;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
+/// 114 with a sketch every released Kečup takes for damaged, else 113 with a hole
+/// callout bound to its source, else
 /// 112 with a mesh that shows a picture, which a Kečup that writes 111 refuses as newer,
 /// else 111 with a mesh sheet, which Kečup 0.3.2 refuses as an invalid mesh
 /// body, else 110
@@ -85,13 +89,18 @@ fn format_of(product: &ProductModel) -> u16 {
                 _ => None,
             })
     };
-    if product.drawing_sheets.values().any(|sheet| {
+    if product.features.values().any(|feature| {
+        matches!(feature.kind(), crate::document::FeatureKind::Sketch(sketch)
+            if sketch.released_readers_refuse())
+    }) {
+        SNAPSHOT_FORMAT
+    } else if product.drawing_sheets.values().any(|sheet| {
         sheet
             .notes()
             .iter()
             .any(|note| note.hole_callout_sources().is_some())
     }) {
-        SNAPSHOT_FORMAT
+        113
     } else if meshes().any(|mesh| mesh.look.is_some()) {
         112
     } else if meshes().any(crate::document::MeshBodySpec::is_sheet) {

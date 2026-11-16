@@ -497,7 +497,7 @@ impl ExactBackend {
                 PlanarProfileLoop::Segments(segments) => segments.len(),
                 PlanarProfileLoop::Circle { .. } => 1,
             };
-            if loop_segment_count == 0 || loop_segment_count > limits::PATH_SEGMENTS {
+            if loop_segment_count == 0 || loop_segment_count > limits::PLANAR_PROFILE_SEGMENTS {
                 return Err(parameter_error(
                     GeometryErrorCode::InvalidProfile,
                     operation,

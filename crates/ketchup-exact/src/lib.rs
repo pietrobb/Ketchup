@@ -54,6 +54,7 @@ const fn native_tolerances() -> ffi::NativeTolerances {
         approximation: APPROXIMATION,
         negligible: NEGLIGIBLE,
         angular_rad: DEFAULT_ANGULAR_TOLERANCE_RAD,
+        planar_profile_segments: ketchup_tolerance::limits::PLANAR_PROFILE_SEGMENTS,
     }
 }
 
@@ -69,6 +70,7 @@ mod ffi {
         approximation: f64,
         negligible: f64,
         angular_rad: f64,
+        planar_profile_segments: usize,
     }
 
     extern "Rust" {

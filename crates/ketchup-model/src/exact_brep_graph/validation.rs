@@ -80,7 +80,7 @@ pub(super) fn validate_geometry(
     };
     match geometry {
         ExactBRepPlanarGeometry::Boundary { closed, segments } => {
-            if segments.len() > limits::PATH_SEGMENTS {
+            if segments.len() > limits::PLANAR_PROFILE_SEGMENTS {
                 return Err(ExactBRepGraphError::ResourceLimit);
             }
             if segments.is_empty() || *closed && segments.len() < 2 {

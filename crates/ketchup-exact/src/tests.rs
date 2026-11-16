@@ -149,6 +149,41 @@ fn a_shell_maps_the_faces_of_its_body_and_result_once_however_many_faces_it_reco
 }
 
 #[test]
+fn planar_profile_segment_budget_accepts_dense_loops_and_rejects_overflow() {
+    let backend = ExactBackend::new();
+    let polygon = |count: usize| {
+        let points = (0..count)
+            .map(|i| {
+                let angle = std::f64::consts::TAU * i as f64 / count as f64;
+                [100.0 * angle.cos(), 100.0 * angle.sin()]
+            })
+            .collect::<Vec<_>>();
+        PlanarProfileLoop::Segments(
+            (0..count)
+                .map(|i| PlanarProfileSegment::Line {
+                    start_mm: points[i],
+                    end_mm: points[(i + 1) % count],
+                })
+                .collect(),
+        )
+    };
+    let count = ketchup_tolerance::limits::PLANAR_PROFILE_SEGMENTS;
+    assert!(count > ketchup_tolerance::limits::PATH_SEGMENTS);
+    assert_eq!(native_tolerances().planar_profile_segments, count);
+    let profile = polygon(count);
+    let face = backend.planar_surface_profile(&profile).unwrap();
+    assert_eq!(face.body.topology.face_count, 1);
+    let offset = backend.offset_planar_profile(&profile, 1.0).unwrap();
+    assert_eq!(offset.body.topology.face_count, 1);
+    assert!(backend.planar_surface_profile(&polygon(count + 1)).is_err());
+    assert!(
+        backend
+            .offset_planar_profile(&polygon(count + 1), 1.0)
+            .is_err()
+    );
+}
+
+#[test]
 fn native_code_reads_the_tolerances_of_ketchup_tolerance() {
     let native = native_tolerances();
     assert_eq!(
