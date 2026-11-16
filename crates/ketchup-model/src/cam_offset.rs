@@ -3,6 +3,7 @@
 //! line/arc geometry; nothing is sampled into polylines.
 use crate::cam::CamPlannerError;
 use crate::tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
+use ketchup_geometry::linalg::{cross2 as cross, dot2 as dot, sub2 as sub};
 use std::f64::consts::TAU;
 
 pub(crate) type Point = [f64; 2];
@@ -31,18 +32,6 @@ fn refused() -> CamPlannerError {
 
 pub(crate) fn distance(left: Point, right: Point) -> f64 {
     (left[0] - right[0]).hypot(left[1] - right[1])
-}
-
-fn sub(left: Point, right: Point) -> Point {
-    [left[0] - right[0], left[1] - right[1]]
-}
-
-fn cross(left: Point, right: Point) -> f64 {
-    left[0] * right[1] - left[1] * right[0]
-}
-
-fn dot(left: Point, right: Point) -> f64 {
-    left[0] * right[0] + left[1] * right[1]
 }
 
 fn unit(vector: Point) -> Point {

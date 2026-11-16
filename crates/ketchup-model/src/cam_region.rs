@@ -15,7 +15,7 @@ use ketchup_geometry::linalg::{cross, dot};
 /// Most boundary segments one region holds.
 const MAX_REGION_SEGMENTS: usize = 1_024;
 /// Most scan lanes one pocket clears.
-const MAX_POCKET_LANES: usize = 50_000;
+const MAX_POCKET_LANES: u32 = 50_000;
 /// How far, in stepovers, pocket lanes stay off the wall pass. A stepover is
 /// at most the cutter diameter, so the gap stays within the band the wall
 /// pass sweeps.
@@ -659,15 +659,14 @@ pub(crate) fn pocket_paths(
         };
     let [minimum, maximum] = loop_bounds(&boundaries[..1]);
     let span = maximum[1] - minimum[1];
-    let lanes = (span / stepover_mm).ceil().max(1.0);
-    if !lanes.is_finite() || lanes > MAX_POCKET_LANES as f64 {
-        return Err(refused());
-    }
-    let lanes = lanes as usize;
+    // The fewest lanes whose stepover covers the span.
+    let lanes = (1..=MAX_POCKET_LANES)
+        .find(|&lanes| f64::from(lanes) * stepover_mm >= span)
+        .ok_or_else(refused)?;
     let middle = (minimum[1] + maximum[1]) * 0.5;
-    let mut rows: Vec<(f64, Vec<[f64; 2]>)> = Vec::with_capacity(lanes + 1);
+    let mut rows: Vec<(f64, Vec<[f64; 2]>)> = Vec::new();
     for index in 0..=lanes {
-        let nominal = minimum[1] + span * index as f64 / lanes as f64;
+        let nominal = minimum[1] + span * f64::from(index) / f64::from(lanes);
         let y = clear_lane(&boundaries, nominal, middle);
         let mut crossings: Vec<f64> = boundaries
             .iter()

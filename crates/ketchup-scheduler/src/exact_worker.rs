@@ -807,17 +807,16 @@ fn cam_world_sweep_bounds(
     }
     low[2] += axial_offset_mm;
     high[2] += axial_offset_mm + axial_length_mm;
-    let matrix = &request.setup_to_world;
+    let setup_to_world = ketchup_geometry::linalg::Affine3::from_row_major(request.setup_to_world);
     let mut world = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     for corner in 0..8 {
-        let local = [
+        let local = ketchup_geometry::linalg::Vec3::new(
             if corner & 1 == 0 { low[0] } else { high[0] },
             if corner & 2 == 0 { low[1] } else { high[1] },
             if corner & 4 == 0 { low[2] } else { high[2] },
-        ];
-        for axis in 0..3 {
-            let row = &matrix[axis * 4..axis * 4 + 4];
-            let value = row[0] * local[0] + row[1] * local[1] + row[2] * local[2] + row[3];
+        );
+        let point = setup_to_world.transform_point(local).to_array();
+        for (axis, &value) in point.iter().enumerate() {
             world[0][axis] = world[0][axis].min(value);
             world[1][axis] = world[1][axis].max(value);
         }
