@@ -366,9 +366,8 @@ fn an_outside_contour_from_an_exact_face_runs_one_tool_radius_off_the_part() {
     assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
     assert!(simulation.collisions.is_empty(), "{simulation:?}");
     // A band one cutter wide around the 140 mm outline, rounded at the corners, 4 deep.
-    let band_mm3 = (140.0 * 2.0 * TOOL_RADIUS
-        + std::f64::consts::PI * (2.0 * TOOL_RADIUS).powi(2))
-        * 4.0;
+    let band_mm3 =
+        (140.0 * 2.0 * TOOL_RADIUS + std::f64::consts::PI * (2.0 * TOOL_RADIUS).powi(2)) * 4.0;
     assert!(
         (simulation.removed_stock_mm3 - band_mm3).abs() <= 1.0e-3,
         "{simulation:?}"

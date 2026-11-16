@@ -77,15 +77,11 @@ impl CamRegion2d {
         if loops.is_empty() || loops.iter().map(Vec::len).sum::<usize>() > MAX_REGION_SEGMENTS {
             return Err(refused());
         }
-        loops.sort_by(|left, right| {
-            signed_area(right)
-                .abs()
-                .total_cmp(&signed_area(left).abs())
-        });
+        loops.sort_by(|left, right| signed_area(right).abs().total_cmp(&signed_area(left).abs()));
         let outer = oriented(&loops[0], true);
         let mut islands = Vec::with_capacity(loops.len() - 1);
         for island in &loops[1..] {
-            if !inside(&[outer.clone()], island[0].start()) {
+            if !inside(std::slice::from_ref(&outer), island[0].start()) {
                 return Err(refused());
             }
             islands.push(path_of(&oriented(island, false)));
@@ -188,7 +184,10 @@ fn chain_lines(mut lines: Vec<Segment>) -> Result<Vec<Vec<Segment>>, CamPlannerE
         let last = chain.len() - 1;
         let start = chain[0].start();
         if let Segment::Line { start: from, .. } = chain[last] {
-            chain[last] = Segment::Line { start: from, end: start };
+            chain[last] = Segment::Line {
+                start: from,
+                end: start,
+            };
         }
         if chain.len() < 3 {
             return Err(refused());
@@ -336,7 +335,10 @@ fn move_stays_inside(loops: &[Vec<Segment>], from: Point, to: Point) -> bool {
         let t = (pair[0] + pair[1]) * 0.5 / length;
         on_or_inside(
             loops,
-            [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t],
+            [
+                from[0] + (to[0] - from[0]) * t,
+                from[1] + (to[1] - from[1]) * t,
+            ],
         )
     })
 }
@@ -393,16 +395,33 @@ pub(crate) fn pocket_paths(
             .flat_map(|segments| lane_crossings(segments, y))
             .collect();
         crossings.sort_by(f64::total_cmp);
-        let spans = crossings
-            .chunks_exact(2)
-            .filter(|pair| pair[1] - pair[0] > LOOP_TOLERANCE_MM)
-            .map(|pair| [pair[0], pair[1]])
-            .collect();
+        let mut spans: Vec<[f64; 2]> = Vec::new();
+        for pair in crossings.chunks_exact(2) {
+            match spans.last_mut() {
+                // A lane that only grazes an island, never deeper than the loop
+                // tolerance, is one span and not two cuts a sliver apart.
+                Some(last) if grazes(&boundaries, y, last[1], pair[0]) => last[1] = pair[1],
+                _ => spans.push([pair[0], pair[1]]),
+            }
+        }
+        spans.retain(|span| span[1] - span[0] > LOOP_TOLERANCE_MM);
         rows.push((y, spans));
     }
     let mut paths = zigzag(&boundaries, &mut rows);
     paths.extend(boundaries.iter().map(|boundary| path_of(boundary)));
     Ok(paths)
+}
+
+/// Whether the stretch of lane `y` from `from_x` to `to_x` stays within the
+/// loop tolerance of the boundaries all the way.
+fn grazes(boundaries: &[Vec<Segment>], y: f64, from_x: f64, to_x: f64) -> bool {
+    (0..=8).all(|step| {
+        let x = from_x + (to_x - from_x) * f64::from(step) / 8.0;
+        boundaries
+            .iter()
+            .flatten()
+            .any(|segment| segment.distance_to([x, y]) <= LOOP_TOLERANCE_MM)
+    })
 }
 
 fn zigzag(boundaries: &[Vec<Segment>], rows: &mut [(f64, Vec<[f64; 2]>)]) -> Vec<CamPath2d> {
@@ -412,7 +431,9 @@ fn zigzag(boundaries: &[Vec<Segment>], rows: &mut [(f64, Vec<[f64; 2]>)]) -> Vec
             let y = rows[first_row].0;
             let mut path = CamPath2d {
                 start_mm: [span[0], y],
-                segments: vec![CamPathSegment2d::Line { to_mm: [span[1], y] }],
+                segments: vec![CamPathSegment2d::Line {
+                    to_mm: [span[1], y],
+                }],
             };
             let mut at_right = true;
             let mut tail = [span[1], y];
@@ -421,9 +442,7 @@ fn zigzag(boundaries: &[Vec<Segment>], rows: &mut [(f64, Vec<[f64; 2]>)]) -> Vec
                 let found = spans
                     .iter()
                     .enumerate()
-                    .filter(|(_, span)| {
-                        move_stays_inside(boundaries, tail, [span[side], *next_y])
-                    })
+                    .filter(|(_, span)| move_stays_inside(boundaries, tail, [span[side], *next_y]))
                     .min_by(|(_, left), (_, right)| {
                         (left[side] - tail[0])
                             .abs()
@@ -455,7 +474,10 @@ pub(crate) fn contour_paths(
     match side {
         CamContourSide::Outside => {
             let (outer, _) = region.loops()?;
-            Ok(vec![path_of(&reversed(&offset_right(&outer, clearance_mm)?))])
+            Ok(vec![path_of(&reversed(&offset_right(
+                &outer,
+                clearance_mm,
+            )?))])
         }
         CamContourSide::Inside => Ok(pocket_boundaries(region, clearance_mm)?
             .iter()
@@ -495,7 +517,11 @@ pub(crate) fn paths_bounds(paths: &[CamPath2d]) -> Result<[Point; 2], CamPlanner
             current = piece.end();
         }
     }
-    if minimum.iter().chain(&maximum).any(|value| !value.is_finite()) {
+    if minimum
+        .iter()
+        .chain(&maximum)
+        .any(|value| !value.is_finite())
+    {
         return Err(refused());
     }
     Ok([minimum, maximum])

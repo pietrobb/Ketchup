@@ -163,10 +163,7 @@ impl Segment {
                 (-slack..=1.0 + slack).contains(&t)
             }
             Self::Arc {
-                start,
-                center,
-                ccw,
-                ..
+                start, center, ccw, ..
             } => {
                 let radius = distance(*start, *center);
                 let angle = if *ccw {
@@ -186,10 +183,7 @@ impl Segment {
             Self::Line { start, end } => {
                 let along = sub(*end, *start);
                 let t = (dot(sub(point, *start), along) / dot(along, along)).clamp(0.0, 1.0);
-                distance(
-                    point,
-                    [start[0] + along[0] * t, start[1] + along[1] * t],
-                )
+                distance(point, [start[0] + along[0] * t, start[1] + along[1] * t])
             }
             Self::Arc {
                 start, end, center, ..
@@ -262,7 +256,11 @@ pub(crate) fn signed_area(segments: &[Segment]) -> f64 {
 }
 
 pub(crate) fn reversed(segments: &[Segment]) -> Vec<Segment> {
-    segments.iter().rev().map(|segment| segment.reversed()).collect()
+    segments
+        .iter()
+        .rev()
+        .map(|segment| segment.reversed())
+        .collect()
 }
 
 /// The loop oriented counter-clockwise (`ccw`) or clockwise.
@@ -386,7 +384,13 @@ fn shift_right(segment: Segment, distance_mm: f64) -> Result<Segment, CamPlanner
 /// Whether trimming left the segment running the way it ran, with length.
 fn keeps_direction(original: &Segment, trimmed: &Segment) -> bool {
     match (original, trimmed) {
-        (Segment::Line { start, end }, Segment::Line { start: from, end: to }) => {
+        (
+            Segment::Line { start, end },
+            Segment::Line {
+                start: from,
+                end: to,
+            },
+        ) => {
             distance(*from, *to) > LOOP_TOLERANCE_MM
                 && dot(sub(*end, *start), sub(*to, *from)) > 0.0
         }
@@ -401,12 +405,17 @@ fn keeps_direction(original: &Segment, trimmed: &Segment) -> bool {
 /// Where the full line or circle of `left` meets that of `right`.
 fn curve_intersections(left: &Segment, right: &Segment) -> Vec<Point> {
     match (left, right) {
-        (Segment::Line { start, end }, Segment::Line { start: from, end: to }) => {
+        (
+            Segment::Line { start, end },
+            Segment::Line {
+                start: from,
+                end: to,
+            },
+        ) => {
             let along = sub(*end, *start);
             let other = sub(*to, *from);
             let denominator = cross(along, other);
-            if denominator.abs() <= PARALLEL * dot(along, along).sqrt() * dot(other, other).sqrt()
-            {
+            if denominator.abs() <= PARALLEL * dot(along, along).sqrt() * dot(other, other).sqrt() {
                 return Vec::new();
             }
             let t = cross(sub(*from, *start), other) / denominator;
@@ -417,9 +426,7 @@ fn curve_intersections(left: &Segment, right: &Segment) -> Vec<Point> {
         }
         (Segment::Arc { .. }, Segment::Line { .. }) => curve_intersections(right, left),
         (
-            Segment::Arc {
-                start, center, ..
-            },
+            Segment::Arc { start, center, .. },
             Segment::Arc {
                 start: other_start,
                 center: other_center,
@@ -438,7 +445,10 @@ fn line_circle(start: Point, end: Point, center: Point, radius: f64) -> Vec<Poin
     let direction = unit(sub(end, start));
     let to_center = sub(center, start);
     let along = dot(to_center, direction);
-    let foot = [start[0] + direction[0] * along, start[1] + direction[1] * along];
+    let foot = [
+        start[0] + direction[0] * along,
+        start[1] + direction[1] * along,
+    ];
     let offset = distance(foot, center);
     if offset > radius + LOOP_TOLERANCE_MM {
         return Vec::new();
@@ -464,7 +474,10 @@ fn circle_circle(center: Point, radius: f64, other: Point, other_radius: f64) ->
     let along = (gap * gap + radius * radius - other_radius * other_radius) / (2.0 * gap);
     let half = (radius * radius - along * along).max(0.0).sqrt();
     let direction = unit(sub(other, center));
-    let foot = [center[0] + direction[0] * along, center[1] + direction[1] * along];
+    let foot = [
+        center[0] + direction[0] * along,
+        center[1] + direction[1] * along,
+    ];
     if half <= LOOP_TOLERANCE_MM {
         return vec![foot];
     }
@@ -494,15 +507,19 @@ pub(crate) fn intersections(left: &Segment, right: &Segment) -> Vec<Point> {
 
 fn same_curve(left: &Segment, right: &Segment) -> bool {
     match (left, right) {
-        (Segment::Line { start, end }, Segment::Line { start: from, end: to }) => {
+        (
+            Segment::Line { start, end },
+            Segment::Line {
+                start: from,
+                end: to,
+            },
+        ) => {
             let along = unit(sub(*end, *start));
             cross(along, sub(*from, *start)).abs() <= LOOP_TOLERANCE_MM
                 && cross(along, sub(*to, *start)).abs() <= LOOP_TOLERANCE_MM
         }
         (
-            Segment::Arc {
-                start, center, ..
-            },
+            Segment::Arc { start, center, .. },
             Segment::Arc {
                 start: other_start,
                 center: other_center,
@@ -571,8 +588,9 @@ pub(crate) fn lane_crossings(segments: &[Segment], y: f64) -> Vec<f64> {
         match segment {
             Segment::Line { start, end } => {
                 if (start[1] - y) * (end[1] - y) < 0.0 {
-                    crossings
-                        .push(start[0] + (y - start[1]) * (end[0] - start[0]) / (end[1] - start[1]));
+                    crossings.push(
+                        start[0] + (y - start[1]) * (end[0] - start[0]) / (end[1] - start[1]),
+                    );
                 }
             }
             Segment::Arc { start, center, .. } => {

@@ -794,6 +794,18 @@ fn append_cam_collision(
     obstacle: &ketchup_exact::ExactBody,
     tolerance_mm: f64,
 ) -> Result<(), ketchup_exact::GeometryError> {
+    // Bounds enclose their solids, so boxes apart by more than the tolerance
+    // prove the solids apart without asking the kernel.
+    let (left, right) = (&moving.topology.bounds_mm, &obstacle.topology.bounds_mm);
+    if left.min.x - right.max.x > tolerance_mm
+        || right.min.x - left.max.x > tolerance_mm
+        || left.min.y - right.max.y > tolerance_mm
+        || right.min.y - left.max.y > tolerance_mm
+        || left.min.z - right.max.z > tolerance_mm
+        || right.min.z - left.max.z > tolerance_mm
+    {
+        return Ok(());
+    }
     let relation = backend.query_body_pair(moving, obstacle, tolerance_mm)?;
     if relation.relation != ExactPairRelation::Separated {
         collisions.push(CamSimulationWireCollision {
