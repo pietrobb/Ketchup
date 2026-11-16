@@ -84,6 +84,7 @@ fn presentation(path: &Path, image: Value) -> Request {
         drawing_scale: None,
         image: Some(serde_json::from_value(image).unwrap()),
         cam_dialect: None,
+        cam_operations: None,
         overwrite: false,
     }
 }

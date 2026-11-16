@@ -6,11 +6,27 @@ use ketchup_model::cam::{
     CamCutParameters, CamPlan, CamPlanId, CamPostprocessorDialect, CamSetup, CamStock, CamTool,
     CamToolKind, CamWorkOffset,
 };
-use ketchup_model::document::{CanonicalCommand, DefinitionId, Dimension, FeatureId, FeatureKind};
+use ketchup_model::document::{
+    CanonicalCommand, DefinitionId, Dimension, FeatureId, FeatureKind, OccurrenceId, Transform,
+};
 
-/// A window holding a 20 × 10 × 5 mm block and a facing plan for it, whose prompts answer as
+/// A window holding a 20 Ă— 10 Ă— 5 mm block and a facing plan for it, whose prompts answer as
 /// `dialogs` says.
 fn cam_window(dialogs: &ScriptedFileDialogs) -> (KetchupApp, LiveBridge, tempfile::TempDir) {
+    cam_window_over(
+        dialogs,
+        CamStock {
+            minimum_mm: [0.0, 0.0, 0.0],
+            maximum_mm: [20.0, 10.0, 7.0],
+        },
+    )
+}
+
+/// The window of [`cam_window`] with its plan cutting `stock`, the block placed once.
+fn cam_window_over(
+    dialogs: &ScriptedFileDialogs,
+    stock: CamStock,
+) -> (KetchupApp, LiveBridge, tempfile::TempDir) {
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs.clone()));
     let worker = ketchup_application::evaluation::exact_worker_candidates()
         .into_iter()
@@ -38,16 +54,22 @@ fn cam_window(dialogs: &ScriptedFileDialogs) -> (KetchupApp, LiveBridge, tempfil
                 name: "20x10x5 target".into(),
                 kind: FeatureKind::extrusion(profile, Dimension::new("5", 5.0).unwrap()),
             },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(952),
+                definition_id: definition,
+                name: "Block".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
         ]))
         .unwrap();
     let plan = CamPlan::new(
         &app.document.current(),
         CamPlanId(95),
         "Reviewed facing",
-        CamStock {
-            minimum_mm: [0.0, 0.0, 0.0],
-            maximum_mm: [20.0, 10.0, 7.0],
-        },
+        stock,
         CamTool {
             number: 1,
             kind: CamToolKind::FlatEndMill,
@@ -87,6 +109,16 @@ fn cam_window(dialogs: &ScriptedFileDialogs) -> (KetchupApp, LiveBridge, tempfil
 }
 
 fn cam_export(path: &Path, export_format: &str, cam_dialect: Option<&str>) -> Request {
+    cam_export_of(path, export_format, cam_dialect, None)
+}
+
+/// An export whose program runs `cam_operations`, faces of the part named by ordinal.
+fn cam_export_of(
+    path: &Path,
+    export_format: &str,
+    cam_dialect: Option<&str>,
+    cam_operations: Option<Value>,
+) -> Request {
     Request::Export {
         expected: None,
         path: path.display().to_string(),
@@ -94,6 +126,8 @@ fn cam_export(path: &Path, export_format: &str, cam_dialect: Option<&str>) -> Re
         drawing_scale: None,
         image: None,
         cam_dialect: cam_dialect.map(str::to_owned),
+        cam_operations: cam_operations
+            .map(|operations| serde_json::from_value(operations).unwrap()),
         overwrite: false,
     }
 }
@@ -204,4 +238,133 @@ fn a_window_without_a_cam_plan_refuses_the_program() {
         Err("export_refused")
     );
     assert!(!target.exists());
+}
+
+/// The ordinal `query kind=faces` gives the lowest face of the block.
+fn bottom_face(app: &mut KetchupApp, bridge: &mut LiveBridge) -> u64 {
+    super::program_edit::evaluate_exact(app);
+    let page = bridge
+        .execute(
+            app,
+            Request::Query {
+                expected: None,
+                query: serde_json::from_value(json!({"kind": "faces", "limit": 50})).unwrap(),
+            },
+            false,
+        )
+        .unwrap();
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["definition_id"] == 95)
+        .min_by(|left, right| {
+            let z = |row: &Value| row["geometry"]["centroid_mm"][2].as_f64().unwrap();
+            z(left).total_cmp(&z(right))
+        })
+        .unwrap_or_else(|| panic!("no face of the block in {page}"))["ordinal"]
+        .as_u64()
+        .unwrap()
+}
+
+/// The stock the confirmation says the program removes, in mmÂł.
+fn removed_mm3(prompt: &str) -> f64 {
+    let after = &prompt[prompt
+        .find("removes ")
+        .unwrap_or_else(|| panic!("{prompt}"))
+        + 8..];
+    after
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("{prompt}"))
+}
+
+#[test]
+fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outline() {
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval(7);
+    let (mut app, mut bridge, directory) = cam_window_over(
+        &dialogs,
+        CamStock {
+            minimum_mm: [-3.0, -3.0, 0.0],
+            maximum_mm: [23.0, 13.0, 5.0],
+        },
+    );
+    let bottom = bottom_face(&mut app, &mut bridge);
+    let before = app.canonical_digest();
+
+    // The client names the bottom face; Ketchup reads its outline from the exact part and
+    // cuts one tool radius outside it, from the stock top down to the face.
+    let target = directory.path().join("profile.gcode");
+    bridge
+        .execute(
+            &mut app,
+            cam_export_of(
+                &target,
+                "cam_nc",
+                Some("grbl"),
+                Some(json!([{"type": "face_contour", "face_ordinal": bottom, "side": "outside"}])),
+            ),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let program = std::fs::read_to_string(&target).unwrap();
+    assert!(program.contains("X-1"), "{program}");
+    let prompts = dialogs.high_risk_prompts();
+    let band_mm2 = 60.0 * 2.0 + std::f64::consts::PI * 4.0;
+    assert!(
+        (removed_mm3(&prompts[0]) - band_mm2 * 5.0).abs() < 0.5,
+        "{}",
+        prompts[0]
+    );
+    assert_eq!(app.canonical_digest(), before);
+
+    // A flat face is no hole and a face the part does not have is refused before any prompt;
+    // a malformed operation, or operations given to another format, before anything runs.
+    for (operations, code) in [
+        (
+            json!([{"type": "face_drill", "face_ordinal": bottom}]),
+            "export_failed",
+        ),
+        (
+            json!([{"type": "face_pocket", "face_ordinal": 9_999}]),
+            "export_failed",
+        ),
+        (json!([]), "invalid_params"),
+    ] {
+        let refused = directory.path().join("refused.nc");
+        let request = cam_export_of(&refused, "cam_nc", None, Some(operations.clone()));
+        assert_eq!(
+            bridge.execute(&mut app, request, false),
+            Err(code),
+            "{operations}"
+        );
+        assert!(!refused.exists());
+    }
+    // A malformed operation is no request at all.
+    assert!(
+        serde_json::from_value::<Vec<crate::live_bridge::interchange::CamFaceOperationRequest>>(
+            json!([
+                {"type": "face_contour", "face_ordinal": bottom, "side": "diagonal"}
+            ])
+        )
+        .is_err()
+    );
+    let step = directory.path().join("model.step");
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            cam_export_of(
+                &step,
+                "step",
+                None,
+                Some(json!([{"type": "face_pocket", "face_ordinal": bottom}]))
+            ),
+            false
+        ),
+        Err("invalid_params")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
 }

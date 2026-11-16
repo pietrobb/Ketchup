@@ -451,6 +451,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
             drawing_scale: None,
             image: None,
             cam_dialect: None,
+            cam_operations: None,
             overwrite: false,
         },
     })

@@ -57,6 +57,7 @@ fn export_profiles(path: &Path) -> Request {
         drawing_scale: None,
         image: None,
         cam_dialect: None,
+        cam_operations: None,
         overwrite: false,
     }
 }

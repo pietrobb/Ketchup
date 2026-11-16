@@ -3,7 +3,7 @@
 
 use crate::*;
 use ketchup_application::cam_workflow::CamReviewError;
-use ketchup_model::cam::{CamGCodeDialect, CamGCodeDialectError};
+use ketchup_model::cam::{CamGCodeDialect, CamGCodeDialectError, CamOperation};
 
 /// The library's controller dialects as (id, name), in library order.
 pub(crate) fn cam_dialect_choices() -> Result<Vec<(String, String)>, CamGCodeDialectError> {
@@ -22,17 +22,19 @@ pub(crate) fn cam_dialect_name(dialect: &CamPostprocessorDialect) -> String {
 }
 
 impl KetchupApp {
-    /// Writes the program of the document's first CAM plan, facing its stock, for `dialect`
-    /// to the new file `path`. The program is simulated exactly first, stopped when
-    /// `cancelled` is set; the user confirms its release knowing the controller and the result.
+    /// Writes the program of the document's first CAM plan running `operations`, or facing
+    /// its stock when there are none, for `dialect` to the new file `path`. The program is
+    /// simulated exactly first, stopped when `cancelled` is set; the user confirms its release
+    /// knowing the controller and the result.
     pub(crate) fn export_current_cam_program_to(
         &mut self,
         path: &Path,
         dialect: CamPostprocessorDialect,
+        operations: Vec<CamOperation>,
         cancelled: &AtomicBool,
     ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
-        let result = self.write_cam_program(path, dialect, cancelled);
+        let result = self.write_cam_program(path, dialect, operations, cancelled);
         self.report_export_outcome("cam-nc", path, result)
     }
 
@@ -40,6 +42,7 @@ impl KetchupApp {
         &mut self,
         path: &Path,
         dialect: CamPostprocessorDialect,
+        mut operations: Vec<CamOperation>,
         cancelled: &AtomicBool,
     ) -> Result<Written, ExportError> {
         let new_file = || ExportError::Destination {
@@ -58,9 +61,12 @@ impl KetchupApp {
                 subject: "CAM plan",
             })?;
         let plan_id = plan.id();
-        let operation = plan
-            .default_facing_operation(&snapshot, 1)
-            .map_err(ExportError::failed)?;
+        if operations.is_empty() {
+            operations.push(
+                plan.default_facing_operation(&snapshot, 1)
+                    .map_err(ExportError::failed)?,
+            );
+        }
         let worker_path = self.exact_worker_executable()?;
         self.reviews.cam_reviews.set_worker_path(worker_path);
         let review = self
@@ -71,7 +77,7 @@ impl KetchupApp {
                 mutation_epoch,
                 CamReviewRequest {
                     plan_id,
-                    operations: vec![operation],
+                    operations,
                     fixtures: Vec::new(),
                     dialect: dialect.clone(),
                 },

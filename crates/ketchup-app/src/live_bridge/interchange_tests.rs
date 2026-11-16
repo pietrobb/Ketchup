@@ -41,6 +41,7 @@ fn export(path: &Path, export_format: &str) -> Request {
         drawing_scale: None,
         image: None,
         cam_dialect: None,
+        cam_operations: None,
         overwrite: false,
     }
 }

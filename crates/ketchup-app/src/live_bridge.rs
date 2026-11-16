@@ -692,6 +692,9 @@ pub enum Request {
         /// For cam_nc: the library dialect of the controller the program is written for.
         #[serde(default)]
         cam_dialect: Option<String>,
+        /// For cam_nc: the operations of the program, each naming a face of the plan's part.
+        #[serde(default)]
+        cam_operations: Option<Vec<interchange::CamFaceOperationRequest>>,
         /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
         #[serde(default)]
         overwrite: bool,
