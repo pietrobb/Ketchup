@@ -658,6 +658,375 @@ fn an_operation_naming_a_face_reads_it_from_the_evaluated_target_before_it_plans
     );
 }
 
+const OUTLINE: [[f64; 2]; 2] = [[0.0, 0.0], [80.0, 50.0]];
+const OUTLINE_RADIUS: f64 = 5.0;
+const ROUND_POCKET: [[f64; 2]; 2] = [[10.0, 15.0], [40.0, 35.0]];
+const ROUND_POCKET_RADIUS: f64 = 4.0;
+const PLATE_HOLE: [f64; 2] = [60.0, 32.0];
+const SLOT_ENDS: [[f64; 2]; 2] = [[52.0, 12.0], [68.0, 12.0]];
+const HOLE_RADIUS: f64 = 3.3;
+
+/// A rectangle with its corners rounded to `radius`, counter-clockwise.
+fn rounded_rectangle(first_id: u64, [min, max]: [[f64; 2]; 2], radius: f64) -> Vec<SketchEntity> {
+    let (r, mut entities) = (radius, Vec::new());
+    let corners = [
+        [min[0] + r, min[1] + r],
+        [max[0] - r, min[1] + r],
+        [max[0] - r, max[1] - r],
+        [min[0] + r, max[1] - r],
+    ];
+    // Leaving corner `index` the side runs along this direction.
+    let along = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+    for index in 0..4 {
+        let center = corners[index];
+        let next = corners[(index + 1) % 4];
+        let [dx, dy] = along[index];
+        // Outward normal of the side leaving this corner.
+        let out = [dy, -dx];
+        let side_start = [center[0] + out[0] * r, center[1] + out[1] * r];
+        let side_end = [next[0] + out[0] * r, next[1] + out[1] * r];
+        let [nx, ny] = along[(index + 1) % 4];
+        let next_out = [ny, -nx];
+        entities.push(SketchEntity::Line {
+            id: SketchEntityId(first_id + 2 * index as u64),
+            start_mm: side_start,
+            end_mm: side_end,
+        });
+        entities.push(SketchEntity::Arc {
+            id: SketchEntityId(first_id + 2 * index as u64 + 1),
+            start_mm: side_end,
+            end_mm: [next[0] + next_out[0] * r, next[1] + next_out[1] * r],
+            center_mm: next,
+            clockwise: false,
+        });
+    }
+    entities
+}
+
+/// Signed distance from `point` to a rounded rectangle: negative inside.
+fn rounded_rectangle_distance(point: [f64; 2], [min, max]: [[f64; 2]; 2], radius: f64) -> f64 {
+    let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let q = [0, 1]
+        .map(|axis| (point[axis] - center[axis]).abs() - ((max[axis] - min[axis]) * 0.5 - radius));
+    q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0) - radius
+}
+
+/// An 80 x 50 x 8 plate with R5 corners, a 30 x 20 pocket 3 deep with R4
+/// corners, an obround belt slot and a 6.6 mm hole through it: the shapes of
+/// a real machine plate. Nothing in it is named for CAM.
+fn rounded_machine_plate(tool: CamTool) -> (DocumentStore, CamPlan, FeatureId) {
+    let outline_sketch = FeatureId(970);
+    let feature_sketch = FeatureId(971);
+    let plate = FeatureId(972);
+    let last = FeatureId(975);
+    let outline = SketchSpec {
+        workplane: WORKPLANE,
+        entities: rounded_rectangle(1, OUTLINE, OUTLINE_RADIUS),
+        constraints: Vec::new(),
+    };
+    let outline_region = outline.solved_regions().unwrap()[0].id;
+    let mut entities = rounded_rectangle(1, ROUND_POCKET, ROUND_POCKET_RADIUS);
+    let [left, right] = SLOT_ENDS;
+    let r = HOLE_RADIUS;
+    entities.extend([
+        SketchEntity::Line {
+            id: SketchEntityId(20),
+            start_mm: [left[0], left[1] - r],
+            end_mm: [right[0], right[1] - r],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(21),
+            start_mm: [right[0], right[1] - r],
+            end_mm: [right[0], right[1] + r],
+            center_mm: right,
+            clockwise: false,
+        },
+        SketchEntity::Line {
+            id: SketchEntityId(22),
+            start_mm: [right[0], right[1] + r],
+            end_mm: [left[0], left[1] + r],
+        },
+        SketchEntity::Arc {
+            id: SketchEntityId(23),
+            start_mm: [left[0], left[1] + r],
+            end_mm: [left[0], left[1] - r],
+            center_mm: left,
+            clockwise: false,
+        },
+        SketchEntity::Circle {
+            id: SketchEntityId(30),
+            center_mm: PLATE_HOLE,
+            radius_mm: HOLE_RADIUS,
+        },
+    ]);
+    let features = SketchSpec {
+        workplane: WORKPLANE,
+        entities,
+        constraints: Vec::new(),
+    };
+    let regions = features.solved_regions().unwrap();
+    let region_with = |entity: u64| {
+        regions
+            .iter()
+            .find(|region| region.outer_entity_ids.contains(&SketchEntityId(entity)))
+            .unwrap()
+            .id
+    };
+    let pad =
+        |id: u64, name: &str, sketch, region, extent, operation| CanonicalCommand::CreateFeature {
+            id: FeatureId(id),
+            definition_id: DEFINITION,
+            name: name.into(),
+            kind: FeatureKind::Pad(PadSpec {
+                profile: PadProfile::SketchRegion { sketch, region },
+                direction: FeatureDirection::AlongNormal,
+                extent,
+                operation,
+            }),
+        };
+    let through = |target: FeatureId| PadOperation::Cut {
+        target,
+        start: CutStart::ProfilePlane,
+    };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Rounded machine plate".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: WORKPLANE,
+                definition_id: DEFINITION,
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: outline_sketch,
+                definition_id: DEFINITION,
+                name: "Outline".into(),
+                kind: FeatureKind::Sketch(outline),
+            },
+            CanonicalCommand::CreateFeature {
+                id: feature_sketch,
+                definition_id: DEFINITION,
+                name: "Pocket, slot and hole".into(),
+                kind: FeatureKind::Sketch(features),
+            },
+            pad(
+                972,
+                "Plate",
+                outline_sketch,
+                outline_region,
+                FeatureExtent::Blind(dimension(8.0)),
+                PadOperation::NewBody,
+            ),
+            pad(
+                973,
+                "Pocket",
+                feature_sketch,
+                region_with(1),
+                FeatureExtent::Blind(dimension(3.0)),
+                PadOperation::Cut {
+                    target: plate,
+                    start: CutStart::TargetFace,
+                },
+            ),
+            pad(
+                974,
+                "Belt slot",
+                feature_sketch,
+                region_with(20),
+                FeatureExtent::ThroughAll,
+                through(FeatureId(973)),
+            ),
+            pad(
+                975,
+                "Bolt hole",
+                feature_sketch,
+                region_with(30),
+                FeatureExtent::ThroughAll,
+                through(FeatureId(974)),
+            ),
+        ]))
+        .unwrap();
+    let plan = CamPlan::new(
+        &document.current(),
+        CamPlanId(98),
+        "Rounded plate",
+        CamStock {
+            minimum_mm: [-5.0, -5.0, 0.0],
+            maximum_mm: [85.0, 55.0, 8.0],
+        },
+        tool,
+        CamSetup {
+            work_offset: CamWorkOffset::G54,
+            origin_mm: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 1.0, 0.0],
+            safe_height_mm: 15.0,
+        },
+        CamCutParameters {
+            maximum_stepdown_mm: 2.0,
+            stepover_ratio: 0.5,
+            radial_allowance_mm: 0.0,
+            axial_allowance_mm: 0.0,
+        },
+        DEFINITION,
+        last,
+    )
+    .unwrap();
+    (document, plan, last)
+}
+
+fn end_mill() -> CamTool {
+    CamTool {
+        number: 2,
+        kind: CamToolKind::FlatEndMill,
+        diameter_mm: 2.0 * TOOL_RADIUS,
+        flute_length_mm: 10.0,
+        overall_length_mm: 25.0,
+        holder_diameter_mm: 6.0,
+        holder_length_mm: 20.0,
+        spindle_rpm: 12_000,
+        feed_mm_per_min: 600.0,
+        plunge_mm_per_min: 150.0,
+    }
+}
+
+/// Arcs of `radius` in `path` centred on each of `centers`.
+fn has_arcs_at(path: &CamPath2d, centers: &[[f64; 2]], radius: f64) -> bool {
+    let points = segment_points(path);
+    centers.iter().all(|center| {
+        path.segments.iter().enumerate().any(|(index, segment)| {
+            matches!(segment, CamPathSegment2d::Arc { center_mm, .. }
+                if distance(*center_mm, *center) <= 1.0e-6
+                    && (distance(points[index + 1], *center) - radius).abs() <= 1.0e-6)
+        })
+    })
+}
+
+fn rounded_corner_centers([min, max]: [[f64; 2]; 2], radius: f64) -> [[f64; 2]; 4] {
+    [
+        [min[0] + radius, min[1] + radius],
+        [max[0] - radius, min[1] + radius],
+        [max[0] - radius, max[1] - radius],
+        [min[0] + radius, max[1] - radius],
+    ]
+}
+
+#[test]
+fn faces_bounded_by_partial_arcs_give_contour_pocket_and_hole_of_a_rounded_machine_plate() {
+    let _turn = crate::integration_support::file_turn();
+    let (document, plan, last) = rounded_machine_plate(end_mill());
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, last).unwrap();
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    let cancelled = AtomicBool::new(false);
+
+    // The underside: the R5 outline, with the slot and the hole as islands.
+    let bottom = planar_face_at(&package, 0.0, -1.0);
+    let outline = CamRegion2d::from_planar_face(&package, bottom, plan.setup()).unwrap();
+    assert!(has_arcs_at(
+        &outline.outer,
+        &rounded_corner_centers(OUTLINE, OUTLINE_RADIUS),
+        OUTLINE_RADIUS
+    ));
+    assert_eq!(outline.islands.len(), 2, "{outline:?}");
+    assert!(
+        outline
+            .islands
+            .iter()
+            .any(|island| has_arcs_at(island, &SLOT_ENDS, HOLE_RADIUS)),
+        "{outline:?}"
+    );
+
+    let contour = [CamOperation::RegionContour {
+        id: 1,
+        region: outline,
+        side: CamContourSide::Outside,
+        top_z_mm: 8.0,
+        bottom_z_mm: 4.0,
+    }];
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &contour).unwrap();
+    let points = cut_points(&toolpath);
+    assert!(!points.is_empty());
+    for point in &points {
+        let off = rounded_rectangle_distance([point[0], point[1]], OUTLINE, OUTLINE_RADIUS);
+        assert!(
+            (off - TOOL_RADIUS).abs() <= 1.0e-6,
+            "cutter centre {point:?} is {off} off the rounded outline"
+        );
+    }
+    let simulation = worker
+        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .unwrap();
+    assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    assert!(simulation.collisions.is_empty(), "{simulation:?}");
+    let perimeter =
+        2.0 * (80.0 + 50.0 - 4.0 * OUTLINE_RADIUS) + std::f64::consts::TAU * OUTLINE_RADIUS;
+    let band_mm3 =
+        (perimeter * 2.0 * TOOL_RADIUS + std::f64::consts::PI * (2.0 * TOOL_RADIUS).powi(2)) * 4.0;
+    assert!(
+        (simulation.removed_stock_mm3 - band_mm3).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+
+    // The pocket floor at z = 5: four R4 corners the cutter clears completely.
+    let floor = planar_face_at(&package, 5.0, 1.0);
+    let pocket = CamRegion2d::from_planar_face(&package, floor, plan.setup()).unwrap();
+    assert!(pocket.islands.is_empty());
+    assert!(has_arcs_at(
+        &pocket.outer,
+        &rounded_corner_centers(ROUND_POCKET, ROUND_POCKET_RADIUS),
+        ROUND_POCKET_RADIUS
+    ));
+    let clear = [CamOperation::RegionPocket {
+        id: 2,
+        region: pocket,
+        top_z_mm: 8.0,
+        bottom_z_mm: 5.0,
+    }];
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &clear).unwrap();
+    for point in cut_points(&toolpath) {
+        let inside =
+            rounded_rectangle_distance([point[0], point[1]], ROUND_POCKET, ROUND_POCKET_RADIUS);
+        assert!(
+            inside <= -TOOL_RADIUS + 1.0e-6,
+            "{point:?} is {inside} inside"
+        );
+        assert!(point[2] >= 5.0 - 1.0e-9, "{point:?}");
+    }
+    let simulation = worker
+        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .unwrap();
+    assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    let pocket_area = 30.0 * 20.0 - (4.0 - std::f64::consts::PI) * ROUND_POCKET_RADIUS.powi(2);
+    assert!(
+        (simulation.removed_stock_mm3 - pocket_area * 3.0).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+
+    // Of all the cylindrical faces (corner fillets, slot ends, pocket corners
+    // and the hole) only the hole's wall is a drillable hole; it is read
+    // although the top face around it is bounded by arcs.
+    let holes: Vec<CamHole> = package
+        .face_evidence
+        .iter()
+        .filter(|face| face.surface_kind == "cylinder")
+        .filter_map(|face| {
+            CamHole::from_cylindrical_face(&package, face.face_ordinal, plan.setup()).ok()
+        })
+        .collect();
+    assert_eq!(holes.len(), 1, "{holes:?}");
+    assert!(distance(holes[0].center_mm, PLATE_HOLE) <= 1.0e-6);
+    assert!((holes[0].radius_mm - HOLE_RADIUS).abs() <= 1.0e-6);
+    assert!((holes[0].top_z_mm - 8.0).abs() <= 1.0e-6);
+    assert!(holes[0].bottom_z_mm.abs() <= 1.0e-6);
+}
+
 fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
     (left[0] - right[0]).hypot(left[1] - right[1])
 }

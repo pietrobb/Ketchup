@@ -16,6 +16,10 @@ use ketchup_geometry::linalg::{cross, dot};
 const MAX_REGION_SEGMENTS: usize = 1_024;
 /// Most scan lanes one pocket clears.
 const MAX_POCKET_LANES: usize = 50_000;
+/// How far, in stepovers, pocket lanes stay off the wall pass. A stepover is
+/// at most the cutter diameter, so the gap stays within the band the wall
+/// pass sweeps.
+const LANE_WALL_GAP_STEPOVERS: f64 = 0.1;
 
 /// A closed region in the setup's XY plane: the outer boundary and the islands
 /// inside it that the cutter must leave standing.
@@ -41,8 +45,9 @@ fn refused() -> CamPlannerError {
 impl CamRegion2d {
     /// The loops of one planar face of an evaluated part, in setup coordinates:
     /// the loop enclosing the others is the outer boundary, the rest are islands.
-    /// The face must lie square to the setup's Z axis and be bounded by lines
-    /// and whole circles; anything else is refused rather than approximated.
+    /// The face must lie square to the setup's Z axis and be bounded by lines,
+    /// circular arcs and whole circles; anything else is refused rather than
+    /// approximated.
     pub fn from_planar_face(
         package: &ExactBRepGraphPackage,
         face_ordinal: u32,
@@ -65,7 +70,7 @@ impl CamRegion2d {
             ];
             [dot(relative, setup.x_axis), dot(relative, setup.y_axis)]
         };
-        let mut lines = Vec::new();
+        let mut pieces = Vec::new();
         let mut loops = Vec::new();
         for edge in package
             .edge_evidence
@@ -73,11 +78,11 @@ impl CamRegion2d {
             .filter(|edge| edge.adjacent_face_ordinals.contains(&face_ordinal))
         {
             match boundary_piece(edge, to_setup)? {
-                Piece::Line(segment) => lines.push(segment),
+                Piece::Open(segment) => pieces.push(segment),
                 Piece::Circle(segments) => loops.push(segments),
             }
         }
-        loops.extend(chain_lines(lines)?);
+        loops.extend(chain_pieces(pieces)?);
         if loops.is_empty() || loops.iter().map(Vec::len).sum::<usize>() > MAX_REGION_SEGMENTS {
             return Err(refused());
         }
@@ -329,7 +334,8 @@ fn planar_face(
 }
 
 enum Piece {
-    Line(Segment),
+    /// A line or partial arc, joined to its neighbours by [`chain_pieces`].
+    Open(Segment),
     Circle(Vec<Segment>),
 }
 
@@ -342,7 +348,7 @@ fn boundary_piece(
     match (edge.curve_kind.as_str(), edge.closed, edge.circle_radius_mm) {
         ("line", false, None) => {
             let end = [0, 1, 2].map(|axis| origin[axis] + direction[axis] * edge.length_mm);
-            Ok(Piece::Line(Segment::Line {
+            Ok(Piece::Open(Segment::Line {
                 start: to_setup(origin),
                 end: to_setup(end),
             }))
@@ -367,51 +373,98 @@ fn boundary_piece(
                 },
             ]))
         }
-        // Partial arcs need their end points, which face evidence does not carry yet.
+        ("circle", false, Some(radius)) if radius.is_finite() && radius > LOOP_TOLERANCE_MM => {
+            partial_arc(edge, origin, radius, &to_setup).map(Piece::Open)
+        }
+        // B-spline, ellipse and other curves are refused, not approximated.
         _ => Err(refused()),
     }
 }
 
-/// Joins line pieces end to end into closed loops.
-fn chain_lines(mut lines: Vec<Segment>) -> Result<Vec<Vec<Segment>>, CamPlannerError> {
+/// A partial circle edge as an arc in the setup plane. Its ends follow from
+/// its exact length and centroid: the arc sweeps `length / radius`, and its
+/// centroid lies on the bisector `radius * sin(h) / h` from the centre, `h`
+/// being half the sweep. A centroid elsewhere is refused.
+fn partial_arc(
+    edge: &ExactBRepGraphEdgeEvidence,
+    origin: [f64; 3],
+    radius: f64,
+    to_setup: impl Fn([f64; 3]) -> Point,
+) -> Result<Segment, CamPlannerError> {
+    let half = edge.length_mm / radius * 0.5;
+    if !(half > 0.0 && half < std::f64::consts::PI) {
+        return Err(refused());
+    }
+    let center = to_setup(origin);
+    let centroid = to_setup(edge.centroid_mm);
+    let offset = [centroid[0] - center[0], centroid[1] - center[1]];
+    let reach = offset[0].hypot(offset[1]);
+    if (reach - radius * half.sin() / half).abs() > LOOP_TOLERANCE_MM || reach <= LOOP_TOLERANCE_MM
+    {
+        return Err(refused());
+    }
+    let bisector = [offset[0] / reach, offset[1] / reach];
+    let at = |angle: f64| {
+        let (sin, cos) = angle.sin_cos();
+        [
+            center[0] + radius * (bisector[0] * cos - bisector[1] * sin),
+            center[1] + radius * (bisector[0] * sin + bisector[1] * cos),
+        ]
+    };
+    Ok(Segment::Arc {
+        start: at(-half),
+        end: at(half),
+        center,
+        ccw: true,
+    })
+}
+
+/// Joins line and arc pieces end to end into closed loops.
+fn chain_pieces(mut pieces: Vec<Segment>) -> Result<Vec<Vec<Segment>>, CamPlannerError> {
     let mut loops = Vec::new();
-    while let Some(first) = lines.pop() {
+    while let Some(first) = pieces.pop() {
         let mut chain = vec![first];
         while distance(chain[chain.len() - 1].end(), chain[0].start()) > LOOP_TOLERANCE_MM {
             let tail = chain[chain.len() - 1].end();
-            let index = lines
+            let index = pieces
                 .iter()
                 .position(|segment| {
                     distance(segment.start(), tail) <= LOOP_TOLERANCE_MM
                         || distance(segment.end(), tail) <= LOOP_TOLERANCE_MM
                 })
                 .ok_or_else(refused)?;
-            let next = lines.swap_remove(index);
-            let next = if distance(next.start(), tail) <= LOOP_TOLERANCE_MM {
+            let next = pieces.swap_remove(index);
+            chain.push(if distance(next.start(), tail) <= LOOP_TOLERANCE_MM {
                 next
             } else {
                 next.reversed()
-            };
-            // Snap so consecutive segments share one exact point.
-            chain.push(match next {
-                Segment::Line { end, .. } => Segment::Line { start: tail, end },
-                arc => arc,
             });
         }
-        let last = chain.len() - 1;
-        let start = chain[0].start();
-        if let Segment::Line { start: from, .. } = chain[last] {
-            chain[last] = Segment::Line {
-                start: from,
-                end: start,
-            };
-        }
-        if chain.len() < 3 {
+        if chain.len() < 2 || (chain.len() == 2 && chain.iter().all(is_line)) {
             return Err(refused());
+        }
+        // Snap so consecutive segments share one exact point; an arc's ends
+        // stay where its circle puts them and the line beside it moves.
+        for index in 0..chain.len() {
+            let next = (index + 1) % chain.len();
+            let joint = match (&chain[index], &chain[next]) {
+                (_, Segment::Arc { start, .. }) => *start,
+                (Segment::Arc { end, .. }, _) | (Segment::Line { end, .. }, _) => *end,
+            };
+            if let Segment::Line { end, .. } = &mut chain[index] {
+                *end = joint;
+            }
+            if let Segment::Line { start, .. } = &mut chain[next] {
+                *start = joint;
+            }
         }
         loops.push(chain);
     }
     Ok(loops)
+}
+
+const fn is_line(segment: &Segment) -> bool {
+    matches!(segment, Segment::Line { .. })
 }
 
 fn path_of(segments: &[Segment]) -> CamPath2d {
@@ -594,7 +647,16 @@ pub(crate) fn pocket_paths(
     clearance_mm: f64,
     stepover_mm: f64,
 ) -> Result<Vec<CamPath2d>, CamPlannerError> {
-    let boundaries = pocket_boundaries(region, clearance_mm)?;
+    let walls = pocket_boundaries(region, clearance_mm)?;
+    // Lanes stop short of the walls, whose own pass finishes them: a lane
+    // ending on a wall's offset leaves its cutter touching a curved wall
+    // along a line, which the exact simulation cannot cut reliably.
+    let boundaries =
+        match pocket_boundaries(region, clearance_mm + stepover_mm * LANE_WALL_GAP_STEPOVERS) {
+            Ok(inner) => inner,
+            Err(CamPlannerError::UnsupportedRegion) => walls.clone(),
+            Err(other) => return Err(other),
+        };
     let [minimum, maximum] = loop_bounds(&boundaries[..1]);
     let span = maximum[1] - minimum[1];
     let lanes = (span / stepover_mm).ceil().max(1.0);
@@ -625,7 +687,7 @@ pub(crate) fn pocket_paths(
         rows.push((y, spans));
     }
     let mut paths = zigzag(&boundaries, &mut rows);
-    paths.extend(boundaries.iter().map(|boundary| path_of(boundary)));
+    paths.extend(walls.iter().map(|boundary| path_of(boundary)));
     Ok(paths)
 }
 
