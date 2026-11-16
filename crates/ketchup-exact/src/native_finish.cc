@@ -53,6 +53,25 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
           true);
       return operation.IsDone() && !operation.Shape().IsNull();
     };
+    // OCCT can report an open shell as done yet hand back the body unchanged,
+    // e.g. when the wall is thicker than the body or a round cannot be offset.
+    // An inward wall must remove volume; an outward one must add it.
+    const auto hollowed = [&](const TopoDS_Shape& shape, double offset) {
+      GProp_GProps source_properties;
+      GProp_GProps result_properties;
+      BRepGProp::VolumeProperties(body.impl().shape, source_properties);
+      BRepGProp::VolumeProperties(shape, result_properties);
+      const double source_volume = source_properties.Mass();
+      const double result_volume = result_properties.Mass();
+      const double tolerance = tolerances().rounding * std::max(source_volume, 1.0);
+      return std::isfinite(source_volume) && std::isfinite(result_volume)
+          && result_volume > tolerance
+          && (offset < 0.0 ? result_volume < source_volume - tolerance
+                           : std::abs(result_volume - source_volume) > tolerance);
+    };
+    constexpr const char* NOT_HOLLOWED =
+        "Shell left the body solid: the wall is too thick for the body, or a curved face "
+        "cannot be offset by that thickness";
     const auto append_selected_history = [&](
         std::vector<HistoryRecord>& history,
         BRepOffsetAPI_MakeThickSolid& operation,
@@ -207,6 +226,9 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
       if (!build_thick(operation, offset)) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT body shell did not complete");
       }
+      if (!hollowed(operation.Shape(), offset)) {
+        return error_result(STATUS_NO_GEOMETRIC_CHANGE, NOT_HOLLOWED);
+      }
       const TopoDS_Shape result = operation.Shape();
       const ShapeIndex result_index(result);
       std::vector<HistoryRecord> history;
@@ -221,6 +243,10 @@ std::unique_ptr<NativeOperationResult> shell_body_native(
     if (!build_thick(inward, -thickness * 0.5)
         || !build_thick(outward, thickness * 0.5)) {
       return error_result(STATUS_INVALID_SHAPE, "OCCT symmetric body shell halves did not complete");
+    }
+    if (!hollowed(inward.Shape(), -thickness * 0.5)
+        || !hollowed(outward.Shape(), thickness * 0.5)) {
+      return error_result(STATUS_NO_GEOMETRIC_CHANGE, NOT_HOLLOWED);
     }
     BRepAlgoAPI_Fuse fusion;
     configure_boolean(fusion, inward.Shape(), outward.Shape());
@@ -602,6 +628,19 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
         }
         for (const TopoDS_Edge& edge : selected) {
           operation.Add(stations, edge);
+        }
+        // A run of edges that closes on itself (a circle, a tangent loop) has
+        // no free end: a radius that ends unlike it starts would step there.
+        const double end_radius = fillet_radius_stations[fillet_radius_stations.size() - 1];
+        if (end_radius != amount) {
+          for (int contour = 1; contour <= operation.NbContours(); ++contour) {
+            if (operation.Closed(contour)) {
+              return error_result(
+                  STATUS_INVALID_PARAMETER,
+                  "Variable fillet on a closed run of edges must end with the radius it "
+                  "starts with");
+            }
+          }
         }
       }
       return collect_finished(operation);
