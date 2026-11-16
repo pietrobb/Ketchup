@@ -173,6 +173,18 @@ pub enum CamOperation {
         top_z_mm: f64,
         bottom_z_mm: f64,
     },
+    /// Clears the pocket whose floor is planar face `face_ordinal` of the
+    /// target, from the stock top down to the floor.
+    FacePocket { id: u64, face_ordinal: u32 },
+    /// Runs the cutter on `side` of planar face `face_ordinal`'s boundary,
+    /// from the stock top down to the face.
+    FaceContour {
+        id: u64,
+        face_ordinal: u32,
+        side: CamContourSide,
+    },
+    /// Drills the hole whose wall is cylindrical face `face_ordinal`.
+    FaceDrill { id: u64, face_ordinal: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -490,6 +502,7 @@ pub enum CamPlannerError {
     UnsupportedTool,
     UnsupportedRegion,
     UnsupportedHole,
+    UnresolvedFace,
     StaleToolpath,
 }
 
@@ -522,6 +535,9 @@ impl std::fmt::Display for CamPlannerError {
             Self::UnsupportedHole => formatter.write_str(
                 "CAM hole is not a straight round hole along the setup Z axis, \
                  or the drill is not its diameter",
+            ),
+            Self::UnresolvedFace => formatter.write_str(
+                "CAM operation names a face that was not read from the evaluated target",
             ),
             Self::StaleToolpath => formatter.write_str(
                 "CAM toolpath is malformed or does not match the current plan and exact target",
@@ -1065,6 +1081,9 @@ impl CamToolpath {
                     append_region_paths(&mut builder, plan, region, &paths, depths, bounds)?;
                     CamOperationKind::Contour
                 }
+                CamOperation::FacePocket { .. }
+                | CamOperation::FaceContour { .. }
+                | CamOperation::FaceDrill { .. } => return Err(CamPlannerError::UnresolvedFace),
             };
             planned_operations.push(CamToolpathOperation {
                 id: operation_id(operation),
@@ -1703,7 +1722,10 @@ fn operation_id(operation: &CamOperation) -> u64 {
         | CamOperation::Contour { id, .. }
         | CamOperation::Drill { id, .. }
         | CamOperation::RegionPocket { id, .. }
-        | CamOperation::RegionContour { id, .. } => *id,
+        | CamOperation::RegionContour { id, .. }
+        | CamOperation::FacePocket { id, .. }
+        | CamOperation::FaceContour { id, .. }
+        | CamOperation::FaceDrill { id, .. } => *id,
     }
 }
 
@@ -1910,7 +1932,7 @@ fn distance_3d(left: [f64; 3], right: [f64; 3]) -> f64 {
         .sqrt()
 }
 
-fn setup_bounds(world_bounds: [[f64; 3]; 2], setup: &CamSetup) -> [[f64; 3]; 2] {
+pub(crate) fn setup_bounds(world_bounds: [[f64; 3]; 2], setup: &CamSetup) -> [[f64; 3]; 2] {
     let z_axis = cross(setup.x_axis, setup.y_axis);
     let axes = [setup.x_axis, setup.y_axis, z_axis];
     let mut minimum = [f64::INFINITY; 3];

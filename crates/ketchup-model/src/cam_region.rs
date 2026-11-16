@@ -1,7 +1,8 @@
 //! Planar regions a CAM operation machines, read from an exact face of the
 //! part, and the cutter-centre paths that clear or follow them.
 use crate::cam::{
-    CamOperation, CamPath2d, CamPathSegment2d, CamPlannerError, CamSetup, CamTool, CamToolKind,
+    CamOperation, CamPath2d, CamPathSegment2d, CamPlan, CamPlannerError, CamSetup, CamTool,
+    CamToolKind, setup_bounds,
 };
 use crate::cam_offset::{
     LOOP_TOLERANCE_MM, Point, Segment, degenerate_lane, distance, intersections, lane_crossings,
@@ -225,6 +226,69 @@ impl CamHole {
 }
 
 impl CamOperation {
+    /// Whether the operation names a face of the target, which must be read
+    /// from the evaluated part with [`Self::resolve_face`] before planning.
+    #[must_use]
+    pub const fn names_face(&self) -> bool {
+        matches!(
+            self,
+            Self::FacePocket { .. } | Self::FaceContour { .. } | Self::FaceDrill { .. }
+        )
+    }
+
+    /// The operation with its named face replaced by the region or hole read
+    /// from `package`, the evaluated target of `plan`. Pockets and contours cut
+    /// from the stock top down to their face; a pocket floor must face the
+    /// tool. Operations that name no face come back unchanged.
+    pub fn resolve_face(
+        &self,
+        package: &ExactBRepGraphPackage,
+        plan: &CamPlan,
+    ) -> Result<Self, CamPlannerError> {
+        if !self.names_face() {
+            return Ok(self.clone());
+        }
+        if package.graph.graph_digest != plan.target().exact_graph_digest {
+            return Err(CamPlannerError::StaleToolpath);
+        }
+        let setup = plan.setup();
+        let stock = plan.stock();
+        let top_z_mm = setup_bounds([stock.minimum_mm, stock.maximum_mm], setup)[1][2];
+        match self {
+            Self::FacePocket { id, face_ordinal } => {
+                let (region, floor_z, faces_tool) = planar_face(package, *face_ordinal, setup)?;
+                if !faces_tool {
+                    return Err(refused());
+                }
+                Ok(Self::RegionPocket {
+                    id: *id,
+                    region,
+                    top_z_mm,
+                    bottom_z_mm: floor_z,
+                })
+            }
+            Self::FaceContour {
+                id,
+                face_ordinal,
+                side,
+            } => {
+                let (region, face_z, _) = planar_face(package, *face_ordinal, setup)?;
+                Ok(Self::RegionContour {
+                    id: *id,
+                    region,
+                    side: *side,
+                    top_z_mm,
+                    bottom_z_mm: face_z,
+                })
+            }
+            Self::FaceDrill { id, face_ordinal } => {
+                let hole = CamHole::from_cylindrical_face(package, *face_ordinal, setup)?;
+                Self::drill_hole(*id, &hole, plan.tool())
+            }
+            _ => Ok(self.clone()),
+        }
+    }
+
     /// Drills `hole` from its rim to its far rim with `tool`, which must be a
     /// drill of the hole's diameter.
     pub fn drill_hole(id: u64, hole: &CamHole, tool: &CamTool) -> Result<Self, CamPlannerError> {
@@ -240,6 +304,28 @@ impl CamOperation {
             bottom_z_mm: hole.bottom_z_mm,
         })
     }
+}
+
+/// The region of planar face `face_ordinal`, its setup Z, and whether its
+/// outward normal points at the tool.
+fn planar_face(
+    package: &ExactBRepGraphPackage,
+    face_ordinal: u32,
+    setup: &CamSetup,
+) -> Result<(CamRegion2d, f64, bool), CamPlannerError> {
+    let region = CamRegion2d::from_planar_face(package, face_ordinal, setup)?;
+    let face = package
+        .face_evidence
+        .iter()
+        .find(|face| face.face_ordinal == face_ordinal)
+        .ok_or_else(refused)?;
+    let z_axis = cross(setup.x_axis, setup.y_axis);
+    let relative = [0, 1, 2].map(|axis| face.centroid_mm[axis] - setup.origin_mm[axis]);
+    Ok((
+        region,
+        dot(relative, z_axis),
+        dot(face.unit_normal, z_axis) > 0.0,
+    ))
 }
 
 enum Piece {

@@ -1,5 +1,7 @@
 use super::*;
-use ketchup_model::cam::{CamContourSide, CamHole, CamMotion, CamMotionPath, CamRegion2d};
+use ketchup_model::cam::{
+    CamContourSide, CamHole, CamMotion, CamMotionPath, CamPlannerError, CamRegion2d,
+};
 
 const DEFINITION: DefinitionId = DefinitionId(96);
 const PLATE_PROFILE: FeatureId = FeatureId(960);
@@ -577,6 +579,83 @@ fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_c
         .unwrap()
         .face_ordinal;
     assert!(CamHole::from_cylindrical_face(&pocket, island_wall, pocket_plan.setup()).is_err());
+}
+
+#[test]
+fn an_operation_naming_a_face_reads_it_from_the_evaluated_target_before_it_plans() {
+    let _turn = crate::integration_support::file_turn();
+    let (document, plan) = plate_with_island_pocket();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, POCKET).unwrap();
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    let floor = planar_face_at(&package, 6.0, 1.0);
+    let stock_top = plan.stock().maximum_mm[2];
+
+    // Unread, a named face cannot be planned; read, it is the floor's region
+    // cleared from the stock top down to the floor.
+    let named = CamOperation::FacePocket {
+        id: 1,
+        face_ordinal: floor,
+    };
+    assert_eq!(
+        CamToolpath::plan(&snapshot, &plan, std::slice::from_ref(&named)),
+        Err(CamPlannerError::UnresolvedFace)
+    );
+    let resolved = named.resolve_face(&package, &plan).unwrap();
+    assert_eq!(
+        resolved,
+        CamOperation::RegionPocket {
+            id: 1,
+            region: CamRegion2d::from_planar_face(&package, floor, plan.setup()).unwrap(),
+            top_z_mm: stock_top,
+            bottom_z_mm: 6.0,
+        }
+    );
+    assert!(CamToolpath::plan(&snapshot, &plan, &[resolved]).is_ok());
+
+    // The plate's underside faces away from the tool: no pocket has it as a floor.
+    let underside = planar_face_at(&package, 0.0, -1.0);
+    let upside_down = CamOperation::FacePocket {
+        id: 2,
+        face_ordinal: underside,
+    };
+    assert_eq!(
+        upside_down.resolve_face(&package, &plan),
+        Err(CamPlannerError::UnsupportedRegion)
+    );
+
+    // A drill names a hole by its wall and gets the hole the wall bounds.
+    let (holes_document, holes_plan, last) = plate_with_holes();
+    let holes_graph =
+        ExactBRepGraph::from_snapshot(&holes_document.current(), DEFINITION, last).unwrap();
+    let holes = worker.evaluate_exact_brep_graph(&holes_graph).unwrap();
+    let through_wall = holes
+        .face_evidence
+        .iter()
+        .find(|face| {
+            face.surface_kind == "cylinder"
+                && CamHole::from_cylindrical_face(&holes, face.face_ordinal, holes_plan.setup())
+                    .is_ok_and(|hole| distance(hole.center_mm, THROUGH_HOLE) <= 1.0e-6)
+        })
+        .unwrap()
+        .face_ordinal;
+    let drill = CamOperation::FaceDrill {
+        id: 3,
+        face_ordinal: through_wall,
+    };
+    let hole = CamHole::from_cylindrical_face(&holes, through_wall, holes_plan.setup()).unwrap();
+    assert_eq!(
+        drill.resolve_face(&holes, &holes_plan),
+        CamOperation::drill_hole(3, &hole, holes_plan.tool())
+    );
+
+    // Faces are read only from the evaluated target of the plan itself.
+    assert_eq!(
+        drill.resolve_face(&holes, &plan),
+        Err(CamPlannerError::StaleToolpath)
+    );
 }
 
 fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
