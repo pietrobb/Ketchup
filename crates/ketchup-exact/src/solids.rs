@@ -9,52 +9,7 @@ impl ExactBackend {
         let input = format!("{operation}:{spec:?}");
         validate_length(spec.radius_mm, "radius_mm", operation, &input)?;
         validate_length(spec.axial_length_mm, "axial_length_mm", operation, &input)?;
-        let motion = match spec.motion {
-            AxialToolMotion::Line { start_mm, end_mm } => {
-                for (index, value) in start_mm.into_iter().chain(end_mm).enumerate() {
-                    validate_coordinate(value, &format!("point_{index}"), operation, &input)?;
-                }
-                SpatialProfileSegment::Line { start_mm, end_mm }
-            }
-            AxialToolMotion::Arc {
-                start_mm,
-                end_mm,
-                center_mm,
-                clockwise,
-            } => {
-                for (index, value) in start_mm
-                    .into_iter()
-                    .chain(end_mm)
-                    .chain(center_mm)
-                    .enumerate()
-                {
-                    validate_coordinate(value, &format!("point_{index}"), operation, &input)?;
-                }
-                let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
-                let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
-                if (start_mm[2] - end_mm[2]).abs() > ROUNDING
-                    || (start_mm[2] - center_mm[2]).abs() > ROUNDING
-                    || start_radius <= ROUNDING
-                    || (start_radius - end_radius).abs() > DEFAULT_LINEAR_TOLERANCE_MM
-                    || start_mm == end_mm
-                {
-                    return Err(parameter_error(
-                        GeometryErrorCode::InvalidParameter,
-                        operation,
-                        &input,
-                        "Axial tool arc must be planar, non-closed, concentric, and non-degenerate"
-                            .to_owned(),
-                    ));
-                }
-                SpatialProfileSegment::CircularArc {
-                    start_mm,
-                    end_mm,
-                    center_mm,
-                    normal: [0.0, 0.0, 1.0],
-                    clockwise,
-                }
-            }
-        };
+        let motion = axial_tool_segment(spec.motion, operation, &input)?;
         collect_output(
             ffi::sweep_axial_tool_native(
                 &native_spatial_segment(&motion),
@@ -64,6 +19,53 @@ impl ExactBackend {
             operation,
             &input,
             HistoryConfidence::Complete,
+        )
+    }
+
+    /// Cuts `target` by the axial tool of `radius_mm` and `axial_length_mm` swept along
+    /// each of `motions` in turn, each sweep placed by the rigid row-major `matrix`.
+    /// Only the final body is checked and measured.
+    pub fn cut_axial_sweeps(
+        &self,
+        target: &ExactBody,
+        motions: &[AxialToolMotion],
+        radius_mm: f64,
+        axial_length_mm: f64,
+        matrix: &[f64; 16],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "cut_axial_sweeps";
+        let input = format!(
+            "{operation}:{}:{motions:?}:{:016x}:{:016x}:{matrix:?}",
+            target.result_fingerprint,
+            radius_mm.to_bits(),
+            axial_length_mm.to_bits()
+        );
+        validate_length(radius_mm, "radius_mm", operation, &input)?;
+        validate_length(axial_length_mm, "axial_length_mm", operation, &input)?;
+        if motions.is_empty()
+            || !matrix.iter().all(|value| value.is_finite())
+            || matrix[12..] != [0.0, 0.0, 0.0, 1.0]
+        {
+            return Err(parameter_error(
+                GeometryErrorCode::InvalidParameter,
+                operation,
+                &input,
+                "a sweep cut needs motions and a finite affine 4x4 matrix".to_owned(),
+            ));
+        }
+        let segments = motions
+            .iter()
+            .map(|motion| {
+                axial_tool_segment(*motion, operation, &input)
+                    .map(|segment| native_spatial_segment(&segment))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let native = target.owned_native("Target exact body", operation, &input)?;
+        collect_output(
+            ffi::cut_axial_sweeps_native(native, &segments, radius_mm, axial_length_mm, matrix),
+            operation,
+            &input,
+            HistoryConfidence::None,
         )
     }
 
@@ -454,4 +456,58 @@ impl ExactBackend {
             HistoryConfidence::Partial,
         )
     }
+}
+
+/// The spatial segment an axial tool `motion` sweeps along, checked as `operation` does.
+fn axial_tool_segment(
+    motion: AxialToolMotion,
+    operation: &'static str,
+    input: &str,
+) -> Result<SpatialProfileSegment, GeometryError> {
+    Ok(match motion {
+        AxialToolMotion::Line { start_mm, end_mm } => {
+            for (index, value) in start_mm.into_iter().chain(end_mm).enumerate() {
+                validate_coordinate(value, &format!("point_{index}"), operation, input)?;
+            }
+            SpatialProfileSegment::Line { start_mm, end_mm }
+        }
+        AxialToolMotion::Arc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => {
+            for (index, value) in start_mm
+                .into_iter()
+                .chain(end_mm)
+                .chain(center_mm)
+                .enumerate()
+            {
+                validate_coordinate(value, &format!("point_{index}"), operation, input)?;
+            }
+            let start_radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+            let end_radius = (end_mm[0] - center_mm[0]).hypot(end_mm[1] - center_mm[1]);
+            if (start_mm[2] - end_mm[2]).abs() > ROUNDING
+                || (start_mm[2] - center_mm[2]).abs() > ROUNDING
+                || start_radius <= ROUNDING
+                || (start_radius - end_radius).abs() > DEFAULT_LINEAR_TOLERANCE_MM
+                || start_mm == end_mm
+            {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidParameter,
+                    operation,
+                    input,
+                    "Axial tool arc must be planar, non-closed, concentric, and non-degenerate"
+                        .to_owned(),
+                ));
+            }
+            SpatialProfileSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                normal: [0.0, 0.0, 1.0],
+                clockwise,
+            }
+        }
+    })
 }

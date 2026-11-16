@@ -149,6 +149,56 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
   });
 }
 
+// Cuts `target` by the axial tool swept along each motion in turn, each sweep
+// placed by the rigid `matrix`. Only the final stock is checked and measured,
+// so a program of many motions costs its Booleans, not one full inspection of
+// the growing stock per motion.
+std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
+    const NativeOperationResult& target, rust::Slice<const NativeSegment> motions,
+    double radius, double axial_length, rust::Slice<const double> matrix) noexcept {
+  return guarded([&] {
+    if (!target.valid() || target.impl().shape.IsNull() || motions.empty() || matrix.size() != 16) {
+      return error_result(STATUS_INVALID_PARAMETER, "Axial sweep cut input is unavailable");
+    }
+    for (const double value : matrix) {
+      if (!std::isfinite(value)) {
+        return error_result(STATUS_NON_FINITE_PARAMETER, "Axial sweep cut transform is non-finite");
+      }
+    }
+    gp_Trsf transform;
+    transform.SetValues(
+        matrix[0], matrix[1], matrix[2], matrix[3],
+        matrix[4], matrix[5], matrix[6], matrix[7],
+        matrix[8], matrix[9], matrix[10], matrix[11]);
+    TopoDS_Shape stock = target.impl().shape;
+    for (const NativeSegment& motion : motions) {
+      const std::unique_ptr<NativeOperationResult> sweep =
+          sweep_axial_tool_native(motion, radius, axial_length);
+      if (sweep == nullptr || !sweep->valid()) {
+        return error_result(
+            sweep == nullptr ? STATUS_NULL_RESULT : sweep->status_code(),
+            "Axial tool sweep of a cut failed");
+      }
+      BRepBuilderAPI_Transform placed(sweep->impl().shape, transform, true);
+      placed.Build();
+      if (!placed.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT axial sweep placement did not complete");
+      }
+      BRepAlgoAPI_Cut operation;
+      configure_boolean(operation, stock, placed.Shape());
+      operation.Build();
+      if (!operation.IsDone() || operation.HasErrors()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body cut did not complete");
+      }
+      stock = operation.Shape();
+      if (stock.IsNull() || count_subshapes(stock, TopAbs_SOLID) == 0) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT body Boolean produced no solid result");
+      }
+    }
+    return success_result(stock, {}, count_subshapes(stock, TopAbs_SOLID) >= 2);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation_kind) noexcept {

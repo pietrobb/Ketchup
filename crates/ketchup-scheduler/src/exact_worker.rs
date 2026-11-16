@@ -739,6 +739,30 @@ fn cam_simulation_response(
         .map_err(|error| geometry_failure(&error))
 }
 
+/// `motion` in the setup frame, raised by `axial_offset_mm`, as an axial tool path.
+fn cam_axial_motion(
+    motion: &crate::CamSimulationWireMotion,
+    axial_offset_mm: f64,
+) -> AxialToolMotion {
+    let offset = |mut point: [f64; 3]| {
+        point[2] += axial_offset_mm;
+        point
+    };
+    if motion.path_kind == 0 {
+        AxialToolMotion::Line {
+            start_mm: offset(motion.start_mm),
+            end_mm: offset(motion.end_mm),
+        }
+    } else {
+        AxialToolMotion::Arc {
+            start_mm: offset(motion.start_mm),
+            end_mm: offset(motion.end_mm),
+            center_mm: offset(motion.center_mm),
+            clockwise: motion.clockwise,
+        }
+    }
+}
+
 fn cam_axial_sweep(
     backend: &ExactBackend,
     motion: &crate::CamSimulationWireMotion,
@@ -746,27 +770,59 @@ fn cam_axial_sweep(
     axial_length_mm: f64,
     axial_offset_mm: f64,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let offset = |mut point: [f64; 3]| {
-        point[2] += axial_offset_mm;
-        point
-    };
     backend.sweep_axial_tool(AxialToolSweepSpec {
-        motion: if motion.path_kind == 0 {
-            AxialToolMotion::Line {
-                start_mm: offset(motion.start_mm),
-                end_mm: offset(motion.end_mm),
-            }
-        } else {
-            AxialToolMotion::Arc {
-                start_mm: offset(motion.start_mm),
-                end_mm: offset(motion.end_mm),
-                center_mm: offset(motion.center_mm),
-                clockwise: motion.clockwise,
-            }
-        },
+        motion: cam_axial_motion(motion, axial_offset_mm),
         radius_mm,
         axial_length_mm,
     })
+}
+
+/// A world box enclosing the sweep [`cam_world_sweep`] builds: the motion's box (an
+/// arc's whole circle) widened by the radius and raised by the offset and length, with
+/// its corners placed in the world.
+fn cam_world_sweep_bounds(
+    request: &CamSimulationWireRequest,
+    motion: &crate::CamSimulationWireMotion,
+    radius_mm: f64,
+    axial_length_mm: f64,
+    axial_offset_mm: f64,
+) -> [[f64; 3]; 2] {
+    let mut low = [0.0_f64; 3];
+    let mut high = [0.0_f64; 3];
+    for axis in 0..3 {
+        low[axis] = motion.start_mm[axis].min(motion.end_mm[axis]);
+        high[axis] = motion.start_mm[axis].max(motion.end_mm[axis]);
+    }
+    if motion.path_kind != 0 {
+        let circle = (motion.start_mm[0] - motion.center_mm[0])
+            .hypot(motion.start_mm[1] - motion.center_mm[1]);
+        for axis in 0..2 {
+            low[axis] = low[axis].min(motion.center_mm[axis] - circle);
+            high[axis] = high[axis].max(motion.center_mm[axis] + circle);
+        }
+    }
+    for axis in 0..2 {
+        low[axis] -= radius_mm;
+        high[axis] += radius_mm;
+    }
+    low[2] += axial_offset_mm;
+    high[2] += axial_offset_mm + axial_length_mm;
+    let matrix = &request.setup_to_world;
+    let mut world = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for corner in 0..8 {
+        let local = [
+            if corner & 1 == 0 { low[0] } else { high[0] },
+            if corner & 2 == 0 { low[1] } else { high[1] },
+            if corner & 4 == 0 { low[2] } else { high[2] },
+        ];
+        for axis in 0..3 {
+            let row = &matrix[axis * 4..axis * 4 + 4];
+            let value = row[0] * local[0] + row[1] * local[1] + row[2] * local[2] + row[3];
+            world[0][axis] = world[0][axis].min(value);
+            world[1][axis] = world[1][axis].max(value);
+        }
+    }
+    world
 }
 
 fn cam_world_sweep(
@@ -854,24 +910,87 @@ fn simulate_cam_geometry(
         .collect::<Result<Vec<_>, _>>()?;
     let mut collisions = Vec::new();
     let mut cutting_motion_count = 0;
+    // Cuts wait until a check needs the stock they leave, so consecutive cuts run as one
+    // kernel call and the stock is inspected once for them all.
+    let mut pending_cuts = Vec::new();
+    let flush = |stock: &mut ExactOpOutput,
+                 pending: &mut Vec<AxialToolMotion>|
+     -> Result<(), ketchup_exact::GeometryError> {
+        if !pending.is_empty() {
+            *stock = backend.cut_axial_sweeps(
+                &stock.body,
+                pending,
+                request.cutter_radius_mm,
+                request.cutter_length_mm,
+                &request.setup_to_world,
+            )?;
+            pending.clear();
+        }
+        Ok(())
+    };
+    let near = |sweep: [[f64; 3]; 2], obstacle: [[f64; 3]; 2]| {
+        (0..3).all(|axis| {
+            sweep[0][axis] - obstacle[1][axis] <= tolerance_mm
+                && obstacle[0][axis] - sweep[1][axis] <= tolerance_mm
+        })
+    };
     for (motion_index, motion) in request.motions.iter().enumerate() {
-        let tool = cam_world_sweep(
-            backend,
+        // Stock only shrinks, so its first bounds enclose it throughout; a sweep whose
+        // enclosing box keeps clear of an obstacle's is never built for it.
+        let tool_box = cam_world_sweep_bounds(
             request,
             motion,
             request.cutter_radius_mm,
             request.tool_length_mm,
             0.0,
-        )?;
-        let holder = cam_world_sweep(
-            backend,
+        );
+        let holder_box = cam_world_sweep_bounds(
             request,
             motion,
             request.holder_radius_mm,
             request.holder_length_mm,
             request.holder_offset_mm,
-        )?;
-        if motion.kind == 0 {
+        );
+        let tool_meets_stock = motion.kind == 0 && near(tool_box, request.stock_bounds_mm);
+        let holder_meets_stock = near(holder_box, request.stock_bounds_mm);
+        let tool = if tool_meets_stock
+            || request
+                .fixtures
+                .iter()
+                .any(|fixture| near(tool_box, fixture.bounds_mm))
+        {
+            Some(cam_world_sweep(
+                backend,
+                request,
+                motion,
+                request.cutter_radius_mm,
+                request.tool_length_mm,
+                0.0,
+            )?)
+        } else {
+            None
+        };
+        let holder = if holder_meets_stock
+            || request
+                .fixtures
+                .iter()
+                .any(|fixture| near(holder_box, fixture.bounds_mm))
+        {
+            Some(cam_world_sweep(
+                backend,
+                request,
+                motion,
+                request.holder_radius_mm,
+                request.holder_length_mm,
+                request.holder_offset_mm,
+            )?)
+        } else {
+            None
+        };
+        if tool_meets_stock || holder_meets_stock {
+            flush(&mut stock, &mut pending_cuts)?;
+        }
+        if let (true, Some(tool)) = (tool_meets_stock, &tool) {
             append_cam_collision(
                 &mut collisions,
                 backend,
@@ -885,61 +1004,44 @@ fn simulate_cam_geometry(
                 tolerance_mm,
             )?;
         }
-        append_cam_collision(
-            &mut collisions,
-            backend,
-            motion_index,
-            motion.kind,
-            1,
-            0,
-            None,
-            &holder.body,
-            &stock.body,
-            tolerance_mm,
-        )?;
-        for (fixture_id, fixture) in &fixture_bodies {
+        if let (true, Some(holder)) = (holder_meets_stock, &holder) {
             append_cam_collision(
                 &mut collisions,
                 backend,
                 motion_index,
                 motion.kind,
+                1,
                 0,
-                1,
-                Some(*fixture_id),
-                &tool.body,
-                &fixture.body,
-                tolerance_mm,
-            )?;
-            append_cam_collision(
-                &mut collisions,
-                backend,
-                motion_index,
-                motion.kind,
-                1,
-                1,
-                Some(*fixture_id),
+                None,
                 &holder.body,
-                &fixture.body,
+                &stock.body,
                 tolerance_mm,
             )?;
+        }
+        for (fixture_id, fixture) in &fixture_bodies {
+            for (participant, sweep) in [(0, &tool), (1, &holder)] {
+                if let Some(sweep) = sweep {
+                    append_cam_collision(
+                        &mut collisions,
+                        backend,
+                        motion_index,
+                        motion.kind,
+                        participant,
+                        1,
+                        Some(*fixture_id),
+                        &sweep.body,
+                        &fixture.body,
+                        tolerance_mm,
+                    )?;
+                }
+            }
         }
         if matches!(motion.kind, 1 | 2) {
             cutting_motion_count += 1;
-            let cutter = cam_world_sweep(
-                backend,
-                request,
-                motion,
-                request.cutter_radius_mm,
-                request.cutter_length_mm,
-                0.0,
-            )?;
-            stock = backend.boolean_bodies(
-                &stock.body,
-                &cutter.body,
-                ExactBodyBooleanOperation::Cut,
-            )?;
+            pending_cuts.push(cam_axial_motion(motion, 0.0));
         }
     }
+    flush(&mut stock, &mut pending_cuts)?;
     let stock_after_mm3 = stock.body.topology.volume_mm3;
     let common = backend.query_body_pair(&stock.body, &target.body, tolerance_mm)?;
     let residual_stock_mm3 = (stock_after_mm3 - common.common_volume_mm3).max(0.0);
