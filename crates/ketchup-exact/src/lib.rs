@@ -5,12 +5,13 @@
 use ketchup_tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_ANGULAR_TOLERANCE_RAD,
     DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, NETWORK_SURFACE_APPROXIMATION_MM,
-    RAIL_LOFT_APPROXIMATION_MM, ROUNDING,
+    RAIL_LOFT_APPROXIMATION_MM, ROUNDING, SURFACE_BLEND_ANGLE_RAD, SURFACE_BLEND_CURVATURE_SHARE,
 };
 use std::fmt;
 
 pub mod naming;
 
+mod blend;
 mod booleans;
 mod evidence;
 mod exchange;
@@ -23,6 +24,7 @@ mod spec;
 mod sweep_loft;
 mod thread;
 mod validation;
+pub use blend::SeamContinuity;
 pub use evidence::*;
 pub use exchange::*;
 pub use ketchup_geometry::contact_patch::ContactPatch;
@@ -57,6 +59,8 @@ const fn native_tolerances() -> ffi::NativeTolerances {
         angular_rad: DEFAULT_ANGULAR_TOLERANCE_RAD,
         rail_loft_approximation_mm: RAIL_LOFT_APPROXIMATION_MM,
         network_surface_approximation_mm: NETWORK_SURFACE_APPROXIMATION_MM,
+        surface_blend_angle_rad: SURFACE_BLEND_ANGLE_RAD,
+        surface_blend_curvature_share: SURFACE_BLEND_CURVATURE_SHARE,
         planar_profile_segments: ketchup_tolerance::limits::PLANAR_PROFILE_SEGMENTS,
     }
 }
@@ -75,7 +79,23 @@ mod ffi {
         angular_rad: f64,
         rail_loft_approximation_mm: f64,
         network_surface_approximation_mm: f64,
+        surface_blend_angle_rad: f64,
+        surface_blend_curvature_share: f64,
         planar_profile_segments: usize,
+    }
+
+    /// How two surfaces meet along the edges they share: the largest gap,
+    /// angle between normals and difference of the curvatures across the
+    /// seam over interior samples, and the second surface's largest cross
+    /// curvature (signed by the first surface's normal).
+    struct NativeSeam {
+        status: u8,
+        diagnostic: String,
+        length_mm: f64,
+        gap_mm: f64,
+        normal_angle_rad: f64,
+        curvature_difference_per_mm: f64,
+        second_curvature_per_mm: f64,
     }
 
     extern "Rust" {
@@ -339,6 +359,16 @@ mod ffi {
             target: &NativeOperationResult,
             cutter: &NativeOperationResult,
         ) -> UniquePtr<NativeOperationResult>;
+        fn blend_surfaces_native(
+            first: &NativeOperationResult,
+            first_order: u8,
+            second: &NativeOperationResult,
+            second_order: u8,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn measure_seam_native(
+            first: &NativeOperationResult,
+            second: &NativeOperationResult,
+        ) -> NativeSeam;
         fn extend_planar_surface_native(
             target: &NativeOperationResult,
             distance: f64,

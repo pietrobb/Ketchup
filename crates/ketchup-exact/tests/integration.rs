@@ -10,6 +10,7 @@ mod loft_rail;
 mod naming;
 mod network_surface;
 mod pair_query;
+mod surface_blend;
 mod thread_groove;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

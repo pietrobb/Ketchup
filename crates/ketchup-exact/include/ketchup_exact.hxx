@@ -19,6 +19,7 @@ struct NativeRejectedShape;
 struct NativeVolumeMeshTetrahedron;
 struct NativeTopologySummary;
 struct NativePairQuery;
+struct NativeSeam;
 struct NativePoint;
 struct NativeSegment;
 struct NativeLoftSection;
@@ -108,6 +109,12 @@ std::unique_ptr<NativeOperationResult> fill_network_surface_native(
 std::unique_ptr<NativeOperationResult> trim_surface_native(
     const NativeOperationResult& target,
     const NativeOperationResult& cutter) noexcept;
+std::unique_ptr<NativeOperationResult> blend_surfaces_native(
+    const NativeOperationResult& first, std::uint8_t first_order,
+    const NativeOperationResult& second, std::uint8_t second_order) noexcept;
+NativeSeam measure_seam_native(
+    const NativeOperationResult& first,
+    const NativeOperationResult& second) noexcept;
 std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
     const NativeOperationResult& target, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> combine_surfaces_native(
