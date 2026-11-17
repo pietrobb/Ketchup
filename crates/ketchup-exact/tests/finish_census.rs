@@ -13,6 +13,10 @@ const WIDTH: f64 = 30.0;
 const HEIGHT: f64 = 20.0;
 
 fn block(backend: &ExactBackend) -> ExactOpOutput {
+    sized_block(backend, WIDTH)
+}
+
+fn sized_block(backend: &ExactBackend, width: f64) -> ExactOpOutput {
     backend
         .make_box(BoxSpec {
             origin_mm: Point3 {
@@ -22,7 +26,7 @@ fn block(backend: &ExactBackend) -> ExactOpOutput {
             },
             size_mm: Size3 {
                 x: LENGTH,
-                y: WIDTH,
+                y: width,
                 z: HEIGHT,
             },
         })
@@ -313,6 +317,15 @@ fn rounded_box_volume(x: f64, y: f64, z: f64, r: f64) -> f64 {
         + 4.0 / 3.0 * std::f64::consts::PI * r.powi(3)
 }
 
+/// A `length` x `width` rectangle grown by a ball of `radius` (Steiner's
+/// formula): a slab, half a cylinder along each side, a sphere at the corners.
+fn full_round_volume(length: f64, width: f64, radius: f64) -> f64 {
+    use std::f64::consts::PI;
+    2.0 * length * width * radius
+        + PI * (length + width) * radius * radius
+        + 4.0 / 3.0 * PI * radius.powi(3)
+}
+
 /// Made, taking off at most a tenth of `volume`.
 fn below(volume: f64) -> Expect {
     Expect::Between(volume * 0.9, volume)
@@ -357,6 +370,7 @@ fn hole_rim(plate: &ExactBody) -> Vec<u32> {
 fn census_of_constant_fillets() {
     let backend = ExactBackend::new();
     let block = block(&backend);
+    let bar = sized_block(&backend, HEIGHT);
     let block_body = &block.body;
     let cylinder = cylinder(&backend);
     let ell = ell(&backend);
@@ -379,10 +393,36 @@ fn census_of_constant_fillets() {
             fillet(&backend, block_body, &all_edges(block_body), 2.0),
             below(BLOCK_VOLUME),
         ),
-        // Rounds meeting across a whole face leave no flat between them.
+        // Rounds meeting across a whole face leave no flat between them: a
+        // full round, the 20 x 10 mm rectangle left at mid-height grown by a
+        // 10 mm ball.
         (
             "fillet every edge, radius half the height",
             fillet(&backend, block_body, &all_edges(block_body), HEIGHT / 2.0),
+            Expect::Volume(full_round_volume(
+                LENGTH - HEIGHT,
+                WIDTH - HEIGHT,
+                HEIGHT / 2.0,
+            )),
+        ),
+        // A square bar rounds to a capsule: the 20 mm segment left on its
+        // axis grown by a 10 mm ball.
+        (
+            "fillet every edge of a square bar, radius half its side",
+            fillet(&backend, &bar.body, &all_edges(&bar.body), HEIGHT / 2.0),
+            Expect::Volume(
+                std::f64::consts::PI * 100.0 * (LENGTH - HEIGHT)
+                    + 4.0 / 3.0 * std::f64::consts::PI * 1000.0,
+            ),
+        ),
+        (
+            "fillet every edge, radius past half the height",
+            fillet(
+                &backend,
+                block_body,
+                &all_edges(block_body),
+                HEIGHT / 2.0 + 0.5,
+            ),
             Expect::Refused(ROUND_DOES_NOT_FIT),
         ),
         (
