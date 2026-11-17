@@ -898,6 +898,11 @@ pub enum SurfaceBodySpec {
         guide: Option<FeatureId>,
         continuity: LoftContinuity,
     },
+    /// The smoothest surface spanning one closed loop of spatial lines, arcs
+    /// and cubic Beziers, which may meet at corners.
+    Boundary {
+        segments: Vec<SpatialPathSegment>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1512,7 +1517,9 @@ impl FeatureKind {
             | Self::ConstructionAxis { .. }
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
-            | Self::SurfaceBody(SurfaceBodySpec::Planar { .. })
+            | Self::SurfaceBody(
+                SurfaceBodySpec::Planar { .. } | SurfaceBodySpec::Boundary { .. },
+            )
             | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
             | Self::Scale { .. }
@@ -1559,6 +1566,7 @@ impl FeatureKind {
             | Self::ConstructionAxis { .. }
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
+            | Self::SurfaceBody(SurfaceBodySpec::Boundary { .. })
             | Self::MeshBody(_) => BTreeSet::new(),
             Self::RigidTransform { target, .. } | Self::Scale { target, .. } => {
                 [*target].into_iter().collect()

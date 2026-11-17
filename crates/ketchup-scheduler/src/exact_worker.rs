@@ -59,9 +59,11 @@ mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
 mod source_document;
+mod surfaces;
 
 use failure::{backend_failure, geometry_failure};
 use source_document::{SourceDocument, XdeFormat};
+use surfaces::{fill_boundary, planar_face};
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
@@ -873,9 +875,7 @@ fn evaluate_exact_brep_graph(
                 &graph.profiles[profile.0 as usize],
                 f64::from_bits(*distance_bits),
             )?,
-            ExactBRepOperation::PlanarSurface { profile } => {
-                exact_brep_planar_surface(backend, &graph.profiles[profile.0 as usize])?
-            }
+            ExactBRepOperation::PlanarSurface { profile } => planar_face(backend, graph, *profile)?,
             ExactBRepOperation::Sweep { profile, path } => exact_brep_sweep(
                 backend,
                 &graph.profiles[profile.0 as usize],
@@ -922,6 +922,7 @@ fn evaluate_exact_brep_graph(
                 guide,
                 continuity,
             } => exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, false)?,
+            ExactBRepOperation::BoundarySurface { boundary } => fill_boundary(backend, boundary)?,
             ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
                 &outputs[target.0 as usize].body,
                 &outputs[cutter.0 as usize].body,
@@ -2174,57 +2175,6 @@ fn exact_brep_spatial_path_segment(segment: &ExactBRepSpatialPathSegment) -> Spa
             end_mm: end_bits.map(f64::from_bits),
         },
     }
-}
-
-fn exact_brep_planar_surface(
-    backend: &ExactBackend,
-    profile: &ExactBRepProfile,
-) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let planar_loop = match &profile.geometry {
-        ExactBRepPlanarGeometry::Boundary { .. } => {
-            PlanarProfileLoop::Segments(exact_brep_boundary_segments(profile, true)?)
-        }
-        ExactBRepPlanarGeometry::Circle {
-            center_bits,
-            radius_bits,
-        } => {
-            let center_mm = center_bits.map(f64::from_bits);
-            let radius_mm = f64::from_bits(*radius_bits);
-            let positive = [center_mm[0] + radius_mm, center_mm[1]];
-            let negative = [center_mm[0] - radius_mm, center_mm[1]];
-            PlanarProfileLoop::Segments(vec![
-                PlanarProfileSegment::CircularArc {
-                    start_mm: positive,
-                    end_mm: negative,
-                    center_mm,
-                    clockwise: false,
-                },
-                PlanarProfileSegment::CircularArc {
-                    start_mm: negative,
-                    end_mm: positive,
-                    center_mm,
-                    clockwise: false,
-                },
-            ])
-        }
-        ExactBRepPlanarGeometry::Region { outer, holes } if holes.is_empty() => {
-            exact_brep_planar_loop(outer)
-        }
-        ExactBRepPlanarGeometry::Region { .. } => {
-            return Err(exact_brep_profile_error(
-                profile,
-                "exact planar surface does not yet support profile holes",
-            ));
-        }
-        ExactBRepPlanarGeometry::Spline { .. } => {
-            return Err(exact_brep_profile_error(
-                profile,
-                "exact planar surface requires a closed line/arc/circle/cubic profile",
-            ));
-        }
-    };
-    let local = backend.planar_surface_profile(&planar_loop)?;
-    transform_local_to_profile_frame(backend, profile, &local)
 }
 
 fn exact_brep_planar_offset(

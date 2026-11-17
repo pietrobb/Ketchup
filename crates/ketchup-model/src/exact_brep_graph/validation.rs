@@ -408,12 +408,13 @@ pub(super) fn operation_requires_v15(operation: &ExactBRepOperation) -> bool {
     )
 }
 
-/// No build before draft (or a modelled thread) wrote such a node, so they
-/// share the newest schema instead of adding one.
+/// No build before draft (or a modelled thread, or a boundary surface) wrote
+/// such a node, so they share the newest schema instead of adding one.
 pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
     matches!(
         operation,
         ExactBRepOperation::SurfaceThicken { .. }
+            | ExactBRepOperation::BoundarySurface { .. }
             | ExactBRepOperation::Draft(_)
             | ExactBRepOperation::Scale { .. }
             | ExactBRepOperation::ThreadGroove(_)
@@ -687,6 +688,7 @@ pub(super) fn valid_operation(
                 node.operation,
                 ExactBRepOperation::PlanarSurface { .. }
                     | ExactBRepOperation::LoftSurface { .. }
+                    | ExactBRepOperation::BoundarySurface { .. }
                     | ExactBRepOperation::SurfaceTrim { .. }
                     | ExactBRepOperation::SurfaceExtend { .. }
                     | ExactBRepOperation::SurfaceKnit {
@@ -1018,6 +1020,9 @@ pub(super) fn valid_operation(
             planar_offset_distance(f64::from_bits(*distance_bits)).is_ok()
         }
         ExactBRepOperation::PlanarSurface { .. } => true,
+        ExactBRepOperation::BoundarySurface { boundary } => {
+            valid_boundary_path(boundary, tolerance_mm)
+        }
         ExactBRepOperation::Sweep { profile, path } => profile != path,
         ExactBRepOperation::SpatialSweep { path, .. } => valid_spatial_path(path, tolerance_mm),
         ExactBRepOperation::Loft {

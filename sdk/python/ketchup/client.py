@@ -485,6 +485,13 @@ class Document:
             source["guide_feature_id"] = guide_feature_id
         return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
 
+    def boundary_surface(self, definition_id, name, segments):
+        """Fill one closed loop of spatial line/circular_arc/cubic_bezier segments."""
+        return self.append_feature(definition_id, name, {
+            "type": "surface_body",
+            "source": {"type": "boundary", "segments": list(segments)},
+        })
+
     def trim_surface(self, definition_id, name, target_feature_id, cutter_feature_id):
         return self.append_feature(definition_id, name, {
             "type": "surface_trim", "target_feature_id": target_feature_id,

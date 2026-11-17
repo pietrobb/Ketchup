@@ -1,5 +1,8 @@
 #include "native_common.hxx"
 
+#include <BRepOffsetAPI_MakeFilling.hxx>
+#include <BRepTools_WireExplorer.hxx>
+
 namespace ketchup::exact {
 
 std::unique_ptr<NativeOperationResult> make_box_native(
@@ -207,6 +210,70 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
     rust::Slice<const NativeSegment> segments) noexcept {
   return offset_planar_profile_native(segments, 0.0);
+}
+
+std::unique_ptr<NativeOperationResult> fill_boundary_surface_native(
+    rust::Slice<const NativeSegment> boundary) noexcept {
+  return guarded([&] {
+    const std::size_t count = boundary.size();
+    if (count < 2 || count > 64) {
+      return error_result(STATUS_INVALID_PARAMETER, "Boundary surface requires 2 to 64 boundary curves");
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    for (std::size_t index = 0; index < count; ++index) {
+      const NativeSegment& segment = boundary[index];
+      if (!segment_bounded(segment, 1000000.0)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Boundary surface curve is not finite");
+      }
+      if (!same_point(segment.end, boundary[(index + 1) % count].start)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Boundary surface curves are not one closed loop");
+      }
+      const TopoDS_Edge edge = spatial_segment_edge(segment);
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Boundary surface curve does not make an edge");
+      }
+      wire_builder.Add(edge);
+    }
+    if (!wire_builder.IsDone() || !wire_builder.Wire().Closed()
+        || !BRepCheck_Analyzer(wire_builder.Wire()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "Boundary surface curves do not make one valid closed wire");
+    }
+    // Every boundary curve is a position (G0) constraint; the filled surface
+    // is the smoothest plate that meets them.
+    BRepOffsetAPI_MakeFilling filling;
+    for (BRepTools_WireExplorer edges(wire_builder.Wire()); edges.More(); edges.Next()) {
+      filling.Add(edges.Current(), GeomAbs_C0);
+    }
+    filling.Build();
+    if (!filling.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT could not fill the boundary curves");
+    }
+    // A plate that does not reach its own boundary is a doubtful result: the
+    // face would sit on edges it does not actually meet.
+    const double gap = filling.G0Error();
+    if (!std::isfinite(gap) || gap > tolerances().linear_mm) {
+      std::ostringstream diagnostic;
+      diagnostic << "Boundary surface misses its boundary curves by " << gap
+                 << " mm, more than the " << tolerances().linear_mm << " mm tolerance";
+      return error_result(STATUS_INVALID_SHAPE, diagnostic.str());
+    }
+    const TopoDS_Shape result = filling.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
+        || count_subshapes(result, TopAbs_FACE) != 1
+        || count_subshapes(result, TopAbs_WIRE) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "Boundary surface is not one valid bounded face");
+    }
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(result, properties);
+    if (!std::isfinite(properties.Mass()) || properties.Mass() <= tolerances().negligible) {
+      return error_result(STATUS_DEGENERATE_OPERATION, "Boundary surface has no area");
+    }
+    const ShapeIndex result_index(result);
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "boundary_surface.face", "filled", "boundary.wire", result_index, result));
+    return success_result(result, std::move(history), false, false, {}, true);
+  });
 }
 
 std::unique_ptr<NativeOperationResult> trim_surface_native(
