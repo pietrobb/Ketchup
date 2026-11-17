@@ -199,6 +199,92 @@ fn an_assembly_of_joined_occurrences_is_reviewed_with_its_natural_frequencies() 
     assert_eq!(server.state(), state);
 }
 
+/// The lower cylinder's top mated face to face to the upper one's bottom.
+fn mate_the_stack(server: &mut Server, mate_id: u64) {
+    use ketchup_model::assembly::{
+        AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+    };
+    use ketchup_model::exact_product::{ExactBodyPackage, ExactFaceRole};
+
+    let snapshot = server.session.snapshot();
+    let package = server
+        .session
+        .exact_results()
+        .get_render(&snapshot, DefinitionId(81))
+        .unwrap();
+    let ExactBodyPackage::Graph(package) = package.as_ref() else {
+        panic!("the cylinder has exact graph evidence");
+    };
+    let face = |role| {
+        package
+            .planar_face_attachments
+            .iter()
+            .find(|attachment| attachment.reference().role() == Some(role))
+            .unwrap()
+            .clone()
+    };
+    let mate = AssemblyMate::new(
+        AssemblyMateId(mate_id),
+        AssemblyMateEndpoint::resolved_planar_face(OccurrenceId(84), face(ExactFaceRole::Top)),
+        AssemblyMateEndpoint::resolved_planar_face(OccurrenceId(85), face(ExactFaceRole::Bottom)),
+        AssemblyMateKind::CoincidentPlanar {
+            offset_mm: 0.0,
+            reversed: true,
+        },
+    );
+    let proposal = server
+        .session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMate(mate),
+        ]))
+        .unwrap();
+    server.session.apply_proposal(&proposal).unwrap();
+}
+
+/// R5.5: a face-to-face mate of the document joins the faces it names, so the
+/// study need not name them again.
+#[test]
+fn a_face_to_face_mate_joins_an_assembly_review_like_the_faces_it_names() {
+    let (mut server, bottom, top) = stacked_cylinders();
+    mate_the_stack(&mut server, 86);
+    let state = server.state();
+    let rigid = json!({"type":"rigid"});
+
+    let named = request(
+        &mut server,
+        "fea_assembly_review",
+        params(&state, bottom, top, &rigid, &json!({})),
+    );
+    assert!(named.get("error").is_none(), "{named}");
+    let mated = request(
+        &mut server,
+        "fea_assembly_review",
+        params(
+            &state,
+            bottom,
+            top,
+            &rigid,
+            &json!({"joints":[],"mate_joints":[{"mate_id":86,"kind":rigid}]}),
+        ),
+    );
+    assert!(mated.get("error").is_none(), "{mated}");
+    assert_eq!(mated["result"]["levels"], named["result"]["levels"]);
+
+    let unknown = request(
+        &mut server,
+        "fea_assembly_review",
+        params(
+            &state,
+            bottom,
+            top,
+            &rigid,
+            &json!({"joints":[],"mate_joints":[{"mate_id":87,"kind":rigid}]}),
+        ),
+    );
+    assert_eq!(unknown["error"]["code"], "fea_setup_rejected", "{unknown}");
+    assert_eq!(server.state(), state);
+}
+
 #[test]
 fn an_assembly_review_that_cannot_be_built_is_refused_without_changing_the_document() {
     let (mut server, bottom, top) = stacked_cylinders();

@@ -4,9 +4,10 @@ use super::{Error, Result};
 use ketchup_analysis::fea::{FeaCouplingKind, FeaMaterial, FeaSolveSettings};
 use ketchup_application::fea_workflow::{
     ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaFaceTraction, ExactFeaJoint,
-    ExactFeaJointFace, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaAssemblyStudyRequest,
-    FeaReviewSummary, FeaStudyRequest,
+    ExactFeaJointFace, ExactFeaMateJoint, ExactFeaSetup, ExactVolumeMeshWireOptions,
+    FeaAssemblyStudyRequest, FeaReviewSummary, FeaStudyRequest,
 };
+use ketchup_model::assembly::AssemblyMateId;
 use ketchup_model::document::{DefinitionId, FeatureId, InstancePath, OccurrenceId};
 use ketchup_model::tolerance::limits;
 use serde::Deserialize;
@@ -30,13 +31,14 @@ pub(super) const ASSEMBLY_REVIEW_FIELDS: &[&str] = &[
     "case_id",
     "parts",
     "joints",
+    "mate_joints",
     "mesh_levels",
     "solve_settings",
     "mode_count",
     "confirmed",
 ];
 /// Fields a request may leave out.
-const OPTIONAL_FIELDS: &[&str] = &["mode_count"];
+const OPTIONAL_FIELDS: &[&str] = &["mode_count", "mate_joints"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,10 +147,33 @@ enum FeaJointKindInput {
     },
 }
 
+impl From<FeaJointKindInput> for FeaCouplingKind {
+    fn from(input: FeaJointKindInput) -> Self {
+        match input {
+            FeaJointKindInput::Rigid => Self::Rigid,
+            FeaJointKindInput::Spring {
+                translation_n_per_mm,
+                rotation_n_mm_per_rad,
+            } => Self::Spring {
+                translation_n_per_mm,
+                rotation_n_mm_per_rad,
+            },
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FeaJointInput {
     faces: [FeaJointFaceInput; 2],
+    kind: FeaJointKindInput,
+}
+
+/// A face-to-face mate of the document joined at the faces it names.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaMateJointInput {
+    mate_id: u64,
     kind: FeaJointKindInput,
 }
 
@@ -158,6 +183,8 @@ struct FeaAssemblyReviewInput {
     case_id: String,
     parts: Vec<FeaAssemblyPartInput>,
     joints: Vec<FeaJointInput>,
+    #[serde(default)]
+    mate_joints: Vec<FeaMateJointInput>,
     mesh_levels: Vec<ExactVolumeMeshWireOptions>,
     solve_settings: FeaSolveSettingsInput,
     #[serde(default)]
@@ -252,16 +279,15 @@ pub(super) fn assembly_review_request(
                 part: face.part,
                 face_ordinal: face.face_ordinal,
             }),
-            kind: match joint.kind {
-                FeaJointKindInput::Rigid => FeaCouplingKind::Rigid,
-                FeaJointKindInput::Spring {
-                    translation_n_per_mm,
-                    rotation_n_mm_per_rad,
-                } => FeaCouplingKind::Spring {
-                    translation_n_per_mm,
-                    rotation_n_mm_per_rad,
-                },
-            },
+            kind: joint.kind.into(),
+        })
+        .collect();
+    let mate_joints = input
+        .mate_joints
+        .into_iter()
+        .map(|joint| ExactFeaMateJoint {
+            mate_id: AssemblyMateId(joint.mate_id),
+            kind: joint.kind.into(),
         })
         .collect();
     Ok((
@@ -271,6 +297,7 @@ pub(super) fn assembly_review_request(
                 case_id: input.case_id,
                 parts,
                 joints,
+                mate_joints,
             },
             mesh_levels: input.mesh_levels,
             solve_settings: input.solve_settings.into(),

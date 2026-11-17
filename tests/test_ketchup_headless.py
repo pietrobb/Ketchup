@@ -368,10 +368,16 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(request["params"]["expected_revision"], 1)
         self.assertEqual(request["params"]["parts"], parts)
         self.assertEqual(request["params"]["joints"], joints)
+        self.assertEqual(request["params"]["mate_joints"], [])
         self.assertEqual(request["params"]["mode_count"], 3)
         self.assertTrue(request["params"]["confirmed"])
+        mates = [{"mate_id": 12, "kind": {"type": "rigid"}}]
+        doc.fea_assembly_review("stack", parts=parts, joints=[], mate_joints=mates,
+                                mesh_levels=levels, confirmed=True)
+        self.assertEqual(process.requests[-1]["params"]["mate_joints"], mates)
         for refused in ({"parts": []}, {"mode_count": 65}, {"mode_count": -1},
-                        {"joints": [1]}, {"mesh_levels": levels[:1]}):
+                        {"joints": [1]}, {"mate_joints": [1]}, {"mate_joints": {}},
+                        {"mesh_levels": levels[:1]}):
             arguments = {"parts": parts, "joints": joints, "mesh_levels": levels,
                          "confirmed": True, **refused}
             with self.assertRaises(ValueError):

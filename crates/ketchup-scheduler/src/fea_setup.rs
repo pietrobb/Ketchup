@@ -182,4 +182,9 @@ pub enum ExactFeaSetupError {
     InvalidJoint {
         joint: usize,
     },
+    /// The mate is not a face-to-face mate of the document whose two
+    /// resolved faces belong to studied parts.
+    InvalidMate {
+        mate_id: ketchup_model::assembly::AssemblyMateId,
+    },
 }

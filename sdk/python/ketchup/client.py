@@ -677,7 +677,7 @@ class Document:
             "confirmed": confirmed,
         }, guarded=True)
 
-    def fea_assembly_review(self, case_id, *, parts, joints, mesh_levels,
+    def fea_assembly_review(self, case_id, *, parts, joints, mesh_levels, mate_joints=(),
                             maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
                             maximum_small_deformation_ratio=0.05,
                             convergence_relative_tolerance=0.02, mode_count=0,
@@ -689,6 +689,9 @@ class Document:
         Each joint names two faces, ``{"part": index, "face_ordinal": n}``, of different
         parts and a ``kind``: ``{"type": "rigid"}`` or ``{"type": "spring",
         "translation_n_per_mm": [x, y, z], "rotation_n_mm_per_rad": [x, y, z]}``.
+        Each mate joint, ``{"mate_id": id, "kind": kind}``, joins the two faces a
+        face-to-face (coincident planar) mate of the document names; both mated
+        occurrences must be parts of the study.
         """
         if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
             raise ValueError("case_id must be a nonempty string of at most 128 characters")
@@ -698,11 +701,15 @@ class Document:
             raise ValueError("each part must be a dict")
         if not isinstance(joints, (list, tuple)) or any(not isinstance(joint, dict) for joint in joints):
             raise ValueError("joints must be a list or tuple of dicts")
+        if not isinstance(mate_joints, (list, tuple)) or any(
+                not isinstance(joint, dict) for joint in mate_joints):
+            raise ValueError("mate_joints must be a list or tuple of dicts")
         _check_study(mesh_levels, mode_count, confirmed)
         return self._call("fea_assembly_review", {
             "case_id": case_id,
             "parts": [dict(part) for part in parts],
             "joints": [dict(joint) for joint in joints],
+            "mate_joints": [dict(joint) for joint in mate_joints],
             "mesh_levels": [dict(level) for level in mesh_levels],
             "solve_settings": {
                 "maximum_nodes": maximum_nodes,
