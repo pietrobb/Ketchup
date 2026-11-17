@@ -2,8 +2,10 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod backend;
+mod boundary_surface;
 mod crmath;
 mod face_measurement;
+mod finish_census;
 mod naming;
 mod pair_query;
 mod thread_groove;

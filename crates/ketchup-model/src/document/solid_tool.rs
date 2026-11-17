@@ -216,6 +216,27 @@ fn repoint_pin_joint_pockets(
     Ok(())
 }
 
+fn remap_surface_body(
+    spec: &SurfaceBodySpec,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<SurfaceBodySpec, CanonicalError> {
+    Ok(match spec {
+        SurfaceBodySpec::Planar { profile } => SurfaceBodySpec::Planar {
+            profile: remapped(mapping, profile)?,
+        },
+        SurfaceBodySpec::Loft {
+            sections,
+            guide,
+            continuity,
+        } => SurfaceBodySpec::Loft {
+            sections: remap_loft_sections(sections, mapping)?,
+            guide: remap_optional_feature(*guide, mapping)?,
+            continuity: *continuity,
+        },
+        boundary @ SurfaceBodySpec::Boundary { .. } => boundary.clone(),
+    })
+}
+
 pub(super) fn clone_definition_and_repoint(
     product: &mut ProductModel,
     plan: &CloneDefinitionPlan,
@@ -403,20 +424,9 @@ pub(super) fn clone_definition_and_repoint(
                 policy: spec.policy,
                 primary: spec.primary,
             }),
-            FeatureKind::SurfaceBody(spec) => FeatureKind::SurfaceBody(match spec {
-                SurfaceBodySpec::Planar { profile } => SurfaceBodySpec::Planar {
-                    profile: remapped(&mapping, profile)?,
-                },
-                SurfaceBodySpec::Loft {
-                    sections,
-                    guide,
-                    continuity,
-                } => SurfaceBodySpec::Loft {
-                    sections: remap_loft_sections(sections, &mapping)?,
-                    guide: remap_optional_feature(*guide, &mapping)?,
-                    continuity: *continuity,
-                },
-            }),
+            FeatureKind::SurfaceBody(spec) => {
+                FeatureKind::SurfaceBody(remap_surface_body(spec, &mapping)?)
+            }
             FeatureKind::SurfaceTrim { target, cutter } => FeatureKind::SurfaceTrim {
                 target: remapped(&mapping, target)?,
                 cutter: remapped(&mapping, cutter)?,

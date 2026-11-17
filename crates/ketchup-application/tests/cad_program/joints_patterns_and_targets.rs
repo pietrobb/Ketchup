@@ -2670,6 +2670,76 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
     );
 }
 
+/// The AI fills a loop of 3D curves with a surface in one operation; a loop that
+/// does not close is refused before anything changes.
+#[test]
+fn public_boundary_surface_program_fills_a_closed_loop_of_curves() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Boundary surfaces".into(),
+            },
+        ]))
+        .unwrap();
+    let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
+    let boundary = |segments| {
+        program(vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0.into(),
+            name: "Patch".into(),
+            feature: AssistantCadBodyFeature::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Boundary { segments },
+            },
+        }])
+    };
+    let input = boundary(vec![
+        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+        line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
+        line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
+    ]);
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["feature"]["source"]["type"],
+        "boundary"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(1)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments }) if segments.len() == 4
+    ));
+
+    let baseline = document.current().canonical_digest();
+    let open = boundary(vec![
+        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+    ]);
+    // Refused while planning or, at the latest, by the model's preview.
+    let refused = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &open,
+    )
+    .map(|batch| document.preview_batch(&batch).is_err());
+    assert!(matches!(refused, Err(_) | Ok(true)));
+    assert_eq!(document.current().canonical_digest(), baseline);
+}
+
 #[test]
 fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
     let definition = DefinitionId(1);
