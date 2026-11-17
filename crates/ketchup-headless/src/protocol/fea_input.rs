@@ -198,10 +198,10 @@ impl From<FeaReviewError> for Error {
             FeaReviewError::ConfirmationRequired => "confirmation_required",
             FeaReviewError::WorkerUnavailable => "exact_worker_unavailable",
             FeaReviewError::InvalidRefinementLevels => "fea_refinement_invalid",
-            FeaReviewError::InvalidTarget(_) => "fea_target_rejected",
-            FeaReviewError::Meshing(_) => "fea_meshing_rejected",
-            FeaReviewError::Setup(_) => "fea_setup_rejected",
-            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(_) => "fea_solve_rejected",
+            FeaReviewError::InvalidTarget(..) => "fea_target_rejected",
+            FeaReviewError::Meshing(..) => "fea_meshing_rejected",
+            FeaReviewError::Setup(..) => "fea_setup_rejected",
+            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(..) => "fea_solve_rejected",
         };
         Self::caused_by(code, &error)
     }
