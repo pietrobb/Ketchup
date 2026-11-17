@@ -1210,6 +1210,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
             CanonicalCommand::CreateOccurrence {
@@ -1301,6 +1302,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                 ],
                 guide: None,
                 continuity: LoftContinuity::Position,
+                rail: None,
             },
         }]))
         .err()

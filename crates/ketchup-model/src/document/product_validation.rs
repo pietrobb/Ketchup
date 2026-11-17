@@ -676,6 +676,37 @@ fn is_planar_surface_profile(kind: &FeatureKind) -> bool {
     )
 }
 
+/// A Loft's guide and rail are spatial paths of its definition that come before
+/// it, and a curvature-continuous Loft has neither.
+fn validate_loft_paths(
+    product: &ProductModel,
+    feature: &Feature,
+    feature_position: usize,
+    continuity: LoftContinuity,
+    paths: impl IntoIterator<Item = FeatureId>,
+) -> Result<(), CanonicalError> {
+    let definition = &product.definitions[&feature.definition_id];
+    for path in paths {
+        let path_feature = product
+            .features
+            .get(&path)
+            .ok_or(CanonicalError::FeatureNotFound(path))?;
+        let path_precedes_loft = definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == path)
+            .is_some_and(|position| position < feature_position);
+        if continuity == LoftContinuity::Curvature
+            || path_feature.definition_id != feature.definition_id
+            || !matches!(path_feature.kind, FeatureKind::SpatialPath { .. })
+            || !path_precedes_loft
+        {
+            return Err(CanonicalError::InvalidLoft);
+        }
+    }
+    Ok(())
+}
+
 fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
@@ -1057,11 +1088,13 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                 sections,
                 guide,
                 continuity,
+                rail,
             }
             | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
                 sections,
                 guide,
                 continuity,
+                rail,
             }) => {
                 let feature_position = definition
                     .feature_ids
@@ -1093,24 +1126,8 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                         return Err(CanonicalError::InvalidLoft);
                     }
                 }
-                if let Some(guide) = guide {
-                    let guide_feature = product
-                        .features
-                        .get(&guide)
-                        .ok_or(CanonicalError::FeatureNotFound(guide))?;
-                    let guide_precedes_loft = definition
-                        .feature_ids
-                        .iter()
-                        .position(|candidate| *candidate == guide)
-                        .is_some_and(|position| position < feature_position);
-                    if continuity == LoftContinuity::Curvature
-                        || guide_feature.definition_id != feature.definition_id
-                        || !matches!(guide_feature.kind, FeatureKind::SpatialPath { .. })
-                        || !guide_precedes_loft
-                    {
-                        return Err(CanonicalError::InvalidLoft);
-                    }
-                }
+                let paths = guide.into_iter().chain(rail);
+                validate_loft_paths(product, feature, feature_position, continuity, paths)?;
             }
             FeatureKind::Boolean { target, tool, .. } => {
                 let target_feature = product

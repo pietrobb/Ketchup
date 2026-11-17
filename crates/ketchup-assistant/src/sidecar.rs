@@ -17,6 +17,7 @@ use std::fmt;
 
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
+mod loft;
 mod spatial_path;
 
 /// Most operations in one CAD edit program.
@@ -929,6 +930,11 @@ pub enum AssistantCadSurfaceBodySource {
         guide_feature_id: Option<AssistantCadFeatureReference>,
         #[serde(default)]
         continuity: AssistantCadLoftContinuity,
+        /// A second spatial path from the first section's border to the
+        /// last's; every section stretches so its border stays on it. Needs
+        /// `guide_feature_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail_feature_id: Option<AssistantCadFeatureReference>,
     },
     /// The smoothest surface spanning one closed loop of spatial lines, arcs
     /// and cubic Beziers; the loop may turn at corners.
@@ -1064,6 +1070,11 @@ pub enum AssistantCadBodyFeature {
         guide_feature_id: Option<AssistantCadFeatureReference>,
         #[serde(default)]
         continuity: AssistantCadLoftContinuity,
+        /// A second spatial path from the first section's border to the
+        /// last's; every section stretches so its border stays on it. Needs
+        /// `guide_feature_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail_feature_id: Option<AssistantCadFeatureReference>,
     },
     SurfaceBody {
         source: AssistantCadSurfaceBodySource,
@@ -1239,27 +1250,8 @@ impl AssistantCadBodyFeature {
                 sections,
                 guide_feature_id,
                 continuity,
-            } if (2..=limits::LOFT_SECTIONS).contains(&sections.len())
-                && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
-                && !(guide_feature_id.is_some()
-                    && *continuity == AssistantCadLoftContinuity::Curvature)
-                && sections.iter().all(|section| {
-                    section.profile_feature_id.validate().is_ok()
-                        && section.elevation_mm.is_finite()
-                        && section.elevation_mm.abs() <= MAX_COORDINATE_MM
-                })
-                && sections
-                    .iter()
-                    .map(|section| section.profile_feature_id)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    == sections.len()
-                && sections
-                    .windows(2)
-                    .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
-            {
-                Ok(())
-            }
+                rail_feature_id,
+            } if loft::valid(sections, *guide_feature_id, *rail_feature_id, *continuity) => Ok(()),
             Self::Loft { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceBody {
                 source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
@@ -1273,28 +1265,9 @@ impl AssistantCadBodyFeature {
                         sections,
                         guide_feature_id,
                         continuity,
+                        rail_feature_id,
                     },
-            } if (2..=limits::LOFT_SECTIONS).contains(&sections.len())
-                && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
-                && !(guide_feature_id.is_some()
-                    && *continuity == AssistantCadLoftContinuity::Curvature)
-                && sections.iter().all(|section| {
-                    section.profile_feature_id.validate().is_ok()
-                        && section.elevation_mm.is_finite()
-                        && section.elevation_mm.abs() <= MAX_COORDINATE_MM
-                })
-                && sections
-                    .iter()
-                    .map(|section| section.profile_feature_id)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    == sections.len()
-                && sections
-                    .windows(2)
-                    .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
-            {
-                Ok(())
-            }
+            } if loft::valid(sections, *guide_feature_id, *rail_feature_id, *continuity) => Ok(()),
             Self::SurfaceBody { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
             Self::SurfaceTrim {
                 target_feature_id,
@@ -1516,6 +1489,7 @@ impl AssistantCadBodyFeature {
             Self::Loft {
                 sections,
                 guide_feature_id,
+                rail_feature_id,
                 ..
             }
             | Self::SurfaceBody {
@@ -1523,6 +1497,7 @@ impl AssistantCadBodyFeature {
                     AssistantCadSurfaceBodySource::Loft {
                         sections,
                         guide_feature_id,
+                        rail_feature_id,
                         ..
                     },
             } => {
@@ -1537,14 +1512,14 @@ impl AssistantCadBodyFeature {
                         )?;
                     }
                 }
-                if let Some(AssistantCadFeatureReference::ProgramOutput(reference)) =
-                    guide_feature_id
-                {
-                    reference.validate_for(
-                        operation_index,
-                        operations,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    )?;
+                for path in guide_feature_id.iter().chain(rail_feature_id) {
+                    if let AssistantCadFeatureReference::ProgramOutput(reference) = path {
+                        reference.validate_for(
+                            operation_index,
+                            operations,
+                            AssistantCadProgramFeatureOutput::ConstructionFeature,
+                        )?;
+                    }
                 }
             }
             Self::SurfaceBody {
