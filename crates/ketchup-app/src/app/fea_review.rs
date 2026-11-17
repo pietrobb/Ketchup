@@ -155,6 +155,7 @@ impl KetchupApp {
                     youngs_modulus_mpa,
                     poisson_ratio,
                     yield_strength_mpa: Some(yield_strength_mpa),
+                    density_kg_per_m3: None,
                 },
                 constrained_face_ordinals,
                 face_tractions: vec![ExactFeaFaceTraction {

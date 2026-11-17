@@ -18,6 +18,7 @@ fn steel() -> FeaMaterial {
         youngs_modulus_mpa: 200_000.0,
         poisson_ratio: 0.3,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     }
 }
 

@@ -20,6 +20,7 @@ fn steel() -> FeaMaterial {
         youngs_modulus_mpa: YOUNG_MPA,
         poisson_ratio: POISSON,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     }
 }
 
@@ -428,6 +429,7 @@ fn convergence_refuses_changed_element_material_assignments() {
         youngs_modulus_mpa: 198_000.0,
         poisson_ratio: POISSON,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     };
     coarse.materials.push(alternate.clone());
     fine.materials.push(alternate);
@@ -453,6 +455,7 @@ fn convergence_refuses_spatially_swapped_equal_volume_materials() {
         youngs_modulus_mpa: 100_000.0,
         poisson_ratio: POISSON,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     };
     coarse.materials.push(alternate.clone());
     fine.materials.push(alternate);

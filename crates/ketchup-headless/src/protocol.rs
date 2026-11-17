@@ -18,7 +18,6 @@ mod cam_input;
 mod fea_input;
 mod model_tools;
 mod production;
-use ketchup_analysis::fea::FeaMaterial;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
@@ -395,21 +394,12 @@ struct FeaReviewInput {
     feature_id: u64,
     occurrence_id: u64,
     case_id: String,
-    material: FeaMaterialInput,
+    material: fea_input::FeaMaterialInput,
     constrained_face_ordinals: Vec<u32>,
     face_tractions: Vec<FeaFaceTractionInput>,
     mesh_levels: Vec<ExactVolumeMeshWireOptions>,
     solve_settings: fea_input::FeaSolveSettingsInput,
     confirmed: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaMaterialInput {
-    id: u64,
-    youngs_modulus_mpa: f64,
-    poisson_ratio: f64,
-    yield_strength_mpa: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -1337,12 +1327,7 @@ fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)>
             setup: ExactFeaSetup {
                 case_id: input.case_id,
                 instance_path: InstancePath::root(OccurrenceId(input.occurrence_id)),
-                material: FeaMaterial {
-                    id: input.material.id,
-                    youngs_modulus_mpa: input.material.youngs_modulus_mpa,
-                    poisson_ratio: input.material.poisson_ratio,
-                    yield_strength_mpa: input.material.yield_strength_mpa,
-                },
+                material: input.material.into(),
                 constrained_face_ordinals: input.constrained_face_ordinals,
                 face_tractions: input
                     .face_tractions
