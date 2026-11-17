@@ -4,4 +4,5 @@
 #![deny(clippy::let_underscore_must_use)]
 
 pub mod fea;
+mod sparse;
 pub mod validator_hosting;

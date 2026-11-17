@@ -636,7 +636,7 @@ class Document:
 
     def fea_review(self, definition_id, feature_id, occurrence_id, case_id, *, material,
                    constrained_face_ordinals, face_tractions, mesh_levels,
-                   maximum_nodes=256, relative_pivot_tolerance=1.0e-12,
+                   maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
                    maximum_small_deformation_ratio=0.05,
                    convergence_relative_tolerance=0.02, confirmed=False):
         """Run a guarded exact-mesh linear-static convergence review without mutation."""
