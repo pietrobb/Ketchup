@@ -94,8 +94,8 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/persistence/legacy.rs": 4721,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4339,
-    "crates/ketchup-scheduler/src/lib.rs": 3268,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4338,
+    "crates/ketchup-scheduler/src/lib.rs": 3262,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review
@@ -551,8 +551,9 @@ CASTS_AND_ALLOWS = {
     "ketchup-viewer-android unsafe": 4,
     # The vendored crates the workspace patches in build into the release too (review
     # 2026-11-13 r95 P3: the count saw none of them): starlark's value heap and
-    # process-wrap's process groups and job objects.
-    "third_party/process-wrap unsafe": 49,
+    # process-wrap's process groups and job objects, and its ProcessMeter (8: the window's
+    # memory budget reads and stops worker processes through their handle or pid).
+    "third_party/process-wrap unsafe": 57,
     "third_party/starlark unsafe": 596,
 }
 
