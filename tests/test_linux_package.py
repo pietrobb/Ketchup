@@ -72,6 +72,14 @@ def test_the_package_carries_the_notices_of_the_programs_it_builds():
     assert ".dll" not in text and "{" not in text
 
 
+def test_the_occt_build_installs_the_license_texts_the_package_ships():
+    occt_build = (ROOT / "scripts" / "linux" / "build-occt.sh").read_text(encoding="utf-8")
+    installed = re.search(r'^cp "\$src/(\S+)" "\$src/(\S+)" "\$install/"$', occt_build, re.MULTILINE)
+    assert installed, "build-occt.sh copies OCCT's license texts into the install"
+    for name in installed.groups():
+        assert f'"$occt/{name}"' in build_script(), name
+
+
 def test_ci_builds_it_on_a_release_tag_and_starts_it_in_a_clean_container():
     on = re.search(r"^on:\n((?:  .*\n)+)", workflow(), re.MULTILINE).group(1)
     assert re.search(r'tags: \["v\*"\]', on), on
