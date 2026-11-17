@@ -1940,27 +1940,16 @@ fn resolve_staged_program_feature_references(
     if let AssistantCadBodyFeature::Loft {
         sections,
         guide_feature_id,
+        rail_feature_id,
         ..
     } = &mut feature
     {
-        for section in sections {
-            section.profile_feature_id = staged_planning
-                .resolve_program_feature(
-                    section.profile_feature_id,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                    operation,
-                )?
-                .into();
-        }
-        if let Some(guide) = guide_feature_id {
-            *guide = staged_planning
-                .resolve_program_feature(
-                    *guide,
-                    AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    operation,
-                )?
-                .into();
-        }
+        surface_body_references::resolve_loft(
+            sections,
+            [guide_feature_id, rail_feature_id],
+            staged_planning,
+            operation,
+        )?;
     }
     if let AssistantCadBodyFeature::Pocket {
         target_feature_id,

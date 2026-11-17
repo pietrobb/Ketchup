@@ -597,20 +597,14 @@ impl<'a> GraphCompiler<'a> {
                 sections,
                 guide,
                 continuity,
-            } => ExactBRepOperation::Loft {
-                sections: self.compile_loft_sections(sections)?,
-                guide: self.compile_loft_guide(*guide)?,
-                continuity: (*continuity).into(),
-            },
+                rail,
+            } => self.compile_loft(sections, [*guide, *rail], *continuity, true)?,
             FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
                 sections,
                 guide,
                 continuity,
-            }) => ExactBRepOperation::LoftSurface {
-                sections: self.compile_loft_sections(sections)?,
-                guide: self.compile_loft_guide(*guide)?,
-                continuity: (*continuity).into(),
-            },
+                rail,
+            }) => self.compile_loft(sections, [*guide, *rail], *continuity, false)?,
             FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments }) => {
                 ExactBRepOperation::BoundarySurface {
                     boundary: boundary_path(
@@ -719,6 +713,35 @@ impl<'a> GraphCompiler<'a> {
             neutral: topology_selector(neutral, face, spec.target)?,
             angle_degrees_bits: spec.angle_degrees.to_bits(),
         }))
+    }
+
+    /// A solid or surface Loft through `sections` along its guide and rail.
+    fn compile_loft(
+        &mut self,
+        sections: &[LoftSection],
+        [guide, rail]: [Option<FeatureId>; 2],
+        continuity: LoftContinuity,
+        solid: bool,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        let sections = self.compile_loft_sections(sections)?;
+        let guide = self.compile_loft_guide(guide)?;
+        let rail = self.compile_loft_guide(rail)?;
+        let continuity = continuity.into();
+        Ok(if solid {
+            ExactBRepOperation::Loft {
+                sections,
+                guide,
+                continuity,
+                rail,
+            }
+        } else {
+            ExactBRepOperation::LoftSurface {
+                sections,
+                guide,
+                continuity,
+                rail,
+            }
+        })
     }
 
     fn compile_loft_guide(

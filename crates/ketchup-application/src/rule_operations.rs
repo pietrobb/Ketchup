@@ -177,6 +177,7 @@ pub(crate) fn loft(sections: &[ProgramLoftSection], profiles: &[FeatureId]) -> F
             .collect(),
         guide: None,
         continuity: LoftContinuity::Position,
+        rail: None,
     }
 }
 

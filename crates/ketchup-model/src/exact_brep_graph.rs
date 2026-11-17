@@ -499,6 +499,9 @@ pub enum ExactBRepOperation {
         guide: Option<ExactBRepSpatialPath>,
         #[serde(default)]
         continuity: ExactBRepLoftContinuity,
+        /// The path every section's border stays on; see `FeatureKind::Loft::rail`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<ExactBRepSpatialPath>,
     },
     /// The smoothest surface spanning `boundary`, one closed loop that may
     /// turn at corners; see `SurfaceBodySpec::Boundary`.
@@ -550,6 +553,9 @@ pub enum ExactBRepOperation {
         guide: Option<ExactBRepSpatialPath>,
         #[serde(default)]
         continuity: ExactBRepLoftContinuity,
+        /// The path every section's border stays on; see `FeatureKind::Loft::rail`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<ExactBRepSpatialPath>,
     },
     SheetMetal {
         base_mm_bits: Vec<[u64; 2]>,
@@ -1300,14 +1306,14 @@ impl ExactBRepGraph {
         for (index, node) in self.nodes.iter().enumerate() {
             let id = ExactBRepNodeId(index as u32);
             let spatial_segment_count = match &node.operation {
-                ExactBRepOperation::SpatialSweep { path, .. } => path.segments.len(),
-                ExactBRepOperation::Loft {
-                    guide: Some(path), ..
-                }
-                | ExactBRepOperation::LoftSurface {
-                    guide: Some(path), ..
-                }
+                ExactBRepOperation::SpatialSweep { path, .. }
                 | ExactBRepOperation::BoundarySurface { boundary: path } => path.segments.len(),
+                ExactBRepOperation::Loft { guide, rail, .. }
+                | ExactBRepOperation::LoftSurface { guide, rail, .. } => guide
+                    .iter()
+                    .chain(rail)
+                    .map(|path| path.segments.len())
+                    .sum(),
                 _ => 0,
             };
             segment_count = segment_count
@@ -1667,6 +1673,7 @@ mod tests {
                 .collect(),
             guide: None,
             continuity: ExactBRepLoftContinuity::Position,
+            rail: None,
         }
     }
 
@@ -1768,6 +1775,7 @@ mod tests {
             ],
             guide: None,
             continuity: ExactBRepLoftContinuity::Position,
+            rail: None,
         };
         let profiles = vec![
             profile(0, MAX_EXACT_BREP_LOFT_CONTROL_POINTS),

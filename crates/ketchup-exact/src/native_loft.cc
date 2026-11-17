@@ -2,11 +2,42 @@
 
 namespace ketchup::exact {
 
+namespace {
+
+// One connected wire of bounded spatial segments, or why it is not one.
+const char* guided_loft_path(rust::Slice<const NativeSegment> segments, TopoDS_Wire& wire) {
+  BRepBuilderAPI_MakeWire builder;
+  gp_Pnt previous_end;
+  bool has_previous = false;
+  for (const NativeSegment& segment : segments) {
+    if (!segment_bounded(segment, std::numeric_limits<double>::max())) {
+      return "OCCT guided Loft path is not finite";
+    }
+    const gp_Pnt start = spatial_point(segment.start);
+    if (has_previous && previous_end.Distance(start) > tolerances().linear_mm) {
+      return "OCCT guided Loft path is disconnected";
+    }
+    const TopoDS_Edge edge = spatial_segment_edge(segment);
+    if (edge.IsNull()) return "OCCT guided Loft path edge is null";
+    builder.Add(edge);
+    previous_end = spatial_point(segment.end);
+    has_previous = true;
+  }
+  if (!builder.IsDone() || !BRepCheck_Analyzer(builder.Wire()).IsValid()) {
+    return "OCCT guided Loft path is invalid";
+  }
+  wire = builder.Wire();
+  return nullptr;
+}
+
+}  // namespace
+
 std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     rust::Slice<const NativeLoftSection> sections,
     rust::Slice<const NativeSegment> segments,
     rust::Slice<const NativePoint> spline_points,
     rust::Slice<const NativeSegment> guide_segments,
+    rust::Slice<const NativeSegment> rail_segments,
     std::uint8_t continuity,
     bool make_solid) noexcept {
   return guarded([&] {
@@ -195,33 +226,40 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     if (continuity > 2 || (!guide_segments.empty() && continuity == 2)) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT framed Loft continuity is unsupported");
     }
+    if (!rail_segments.empty() && guide_segments.empty()) {
+      return error_result(STATUS_INVALID_PARAMETER, "OCCT Loft rail needs a guide path");
+    }
     if (!guide_segments.empty()) {
-      BRepBuilderAPI_MakeWire spine_builder;
-      gp_Pnt previous_end;
-      bool has_previous = false;
-      for (const NativeSegment& segment : guide_segments) {
-        if (!segment_bounded(segment, std::numeric_limits<double>::max())) {
-          return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path is not finite");
-        }
-        const gp_Pnt start = spatial_point(segment.start);
-        const gp_Pnt end = spatial_point(segment.end);
-        if (has_previous && previous_end.Distance(start) > tolerances().linear_mm) {
-          return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path is disconnected");
-        }
-        const TopoDS_Edge edge = spatial_segment_edge(segment);
-        if (edge.IsNull()) {
-          return error_result(STATUS_INVALID_SHAPE, "OCCT guided Loft path edge is null");
-        }
-        spine_builder.Add(edge);
-        previous_end = end;
-        has_previous = true;
+      TopoDS_Wire spine;
+      TopoDS_Wire rail;
+      if (const char* problem = guided_loft_path(guide_segments, spine)) {
+        return error_result(STATUS_INVALID_PARAMETER, problem);
       }
-      if (!spine_builder.IsDone() || !BRepCheck_Analyzer(spine_builder.Wire()).IsValid()) {
-        return error_result(STATUS_INVALID_SHAPE, "OCCT guided Loft spine is invalid");
+      if (!rail_segments.empty()) {
+        if (const char* problem = guided_loft_path(rail_segments, rail)) {
+          return error_result(STATUS_INVALID_PARAMETER, problem);
+        }
+        // The rail must start on the first section and end on the last, so the
+        // sections can be stretched to keep their border on it.
+        const auto touches = [](const TopoDS_Shape& point, const TopoDS_Shape& section) {
+          BRepExtrema_DistShapeShape distance(point, section);
+          return distance.IsDone() && distance.Value() <= tolerances().linear_mm;
+        };
+        TopoDS_Vertex rail_start;
+        TopoDS_Vertex rail_end;
+        TopExp::Vertices(rail, rail_start, rail_end);
+        if (rail_start.IsNull() || rail_end.IsNull() || !touches(rail_start, wires.front())
+            || !touches(rail_end, wires.back())) {
+          return error_result(
+              STATUS_INVALID_PARAMETER,
+              "OCCT Loft rail does not start on the first section and end on the last");
+        }
+        return loft_stretched_to_rail(spine, rail, wires, continuity, make_solid);
       }
-      BRepOffsetAPI_MakePipeShell operation(spine_builder.Wire());
+      BRepOffsetAPI_MakePipeShell operation(spine);
       operation.SetMode(false);
-      operation.SetTolerance(tolerances().linear_mm, tolerances().linear_mm, tolerances().rounding);
+      operation.SetTolerance(
+          tolerances().linear_mm, tolerances().linear_mm, tolerances().rounding);
       operation.SetForceApproxC1(continuity == 1);
       for (const TopoDS_Wire& wire : wires) operation.Add(wire, false, false);
       if (!operation.IsReady()) {

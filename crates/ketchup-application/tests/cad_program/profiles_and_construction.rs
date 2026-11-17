@@ -834,6 +834,7 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
                     },
                 ],
                 guide_feature_id: None,
+                rail_feature_id: None,
                 continuity: AssistantCadLoftContinuity::Position,
             },
         },
