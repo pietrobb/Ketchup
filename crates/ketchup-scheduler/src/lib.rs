@@ -276,10 +276,7 @@ impl ExactBRepVolumeMeshPackage {
                 .collect(),
             constraints: constrained_nodes
                 .into_iter()
-                .map(|node| FeaConstraint {
-                    node: node as usize,
-                    displacement_mm: [Some(0.0); 3],
-                })
+                .map(|node| FeaConstraint::held(node as usize))
                 .collect(),
             loads,
         };

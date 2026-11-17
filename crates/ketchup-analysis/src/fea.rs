@@ -1,3 +1,7 @@
+use crate::fea_frame::{
+    ElementAxes, FRAME_DOFS, FrameError, consistent_load, local_stiffness, multiply,
+    peak_von_mises, valid_section,
+};
 use crate::sparse::{FactorError, SymmetricMatrix};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
@@ -45,12 +49,52 @@ pub enum FeaElementKind {
         nodes: [usize; 4],
         material_id: u64,
     },
+    /// A straight 3D Euler–Bernoulli frame element between two nodes; its nodes also
+    /// turn. `orientation` is any vector off the element's line: the section's
+    /// `y` axis lies in the plane of the line and that vector.
+    Frame2 {
+        nodes: [usize; 2],
+        material_id: u64,
+        section: FeaFrameSection,
+        orientation: [f64; 3],
+    },
+}
+
+/// A frame element's cross-section, in the element's own axes (`x` along it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeaFrameSection {
+    pub area_mm2: f64,
+    /// Second moment of area about the section's `y` axis (bending in `x-z`).
+    pub second_moment_y_mm4: f64,
+    /// Second moment of area about the section's `z` axis (bending in `x-y`).
+    pub second_moment_z_mm4: f64,
+    /// Saint-Venant torsion constant: twist rate = torque / (G·J).
+    pub torsion_constant_mm4: f64,
+    /// Distance from the centroid to the farthest fibre along `y`, and along `z`.
+    pub extreme_fibre_y_mm: f64,
+    pub extreme_fibre_z_mm: f64,
+    /// Torsional section modulus: the largest shear stress is torque / modulus.
+    pub torsion_modulus_mm3: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeaConstraint {
     pub node: usize,
     pub displacement_mm: [Option<f64>; 3],
+    /// Turns about the model's axes; only a node a frame element ends at turns.
+    pub rotation_rad: [Option<f64>; 3],
+}
+
+impl FeaConstraint {
+    /// The node held in place and left free to turn.
+    #[must_use]
+    pub fn held(node: usize) -> Self {
+        Self {
+            node,
+            displacement_mm: [Some(0.0); 3],
+            rotation_rad: [None; 3],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +106,17 @@ pub enum FeaLoad {
     SurfaceTraction {
         nodes: [usize; 3],
         traction_n_per_mm2: [f64; 3],
+    },
+    /// A moment (N·mm, model axes) at a node a frame element ends at.
+    NodalMoment {
+        node: usize,
+        moment_n_mm: [f64; 3],
+    },
+    /// A uniform load per length (N/mm, model axes) along the whole element
+    /// element with this id.
+    FrameDistributed {
+        element: u64,
+        load_n_per_mm: [f64; 3],
     },
 }
 
@@ -130,6 +185,14 @@ pub enum FeaError {
     InvalidArea {
         element: u64,
     },
+    /// A frame section value is missing, zero or negative.
+    InvalidFrameSection {
+        element: u64,
+    },
+    /// A frame element's orientation vector is not finite or runs along the element.
+    InvalidFrameOrientation {
+        element: u64,
+    },
     MissingConstraint,
     InvalidConstraint,
     ConflictingConstraint,
@@ -175,6 +238,9 @@ pub struct FeaSolution {
     pub model_digest: String,
     pub displacements_mm: Vec<[f64; 3]>,
     pub reaction_forces_n: Vec<[f64; 3]>,
+    /// Turns about the model's axes; `None` at a node no frame element ends at.
+    pub rotations_rad: Vec<Option<[f64; 3]>>,
+    pub reaction_moments_n_mm: Vec<Option<[f64; 3]>>,
     pub element_results: Vec<FeaElementResult>,
     pub maximum_displacement_mm: f64,
     pub maximum_von_mises_stress_mpa: f64,
@@ -236,7 +302,10 @@ struct GeometricMoments {
 #[derive(Default)]
 struct LoadDefinition {
     nodal: Vec<([u64; 3], [u64; 3])>,
+    moments: Vec<([u64; 3], [u64; 3])>,
     surface: BTreeMap<[u64; 3], GeometricMoments>,
+    /// Uniform frame loads by their value, over the lines they act along.
+    lines: BTreeMap<[u64; 3], GeometricMoments>,
 }
 
 #[derive(Default)]
@@ -248,10 +317,51 @@ struct ConstraintSupport {
 
 type ConstraintDefinition = BTreeMap<(usize, u64), ConstraintSupport>;
 
+struct DofLayout {
+    /// Three moves per node come first.
+    translations: usize,
+    /// The turning nodes, in slot order.
+    owners: Vec<usize>,
+    /// Each turning node's place among the turning nodes.
+    slots: Vec<Option<usize>>,
+}
+
+impl DofLayout {
+    fn count(&self) -> usize {
+        self.translations + self.owners.len() * 3
+    }
+
+    /// The unknown of `axis` (0–2 moves, 3–5 turns) at `node`.
+    fn dof(&self, node: usize, axis: usize) -> Option<usize> {
+        if axis < 3 {
+            Some(node * 3 + axis)
+        } else {
+            self.slots[node].map(|slot| self.translations + slot * 3 + axis - 3)
+        }
+    }
+
+    fn frame_dofs(&self, nodes: [usize; 2]) -> [usize; FRAME_DOFS] {
+        std::array::from_fn(|local| {
+            self.dof(nodes[local / 6], local % 6)
+                .expect("a frame element's nodes turn")
+        })
+    }
+
+    fn turn_of(&self, dof: usize) -> (usize, usize) {
+        let offset = dof - self.translations;
+        (self.owners[offset / 3], offset % 3)
+    }
+
+    fn per_turning_node(&self, value: [f64; 3]) -> Vec<Option<[f64; 3]>> {
+        self.slots.iter().map(|slot| slot.map(|_| value)).collect()
+    }
+}
+
 impl FeaModel {
     pub fn solve(&self, settings: FeaSolveSettings) -> Result<FeaSolution, FeaError> {
         self.validate(settings)?;
-        let dof_count = self.nodes.len() * 3;
+        let layout = self.dof_layout();
+        let dof_count = layout.count();
         // Every unknown has a diagonal entry, so a constraint can set it.
         let mut entries = (0..dof_count)
             .map(|dof| (dof, dof, 0.0))
@@ -268,14 +378,33 @@ impl FeaModel {
                 FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
                     self.assemble_tetrahedron(nodes, material_id, &mut entries)
                 }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    orientation,
+                } => {
+                    let frame = self.element_axes(nodes, orientation);
+                    let stiffness = frame.global_stiffness(&self.frame_local_stiffness(
+                        material_id,
+                        &section,
+                        frame.length_mm,
+                    ));
+                    let dofs = layout.frame_dofs(nodes);
+                    for (row, values) in stiffness.iter().enumerate() {
+                        for (column, value) in values.iter().enumerate() {
+                            entries.push((dofs[row], dofs[column], *value));
+                        }
+                    }
+                }
             }
         }
-        self.assemble_loads(&mut forces);
+        self.assemble_loads(&layout, &mut forces);
 
         let original_stiffness = SymmetricMatrix::from_entries(dof_count, entries);
         let mut stiffness = original_stiffness.clone();
         let original_forces = forces.clone();
-        let constrained = self.apply_constraints(&mut stiffness, &mut forces)?;
+        let constrained = self.apply_constraints(&layout, &mut stiffness, &mut forces)?;
         let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
         let displacement = stiffness
             .factor(threshold, settings.maximum_factor_bytes)
@@ -299,23 +428,43 @@ impl FeaModel {
             .collect::<Vec<_>>();
         let mut maximum_free_dof_residual_n: f64 = 0.0;
         let mut reactions = vec![[0.0; 3]; self.nodes.len()];
+        let mut reaction_moments = layout.per_turning_node([0.0; 3]);
         for (dof, value) in residual.iter().copied().enumerate() {
-            if constrained.contains(&dof) {
+            if !constrained.contains(&dof) {
+                maximum_free_dof_residual_n = maximum_free_dof_residual_n.max(value.abs());
+            } else if dof < layout.translations {
                 reactions[dof / 3][dof % 3] = value;
             } else {
-                maximum_free_dof_residual_n = maximum_free_dof_residual_n.max(value.abs());
+                let (node, axis) = layout.turn_of(dof);
+                if let Some(moment) = &mut reaction_moments[node] {
+                    moment[axis] = value;
+                }
             }
         }
 
-        let displacements_mm = displacement
+        let displacements_mm = displacement[..layout.translations]
             .chunks_exact(3)
             .map(|values| [values[0], values[1], values[2]])
+            .collect::<Vec<_>>();
+        let rotations_rad = layout
+            .slots
+            .iter()
+            .map(|slot| {
+                slot.map(|slot| {
+                    let start = layout.translations + slot * 3;
+                    [
+                        displacement[start],
+                        displacement[start + 1],
+                        displacement[start + 2],
+                    ]
+                })
+            })
             .collect::<Vec<_>>();
         let maximum_displacement_mm = displacements_mm
             .iter()
             .map(|value| length(*value))
             .fold(0.0, f64::max);
-        let element_results = self.element_results(&displacement);
+        let element_results = self.element_results(&layout, &displacement);
         let maximum_von_mises_stress_mpa = element_results
             .iter()
             .map(|result| result.von_mises_stress_mpa)
@@ -337,7 +486,7 @@ impl FeaModel {
                 .fold(0.0, f64::max)
         });
 
-        let total_applied = vector_sum(&original_forces);
+        let total_applied = vector_sum(&original_forces[..layout.translations]);
         let total_reaction = reactions.iter().copied().fold([0.0; 3], add);
         Ok(FeaSolution {
             schema: FEA_SOLUTION_SCHEMA_V1,
@@ -346,6 +495,8 @@ impl FeaModel {
             model_digest: self.digest(),
             displacements_mm,
             reaction_forces_n: reactions,
+            rotations_rad,
+            reaction_moments_n_mm: reaction_moments,
             element_results,
             maximum_displacement_mm,
             maximum_von_mises_stress_mpa,
@@ -434,6 +585,8 @@ impl FeaModel {
         let mut element_ids = BTreeSet::new();
         let mut truss_connectivities = BTreeSet::new();
         let mut tetrahedron_connectivities = BTreeSet::new();
+        let mut frame_connectivities = BTreeSet::new();
+        let mut frames = BTreeSet::new();
         let mut tetrahedron_faces = BTreeMap::<[usize; 3], usize>::new();
         for element in &self.elements {
             let element_id = element.id;
@@ -449,6 +602,9 @@ impl FeaModel {
                 FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
                     (nodes.to_vec(), material_id)
                 }
+                FeaElementKind::Frame2 {
+                    nodes, material_id, ..
+                } => (nodes.to_vec(), material_id),
             };
             // A node outside the mesh is named as such, not as a degenerate shape.
             if nodes.iter().any(|node| *node >= self.nodes.len()) {
@@ -500,6 +656,43 @@ impl FeaModel {
                         *tetrahedron_faces.entry(face).or_default() += 1;
                     }
                 }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    section,
+                    orientation,
+                    ..
+                } => {
+                    if !valid_section(&section) {
+                        return Err(FeaError::InvalidFrameSection {
+                            element: element_id,
+                        });
+                    }
+                    let mut canonical_nodes = nodes;
+                    canonical_nodes.sort_unstable();
+                    if !frame_connectivities.insert(canonical_nodes) {
+                        return Err(FeaError::DuplicateElement {
+                            element: element_id,
+                        });
+                    }
+                    match ElementAxes::new(
+                        self.nodes[nodes[0]].position_mm,
+                        self.nodes[nodes[1]].position_mm,
+                        orientation,
+                    ) {
+                        Ok(_) => {}
+                        Err(FrameError::Degenerate) => {
+                            return Err(FeaError::DegenerateElement {
+                                element: element_id,
+                            });
+                        }
+                        Err(FrameError::Orientation) => {
+                            return Err(FeaError::InvalidFrameOrientation {
+                                element: element_id,
+                            });
+                        }
+                    }
+                    frames.insert(element_id);
+                }
             }
             if !material_ids.contains(&material_id) {
                 return Err(FeaError::MissingMaterial {
@@ -511,20 +704,33 @@ impl FeaModel {
         if self.constraints.is_empty() {
             return Err(FeaError::MissingConstraint);
         }
-        let mut prescribed = BTreeMap::<usize, f64>::new();
+        let turning = self.dof_layout().slots;
+        let mut prescribed = BTreeMap::<(usize, usize), f64>::new();
         for constraint in &self.constraints {
             if constraint.node >= self.nodes.len()
-                || constraint.displacement_mm.iter().all(Option::is_none)
+                || constraint
+                    .displacement_mm
+                    .iter()
+                    .chain(&constraint.rotation_rad)
+                    .all(Option::is_none)
+                || (turning[constraint.node].is_none()
+                    && constraint.rotation_rad.iter().any(Option::is_some))
             {
                 return Err(FeaError::InvalidConstraint);
             }
-            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+            for (axis, value) in constraint
+                .displacement_mm
+                .iter()
+                .chain(&constraint.rotation_rad)
+                .copied()
+                .enumerate()
+            {
                 if let Some(value) = value {
                     if !value.is_finite() {
                         return Err(FeaError::InvalidConstraint);
                     }
                     if prescribed
-                        .insert(constraint.node * 3 + axis, value)
+                        .insert((constraint.node, axis), value)
                         .is_some_and(|previous| previous.to_bits() != value.to_bits())
                     {
                         return Err(FeaError::ConflictingConstraint);
@@ -565,9 +771,86 @@ impl FeaModel {
                         return Err(FeaError::InvalidLoad);
                     }
                 }
+                FeaLoad::NodalMoment { node, moment_n_mm } => {
+                    if node >= self.nodes.len() || turning[node].is_none() || !finite3(moment_n_mm)
+                    {
+                        return Err(FeaError::InvalidLoad);
+                    }
+                }
+                FeaLoad::FrameDistributed {
+                    element,
+                    load_n_per_mm,
+                } => {
+                    if !frames.contains(&element) || !finite3(load_n_per_mm) {
+                        return Err(FeaError::InvalidLoad);
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// Unknowns: three moves per node, then three turns per node a frame element ends at.
+    fn dof_layout(&self) -> DofLayout {
+        let mut slots = vec![None; self.nodes.len()];
+        let mut owners = Vec::new();
+        for element in &self.elements {
+            if let FeaElementKind::Frame2 { nodes, .. } = element.kind {
+                for node in nodes {
+                    if let Some(slot) = slots.get_mut(node)
+                        && slot.is_none()
+                    {
+                        *slot = Some(owners.len());
+                        owners.push(node);
+                    }
+                }
+            }
+        }
+        DofLayout {
+            translations: self.nodes.len() * 3,
+            owners,
+            slots,
+        }
+    }
+
+    fn element_axes(&self, nodes: [usize; 2], orientation: [f64; 3]) -> ElementAxes {
+        ElementAxes::new(
+            self.nodes[nodes[0]].position_mm,
+            self.nodes[nodes[1]].position_mm,
+            orientation,
+        )
+        .expect("validated frame element")
+    }
+
+    fn frame_local_stiffness(
+        &self,
+        material_id: u64,
+        section: &FeaFrameSection,
+        length_mm: f64,
+    ) -> [[f64; FRAME_DOFS]; FRAME_DOFS] {
+        let material = self.material(material_id);
+        local_stiffness(
+            material.youngs_modulus_mpa,
+            material.youngs_modulus_mpa / (2.0 * (1.0 + material.poisson_ratio)),
+            section,
+            length_mm,
+        )
+    }
+
+    /// The uniform load on each frame element, summed, in model axes.
+    fn frame_loads(&self) -> BTreeMap<u64, [f64; 3]> {
+        let mut loads = BTreeMap::<u64, [f64; 3]>::new();
+        for load in &self.loads {
+            if let FeaLoad::FrameDistributed {
+                element,
+                load_n_per_mm,
+            } = *load
+            {
+                let total = loads.entry(element).or_default();
+                *total = add(*total, load_n_per_mm);
+            }
+        }
+        loads
     }
 
     fn material(&self, id: u64) -> &FeaMaterial {
@@ -597,6 +880,19 @@ impl FeaModel {
                     .entry(material_id)
                     .or_default()
                     .add_tetrahedron(nodes.map(|node| self.nodes[node].position_mm)),
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    ..
+                } => distribution
+                    .entry(material_id)
+                    .or_default()
+                    .add_weighted_segment(
+                        self.nodes[nodes[0]].position_mm,
+                        self.nodes[nodes[1]].position_mm,
+                        section.area_mm2,
+                    ),
             }
         }
         distribution
@@ -691,7 +987,21 @@ impl FeaModel {
         }
     }
 
-    fn assemble_loads(&self, forces: &mut [f64]) {
+    fn assemble_loads(&self, layout: &DofLayout, forces: &mut [f64]) {
+        let frame_loads = self.frame_loads();
+        for element in &self.elements {
+            if let FeaElementKind::Frame2 {
+                nodes, orientation, ..
+            } = element.kind
+                && let Some(load) = frame_loads.get(&element.id)
+            {
+                let frame = self.element_axes(nodes, orientation);
+                let nodal = frame.global12(consistent_load(frame.local(*load), frame.length_mm));
+                for (dof, value) in layout.frame_dofs(nodes).into_iter().zip(nodal) {
+                    forces[dof] += value;
+                }
+            }
+        }
         for load in &self.loads {
             match *load {
                 FeaLoad::NodalForce { node, force_n } => {
@@ -714,20 +1024,37 @@ impl FeaModel {
                         }
                     }
                 }
+                FeaLoad::NodalMoment { node, moment_n_mm } => {
+                    for (axis, moment) in moment_n_mm.into_iter().enumerate() {
+                        let dof = layout.dof(node, axis + 3).expect("validated moment");
+                        forces[dof] += moment;
+                    }
+                }
+                FeaLoad::FrameDistributed { .. } => {}
             }
         }
     }
 
     fn apply_constraints(
         &self,
+        layout: &DofLayout,
         stiffness: &mut SymmetricMatrix,
         forces: &mut [f64],
     ) -> Result<BTreeSet<usize>, FeaError> {
         let mut prescribed = BTreeMap::<usize, f64>::new();
         for constraint in &self.constraints {
-            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+            for (axis, value) in constraint
+                .displacement_mm
+                .iter()
+                .chain(&constraint.rotation_rad)
+                .copied()
+                .enumerate()
+            {
                 if let Some(value) = value {
-                    prescribed.insert(constraint.node * 3 + axis, value);
+                    let dof = layout
+                        .dof(constraint.node, axis)
+                        .expect("validated constraint");
+                    prescribed.insert(dof, value);
                 }
             }
         }
@@ -741,7 +1068,8 @@ impl FeaModel {
         Ok(prescribed.into_keys().collect())
     }
 
-    fn element_results(&self, displacement: &[f64]) -> Vec<FeaElementResult> {
+    fn element_results(&self, layout: &DofLayout, displacement: &[f64]) -> Vec<FeaElementResult> {
+        let frame_loads = self.frame_loads();
         self.elements
             .iter()
             .map(|element| match element.kind {
@@ -785,6 +1113,45 @@ impl FeaModel {
                     FeaElementResult {
                         element_id: element.id,
                         strain_energy_n_mm: 0.5 * volume * dot6(strain, stress),
+                        von_mises_stress_mpa: von_mises,
+                        yield_utilization: material
+                            .yield_strength_mpa
+                            .map(|limit| von_mises / limit),
+                    }
+                }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    orientation,
+                } => {
+                    let material = self.material(material_id);
+                    let frame = self.element_axes(nodes, orientation);
+                    let stiffness =
+                        self.frame_local_stiffness(material_id, &section, frame.length_mm);
+                    let dofs = layout.frame_dofs(nodes);
+                    let local_displacement = frame.local12(dofs.map(|dof| displacement[dof]));
+                    let internal = multiply(&stiffness, local_displacement);
+                    // A frame element without a load of its own carries none along it.
+                    let load = frame_loads
+                        .get(&element.id)
+                        .map_or([0.0; 3], |load| frame.local(*load));
+                    // What the nodes put on the element: its stiffness response
+                    // less the share of the load it carries to them.
+                    let equivalent = consistent_load(load, frame.length_mm);
+                    let mut end_forces = internal;
+                    for (value, share) in end_forces.iter_mut().zip(equivalent) {
+                        *value -= share;
+                    }
+                    let von_mises = peak_von_mises(&section, end_forces, load, frame.length_mm);
+                    FeaElementResult {
+                        element_id: element.id,
+                        strain_energy_n_mm: 0.5
+                            * local_displacement
+                                .iter()
+                                .zip(internal)
+                                .map(|(moved, force)| moved * force)
+                                .sum::<f64>(),
                         von_mises_stress_mpa: von_mises,
                         yield_utilization: material
                             .yield_strength_mpa
@@ -841,17 +1208,49 @@ impl FeaModel {
                             self.nodes[nodes[2]].position_mm,
                         );
                 }
+                FeaLoad::NodalMoment { node, moment_n_mm } => definition.moments.push((
+                    self.nodes[node].position_mm.map(f64::to_bits),
+                    moment_n_mm.map(f64::to_bits),
+                )),
+                FeaLoad::FrameDistributed {
+                    element,
+                    load_n_per_mm,
+                } => {
+                    if let Some(FeaElementKind::Frame2 { nodes, .. }) = self
+                        .elements
+                        .iter()
+                        .find(|candidate| candidate.id == element)
+                        .map(|candidate| &candidate.kind)
+                    {
+                        definition
+                            .lines
+                            .entry(load_n_per_mm.map(f64::to_bits))
+                            .or_default()
+                            .add_segment(
+                                self.nodes[nodes[0]].position_mm,
+                                self.nodes[nodes[1]].position_mm,
+                            );
+                    }
+                }
             }
         }
         definition.nodal.sort_unstable();
+        definition.moments.sort_unstable();
         definition
     }
 
     fn constraint_definition(&self) -> ConstraintDefinition {
-        let mut prescribed = vec![[None; 3]; self.nodes.len()];
+        // Axes 0–2 are moves, 3–5 turns; a held turn is kept as a point.
+        let mut prescribed = vec![[None; 6]; self.nodes.len()];
         let mut definition = ConstraintDefinition::new();
         for constraint in &self.constraints {
-            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+            for (axis, value) in constraint
+                .displacement_mm
+                .iter()
+                .chain(&constraint.rotation_rad)
+                .copied()
+                .enumerate()
+            {
                 if let Some(value) = value {
                     prescribed[constraint.node][axis] = Some(value);
                     definition.entry((axis, value.to_bits())).or_default();
@@ -861,8 +1260,10 @@ impl FeaModel {
 
         let mut covered = BTreeSet::new();
         for element in &self.elements {
-            if let FeaElementKind::LinearTruss2 { nodes, .. } = element.kind {
-                for (axis, left) in prescribed[nodes[0]].iter().copied().enumerate() {
+            if let FeaElementKind::LinearTruss2 { nodes, .. }
+            | FeaElementKind::Frame2 { nodes, .. } = element.kind
+            {
+                for (axis, left) in prescribed[nodes[0]].iter().copied().enumerate().take(3) {
                     if let (Some(left), Some(right)) = (left, prescribed[nodes[1]][axis])
                         && left.to_bits() == right.to_bits()
                     {
@@ -893,7 +1294,7 @@ impl FeaModel {
             if count != 1 {
                 continue;
             }
-            for (axis, first) in prescribed[nodes[0]].iter().copied().enumerate() {
+            for (axis, first) in prescribed[nodes[0]].iter().copied().enumerate().take(3) {
                 if let (Some(first), Some(second), Some(third)) = (
                     first,
                     prescribed[nodes[1]][axis],
@@ -980,6 +1381,31 @@ impl FeaModel {
                     }
                     hasher.update(material_id.to_le_bytes());
                 }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    orientation,
+                } => {
+                    hasher.update([3]);
+                    for node in nodes {
+                        hash_index(&mut hasher, node);
+                    }
+                    hasher.update(material_id.to_le_bytes());
+                    hash_f64s(
+                        &mut hasher,
+                        &[
+                            section.area_mm2,
+                            section.second_moment_y_mm4,
+                            section.second_moment_z_mm4,
+                            section.torsion_constant_mm4,
+                            section.extreme_fibre_y_mm,
+                            section.extreme_fibre_z_mm,
+                            section.torsion_modulus_mm3,
+                        ],
+                    );
+                    hash_f64s(&mut hasher, &orientation);
+                }
             }
         }
         for constraint in &self.constraints {
@@ -1010,6 +1436,42 @@ impl FeaModel {
                         hasher.update((node as u64).to_le_bytes());
                     }
                     hash_f64s(&mut hasher, &traction_n_per_mm2);
+                }
+                FeaLoad::NodalMoment { node, moment_n_mm } => {
+                    hasher.update([3]);
+                    hash_index(&mut hasher, node);
+                    hash_f64s(&mut hasher, &moment_n_mm);
+                }
+                FeaLoad::FrameDistributed {
+                    element,
+                    load_n_per_mm,
+                } => {
+                    hasher.update([4]);
+                    hasher.update(element.to_le_bytes());
+                    hash_f64s(&mut hasher, &load_n_per_mm);
+                }
+            }
+        }
+        // Held turns come last, and only when there are any, so a model
+        // without frame elements keeps the digest it had before they existed.
+        let turns = self
+            .constraints
+            .iter()
+            .enumerate()
+            .filter(|(_, constraint)| constraint.rotation_rad.iter().any(Option::is_some))
+            .collect::<Vec<_>>();
+        if !turns.is_empty() {
+            hasher.update(b"rotations");
+            for (index, constraint) in turns {
+                hash_index(&mut hasher, index);
+                for value in constraint.rotation_rad {
+                    match value {
+                        Some(value) => {
+                            hasher.update([1]);
+                            hasher.update(value.to_bits().to_le_bytes());
+                        }
+                        None => hasher.update([0]),
+                    }
                 }
             }
         }
@@ -1269,14 +1731,19 @@ impl GeometricMoments {
 }
 
 fn same_load_definition(left: &LoadDefinition, right: &LoadDefinition) -> bool {
+    let same_spread = |left: &BTreeMap<[u64; 3], GeometricMoments>,
+                       right: &BTreeMap<[u64; 3], GeometricMoments>| {
+        left.len() == right.len()
+            && left.iter().all(|(load, moments)| {
+                right
+                    .get(load)
+                    .is_some_and(|other| same_geometric_moments(moments, other))
+            })
+    };
     left.nodal == right.nodal
-        && left.surface.len() == right.surface.len()
-        && left.surface.iter().all(|(traction, moments)| {
-            right
-                .surface
-                .get(traction)
-                .is_some_and(|other| same_geometric_moments(moments, other))
-        })
+        && left.moments == right.moments
+        && same_spread(&left.surface, &right.surface)
+        && same_spread(&left.lines, &right.lines)
 }
 
 fn same_constraint_definition(left: &ConstraintDefinition, right: &ConstraintDefinition) -> bool {
@@ -1333,6 +1800,14 @@ fn finite3(value: [f64; 3]) -> bool {
 fn hash_text(hasher: &mut Sha256, value: &str) {
     hasher.update((value.len() as u64).to_le_bytes());
     hasher.update(value.as_bytes());
+}
+
+fn hash_index(hasher: &mut Sha256, index: usize) {
+    hasher.update(
+        u64::try_from(index)
+            .expect("an index fits 64 bits")
+            .to_le_bytes(),
+    );
 }
 
 fn hash_f64s(hasher: &mut Sha256, values: &[f64]) {

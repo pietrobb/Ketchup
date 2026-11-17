@@ -70,6 +70,7 @@ fn tetrahedral_bar(cells: usize, side: usize, cell_mm: f64) -> FeaModel {
                 (y == 0 && z == 0).then_some(0.0),
                 (z == 0 && (y == 0 || y == side)).then_some(0.0),
             ],
+            rotation_rad: [None; 3],
         })
         .collect();
     let mut face_count = BTreeMap::<[usize; 3], usize>::new();
