@@ -19,7 +19,8 @@ pub use job_object::{JobObject, JobObjectChild};
 #[cfg(any(all(windows, feature = "job-object"), unix))]
 #[doc(inline)]
 pub use job_memory_limit::{
-	JobMemoryLimit, apply_inherited_memory_limit, memory_limit_exceeded, physical_memory_bytes,
+	JobMemoryLimit, ProcessMeter, apply_inherited_memory_limit, memory_limit_exceeded,
+	physical_memory_bytes,
 };
 #[cfg(feature = "kill-on-drop")]
 #[doc(inline)]

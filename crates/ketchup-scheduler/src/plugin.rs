@@ -1,3 +1,4 @@
+use crate::memory_budget;
 use ketchup_assistant::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
     PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
@@ -133,6 +134,16 @@ pub fn run_plugin_command(
         &command.arguments,
         command.working_directory.as_deref(),
     )?;
+    // The plugin is busy from start to end: the window's budget stops it only when
+    // the processes doing work together pass it.
+    let budget = memory_budget::track(memory_budget::window_memory_budget(), &*child);
+    let _guard = budget.as_ref().map(memory_budget::Registration::busy);
+    let blamed = |error| {
+        budget
+            .as_ref()
+            .and_then(memory_budget::Registration::stopped)
+            .map_or(error, PluginHostError::MemoryBudget)
+    };
     let stdin = child
         .stdin()
         .take()
@@ -215,11 +226,11 @@ pub fn run_plugin_command(
             // Descendants must be terminated even when the plugin exits unsuccessfully.
             let exit = wait_for_exit(child.as_mut(), deadline, cancelled);
             terminate(child.as_mut())?;
-            exit?;
+            exit.map_err(blamed)?;
             Ok(result)
         }
         Err(error) => match terminate(child.as_mut()) {
-            Ok(()) => Err(error),
+            Ok(()) => Err(blamed(error)),
             Err(cleanup_error) => Err(cleanup_error),
         },
     }
@@ -540,6 +551,9 @@ pub enum PluginHostError {
     InvalidTimeout,
     TimedOut,
     Cancelled,
+    /// The background jobs of the window together used more than its memory budget,
+    /// and the plugin was stopped.
+    MemoryBudget(memory_budget::BudgetStop),
 }
 
 impl fmt::Display for PluginHostError {
@@ -565,6 +579,7 @@ impl fmt::Display for PluginHostError {
             Self::InvalidTimeout => formatter.write_str("plugin timeout is not representable"),
             Self::TimedOut => formatter.write_str("plugin process timed out"),
             Self::Cancelled => formatter.write_str("plugin process was cancelled"),
+            Self::MemoryBudget(stop) => stop.fmt(formatter),
         }
     }
 }
