@@ -1,8 +1,8 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except seven changes (the fourth: `JobMemoryLimit` on Unix, with a footprint watch on macOS; the fifth: `KillOnDrop` on Linux;
-the sixth: a `try_wait` that does not reap the process group; the seventh: `physical_memory_bytes`, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
+files) except eight changes (the fourth: `JobMemoryLimit` on Unix, with a footprint watch on macOS; the fifth: `KillOnDrop` on Linux;
+the sixth: a `try_wait` that does not reap the process group; the seventh: `physical_memory_bytes`; the eighth: `ProcessMeter`, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
 has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out, and
 with it the `[[test]]` targets and dev-dependencies of `Cargo.toml`. The unit tests in `src/` run in
 CI on Linux and macOS with this directory's own `Cargo.lock` (`.github/workflows/ci.yml`).
@@ -71,6 +71,24 @@ forked parent reserves differs from what the program reserves after `exec`. macO
 Windows, which adds `Win32_System_SystemInformation` to the `job-object` feature in `Cargo.toml`;
 `sysconf` on Unix), exported next to `JobMemoryLimit`. Ketchup's exact worker, which reads STEP and
 IGES files of any size, may commit half of it (review 2026-10-21 LIM-3); both calls are unsafe.
+
+`src/std/job_memory_limit.rs` also has `ProcessMeter` (exported next to `JobMemoryLimit`): taken
+of a running child, it reads from any thread how much memory the child uses now and kills it. On
+Windows it holds its own process handle (`OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION |
+PROCESS_TERMINATE`, opened while the child's handle is held, so the pid still names the child),
+reads `PROCESS_MEMORY_COUNTERS_EX.PrivateUsage` with `GetProcessMemoryInfo` (the commit charge that
+`ProcessMemoryLimit` counts; adds `Win32_System_ProcessStatus` to the `job-object` feature in
+`Cargo.toml`) and ends it with `TerminateProcess`. On Linux it reads the private resident memory
+(`resident - shared` pages of `/proc/<pid>/statm`), on macOS the physical footprint the footprint
+watch samples, and kills the process group as that watch does (`kill_group`, moved out of the
+macOS module). On Unix it keeps the start time (`/proc/<pid>/stat` field 22, or
+`ri_proc_start_abstime`), so it neither reads nor kills a process that reused the pid. A unit test
+in the same file has a child write 256 MiB, reads it and kills the child.
+
+Why: Ketchup keeps one memory budget for all the background processes of a window (exact
+workers, program workers, plugins). Each keeps the limit of its kind; a thread of the window sums
+what they use now and stops the largest when the sum passes the budget. Reserving each limit from
+the budget up front instead deadlocked, because some jobs hold one worker while they start another.
 
 ## KillOnDrop on Linux
 
