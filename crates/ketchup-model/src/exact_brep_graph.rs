@@ -500,6 +500,11 @@ pub enum ExactBRepOperation {
         #[serde(default)]
         continuity: ExactBRepLoftContinuity,
     },
+    /// The smoothest surface spanning `boundary`, one closed loop that may
+    /// turn at corners; see `SurfaceBodySpec::Boundary`.
+    BoundarySurface {
+        boundary: ExactBRepSpatialPath,
+    },
     SurfaceTrim {
         target: ExactBRepNodeId,
         cutter: ExactBRepNodeId,
@@ -668,6 +673,7 @@ impl ExactBRepOperation {
             | Self::PlanarOffset { .. }
             | Self::PlanarSurface { .. }
             | Self::LoftSurface { .. }
+            | Self::BoundarySurface { .. }
             | Self::Sweep { .. }
             | Self::SpatialSweep { .. }
             | Self::Loft { .. }
@@ -689,6 +695,7 @@ impl ExactBRepOperation {
                 sections.iter().map(|section| section.profile).collect()
             }
             Self::Boolean { .. }
+            | Self::BoundarySurface { .. }
             | Self::SurfaceTrim { .. }
             | Self::SurfaceExtend { .. }
             | Self::SurfaceKnit { .. }
@@ -1003,6 +1010,7 @@ impl ExactBRepGraph {
                 ExactBRepOperation::PlanarOffset { .. }
                 | ExactBRepOperation::PlanarSurface { .. }
                 | ExactBRepOperation::LoftSurface { .. }
+                | ExactBRepOperation::BoundarySurface { .. }
                 | ExactBRepOperation::SurfaceTrim { .. }
                 | ExactBRepOperation::SurfaceExtend { .. },
             ) => BodyKind::Surface,
@@ -1298,7 +1306,8 @@ impl ExactBRepGraph {
                 }
                 | ExactBRepOperation::LoftSurface {
                     guide: Some(path), ..
-                } => path.segments.len(),
+                }
+                | ExactBRepOperation::BoundarySurface { boundary: path } => path.segments.len(),
                 _ => 0,
             };
             segment_count = segment_count

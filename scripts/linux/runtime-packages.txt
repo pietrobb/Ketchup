@@ -1,0 +1,11 @@
+libvulkan1
+mesa-vulkan-drivers
+libxkbcommon-x11-0
+libx11-6
+libxcursor1
+libxrandr2
+libxi6
+libwayland-client0
+libwayland-cursor0
+libwayland-egl1
+xdg-desktop-portal

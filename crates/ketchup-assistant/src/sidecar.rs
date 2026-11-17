@@ -17,6 +17,8 @@ use std::fmt;
 
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
+mod spatial_path;
+
 /// Most operations in one CAD edit program.
 const MAX_CAD_EDIT_OPERATIONS: usize = 64;
 /// Most occurrences one selector may name.
@@ -184,41 +186,6 @@ pub enum AssistantSpatialPathSegment {
         control_2_mm: [f64; 3],
         end_mm: [f64; 3],
     },
-}
-
-impl AssistantSpatialPathSegment {
-    fn canonical(&self) -> SpatialPathSegment {
-        match self {
-            Self::Line { start_mm, end_mm } => SpatialPathSegment::Line {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-            },
-            Self::CircularArc {
-                start_mm,
-                end_mm,
-                center_mm,
-                normal,
-                clockwise,
-            } => SpatialPathSegment::CircularArc {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-                center_mm: *center_mm,
-                normal: *normal,
-                clockwise: *clockwise,
-            },
-            Self::CubicBezier {
-                start_mm,
-                control_1_mm,
-                control_2_mm,
-                end_mm,
-            } => SpatialPathSegment::CubicBezier {
-                start_mm: *start_mm,
-                control_1_mm: *control_1_mm,
-                control_2_mm: *control_2_mm,
-                end_mm: *end_mm,
-            },
-        }
-    }
 }
 
 pub fn validated_spatial_path_segments(
@@ -963,6 +930,11 @@ pub enum AssistantCadSurfaceBodySource {
         #[serde(default)]
         continuity: AssistantCadLoftContinuity,
     },
+    /// The smoothest surface spanning one closed loop of spatial lines, arcs
+    /// and cubic Beziers; the loop may turn at corners.
+    Boundary {
+        segments: Vec<AssistantSpatialPathSegment>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -1293,6 +1265,9 @@ impl AssistantCadBodyFeature {
                 source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
             } if profile_feature_id.validate().is_ok() => Ok(()),
             Self::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Boundary { segments },
+            } if (2..=limits::PATH_SEGMENTS).contains(&segments.len()) => Ok(()),
+            Self::SurfaceBody {
                 source:
                     AssistantCadSurfaceBodySource::Loft {
                         sections,
@@ -1585,7 +1560,9 @@ impl AssistantCadBodyFeature {
                 )?;
             }
             Self::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Planar { .. },
+                source:
+                    AssistantCadSurfaceBodySource::Planar { .. }
+                    | AssistantCadSurfaceBodySource::Boundary { .. },
             } => {}
             Self::SurfaceTrim {
                 target_feature_id,

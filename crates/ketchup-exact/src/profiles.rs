@@ -105,6 +105,52 @@ impl ExactBackend {
         )
     }
 
+    /// Fills one closed loop of spatial lines, arcs and cubic Beziers with the
+    /// smoothest surface that meets every curve. The result is refused when
+    /// the kernel's surface misses a boundary curve by more than the linear
+    /// tolerance.
+    pub fn fill_boundary_surface(
+        &self,
+        boundary: &[SpatialProfileSegment],
+    ) -> Result<ExactOpOutput, GeometryError> {
+        let operation = "fill_boundary_surface";
+        let input = format!(
+            "{operation}:{:?}",
+            digest_bits(&spatial_segments_digest_values(boundary))
+        );
+        let invalid = |diagnostic: &str| {
+            parameter_error(
+                GeometryErrorCode::InvalidProfile,
+                operation,
+                &input,
+                diagnostic.to_owned(),
+            )
+        };
+        if !(2..=limits::PATH_SEGMENTS).contains(&boundary.len()) {
+            return Err(invalid(
+                "Boundary surface requires between two and 64 boundary curves",
+            ));
+        }
+        for segment in boundary {
+            spatial_sweep_path_metrics(segment, operation, &input)?;
+        }
+        let closed = boundary
+            .iter()
+            .zip(boundary.iter().cycle().skip(1))
+            .all(|(segment, next)| {
+                spatial_segment_endpoints(segment).1 == spatial_segment_endpoints(next).0
+            });
+        if !closed {
+            return Err(invalid("Boundary surface curves must form one closed loop"));
+        }
+        collect_output(
+            ffi::fill_boundary_surface_native(&native_spatial_segments(boundary)),
+            operation,
+            &input,
+            HistoryConfidence::Partial,
+        )
+    }
+
     pub fn trim_surface(
         &self,
         target: &ExactBody,
