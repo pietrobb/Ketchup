@@ -117,6 +117,7 @@ fn tetrahedral_bar(cells: usize, side: usize, cell_mm: f64) -> FeaModel {
         elements,
         constraints,
         loads,
+        couplings: Vec::new(),
     }
 }
 
