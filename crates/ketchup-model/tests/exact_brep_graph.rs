@@ -597,6 +597,7 @@ fn compiler_uses_one_contract_for_pad_revolve_sweep_and_loft() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))

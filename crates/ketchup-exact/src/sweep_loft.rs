@@ -250,7 +250,28 @@ impl ExactBackend {
         guide: Option<&[SpatialProfileSegment]>,
         continuity: LoftSurfaceContinuity,
     ) -> Result<ExactOpOutput, GeometryError> {
-        self.loft_framed_profiles_with_body_kind(spec, guide, continuity, true)
+        self.loft_framed_profiles_with_body_kind(spec, guide, None, continuity, true)
+    }
+
+    /// A Loft along `guide` whose every section across the guide is scaled about
+    /// the guide so its border meets `rail` where the rail crosses the section's
+    /// plane. The rail starts on the first section, ends on the last and crosses
+    /// every section between once.
+    pub fn loft_framed_with_rail(
+        &self,
+        spec: &FramedLoftSpec,
+        guide: &[SpatialProfileSegment],
+        rail: &[SpatialProfileSegment],
+        continuity: LoftSurfaceContinuity,
+        make_solid: bool,
+    ) -> Result<ExactOpOutput, GeometryError> {
+        self.loft_framed_profiles_with_body_kind(
+            spec,
+            Some(guide),
+            Some(rail),
+            continuity,
+            make_solid,
+        )
     }
 
     pub fn loft_framed_surface(
@@ -259,13 +280,14 @@ impl ExactBackend {
         guide: Option<&[SpatialProfileSegment]>,
         continuity: LoftSurfaceContinuity,
     ) -> Result<ExactOpOutput, GeometryError> {
-        self.loft_framed_profiles_with_body_kind(spec, guide, continuity, false)
+        self.loft_framed_profiles_with_body_kind(spec, guide, None, continuity, false)
     }
 
     pub(super) fn loft_framed_profiles_with_body_kind(
         &self,
         spec: &FramedLoftSpec,
         guide: Option<&[SpatialProfileSegment]>,
+        rail: Option<&[SpatialProfileSegment]>,
         continuity: LoftSurfaceContinuity,
         make_solid: bool,
     ) -> Result<ExactOpOutput, GeometryError> {
@@ -284,6 +306,17 @@ impl ExactBackend {
         }
         if let Some(guide) = guide {
             validate_spatial_sweep_path(guide, operation, operation)?;
+        }
+        if let Some(rail) = rail {
+            if guide.is_none() {
+                return Err(parameter_error(
+                    GeometryErrorCode::InvalidParameter,
+                    operation,
+                    operation,
+                    "A Loft rail needs a guide path".to_owned(),
+                ));
+            }
+            validate_spatial_sweep_path(rail, operation, operation)?;
         }
         let guide = guide.unwrap_or_default();
         let mut values = vec![spec.sections.len() as f64];
@@ -387,17 +420,24 @@ impl ExactBackend {
             LoftSurfaceContinuity::Tangent => 1,
             LoftSurfaceContinuity::Curvature => 2,
         };
-        let input = format!(
+        let mut input = format!(
             "{operation}:{:?}:{:?}:{continuity_code}:{make_solid}",
             digest_bits(&values),
             digest_bits(&spatial_segments_digest_values(guide))
         );
+        if let Some(rail) = rail {
+            input.push_str(&format!(
+                ":rail:{:?}",
+                digest_bits(&spatial_segments_digest_values(rail))
+            ));
+        }
         collect_output(
             ffi::loft_framed_profiles_native(
                 &sections,
                 &segments,
                 &spline_points,
                 &native_spatial_segments(guide),
+                &rail.map_or_else(Vec::new, native_spatial_segments),
                 continuity_code,
                 make_solid,
             ),

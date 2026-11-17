@@ -2243,6 +2243,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))
@@ -2456,6 +2457,7 @@ fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))
@@ -2532,6 +2534,7 @@ fn worker_evaluates_loft_with_matching_profile_holes_and_rejects_mismatched_wire
                 .collect(),
             guide: None,
             continuity: LoftContinuity::Position,
+            rail: None,
         },
     });
     let mut document = DocumentStore::new();
@@ -2649,6 +2652,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                     ],
                     guide: Some(guide),
                     continuity: LoftContinuity::Tangent,
+                    rail: None,
                 },
             },
         ]))
@@ -2705,6 +2709,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                     ],
                     guide: None,
                     continuity,
+                    rail: None,
                 },
             }]))
             .unwrap();
@@ -2765,6 +2770,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                 ],
                 guide: Some(intersecting_guide),
                 continuity: LoftContinuity::Tangent,
+                rail: None,
             },
         },
     ]));
@@ -2818,6 +2824,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                     ],
                     guide,
                     continuity,
+                    rail: None,
                 },
             }]))
             .err()
@@ -2933,6 +2940,7 @@ fn worker_evaluates_mixed_spline_and_sketch_loft_in_shifted_rotated_frames() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))

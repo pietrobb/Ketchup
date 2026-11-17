@@ -6,6 +6,7 @@ mod boundary_surface;
 mod crmath;
 mod face_measurement;
 mod finish_census;
+mod loft_rail;
 mod naming;
 mod pair_query;
 mod thread_groove;

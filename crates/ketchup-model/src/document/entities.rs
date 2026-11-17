@@ -897,6 +897,11 @@ pub enum SurfaceBodySpec {
         sections: Vec<LoftSection>,
         guide: Option<FeatureId>,
         continuity: LoftContinuity,
+        /// A second spatial path, from the first section's border to the
+        /// last's: every section is stretched so its border stays on it.
+        /// Needs `guide`. Format 116.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<FeatureId>,
     },
     /// The smoothest surface spanning one closed loop of spatial lines, arcs
     /// and cubic Beziers, which may meet at corners.
@@ -1065,6 +1070,11 @@ pub enum FeatureKind {
         sections: Vec<LoftSection>,
         guide: Option<FeatureId>,
         continuity: LoftContinuity,
+        /// A second spatial path, from the first section's border to the
+        /// last's: every section is stretched so its border stays on it.
+        /// Needs `guide`. Format 116.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<FeatureId>,
     },
     SheetMetal(SheetMetalSpec),
     ImportedExactBody(ImportedExactBodySpec),
@@ -1194,6 +1204,17 @@ impl FeatureKind {
             profile,
             path,
             up: None,
+        }
+    }
+
+    /// A solid Loft straight up through `sections`, with neither guide nor rail.
+    #[must_use]
+    pub fn loft(sections: Vec<LoftSection>) -> Self {
+        Self::Loft {
+            sections,
+            guide: None,
+            continuity: LoftContinuity::Position,
+            rail: None,
         }
     }
 
@@ -1591,14 +1612,21 @@ impl FeatureKind {
                 .into_iter()
                 .collect(),
             Self::Loft {
-                sections, guide, ..
+                sections,
+                guide,
+                rail,
+                ..
             }
             | Self::SurfaceBody(SurfaceBodySpec::Loft {
-                sections, guide, ..
+                sections,
+                guide,
+                rail,
+                ..
             }) => sections
                 .iter()
                 .map(|section| section.profile)
                 .chain(*guide)
+                .chain(*rail)
                 .collect(),
             Self::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                 [*profile].into_iter().collect()

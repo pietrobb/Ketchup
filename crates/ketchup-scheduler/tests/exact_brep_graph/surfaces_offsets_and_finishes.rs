@@ -181,6 +181,7 @@ fn loft_surface_is_open_exact_geometry_and_planar_surface_rejects_profile_holes(
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 }),
             },
         ]))
@@ -1896,20 +1897,16 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: loft,
                 definition_id: loft_definition,
                 name: "Lofted solid".into(),
-                kind: FeatureKind::Loft {
-                    sections: vec![
-                        LoftSection {
-                            profile: lower,
-                            elevation_mm: 0.0,
-                        },
-                        LoftSection {
-                            profile: upper,
-                            elevation_mm: 20.0,
-                        },
-                    ],
-                    guide: None,
-                    continuity: LoftContinuity::Position,
-                },
+                kind: FeatureKind::loft(vec![
+                    LoftSection {
+                        profile: lower,
+                        elevation_mm: 0.0,
+                    },
+                    LoftSection {
+                        profile: upper,
+                        elevation_mm: 20.0,
+                    },
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft_cut_profile,
