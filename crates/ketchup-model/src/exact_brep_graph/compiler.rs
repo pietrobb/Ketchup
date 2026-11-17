@@ -88,6 +88,14 @@ impl<'a> GraphCompiler<'a> {
                         pending.push((*surface, false));
                     }
                 }
+                FeatureKind::SurfaceBody(SurfaceBodySpec::ControlPoint {
+                    target, keep, ..
+                }) => {
+                    for seam in keep.iter().rev() {
+                        pending.push((seam.surface, false));
+                    }
+                    pending.push((*target, false));
+                }
                 FeatureKind::WeldmentJoint(spec) => {
                     pending.push((spec.second_member, false));
                     pending.push((spec.first_member, false));
@@ -374,17 +382,9 @@ impl<'a> GraphCompiler<'a> {
                 target: self.body_id(*target)?,
                 cutter: self.body_id(*cutter)?,
             },
-            FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
-                first,
-                first_continuity,
-                second,
-                second_continuity,
-            }) => ExactBRepOperation::SurfaceBlend {
-                first: self.body_id(*first)?,
-                first_continuity: (*first_continuity).into(),
-                second: self.body_id(*second)?,
-                second_continuity: (*second_continuity).into(),
-            },
+            FeatureKind::SurfaceBody(
+                spec @ (SurfaceBodySpec::Blend { .. } | SurfaceBodySpec::ControlPoint { .. }),
+            ) => self.compile_derived_surface(spec)?,
             FeatureKind::SurfaceExtend { target, distance } => ExactBRepOperation::SurfaceExtend {
                 target: self.body_id(*target)?,
                 distance_bits: positive_distance(
@@ -617,6 +617,51 @@ impl<'a> GraphCompiler<'a> {
     }
 
     /// A sketch with exactly one solved region along its normal, or any other profile feature as is.
+    /// A surface made from earlier surfaces: a blend between two, or one with
+    /// a control point moved (and the neighbours whose seams it keeps).
+    fn compile_derived_surface(
+        &self,
+        spec: &SurfaceBodySpec,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        Ok(match spec {
+            SurfaceBodySpec::Blend {
+                first,
+                first_continuity,
+                second,
+                second_continuity,
+            } => ExactBRepOperation::SurfaceBlend {
+                first: self.body_id(*first)?,
+                first_continuity: (*first_continuity).into(),
+                second: self.body_id(*second)?,
+                second_continuity: (*second_continuity).into(),
+            },
+            SurfaceBodySpec::ControlPoint {
+                target,
+                u_index,
+                v_index,
+                offset_mm,
+                weight,
+                keep,
+            } => ExactBRepOperation::SurfaceControlPoint {
+                target: self.body_id(*target)?,
+                u_index: *u_index,
+                v_index: *v_index,
+                offset_bits: offset_mm.map(f64::to_bits),
+                weight_bits: weight.map(f64::to_bits),
+                keep: keep
+                    .iter()
+                    .map(|seam| {
+                        Ok(ExactBRepSurfaceSeam {
+                            surface: self.body_id(seam.surface)?,
+                            continuity: seam.continuity.into(),
+                        })
+                    })
+                    .collect::<Result<_, ExactBRepGraphError>>()?,
+            },
+            _ => return Err(ExactBRepGraphError::InvalidGraph),
+        })
+    }
+
     fn compile_single_region_profile(
         &mut self,
         profile: FeatureId,

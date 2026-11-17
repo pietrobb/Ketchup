@@ -511,6 +511,25 @@ class Document:
             "second_feature_id": second_feature_id, "second_continuity": second_continuity,
         }})
 
+    def move_surface_control_point(self, definition_id, name, target_feature_id, u_index, v_index,
+                                   offset_mm=(0.0, 0.0, 0.0), *, weight=None, keep=()):
+        """Move one control point of a single-face surface's B-spline form.
+
+        `keep` lists (surface_feature_id, continuity) seams that must still hold
+        "position", "tangent" or "curvature" continuity, or the move is refused.
+        The earlier surface stays.
+        """
+        source = {
+            "type": "control_point", "target_feature_id": target_feature_id,
+            "u_index": u_index, "v_index": v_index, "offset_mm": list(offset_mm),
+        }
+        if weight is not None:
+            source["weight"] = weight
+        if keep:
+            source["keep"] = [{"surface_feature_id": surface, "continuity": continuity}
+                              for surface, continuity in keep]
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
+
     def trim_surface(self, definition_id, name, target_feature_id, cutter_feature_id):
         return self.append_feature(definition_id, name, {
             "type": "surface_trim", "target_feature_id": target_feature_id,

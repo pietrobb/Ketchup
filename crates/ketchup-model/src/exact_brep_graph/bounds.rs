@@ -123,6 +123,29 @@ pub(super) fn operation_bounds(
                 .then_some(Some(expanded))
                 .ok_or(ExactBRepGraphError::ResourceLimit)
         }
+        // A surface stays within the hull of its control points, which may
+        // reach past its trimmed face by about its own size; the moved point
+        // goes further by its offset.
+        ExactBRepOperation::SurfaceControlPoint {
+            target,
+            offset_bits,
+            ..
+        } => {
+            let Some(bounds) = node_bounds[target.index()] else {
+                return Ok(None);
+            };
+            let reach = (0..3)
+                .map(|axis| bounds[1][axis] - bounds[0][axis])
+                .fold(0.0, f64::max)
+                + ketchup_geometry::linalg::length(offset_bits.map(f64::from_bits));
+            let expanded = [
+                [0, 1, 2].map(|axis| bounds[0][axis] - reach),
+                [0, 1, 2].map(|axis| bounds[1][axis] + reach),
+            ];
+            valid_bounds(expanded)
+                .then_some(Some(expanded))
+                .ok_or(ExactBRepGraphError::ResourceLimit)
+        }
         ExactBRepOperation::SurfaceTrim { target, cutter } => Ok(node_bounds[target.0 as usize]
             .zip(node_bounds[cutter.0 as usize])
             .and_then(|(target, cutter)| bounds_intersection(target, cutter))),

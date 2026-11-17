@@ -2869,6 +2869,111 @@ fn public_blend_program_joins_two_earlier_surfaces() {
     assert!(itself.validate().is_err());
 }
 
+/// The AI moves a control point of a surface it has just made and keeps the
+/// seam with a neighbour tangent; keeping the moved surface's own seam with
+/// itself, or a move that changes nothing, is refused before planning.
+#[test]
+fn public_control_point_program_reshapes_an_earlier_surface() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Reshaped surface".into(),
+            },
+        ]))
+        .unwrap();
+    let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
+    let plate = |x: f64| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Plate".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::Boundary {
+                segments: vec![
+                    line([x, 0.0, 0.0], [x + 30.0, 0.0, 0.0]),
+                    line([x + 30.0, 0.0, 0.0], [x + 30.0, 20.0, 0.0]),
+                    line([x + 30.0, 20.0, 0.0], [x, 20.0, 0.0]),
+                    line([x, 20.0, 0.0], [x, 0.0, 0.0]),
+                ],
+                inner: Vec::new(),
+            },
+        },
+    };
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let moved = |offset_mm, neighbour| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Moved".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::ControlPoint {
+                target_feature_id: earlier_body(1),
+                u_index: 1,
+                v_index: 1,
+                offset_mm,
+                weight: None,
+                keep: vec![AssistantCadSurfaceSeam {
+                    surface_feature_id: neighbour,
+                    continuity: AssistantCadLoftContinuity::Tangent,
+                }],
+            },
+        },
+    };
+    let input = program(vec![
+        plate(0.0),
+        plate(30.0),
+        moved([0.0, 0.0, 2.0], earlier_body(0)),
+    ]);
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][2]["feature"]["source"]["type"],
+        "control_point"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    let FeatureKind::SurfaceBody(SurfaceBodySpec::ControlPoint {
+        target,
+        offset_mm,
+        keep,
+        ..
+    }) = preview.feature(FeatureId(3)).unwrap().kind()
+    else {
+        panic!("not a control-point move");
+    };
+    assert_eq!((*target, *offset_mm), (FeatureId(2), [0.0, 0.0, 2.0]));
+    assert_eq!(keep[0].surface, FeatureId(1));
+    assert_eq!(
+        preview.feature(FeatureId(3)).unwrap().kind().body_kind(),
+        Some(BodyKind::Surface)
+    );
+
+    for refused in [
+        moved([0.0, 0.0, 2.0], earlier_body(1)),
+        moved([0.0, 0.0, 0.0], earlier_body(0)),
+    ] {
+        assert!(
+            program(vec![plate(0.0), plate(30.0), refused])
+                .validate()
+                .is_err()
+        );
+    }
+}
+
 #[test]
 fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
     let definition = DefinitionId(1);

@@ -85,7 +85,7 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/live_bridge.rs": 3455,
     "crates/ketchup-application/src/planner.rs": 4323,
     "crates/ketchup-application/src/validation.rs": 4053,
-    "crates/ketchup-assistant/src/sidecar.rs": 4207,
+    "crates/ketchup-assistant/src/sidecar.rs": 4128,
     "crates/ketchup-geometry/src/sketch.rs": 3055,
     "crates/ketchup-headless/src/protocol.rs": 3199,
     "crates/ketchup-model/src/drawing.rs": 4459,
@@ -94,7 +94,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/persistence/legacy.rs": 4679,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4213,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4208,
     "crates/ketchup-scheduler/src/lib.rs": 3259,
 }
 
@@ -117,15 +117,15 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
     "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 601,
-    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 649,
+    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 640,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 755,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 404,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 482,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 474,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1335,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 674,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 501,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 496,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its
@@ -530,7 +530,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-program allows": 9,
     "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
-    "ketchup-scheduler casts": 71,
+    "ketchup-scheduler casts": 70,
     # One on each item calling the system to read or change this thread's user and
     # groups, on Linux and macOS (review 2026-11-13 P3: one on the module hid them).
     "ketchup-user-files allows": 8,

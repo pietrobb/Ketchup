@@ -18,6 +18,7 @@ use std::fmt;
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
 mod loft;
+mod program_references;
 mod spatial_path;
 mod structure_change;
 
@@ -940,6 +941,31 @@ pub enum AssistantCadSurfaceBodySource {
         #[serde(default)]
         second_continuity: AssistantCadLoftContinuity,
     },
+    /// An earlier single-face surface with one control point of its B-spline
+    /// form (row `u_index`, column `v_index`, from 0) moved by `offset_mm`
+    /// and, with `weight`, given a new positive weight. Every seam in `keep`
+    /// must hold its continuity after the move or the move is refused. The
+    /// earlier surface stays.
+    ControlPoint {
+        target_feature_id: AssistantCadFeatureReference,
+        u_index: u32,
+        v_index: u32,
+        #[serde(default)]
+        offset_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<AssistantCadSurfaceSeam>,
+    },
+}
+
+/// A neighbouring surface whose seam with a reshaped surface keeps its
+/// continuity.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadSurfaceSeam {
+    pub surface_feature_id: AssistantCadFeatureReference,
+    pub continuity: AssistantCadLoftContinuity,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -1273,6 +1299,30 @@ impl AssistantCadBodyFeature {
             }
             Self::SurfaceBody {
                 source:
+                    AssistantCadSurfaceBodySource::ControlPoint {
+                        target_feature_id,
+                        offset_mm,
+                        weight,
+                        keep,
+                        ..
+                    },
+            } if target_feature_id.validate().is_ok()
+                && assistant_cad_vector_is_bounded(*offset_mm)
+                && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
+                && (weight.is_some() || offset_mm.iter().any(|value| *value != 0.0))
+                && keep.len() <= limits::FEATURE_REFERENCES
+                && keep.iter().enumerate().all(|(index, seam)| {
+                    seam.surface_feature_id.validate().is_ok()
+                        && seam.surface_feature_id != *target_feature_id
+                        && keep[..index]
+                            .iter()
+                            .all(|other| other.surface_feature_id != seam.surface_feature_id)
+                }) =>
+            {
+                Ok(())
+            }
+            Self::SurfaceBody {
+                source:
                     AssistantCadSurfaceBodySource::Loft {
                         sections,
                         guide_feature_id,
@@ -1466,135 +1516,6 @@ impl AssistantCadBodyFeature {
 
     pub fn produces_body_feature_output(&self) -> bool {
         !matches!(self, Self::PlanarOffset { .. })
-    }
-
-    fn validate_program_references(
-        &self,
-        operation_index: usize,
-        operations: &[AssistantCadEditOperation],
-    ) -> Result<(), AssistantRequestInvalid> {
-        let validate_reference = |reference: AssistantCadFeatureReference| match reference {
-            AssistantCadFeatureReference::Existing(_) => Ok(()),
-            AssistantCadFeatureReference::ProgramOutput(reference) => reference.validate_for(
-                operation_index,
-                operations,
-                AssistantCadProgramFeatureOutput::BodyFeature,
-            ),
-        };
-        match self {
-            Self::Boolean {
-                target_feature_id,
-                tool_feature_id,
-                ..
-            } => {
-                validate_reference(*target_feature_id)?;
-                validate_reference(*tool_feature_id)?;
-            }
-            Self::WeldmentJoint {
-                first_member_id,
-                second_member_id,
-                ..
-            } => {
-                validate_reference(*first_member_id)?;
-                validate_reference(*second_member_id)?;
-            }
-            Self::Loft {
-                sections,
-                guide_feature_id,
-                rail_feature_id,
-                ..
-            }
-            | Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Loft {
-                        sections,
-                        guide_feature_id,
-                        rail_feature_id,
-                        ..
-                    },
-            } => {
-                for section in sections {
-                    if let AssistantCadFeatureReference::ProgramOutput(reference) =
-                        section.profile_feature_id
-                    {
-                        reference.validate_for(
-                            operation_index,
-                            operations,
-                            AssistantCadProgramFeatureOutput::SketchFeature,
-                        )?;
-                    }
-                }
-                for path in guide_feature_id.iter().chain(rail_feature_id) {
-                    if let AssistantCadFeatureReference::ProgramOutput(reference) = path {
-                        reference.validate_for(
-                            operation_index,
-                            operations,
-                            AssistantCadProgramFeatureOutput::ConstructionFeature,
-                        )?;
-                    }
-                }
-            }
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Planar {
-                        profile_feature_id: AssistantCadFeatureReference::ProgramOutput(reference),
-                    },
-            } => {
-                reference.validate_for(
-                    operation_index,
-                    operations,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                )?;
-            }
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Planar { .. }
-                    | AssistantCadSurfaceBodySource::Boundary { .. },
-            } => {}
-            Self::SurfaceTrim {
-                target_feature_id,
-                cutter_feature_id,
-            }
-            | Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Blend {
-                        first_feature_id: target_feature_id,
-                        second_feature_id: cutter_feature_id,
-                        ..
-                    },
-            } => {
-                validate_reference(*target_feature_id)?;
-                validate_reference(*cutter_feature_id)?;
-            }
-            Self::SurfaceExtend {
-                target_feature_id, ..
-            }
-            | Self::SurfaceThicken {
-                target_feature_id, ..
-            } => validate_reference(*target_feature_id)?,
-            Self::SurfaceKnit {
-                surface_feature_ids,
-                ..
-            } => {
-                for reference in surface_feature_ids {
-                    validate_reference(*reference)?;
-                }
-            }
-            Self::Pocket {
-                target_feature_id,
-                profile_feature_id,
-                ..
-            } => {
-                validate_reference(*target_feature_id)?;
-                profile_feature_id.validate_output(
-                    operation_index,
-                    operations,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                )?;
-            }
-            _ => {}
-        }
-        Ok(())
     }
 }
 

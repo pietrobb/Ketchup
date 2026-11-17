@@ -265,6 +265,15 @@ class ClientTests(unittest.TestCase):
                     "second_feature_id": 22, "second_continuity": "tangent",
                 },
             }),
+            (lambda: doc.move_surface_control_point(2, "Moved", 23, 2, 16, (0, 0, -5),
+                                                    keep=[(21, "tangent")]), {
+                "type": "surface_body",
+                "source": {
+                    "type": "control_point", "target_feature_id": 23,
+                    "u_index": 2, "v_index": 16, "offset_mm": [0, 0, -5],
+                    "keep": [{"surface_feature_id": 21, "continuity": "tangent"}],
+                },
+            }),
             (lambda: doc.trim_surface(2, "Trim", 21, 22), {
                 "type": "surface_trim", "target_feature_id": 21,
                 "cutter_feature_id": 22,

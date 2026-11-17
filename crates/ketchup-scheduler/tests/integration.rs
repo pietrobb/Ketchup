@@ -14,6 +14,7 @@ mod scheduler_reliability;
 mod sheet_metal;
 mod skp_worker;
 mod surface_blend;
+mod surface_control_point;
 mod thread_groove;
 mod validator_sandbox;
 mod weldment_joint;

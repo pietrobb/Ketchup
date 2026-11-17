@@ -922,6 +922,29 @@ pub enum SurfaceBodySpec {
         second: FeatureId,
         second_continuity: LoftContinuity,
     },
+    /// An earlier single-face surface with one control point of its B-spline
+    /// form (row `u_index`, column `v_index`, from 0) moved by `offset_mm`
+    /// and, with `weight`, given a new positive weight. Every seam in `keep`
+    /// must hold its continuity after the move or the move is refused. The
+    /// earlier surface stays as it is. Format 119.
+    ControlPoint {
+        target: FeatureId,
+        u_index: u32,
+        v_index: u32,
+        offset_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<SurfaceSeam>,
+    },
+}
+
+/// A neighbouring surface whose seam with a reshaped surface keeps its
+/// continuity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SurfaceSeam {
+    pub surface: FeatureId,
+    pub continuity: LoftContinuity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1555,7 +1578,8 @@ impl FeatureKind {
             | Self::SurfaceBody(
                 SurfaceBodySpec::Planar { .. }
                 | SurfaceBodySpec::Boundary { .. }
-                | SurfaceBodySpec::Blend { .. },
+                | SurfaceBodySpec::Blend { .. }
+                | SurfaceBodySpec::ControlPoint { .. },
             )
             | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
@@ -1653,6 +1677,11 @@ impl FeatureKind {
                 second: cutter,
                 ..
             }) => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceBody(SurfaceBodySpec::ControlPoint { target, keep, .. }) => {
+                std::iter::once(*target)
+                    .chain(keep.iter().map(|seam| seam.surface))
+                    .collect()
+            }
             Self::SurfaceExtend { target, .. } | Self::SurfaceThicken { target, .. } => {
                 [*target].into_iter().collect()
             }

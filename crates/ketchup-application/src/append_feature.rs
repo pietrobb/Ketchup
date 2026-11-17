@@ -16,7 +16,8 @@ use ketchup_geometry::sketch::{
 use ketchup_model::document::{
     BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode, DefinitionId, Dimension,
     FeatureId, FeatureKind, FilletRadiusStation, LoftContinuity, LoftSection, ShellDirection,
-    Snapshot, SurfaceBodySpec, WeldmentJointSpec, WeldmentMemberSpec, is_valid_spatial_sweep_path,
+    Snapshot, SurfaceBodySpec, SurfaceSeam, WeldmentJointSpec, WeldmentMemberSpec,
+    is_valid_spatial_sweep_path,
 };
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
@@ -82,6 +83,27 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
             first_continuity: loft_continuity(*first_continuity),
             second: resolved(second_feature_id),
             second_continuity: loft_continuity(*second_continuity),
+        },
+        AssistantCadSurfaceBodySource::ControlPoint {
+            target_feature_id,
+            u_index,
+            v_index,
+            offset_mm,
+            weight,
+            keep,
+        } => SurfaceBodySpec::ControlPoint {
+            target: resolved(target_feature_id),
+            u_index: *u_index,
+            v_index: *v_index,
+            offset_mm: *offset_mm,
+            weight: *weight,
+            keep: keep
+                .iter()
+                .map(|seam| SurfaceSeam {
+                    surface: resolved(&seam.surface_feature_id),
+                    continuity: loft_continuity(seam.continuity),
+                })
+                .collect(),
         },
     }
 }

@@ -725,6 +725,20 @@ fn is_earlier_surface(product: &ProductModel, feature: &Feature, operand: Featur
     })
 }
 
+/// Every operand of a surface trim, blend, control-point move, extension or
+/// thickening is a different surface placed earlier in its definition.
+fn surface_operands_are_earlier(product: &ProductModel, feature: &Feature) -> bool {
+    let operands = feature.kind.dependencies();
+    let distinct = match &feature.kind {
+        FeatureKind::SurfaceTrim { target, cutter } => target != cutter,
+        _ => true,
+    };
+    distinct
+        && operands
+            .into_iter()
+            .all(|operand| is_earlier_surface(product, feature, operand))
+}
+
 fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
@@ -1037,22 +1051,13 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::SurfaceTrim { target, cutter }
-            | FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
-                first: target,
-                second: cutter,
-                ..
-            }) => {
-                if target == cutter
-                    || !is_earlier_surface(product, feature, target)
-                    || !is_earlier_surface(product, feature, cutter)
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::SurfaceExtend { target, .. }
-            | FeatureKind::SurfaceThicken { target, .. } => {
-                if !is_earlier_surface(product, feature, target) {
+            FeatureKind::SurfaceTrim { .. }
+            | FeatureKind::SurfaceBody(
+                SurfaceBodySpec::Blend { .. } | SurfaceBodySpec::ControlPoint { .. },
+            )
+            | FeatureKind::SurfaceExtend { .. }
+            | FeatureKind::SurfaceThicken { .. } => {
+                if !surface_operands_are_earlier(product, feature) {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }

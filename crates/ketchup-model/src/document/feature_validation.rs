@@ -1170,6 +1170,7 @@ pub(super) fn validate_feature_kind(
         FeatureKind::SurfaceBody(
             spec @ (SurfaceBodySpec::Planar { .. }
             | SurfaceBodySpec::Blend { .. }
+            | SurfaceBodySpec::ControlPoint { .. }
             | SurfaceBodySpec::Boundary { .. }),
         ) => validate_unlofted_surface_body(spec, tolerance_mm),
         FeatureKind::Loft {
@@ -1210,7 +1211,7 @@ pub(super) fn validate_feature_kind(
     }
 }
 
-/// A planar, blend or boundary surface body; lofts share `validate_feature_kind`'s loft rules.
+/// A planar, blend, control-point or boundary surface body; lofts share `validate_feature_kind`'s loft rules.
 fn validate_unlofted_surface_body(
     spec: &SurfaceBodySpec,
     tolerance_mm: f64,
@@ -1224,6 +1225,26 @@ fn validate_unlofted_surface_body(
                 && are_valid_network_curves(inner, tolerance_mm))
             .then_some(())
             .ok_or(CanonicalError::InvalidSweep)
+        }
+        SurfaceBodySpec::ControlPoint {
+            target,
+            offset_mm,
+            weight,
+            keep,
+            ..
+        } => {
+            let mut kept = BTreeSet::new();
+            (offset_mm
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
+                && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
+                && (weight.is_some() || offset_mm.iter().any(|value| *value != 0.0))
+                && keep.len() <= limits::FEATURE_REFERENCES
+                && keep
+                    .iter()
+                    .all(|seam| seam.surface != *target && kept.insert(seam.surface)))
+            .then_some(())
+            .ok_or(CanonicalError::InvalidFeatureOwnership(*target))
         }
         SurfaceBodySpec::Planar { .. } | SurfaceBodySpec::Loft { .. } => Ok(()),
     }

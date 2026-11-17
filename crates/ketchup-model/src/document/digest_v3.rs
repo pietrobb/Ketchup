@@ -2333,6 +2333,29 @@ impl DigestV3 {
                 self.u64(second.0);
                 self.continuity(*second_continuity);
             }
+            crate::document::SurfaceBodySpec::ControlPoint {
+                target,
+                u_index,
+                v_index,
+                offset_mm,
+                weight,
+                keep,
+            } => {
+                self.byte(5);
+                self.u64(target.0);
+                self.u64(u64::from(*u_index));
+                self.u64(u64::from(*v_index));
+                for value in offset_mm {
+                    self.u64(value.to_bits());
+                }
+                // No weight hashes as 0, which no valid weight has.
+                self.u64(weight.map_or(0, f64::to_bits));
+                self.length(keep.len());
+                for seam in keep {
+                    self.u64(seam.surface.0);
+                    self.continuity(seam.continuity);
+                }
+            }
         }
     }
 

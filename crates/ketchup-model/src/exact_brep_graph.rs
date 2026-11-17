@@ -323,6 +323,13 @@ impl ExactBRepProfile {
     }
 }
 
+/// A neighbouring surface node whose seam keeps its continuity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExactBRepSurfaceSeam {
+    pub surface: ExactBRepNodeId,
+    pub continuity: ExactBRepLoftContinuity,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExactBRepLoftContinuity {
@@ -524,6 +531,18 @@ pub enum ExactBRepOperation {
         second: ExactBRepNodeId,
         second_continuity: ExactBRepLoftContinuity,
     },
+    /// A single-face surface with one control point moved and reweighted;
+    /// see `SurfaceBodySpec::ControlPoint`.
+    SurfaceControlPoint {
+        target: ExactBRepNodeId,
+        u_index: u32,
+        v_index: u32,
+        offset_bits: [u64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight_bits: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<ExactBRepSurfaceSeam>,
+    },
     SurfaceExtend {
         target: ExactBRepNodeId,
         distance_bits: u64,
@@ -687,6 +706,9 @@ impl ExactBRepOperation {
             Self::WeldmentJoint { first, second, .. }
             | Self::SurfaceBlend { first, second, .. } => vec![first, second],
             Self::SurfaceKnit { surfaces, .. } => surfaces.iter_mut().collect(),
+            Self::SurfaceControlPoint { target, keep, .. } => std::iter::once(target)
+                .chain(keep.iter_mut().map(|seam| &mut seam.surface))
+                .collect(),
             Self::Extrude { .. }
             | Self::Revolve { .. }
             | Self::PlanarOffset { .. }
@@ -717,6 +739,7 @@ impl ExactBRepOperation {
             | Self::BoundarySurface { .. }
             | Self::SurfaceTrim { .. }
             | Self::SurfaceBlend { .. }
+            | Self::SurfaceControlPoint { .. }
             | Self::SurfaceExtend { .. }
             | Self::SurfaceKnit { .. }
             | Self::SurfaceThicken { .. }
@@ -1033,6 +1056,7 @@ impl ExactBRepGraph {
                 | ExactBRepOperation::BoundarySurface { .. }
                 | ExactBRepOperation::SurfaceTrim { .. }
                 | ExactBRepOperation::SurfaceBlend { .. }
+                | ExactBRepOperation::SurfaceControlPoint { .. }
                 | ExactBRepOperation::SurfaceExtend { .. },
             ) => BodyKind::Surface,
             _ => BodyKind::Solid,
