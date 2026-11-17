@@ -69,6 +69,7 @@ fn two_parts(joint: FeaCouplingKind) -> FeaModel {
             youngs_modulus_mpa: YOUNG_MPA,
             poisson_ratio: 0.3,
             yield_strength_mpa: Some(355.0),
+            density_kg_per_m3: None,
         }],
         elements: vec![frame(1, [0, 1]), frame(2, [2, 3])],
         constraints: vec![clamp(0)],
