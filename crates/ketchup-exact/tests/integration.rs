@@ -8,6 +8,7 @@ mod face_measurement;
 mod finish_census;
 mod loft_rail;
 mod naming;
+mod network_surface;
 mod pair_query;
 mod thread_groove;
 

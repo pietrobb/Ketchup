@@ -63,6 +63,12 @@ pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 /// rail lies this close to it; ten nanometres sit far below any machined or printed surface.
 pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-5;
 
+/// Deviation allowed between a surface filled through a network of curves and each curve
+/// of the network, in mm. The kernel fits a smooth plate to points on every curve and
+/// measures every curve against the result; one micrometre is below the form tolerance of
+/// precision machining and far below printing.
+pub const NETWORK_SURFACE_APPROXIMATION_MM: f64 = 1.0e-3;
+
 /// Contact and fit tolerance of rule programs, in mm: two parts at most this far apart
 /// touch, and a part may stick out of the face or the part it fits by this much. Not the
 /// document's [`TolerancePolicy`], which decides coincidence for the exact kernel: program
