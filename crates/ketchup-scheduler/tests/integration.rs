@@ -6,6 +6,7 @@ mod dwg_worker;
 mod exact_brep_graph;
 mod exact_evidence_transport;
 mod generic_sketch_pocket;
+mod loft_rail;
 mod plugin_sandbox;
 mod program_worker;
 mod scheduler_reliability;

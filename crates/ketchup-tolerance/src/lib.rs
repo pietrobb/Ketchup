@@ -58,6 +58,11 @@ pub const DRAFT_VERTICAL_TOLERANCE_DEGREES: f64 = 1.0e-6;
 /// against 6H), so a modelled bolt and its tapped hole stay clear of each other.
 pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 
+/// Deviation allowed between a Loft stretched to a rail and the rail, in mm. The Loft is
+/// fitted through stretched stations across the guide and gets more stations until the
+/// rail lies this close to it; ten nanometres sit far below any machined or printed surface.
+pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-5;
+
 /// Contact and fit tolerance of rule programs, in mm: two parts at most this far apart
 /// touch, and a part may stick out of the face or the part it fits by this much. Not the
 /// document's [`TolerancePolicy`], which decides coincidence for the exact kernel: program

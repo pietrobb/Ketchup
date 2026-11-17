@@ -228,6 +228,24 @@ class ClientTests(unittest.TestCase):
                     "continuity": "tangent",
                 },
             }),
+            (lambda: doc.loft_surface(
+                2,
+                "Railed loft",
+                [{"profile_feature_id": 11, "elevation_mm": 0},
+                 {"profile_feature_id": 12, "elevation_mm": 20}],
+                guide_feature_id=13,
+                rail_feature_id=14,
+            ), {
+                "type": "surface_body",
+                "source": {
+                    "type": "loft",
+                    "sections": [{"profile_feature_id": 11, "elevation_mm": 0},
+                                 {"profile_feature_id": 12, "elevation_mm": 20}],
+                    "continuity": "position",
+                    "guide_feature_id": 13,
+                    "rail_feature_id": 14,
+                },
+            }),
             (lambda: doc.trim_surface(2, "Trim", 21, 22), {
                 "type": "surface_trim", "target_feature_id": 21,
                 "cutter_feature_id": 22,

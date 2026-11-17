@@ -1178,14 +1178,17 @@ pub(super) fn validate_feature_kind(
             sections,
             guide,
             continuity,
+            rail,
         }
         | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
             sections,
             guide,
             continuity,
+            rail,
         }) => {
             if !(2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 || (guide.is_some() && *continuity == LoftContinuity::Curvature)
+                || (rail.is_some() && (guide.is_none() || rail == guide))
                 || sections.windows(2).any(|pair| {
                     pair[0].elevation_mm >= pair[1].elevation_mm
                         || pair[0].profile == pair[1].profile

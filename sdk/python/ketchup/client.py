@@ -490,10 +490,13 @@ class Document:
         })
 
     def loft_surface(self, definition_id, name, sections, *, guide_feature_id=None,
-                     continuity="position"):
+                     continuity="position", rail_feature_id=None):
+        """Loft surface through sections; a rail (needs a guide) stretches them to it."""
         source = {"type": "loft", "sections": list(sections), "continuity": continuity}
         if guide_feature_id is not None:
             source["guide_feature_id"] = guide_feature_id
+        if rail_feature_id is not None:
+            source["rail_feature_id"] = rail_feature_id
         return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
 
     def boundary_surface(self, definition_id, name, segments):
