@@ -71,19 +71,25 @@ impl std::fmt::Display for HoleUnsupported {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::BrokenWall => "Another cut or face breaks the wall of the hole",
-            Self::NoBore => "The finished body has no complete bore of the cut's diameter about its axis",
+            Self::NoBore => {
+                "The finished body has no complete bore of the cut's diameter about its axis"
+            }
             Self::OpensNowhere => "The bore opens nowhere on the body",
             Self::OpensMoreThanTwice => "The hole opens in more than two places",
             Self::UnnamedCone => "The hole has cones the callout cannot name",
             Self::UnnamedRing => "The hole has a flat ring the callout cannot name",
-            Self::NoEnd => "The hole neither runs through nor ends in a flat bottom or a drill point",
+            Self::NoEnd => {
+                "The hole neither runs through nor ends in a flat bottom or a drill point"
+            }
             Self::NotOneRing => "A face of the hole is not one ring of the bore",
-            Self::Widens => "The bore widens below its entry (an undercut or a groove); use a reviewed manual note",
+            Self::Widens => "The bore widens below its entry (an undercut or a groove)",
             Self::TurnsBack => "A face of the hole turns back towards its entry",
             Self::NotOneDiameter => "A cylinder of the hole is not one diameter",
             Self::NotOneBore => "The hole's faces do not form one bore from its entry",
             Self::TwoThreads => "More than one thread is tapped into this hole",
-            Self::ThreadNotCircle => "The thread's hole is not one circle cut from its profile plane",
+            Self::ThreadNotCircle => {
+                "The thread's hole is not one circle cut from its profile plane"
+            }
             Self::NoThreadBore => "The hole has no bore of the thread's diameter",
             Self::ThreadStartsElsewhere => "The thread does not start where its bore does",
             Self::Thread(mismatch) => return mismatch.fmt(formatter),

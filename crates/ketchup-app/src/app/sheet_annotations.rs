@@ -80,12 +80,12 @@ impl KetchupApp {
                     .target("hole_callouts")
                     .reason("Some cuts cannot produce verified hole callouts; nothing was changed.")
                     .fix_hint("Review the reported cuts or use a manual annotation.")
-                    .caused_by_messages(report.diagnostics.iter().map(|diagnostic| {
-                        format!(
-                            "feature {}: {}; {}",
-                            diagnostic.source.feature_id.0, diagnostic.reason, diagnostic.fix_hint
-                        )
-                    })));
+                    .caused_by_messages(
+                        report
+                            .diagnostics
+                            .iter()
+                            .map(|diagnostic| diagnostic.describe(&snapshot)),
+                    ));
             }
             removed_sources = report.diagnostics.len();
             edited = report.sheet;

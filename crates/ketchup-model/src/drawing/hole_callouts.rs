@@ -47,6 +47,19 @@ pub struct HoleCalloutDiagnostic {
     pub fix_hint: String,
 }
 
+impl HoleCalloutDiagnostic {
+    /// One line naming the cut by its feature name, why, and what to do.
+    #[must_use]
+    pub fn describe(&self, snapshot: &Snapshot) -> String {
+        let id = self.source.feature_id;
+        let cut = snapshot.feature(id).map_or_else(
+            || format!("feature {}", id.0),
+            |feature| feature.name().to_owned(),
+        );
+        format!("{cut}: {}. {}", self.reason, self.fix_hint)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HoleCalloutReport {
     pub sheet: DrawingSheet,
@@ -217,7 +230,7 @@ fn source_groups(
                 Err(reason) => {
                     let mut diagnostic = unsupported(source);
                     if let Some(reason) = reason {
-                        diagnostic.reason = reason.to_string();
+                        read_but_refused(&mut diagnostic, &reason);
                     }
                     diagnostics.push(diagnostic);
                 }
@@ -229,7 +242,7 @@ fn source_groups(
                 Err(reason) => {
                     diagnostics.extend(hole.cuts.into_iter().map(|(source, _)| {
                         let mut diagnostic = unsupported(source);
-                        diagnostic.reason = reason.to_string();
+                        read_but_refused(&mut diagnostic, &reason);
                         diagnostic
                     }));
                     continue;
@@ -277,6 +290,14 @@ fn unsupported(source: HoleCalloutSource) -> HoleCalloutDiagnostic {
         reason: "Callout requires a circular cut on the final body's chain of cuts and finishes, whose bore the finished body keeps whole".into(),
         fix_hint: "Use a circular Pad/Boolean cut for the hole; otherwise provide a reviewed manual annotation".into(),
     }
+}
+
+/// A circular cut whose finished hole was read but cannot be called out.
+fn read_but_refused(diagnostic: &mut HoleCalloutDiagnostic, reason: &HoleUnsupported) {
+    diagnostic.reason = reason.to_string();
+    diagnostic.fix_hint =
+        "Change the cuts so the hole is one whole bore, or add a reviewed manual note for it"
+            .into();
 }
 
 /// Following only cuts and edge finishes cannot move the original bore; what

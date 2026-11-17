@@ -193,6 +193,72 @@ fn drilled_sheet() -> (KetchupApp, LiveBridge, u64) {
 }
 
 #[test]
+fn r8_refused_hole_callouts_name_the_cut_and_why_in_the_window_and_to_clients() {
+    use egui_kittest::kittest::Queryable as _;
+    let _turn = crate::live_bridge::measurement::tests::integration_support::file_turn();
+    let (mut app, mut bridge) = setup();
+    super::program_edit::evaluate_exact(&mut app);
+    let top = super::drill_holes::face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+    let position = super::drill_holes::centroid(&top);
+    // Two Ø6 bores 3 mm apart: neither leaves a whole bore.
+    let drill = super::drill_holes::edit(AssistantCadEditOperation::DrillHoles {
+        definition_id: top["definition_id"].as_u64().unwrap(),
+        name: "Overlapping bores".into(),
+        target_feature_id: top["producer_feature_id"].as_u64().unwrap(),
+        face_reference_id: top["reference_id"].as_str().unwrap().into(),
+        points_local_mm: vec![position, [position[0] + 3.0, position[1], position[2]]],
+        diameter_mm: 6.0,
+        depth_mm: Some(8.0),
+        through: false,
+        thread: None,
+    });
+    bridge
+        .execute(&mut app, drill, false)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    let id = sheet_of_parts(&mut app, &mut bridge, 1);
+    let refused = bridge.execute(
+        &mut app,
+        request(
+            "drawing_annotate",
+            json!({"sheet_id": id, "hole_callouts": true}),
+        ),
+        false,
+    );
+    assert!(refused.is_err());
+    let details = take_error_details().unwrap().to_string();
+    assert!(
+        details.contains("Overlapping bores")
+            && details.contains("no complete bore")
+            && details.contains("one whole bore")
+            && !details.contains("feature "),
+        "{details}"
+    );
+    app.dispatch_file_command(AppCommand::ExportProjectDrawings);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1800.0, 1600.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    harness.get_by_label("Annotate sheet").click();
+    harness.run();
+    harness.get_by_label("Generate hole callouts").click();
+    harness.run();
+    let shown = harness
+        .query_all_by_label_contains(": The finished body has no complete bore")
+        .map(|label| {
+            let node = egui_kittest::kittest::NodeT::accesskit_node(&label);
+            node.label().or_else(|| node.value()).unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(
+        shown
+            .iter()
+            .all(|text| text.starts_with("Overlapping bores")),
+        "{shown:?}"
+    );
+}
+
+#[test]
 fn sheet_annotations_new_bore_invalidates_quantity_and_removed_bores_can_be_cleared() {
     use ketchup_model::document::{CanonicalCommand, CommandBatch};
     let _turn = crate::live_bridge::measurement::tests::integration_support::file_turn();
