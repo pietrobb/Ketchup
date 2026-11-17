@@ -248,11 +248,11 @@ drawing_sheet('Bores', source='plate', hole_callouts=True)
         .collect::<Vec<_>>();
     assert_eq!(labels.len(), 2, "{labels:?}");
     assert!(
-        labels.contains(&"4× BORE Ø6 mm; CYLINDRICAL DEPTH 12 mm"),
+        labels.contains(&"4× BORE Ø6 mm DEPTH 12 mm, FLAT BOTTOM"),
         "{labels:?}"
     );
     assert!(
-        labels.contains(&"M5 x 0.8 THREAD DEPTH 8 mm; BORE Ø4.2 mm"),
+        labels.contains(&"M5 x 0.8 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM"),
         "{labels:?}"
     );
     let original = sheet.clone();
@@ -272,7 +272,7 @@ drawing_sheet('Bores', source='plate', hole_callouts=True)
         changed_sheet
             .notes()
             .iter()
-            .any(|note| note.text_template() == "3× BORE Ø6 mm; CYLINDRICAL DEPTH 12 mm")
+            .any(|note| note.text_template() == "3× BORE Ø6 mm DEPTH 12 mm, FLAT BOTTOM")
     );
     use ketchup_application::evaluation;
     use ketchup_model::exact_product::ExactResultRegistry;
@@ -302,7 +302,7 @@ drawing_sheet('Bores', source='plate', hole_callouts=True)
     let drawing = project_orthographic_drawing(&changed, &exact, changed_sheet).unwrap();
     let bundle = ketchup_model::drawing_export::export_drawing(&changed, &drawing).unwrap();
     assert!(String::from_utf8_lossy(bundle.svg()).contains("3× BORE"));
-    assert!(String::from_utf8_lossy(bundle.dxf()).contains("CYLINDRICAL DEPTH 12"));
+    assert!(String::from_utf8_lossy(bundle.dxf()).contains("DEPTH 12 mm, FLAT BOTTOM"));
     assert!(bundle.pdf().is_ok());
     session.undo().unwrap();
     assert_eq!(
@@ -311,8 +311,10 @@ drawing_sheet('Bores', source='plate', hole_callouts=True)
     );
 }
 
+/// Coaxial holes are one hole on the finished body: a bore drilled twice is
+/// one bore, a wide shallow hole over a narrow through hole a counterbore.
 #[test]
-fn r1_sheet_annotations_split_bore_is_refused_instead_of_counted_twice() {
+fn r8_sheet_annotations_read_real_counterbores_and_bores_drilled_twice() {
     let _turn = crate::integration_support::file_turn();
     let mut session = DocumentSession::default();
     session
@@ -322,14 +324,34 @@ fn r1_sheet_annotations_split_bore_is_refused_instead_of_counted_twice() {
 p = box('plate', (40, 30, 20))
 hole(p, 'z+', at=(10, 10), diameter=6, depth=8)
 hole(p, 'z+', at=(10, 10), diameter=6, depth=12)
+hole(p, 'z+', at=(28, 15), diameter=11, depth=6)
+hole(p, 'z+', at=(28, 15), diameter=6.6, depth=20, through=True)
 drawing_sheet('Bores', source='plate', hole_callouts=True)
 "#,
             ),
             false,
         )
-        .err()
         .unwrap();
-    assert_eq!(session.snapshot().drawing_sheets().count(), 0);
+    let snapshot = session.snapshot();
+    let sheet = snapshot.drawing_sheets().next().unwrap();
+    let mut labels = sheet
+        .notes()
+        .iter()
+        .map(|note| {
+            (
+                note.text_template(),
+                note.hole_callout_sources().map(<[_]>::len),
+            )
+        })
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    assert_eq!(
+        labels,
+        [
+            ("BORE Ø6 mm DEPTH 12 mm, FLAT BOTTOM", Some(2)),
+            ("BORE Ø6.6 mm THRU; COUNTERBORE Ø11 mm DEPTH 6 mm", Some(2)),
+        ]
+    );
 }
 
 #[test]
@@ -350,7 +372,7 @@ fn r1_sheet_annotations_generate_real_exact_hole_callouts_and_update_depth() {
     assert_eq!(original.notes().len(), 1);
     assert_eq!(
         original.notes()[0].text_template(),
-        "BORE Ø6 mm; CYLINDRICAL DEPTH 12 mm"
+        "BORE Ø6 mm DEPTH 12 mm, FLAT BOTTOM"
     );
     session
         .apply_rule_program(source(&program(8)), false)
@@ -358,7 +380,7 @@ fn r1_sheet_annotations_generate_real_exact_hole_callouts_and_update_depth() {
     let changed = session.snapshot().drawing_sheets().next().unwrap().clone();
     assert_eq!(
         changed.notes()[0].text_template(),
-        "BORE Ø6 mm; CYLINDRICAL DEPTH 8 mm"
+        "BORE Ø6 mm DEPTH 8 mm, FLAT BOTTOM"
     );
     session.undo().unwrap();
     assert_eq!(

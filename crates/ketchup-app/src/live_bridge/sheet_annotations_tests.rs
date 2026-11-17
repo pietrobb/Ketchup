@@ -155,7 +155,7 @@ fn sheet_annotations_gui_generates_exact_bore_text_and_undoes() {
     assert_eq!(sheet.notes().len(), 1);
     assert_eq!(
         sheet.notes()[0].text_template(),
-        "BORE Ø6 mm; CYLINDRICAL DEPTH 8 mm"
+        "BORE Ø6 mm DEPTH 8 mm, FLAT BOTTOM"
     );
     harness.state_mut().dispatch_command(AppCommand::Undo);
     harness.run();
@@ -235,7 +235,7 @@ fn sheet_annotations_new_bore_invalidates_quantity_and_removed_bores_can_be_clea
         .clone();
     assert_eq!(
         regenerated.notes()[0].text_template(),
-        "2× BORE Ø6 mm; CYLINDRICAL DEPTH 8 mm"
+        "2× BORE Ø6 mm DEPTH 8 mm, FLAT BOTTOM"
     );
     let sources = regenerated.notes()[0].hole_callout_sources().unwrap();
     for source in sources.iter().rev() {
@@ -298,7 +298,7 @@ fn sheet_annotations_client_generates_exact_bore_text_in_one_undo_step() {
     assert_eq!(sheet.notes().len(), 1);
     assert_eq!(
         sheet.notes()[0].text_template(),
-        "BORE Ø6 mm; CYLINDRICAL DEPTH 8 mm"
+        "BORE Ø6 mm DEPTH 8 mm, FLAT BOTTOM"
     );
     let directory = tempfile::tempdir().unwrap();
     for extension in ["svg", "pdf", "dxf"] {
@@ -320,7 +320,7 @@ fn sheet_annotations_client_generates_exact_bore_text_in_one_undo_step() {
         if extension == "pdf" {
             assert!(bytes.starts_with(b"%PDF-"));
         } else {
-            assert!(String::from_utf8_lossy(&bytes).contains("CYLINDRICAL DEPTH 8"));
+            assert!(String::from_utf8_lossy(&bytes).contains("DEPTH 8 mm, FLAT BOTTOM"));
         }
     }
     assert_eq!(app.undo_step_count(), undo + 1);

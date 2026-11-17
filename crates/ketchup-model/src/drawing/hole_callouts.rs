@@ -1,13 +1,17 @@
 //! Source-bound callouts for circular Pad/Boolean cuts, measured on the current
-//! exact body, never on projected circles or cutter travel. Only intact cylinders
-//! with two complete rims are supported. CYLINDRICAL DEPTH is their axial span;
-//! it does not assert a blind bottom or a through condition. Cosmetic threads
-//! additionally require conservative blind-hole runout. Unsupported geometry is
-//! reported rather than silently converted into a plain-hole annotation.
+//! exact body, never on projected circles or cutter travel. The hole about a
+//! cut's axis is read from the body's faces ([`profile`]): its bore, counterbores
+//! and countersink, and whether it runs through or ends in a flat bottom or a
+//! drill point. Coaxial cuts of one hole share one callout. When the body names
+//! no face beyond the bore, CYLINDRICAL DEPTH is its axial span and asserts
+//! neither end. Threads must suit the bore they are tapped into. Unsupported
+//! geometry is reported rather than silently converted into a simpler hole.
 use super::*;
 use crate::document::{BooleanOperation, FeatureId, FeatureKind};
-use ketchup_geometry::linalg::{dot, sub};
 use ketchup_geometry::sketch::PadOperation;
+use profile::{HoleEnd, HoleProfile, HoleUnsupported, hole_profile};
+
+mod profile;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HoleCalloutSource {
@@ -166,14 +170,23 @@ struct CalloutGroup {
     rims: std::collections::BTreeSet<Rim>,
 }
 
+/// One hole of an instance and the cuts on its axis.
+struct Hole {
+    profile: HoleProfile,
+    /// Each cut with the depth of the hole's entry from its start.
+    cuts: Vec<(HoleCalloutSource, f64)>,
+}
+
 fn source_groups(
     snapshot: &Snapshot,
     instances: &[DrawingInstance],
 ) -> Result<(BTreeMap<String, CalloutGroup>, Vec<HoleCalloutDiagnostic>), DrawingError> {
     let mut groups: BTreeMap<String, CalloutGroup> = BTreeMap::new();
     let mut diagnostics = Vec::new();
-    let mut physical_labels = BTreeMap::new();
     for instance in instances {
+        // By the first face of each hole on this instance's body, in the order
+        // of each hole's first cut so sources keep feature order.
+        let mut holes: Vec<(u32, Hole)> = Vec::new();
         for feature in snapshot.features().filter(|feature| {
             feature.definition_id() == instance.package.definition_id()
                 && (is_cut(feature.kind())
@@ -183,30 +196,56 @@ fn source_groups(
                 feature_id: feature.id(),
                 instance_token: instance.token.clone(),
             };
-            let (label, face, rims) = match verified_label(snapshot, instance, feature.id()) {
-                Ok(Some(bore)) => bore,
-                outcome => {
+            match feature_hole(snapshot, instance, feature.id()) {
+                Ok(profile) => {
+                    let Some(&key) = profile.faces.first() else {
+                        continue;
+                    };
+                    let entry = profile.entry;
+                    if let Some((_, hole)) = holes.iter_mut().find(|(face, _)| *face == key) {
+                        hole.cuts.push((source, entry));
+                    } else {
+                        holes.push((
+                            key,
+                            Hole {
+                                profile,
+                                cuts: vec![(source, entry)],
+                            },
+                        ));
+                    }
+                }
+                Err(reason) => {
                     let mut diagnostic = unsupported(source);
-                    if let Err(error) = outcome {
-                        diagnostic.reason = error.to_string();
+                    if let Some(reason) = reason {
+                        diagnostic.reason = reason.to_string();
                     }
                     diagnostics.push(diagnostic);
+                }
+            }
+        }
+        for (key, hole) in holes {
+            let label = match hole_label(snapshot, &hole) {
+                Ok(label) => label,
+                Err(reason) => {
+                    diagnostics.extend(hole.cuts.into_iter().map(|(source, _)| {
+                        let mut diagnostic = unsupported(source);
+                        diagnostic.reason = reason.to_string();
+                        diagnostic
+                    }));
                     continue;
                 }
             };
-            let bore = (instance.token.clone(), face);
-            if physical_labels
-                .insert(bore.clone(), label.clone())
-                .is_some_and(|previous| previous != label)
-            {
-                return Err(DrawingError::AnnotationSourceLost);
-            }
             let group = groups.entry(label).or_default();
-            group.bores.insert(bore);
+            group.bores.insert((instance.token.clone(), key));
+            group.rims.extend(
+                hole.profile
+                    .rims
+                    .iter()
+                    .map(|edge| (instance.token.clone(), *edge)),
+            );
             group
-                .rims
-                .extend(rims.map(|edge| (instance.token.clone(), edge)));
-            group.sources.push(source);
+                .sources
+                .extend(hole.cuts.into_iter().map(|(source, _)| source));
         }
     }
     Ok((groups, diagnostics))
@@ -235,13 +274,13 @@ fn unsupported(source: HoleCalloutSource) -> HoleCalloutDiagnostic {
     HoleCalloutDiagnostic {
         source,
         kind: HoleCalloutDiagnosticKind::UnsupportedProvenance,
-        reason: "Callout requires a circular cut on the final body's subtraction chain, two complete bore rims and an intact shared exact cylinder; threads must be cosmetic with sufficient runout".into(),
-        fix_hint: "Use a circular Pad/Boolean cut starting at the bore entry and canonical cosmetic hole thread; otherwise provide a reviewed manual annotation".into(),
+        reason: "Callout requires a circular cut on the final body's chain of cuts and finishes, whose bore the finished body keeps whole".into(),
+        fix_hint: "Use a circular Pad/Boolean cut for the hole; otherwise provide a reviewed manual annotation".into(),
     }
 }
 
-/// Following only subtractive targets cannot move or add back the original bore.
-/// Its complete geometry must still be corroborated on the finished exact body.
+/// Following only cuts and edge finishes cannot move the original bore; what
+/// they did to it is read from the finished exact body.
 fn on_cut_chain(snapshot: &Snapshot, mut producer: FeatureId, source: FeatureId) -> bool {
     loop {
         if producer == source {
@@ -258,80 +297,149 @@ fn on_cut_chain(snapshot: &Snapshot, mut producer: FeatureId, source: FeatureId)
                 operation: BooleanOperation::Cut,
                 target,
                 ..
-            }) => *target,
+            })
+            | Some(FeatureKind::EdgeFinish { target, .. }) => *target,
             _ => return false,
         };
     }
 }
 
-fn verified_label(
+/// The hole about the circular cut `id`, read from the instance's finished
+/// body; `Err(None)` when `id` is no circular cut on that body's chain.
+fn feature_hole(
     snapshot: &Snapshot,
     instance: &DrawingInstance,
     id: FeatureId,
-) -> Result<Option<(String, u32, [u32; 2])>, DrawingError> {
+) -> Result<HoleProfile, Option<HoleUnsupported>> {
     let Some(feature) = snapshot.feature(id) else {
-        return Ok(None);
+        return Err(None);
     };
     if !is_cut(feature.kind())
         || !on_cut_chain(snapshot, instance.package.producer_feature_id(), id)
     {
-        return Ok(None);
+        return Err(None);
     }
     let Some((start, direction, diameter)) = snapshot.circular_cut_axis(id) else {
-        return Ok(None);
+        return Err(None);
     };
     let ExactBodyPackage::Graph(package) = instance.package.as_ref() else {
-        return Ok(None);
+        return Err(None);
     };
-    let Some((depth, face, rims)) = verified_bore_depth(
+    hole_profile(
         start,
         direction,
         diameter,
         &package.edge_evidence,
         &package.face_evidence,
-    ) else {
-        return Ok(None);
+    )
+    .map_err(Some)
+}
+
+/// The callout of `hole`: its thread, its bore and how it ends, then its
+/// counterbores and countersink. Depths are from the hole's entry.
+fn hole_label(snapshot: &Snapshot, hole: &Hole) -> Result<String, HoleUnsupported> {
+    let profile = &hole.profile;
+    let from_entry = |depth: f64| depth - profile.entry;
+    let Some(bore) = profile.bores.last() else {
+        return Err(HoleUnsupported::NoBore);
     };
-    if snapshot.hole_threads().any(|(feature, _)| feature == id) {
-        let Some(thread) = snapshot.tapped_hole(id) else {
-            return Ok(None);
-        };
-        if thread.modeled {
-            return Ok(None);
+    let threaded = hole
+        .cuts
+        .iter()
+        .filter(|(source, _)| {
+            snapshot
+                .hole_threads()
+                .any(|(id, _)| id == source.feature_id)
+        })
+        .collect::<Vec<_>>();
+    let thread = match threaded.as_slice() {
+        [] => None,
+        [(source, entry)] => Some(thread_label(snapshot, profile, source.feature_id, *entry)?),
+        _ => return Err(HoleUnsupported::TwoThreads),
+    };
+    let diameter = number(bore.diameter);
+    let depth = number(from_entry(bore.to));
+    let only_bore = profile.bores.len() == 1 && profile.countersink.is_none();
+    let mut parts = thread.into_iter().collect::<Vec<_>>();
+    parts.push(match profile.end {
+        HoleEnd::Through => format!("BORE Ø{diameter} mm THRU"),
+        HoleEnd::FlatBottom => format!("BORE Ø{diameter} mm DEPTH {depth} mm, FLAT BOTTOM"),
+        HoleEnd::Point(angle) => format!(
+            "BORE Ø{diameter} mm DEPTH {depth} mm, {}° POINT",
+            number(angle)
+        ),
+        HoleEnd::Unknown if !parts.is_empty() => format!("BORE Ø{diameter} mm"),
+        HoleEnd::Unknown if only_bore => {
+            format!("BORE Ø{diameter} mm; CYLINDRICAL DEPTH {depth} mm")
         }
-        // No through claim is made from circular edges. Require blind runout.
-        ketchup_geometry::tapping::TappedHole {
-            size: &thread.size,
-            pitch_mm: thread.pitch_mm,
-            thread_depth_mm: thread.length_mm,
-            hole_diameter_mm: diameter,
-            hole_depth_mm: depth,
-            through: false,
+        HoleEnd::Unknown => format!("BORE Ø{diameter} mm CYLINDRICAL DEPTH {depth} mm"),
+    });
+    for counterbore in &profile.bores[..profile.bores.len() - 1] {
+        let mut part = format!(
+            "COUNTERBORE Ø{} mm DEPTH {} mm",
+            number(counterbore.diameter),
+            number(from_entry(counterbore.to))
+        );
+        if let Some(angle) = counterbore.step_angle {
+            part.push_str(&format!(", {}° STEP", number(angle)));
         }
-        .check(ketchup_tolerance::APPROXIMATION)
-        .map_err(DrawingError::HoleThread)?;
-        Ok(Some((
-            format!(
-                "{} x {} THREAD DEPTH {} mm; BORE Ø{} mm",
-                thread.size,
-                number(thread.pitch_mm),
-                number(thread.length_mm),
-                number(diameter)
-            ),
-            face,
-            rims,
-        )))
-    } else {
-        Ok(Some((
-            format!(
-                "BORE Ø{} mm; CYLINDRICAL DEPTH {} mm",
-                number(diameter),
-                number(depth)
-            ),
-            face,
-            rims,
-        )))
+        parts.push(part);
     }
+    if let Some((diameter, angle)) = profile.countersink {
+        parts.push(format!(
+            "COUNTERSINK Ø{} mm × {}°",
+            number(diameter),
+            number(angle)
+        ));
+    }
+    Ok(parts.join("; "))
+}
+
+/// The thread tapped by the cut `id` into the bore of its diameter, which the
+/// thread must start at; `entry` is the hole's entry from the cut's start.
+fn thread_label(
+    snapshot: &Snapshot,
+    profile: &HoleProfile,
+    id: FeatureId,
+    entry: f64,
+) -> Result<String, HoleUnsupported> {
+    let tolerance = ketchup_tolerance::APPROXIMATION;
+    let Some(thread) = snapshot.tapped_hole(id) else {
+        return Err(HoleUnsupported::ThreadNotCircle);
+    };
+    if thread.modeled {
+        return Err(HoleUnsupported::ModeledThread);
+    }
+    // Depths from the cut's start, where the thread starts.
+    let from_cut = |depth: f64| depth - profile.entry + entry;
+    let last = profile.bores.len() - 1;
+    let Some((index, bore)) = profile
+        .bores
+        .iter()
+        .enumerate()
+        .find(|(_, bore)| (bore.diameter - thread.surface_diameter_mm).abs() < tolerance)
+    else {
+        return Err(HoleUnsupported::NoThreadBore);
+    };
+    if from_cut(bore.from).abs() > tolerance {
+        return Err(HoleUnsupported::ThreadStartsElsewhere);
+    }
+    ketchup_geometry::tapping::TappedHole {
+        size: &thread.size,
+        pitch_mm: thread.pitch_mm,
+        thread_depth_mm: thread.length_mm,
+        hole_diameter_mm: bore.diameter,
+        hole_depth_mm: from_cut(bore.to),
+        through: index == last && profile.end == HoleEnd::Through,
+    }
+    .check(ketchup_tolerance::APPROXIMATION)
+    .map_err(HoleUnsupported::Thread)?;
+    Ok(format!(
+        "{} x {} THREAD DEPTH {} mm",
+        thread.size,
+        number(thread.pitch_mm),
+        number(thread.length_mm)
+    ))
 }
 
 // Suppress floating-point noise in exact measurements, not manufacturing units.
@@ -340,79 +448,6 @@ fn number(value: f64) -> String {
         .trim_end_matches('0')
         .trim_end_matches('.')
         .to_owned()
-}
-
-fn verified_bore_depth(
-    start: [f64; 3],
-    direction: [f64; 3],
-    diameter: f64,
-    edges: &[crate::exact_product::ExactBRepGraphEdgeEvidence],
-    faces: &[crate::exact_product::ExactBRepGraphFaceEvidence],
-) -> Option<(f64, u32, [u32; 2])> {
-    let tolerance = ketchup_tolerance::APPROXIMATION;
-    let on_axis = |origin| {
-        let displacement = sub(origin, start);
-        let depth = dot(displacement, direction);
-        let radial = sub(
-            displacement,
-            ketchup_geometry::linalg::scale(direction, depth),
-        );
-        (dot(radial, radial) < tolerance * tolerance).then_some(depth)
-    };
-    let parallel = |axis| (dot(axis, direction).abs() - 1.0).abs() < tolerance;
-    let mut rims = edges
-        .iter()
-        .filter_map(|edge| {
-            let radius = edge.circle_radius_mm?;
-            let depth = on_axis(edge.axis_origin_mm?)?;
-            (edge.closed
-                && edge.curve_kind == "circle"
-                && (radius * 2.0 - diameter).abs() < tolerance
-                && parallel(edge.unit_axis_direction?)
-                && depth >= -tolerance)
-                .then_some((depth, edge))
-        })
-        .collect::<Vec<_>>();
-    rims.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let [(entry, first), (depth, second)] = rims.as_slice() else {
-        return None;
-    };
-    if entry.abs() > tolerance || *depth <= tolerance {
-        return None;
-    }
-    let face = faces.iter().find(|face| {
-        face.surface_kind == "cylinder"
-            && first.adjacent_face_ordinals.contains(&face.face_ordinal)
-            && second.adjacent_face_ordinals.contains(&face.face_ordinal)
-            && face.unit_axis_direction.is_some_and(parallel)
-            && face.axis_origin_mm.and_then(on_axis).is_some()
-    })?;
-    // Only a periodic seam may join the two full rims; intersections, partial
-    // cylinders, countersinks and interrupted bores must not masquerade as holes.
-    let other = edges
-        .iter()
-        .filter(|edge| {
-            edge.adjacent_face_ordinals.contains(&face.face_ordinal)
-                && edge.edge_ordinal != first.edge_ordinal
-                && edge.edge_ordinal != second.edge_ordinal
-        })
-        .collect::<Vec<_>>();
-    if other.len() > 1
-        || other.iter().any(|edge| {
-            edge.curve_kind != "line"
-                || edge
-                    .adjacent_face_ordinals
-                    .iter()
-                    .any(|id| *id != face.face_ordinal)
-        })
-    {
-        return None;
-    }
-    Some((
-        *depth,
-        face.face_ordinal,
-        [first.edge_ordinal, second.edge_ordinal],
-    ))
 }
 
 /// Which generated note points at which rims. Every hole group the sheet
