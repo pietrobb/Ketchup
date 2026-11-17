@@ -873,6 +873,7 @@ fn boundary_surface_spans_cornered_curves_through_the_real_worker() {
                         line([40.0, 30.0, 5.0], [0.0, 30.0, 5.0]),
                         line([0.0, 30.0, 5.0], [0.0, 0.0, 5.0]),
                     ],
+                    inner: Vec::new(),
                 }),
             },
             CanonicalCommand::CreateFeature {
@@ -896,6 +897,7 @@ fn boundary_surface_spans_cornered_curves_through_the_real_worker() {
                         line([140.0, 30.0, 0.0], [100.0, 30.0, 10.0]),
                         line([100.0, 30.0, 10.0], [100.0, 0.0, 0.0]),
                     ],
+                    inner: Vec::new(),
                 }),
             },
         ]))
@@ -910,7 +912,8 @@ fn boundary_surface_spans_cornered_curves_through_the_real_worker() {
     );
     assert!(matches!(
         &graph.nodes.last().unwrap().operation,
-        ExactBRepOperation::BoundarySurface { boundary } if boundary.segments.len() == 4
+        ExactBRepOperation::BoundarySurface { boundary, inner: None }
+            if boundary.segments.len() == 4
     ));
     let mut downgraded = graph.clone();
     downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V22.to_owned();
@@ -953,6 +956,7 @@ fn boundary_surface_spans_cornered_curves_through_the_real_worker() {
                         line([40.0, 0.0, 0.0], [40.0, 30.0, 0.0]),
                         line([40.0, 30.0, 0.0], [0.0, 30.0, 0.0]),
                     ],
+                    inner: Vec::new(),
                 }),
             }]))
             .is_err()

@@ -907,7 +907,44 @@ pub enum SurfaceBodySpec {
     /// and cubic Beziers, which may meet at corners.
     Boundary {
         segments: Vec<SpatialPathSegment>,
+        /// Curves of a network inside the loop the surface must also pass
+        /// through, each on its own: up to 64 lines, arcs and cubic Beziers.
+        /// Format 117.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inner: Vec<SpatialPathSegment>,
     },
+    /// A surface across the gap between two earlier single-face surfaces,
+    /// from the edge of each that faces the other, meeting each in position,
+    /// tangent plane or curvature. Both stay as they are. Format 118.
+    Blend {
+        first: FeatureId,
+        first_continuity: LoftContinuity,
+        second: FeatureId,
+        second_continuity: LoftContinuity,
+    },
+    /// An earlier single-face surface with one control point of its B-spline
+    /// form (row `u_index`, column `v_index`, from 0) moved by `offset_mm`
+    /// and, with `weight`, given a new positive weight. Every seam in `keep`
+    /// must hold its continuity after the move or the move is refused. The
+    /// earlier surface stays as it is. Format 119.
+    ControlPoint {
+        target: FeatureId,
+        u_index: u32,
+        v_index: u32,
+        offset_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<SurfaceSeam>,
+    },
+}
+
+/// A neighbouring surface whose seam with a reshaped surface keeps its
+/// continuity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SurfaceSeam {
+    pub surface: FeatureId,
+    pub continuity: LoftContinuity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1539,7 +1576,10 @@ impl FeatureKind {
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
             | Self::SurfaceBody(
-                SurfaceBodySpec::Planar { .. } | SurfaceBodySpec::Boundary { .. },
+                SurfaceBodySpec::Planar { .. }
+                | SurfaceBodySpec::Boundary { .. }
+                | SurfaceBodySpec::Blend { .. }
+                | SurfaceBodySpec::ControlPoint { .. },
             )
             | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
@@ -1631,7 +1671,17 @@ impl FeatureKind {
             Self::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                 [*profile].into_iter().collect()
             }
-            Self::SurfaceTrim { target, cutter } => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceTrim { target, cutter }
+            | Self::SurfaceBody(SurfaceBodySpec::Blend {
+                first: target,
+                second: cutter,
+                ..
+            }) => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceBody(SurfaceBodySpec::ControlPoint { target, keep, .. }) => {
+                std::iter::once(*target)
+                    .chain(keep.iter().map(|seam| seam.surface))
+                    .collect()
+            }
             Self::SurfaceExtend { target, .. } | Self::SurfaceThicken { target, .. } => {
                 [*target].into_iter().collect()
             }

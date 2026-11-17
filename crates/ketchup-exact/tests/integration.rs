@@ -8,7 +8,10 @@ mod face_measurement;
 mod finish_census;
 mod loft_rail;
 mod naming;
+mod network_surface;
 mod pair_query;
+mod surface_blend;
+mod surface_control_points;
 mod thread_groove;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

@@ -1,14 +1,19 @@
-//! Exact surface bodies: a planar face bounded by a profile and the smoothest
-//! surface spanning a closed loop of spatial curves.
+//! Exact surface bodies: a planar face bounded by a profile, the smoothest
+//! surface spanning a closed loop of spatial curves, also through the inner
+//! curves of a network, and surfaces made from earlier ones.
 
+use super::loft::surface_continuity;
 use super::{
-    exact_brep_boundary_segments, exact_brep_planar_loop, exact_brep_profile_error,
-    exact_brep_spatial_path_segment, transform_local_to_profile_frame,
+    exact_brep_boundary_segments, exact_brep_graph_error, exact_brep_planar_loop,
+    exact_brep_profile_error, exact_brep_spatial_path_segment, transform_local_to_profile_frame,
 };
 use ketchup_exact::PlanarProfileSegment;
-use ketchup_exact::{ExactBackend, ExactOpOutput, GeometryError, PlanarProfileLoop};
+use ketchup_exact::{
+    ExactBackend, ExactOpOutput, GeometryError, PlanarProfileLoop, SurfaceControlPoint,
+};
 use ketchup_model::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepPlanarGeometry, ExactBRepProfileId, ExactBRepSpatialPath,
+    ExactBRepGraph, ExactBRepNodeId, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepProfileId, ExactBRepSpatialPath,
 };
 
 pub(super) fn planar_face(
@@ -64,15 +69,86 @@ pub(super) fn planar_face(
     transform_local_to_profile_frame(backend, profile, &local)
 }
 
+/// The surface of a `BoundarySurface` node through its loop and, when it has
+/// them, the inner curves of its network.
 pub(super) fn fill_boundary(
     backend: &ExactBackend,
-    boundary: &ExactBRepSpatialPath,
+    graph: &ExactBRepGraph,
+    operation: &ExactBRepOperation,
 ) -> Result<ExactOpOutput, GeometryError> {
-    backend.fill_boundary_surface(
-        &boundary
-            .segments
+    let ExactBRepOperation::BoundarySurface { boundary, inner } = operation else {
+        return Err(exact_brep_graph_error(
+            graph,
+            "the node is not a boundary surface",
+        ));
+    };
+    let segments = |path: &ExactBRepSpatialPath| {
+        path.segments
             .iter()
             .map(exact_brep_spatial_path_segment)
-            .collect::<Vec<_>>(),
-    )
+            .collect::<Vec<_>>()
+    };
+    let inner = match inner {
+        Some(inner) => segments(inner),
+        None => Vec::new(),
+    };
+    backend.fill_network_surface(&segments(boundary), &inner)
+}
+
+/// The surface of a `SurfaceTrim`, `SurfaceBlend`, `SurfaceControlPoint` or
+/// `SurfaceExtend` node from the earlier surfaces it is made from.
+pub(super) fn derived_surface(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    outputs: &[ExactOpOutput],
+    operation: &ExactBRepOperation,
+) -> Result<ExactOpOutput, GeometryError> {
+    let body = |node: ExactBRepNodeId| &outputs[node.index()].body;
+    match operation {
+        ExactBRepOperation::SurfaceTrim { target, cutter } => {
+            backend.trim_surface(body(*target), body(*cutter))
+        }
+        ExactBRepOperation::SurfaceExtend {
+            target,
+            distance_bits,
+        } => backend.extend_planar_surface(body(*target), f64::from_bits(*distance_bits)),
+        ExactBRepOperation::SurfaceControlPoint {
+            target,
+            u_index,
+            v_index,
+            offset_bits,
+            weight_bits,
+            keep,
+        } => {
+            let keep: Vec<_> = keep
+                .iter()
+                .map(|seam| (body(seam.surface), surface_continuity(seam.continuity)))
+                .collect();
+            backend.move_surface_control_point(
+                body(*target),
+                SurfaceControlPoint {
+                    u_index: *u_index,
+                    v_index: *v_index,
+                    offset_mm: offset_bits.map(f64::from_bits),
+                    weight: weight_bits.map(f64::from_bits),
+                },
+                &keep,
+            )
+        }
+        ExactBRepOperation::SurfaceBlend {
+            first,
+            first_continuity,
+            second,
+            second_continuity,
+        } => backend.blend_surfaces(
+            body(*first),
+            surface_continuity(*first_continuity),
+            body(*second),
+            surface_continuity(*second_continuity),
+        ),
+        _ => Err(exact_brep_graph_error(
+            graph,
+            "the node is not made from earlier surfaces",
+        )),
+    }
 }

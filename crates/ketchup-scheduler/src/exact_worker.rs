@@ -63,7 +63,7 @@ mod surfaces;
 use failure::{backend_failure, geometry_failure};
 use loft::exact_brep_loft_node;
 use source_document::{SourceDocument, XdeFormat};
-use surfaces::{fill_boundary, planar_face};
+use surfaces::{derived_surface, fill_boundary, planar_face};
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
@@ -915,18 +915,13 @@ fn evaluate_exact_brep_graph(
             loft @ ExactBRepOperation::LoftSurface { .. } => {
                 exact_brep_loft_node(backend, graph, loft)?
             }
-            ExactBRepOperation::BoundarySurface { boundary } => fill_boundary(backend, boundary)?,
-            ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
-                &outputs[target.0 as usize].body,
-                &outputs[cutter.0 as usize].body,
-            )?,
-            ExactBRepOperation::SurfaceExtend {
-                target,
-                distance_bits,
-            } => backend.extend_planar_surface(
-                &outputs[target.0 as usize].body,
-                f64::from_bits(*distance_bits),
-            )?,
+            op @ ExactBRepOperation::BoundarySurface { .. } => fill_boundary(backend, graph, op)?,
+            op @ (ExactBRepOperation::SurfaceTrim { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceControlPoint { .. }
+            | ExactBRepOperation::SurfaceExtend { .. }) => {
+                derived_surface(backend, graph, &outputs, op)?
+            }
             ExactBRepOperation::SurfaceKnit {
                 surfaces,
                 tolerance_bits,

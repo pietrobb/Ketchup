@@ -991,6 +991,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: shaft_threads",
     "document.rs: tolerance",
     "document.rs: underlays",
+    "document/entities.rs: inner", // Format 117.
+    "document/entities.rs: keep",  // Format 119.
     "document/entities.rs: logical",
     "document/entities.rs: look",
     "document/entities.rs: modeled",
@@ -998,6 +1000,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document/entities.rs: rail", // Format 116.
     "document/entities.rs: section",
     "document/entities.rs: up",
+    "document/entities.rs: weight", // Format 119.
     "document/revision.rs: variants",
     "drawing.rs: generated_hole_callout", // Format 113.
     "exact_brep_graph.rs: chamfer_edge_sides",
@@ -1005,6 +1008,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: fillet_radius_stations",
     "exact_brep_graph.rs: guide",
     "exact_brep_graph.rs: guide",
+    "exact_brep_graph.rs: inner",
+    "exact_brep_graph.rs: keep",
     "exact_brep_graph.rs: name",
     "exact_brep_graph.rs: profile_edges",
     "exact_brep_graph.rs: profile_faces",
@@ -1019,6 +1024,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: tool_name",
     "exact_brep_graph.rs: trim_bits",
     "exact_brep_graph.rs: up_bits",
+    "exact_brep_graph.rs: weight_bits",
     // A refusal is sent to the AI and the window, never saved in the document.
     "import/dxf/rewrite/refusal.rs: written",
     // The comparison of two revisions answers the AI; it is never saved.
@@ -1221,6 +1227,7 @@ fn a_boundary_surface_needs_format_115_and_reopens_as_saved() {
                         line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
                         line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
                     ],
+                    inner: Vec::new(),
                 }),
             },
         ]))

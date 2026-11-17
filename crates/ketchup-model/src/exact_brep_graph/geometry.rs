@@ -460,6 +460,40 @@ pub(super) fn valid_boundary_path(path: &ExactBRepSpatialPath, tolerance_mm: f64
         && crate::document::is_valid_boundary_loop(&model_segments(path), tolerance_mm)
 }
 
+/// The closed loop of a boundary surface and the inner curves of its network,
+/// if it has one.
+pub(super) fn valid_boundary_surface(
+    boundary: &ExactBRepSpatialPath,
+    inner: Option<&ExactBRepSpatialPath>,
+    tolerance_mm: f64,
+) -> bool {
+    valid_boundary_path(boundary, tolerance_mm)
+        && inner.is_none_or(|inner| valid_network_curves(inner, tolerance_mm))
+}
+
+/// The inner curves of a surface network; see
+/// [`crate::document::are_valid_network_curves`]. Present only when there is one.
+fn valid_network_curves(curves: &ExactBRepSpatialPath, tolerance_mm: f64) -> bool {
+    curves.source_feature_id != 0
+        && !curves.segments.is_empty()
+        && crate::document::are_valid_network_curves(&model_segments(curves), tolerance_mm)
+}
+
+/// The inner curves of a boundary surface, or `None` when it has none.
+pub(super) fn network_curves(
+    source_feature_id: FeatureId,
+    curves: &[SpatialPathSegment],
+    tolerance_mm: f64,
+) -> Result<Option<ExactBRepSpatialPath>, ExactBRepGraphError> {
+    if curves.is_empty() {
+        return Ok(None);
+    }
+    let curves = spatial_path_bits(source_feature_id, curves);
+    valid_network_curves(&curves, tolerance_mm)
+        .then_some(Some(curves))
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
 fn model_segments(path: &ExactBRepSpatialPath) -> Vec<SpatialPathSegment> {
     path.segments
         .iter()

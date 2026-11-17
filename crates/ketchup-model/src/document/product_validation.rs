@@ -707,6 +707,38 @@ fn validate_loft_paths(
     Ok(())
 }
 
+/// `operand` is a surface body feature of `feature`'s definition placed before it.
+fn is_earlier_surface(product: &ProductModel, feature: &Feature, operand: FeatureId) -> bool {
+    let definition = &product.definitions[&feature.definition_id];
+    let position = |id: FeatureId| {
+        definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+    };
+    product.features.get(&operand).is_some_and(|source| {
+        source.definition_id == feature.definition_id
+            && source.kind.body_kind() == Some(BodyKind::Surface)
+            && position(operand)
+                .zip(position(feature.id))
+                .is_some_and(|(operand, feature)| operand < feature)
+    })
+}
+
+/// Every operand of a surface trim, blend, control-point move, extension or
+/// thickening is a different surface placed earlier in its definition.
+fn surface_operands_are_earlier(product: &ProductModel, feature: &Feature) -> bool {
+    let operands = feature.kind.dependencies();
+    let distinct = match &feature.kind {
+        FeatureKind::SurfaceTrim { target, cutter } => target != cutter,
+        _ => true,
+    };
+    distinct
+        && operands
+            .into_iter()
+            .all(|operand| is_earlier_surface(product, feature, operand))
+}
+
 fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
@@ -1019,47 +1051,13 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::SurfaceTrim { target, cutter } => {
-                let feature_position = definition
-                    .feature_ids
-                    .iter()
-                    .position(|candidate| *candidate == feature.id)
-                    .expect("validated definition contains feature");
-                let valid_surface_operand = |operand: FeatureId| {
-                    product.features.get(&operand).is_some_and(|source| {
-                        source.definition_id == feature.definition_id
-                            && source.kind.body_kind() == Some(BodyKind::Surface)
-                            && definition
-                                .feature_ids
-                                .iter()
-                                .position(|candidate| *candidate == operand)
-                                .is_some_and(|position| position < feature_position)
-                    })
-                };
-                if target == cutter
-                    || !valid_surface_operand(target)
-                    || !valid_surface_operand(cutter)
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::SurfaceExtend { target, .. }
-            | FeatureKind::SurfaceThicken { target, .. } => {
-                let feature_position = definition
-                    .feature_ids
-                    .iter()
-                    .position(|candidate| *candidate == feature.id)
-                    .expect("validated definition contains feature");
-                let valid_target = product.features.get(&target).is_some_and(|source| {
-                    source.definition_id == feature.definition_id
-                        && source.kind.body_kind() == Some(BodyKind::Surface)
-                        && definition
-                            .feature_ids
-                            .iter()
-                            .position(|candidate| *candidate == target)
-                            .is_some_and(|position| position < feature_position)
-                });
-                if !valid_target {
+            FeatureKind::SurfaceTrim { .. }
+            | FeatureKind::SurfaceBody(
+                SurfaceBodySpec::Blend { .. } | SurfaceBodySpec::ControlPoint { .. },
+            )
+            | FeatureKind::SurfaceExtend { .. }
+            | FeatureKind::SurfaceThicken { .. } => {
+                if !surface_operands_are_earlier(product, feature) {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }

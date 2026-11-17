@@ -63,6 +63,24 @@ pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 /// rail lies this close to it; ten nanometres sit far below any machined or printed surface.
 pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-5;
 
+/// Deviation allowed between a surface filled through a network of curves and each curve
+/// of the network, in mm. The kernel fits a smooth plate to points on every curve and
+/// measures every curve against the result; one micrometre is below the form tolerance of
+/// precision machining and far below printing.
+pub const NETWORK_SURFACE_APPROXIMATION_MM: f64 = 1.0e-3;
+
+/// Angle allowed between the normals of a blend surface and the surface it meets with
+/// tangent (G1) or curvature (G2) continuity, in radians, at every sampled point of the
+/// seam. A thousandth of a radian (0.06 degree) shows no crease in reflections and is
+/// several times finer than the 0.5 degree tangency check of class-A surfacing reviews.
+pub const SURFACE_BLEND_ANGLE_RAD: f64 = 1.0e-3;
+
+/// Difference allowed between the curvatures of a blend surface and the surface it meets
+/// with curvature (G2) continuity, across the seam, as a share of the larger of the
+/// meeting surface's curvature and one over the seam length. Five per cent keeps
+/// reflection lines visibly unbroken across the seam.
+pub const SURFACE_BLEND_CURVATURE_SHARE: f64 = 0.05;
+
 /// Contact and fit tolerance of rule programs, in mm: two parts at most this far apart
 /// touch, and a part may stick out of the face or the part it fits by this much. Not the
 /// document's [`TolerancePolicy`], which decides coincidence for the exact kernel: program

@@ -19,6 +19,8 @@ struct NativeRejectedShape;
 struct NativeVolumeMeshTetrahedron;
 struct NativeTopologySummary;
 struct NativePairQuery;
+struct NativeSeam;
+struct NativeControlNet;
 struct NativePoint;
 struct NativeSegment;
 struct NativeLoftSection;
@@ -102,11 +104,22 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const NativeSegment> segments, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
     rust::Slice<const NativeSegment> segments) noexcept;
-std::unique_ptr<NativeOperationResult> fill_boundary_surface_native(
-    rust::Slice<const NativeSegment> boundary) noexcept;
+std::unique_ptr<NativeOperationResult> fill_network_surface_native(
+    rust::Slice<const NativeSegment> boundary,
+    rust::Slice<const NativeSegment> inner) noexcept;
 std::unique_ptr<NativeOperationResult> trim_surface_native(
     const NativeOperationResult& target,
     const NativeOperationResult& cutter) noexcept;
+std::unique_ptr<NativeOperationResult> blend_surfaces_native(
+    const NativeOperationResult& first, std::uint8_t first_order,
+    const NativeOperationResult& second, std::uint8_t second_order) noexcept;
+NativeSeam measure_seam_native(
+    const NativeOperationResult& first,
+    const NativeOperationResult& second) noexcept;
+NativeControlNet surface_control_net_native(const NativeOperationResult& body) noexcept;
+std::unique_ptr<NativeOperationResult> move_surface_control_point_native(
+    const NativeOperationResult& body, std::uint32_t u_index, std::uint32_t v_index,
+    NativePoint offset, double weight) noexcept;
 std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
     const NativeOperationResult& target, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> combine_surfaces_native(

@@ -208,6 +208,9 @@ class ClientTests(unittest.TestCase):
     def test_surface_helpers_emit_only_typed_append_feature_operations(self):
         process = FakeProcess()
         doc = self.session(process).new_document()
+        loop_line = {"type": "line", "start_mm": [0, 0, 0], "end_mm": [100, 0, 0]}
+        arch = {"type": "cubic_bezier", "start_mm": [0, 50, 0], "control_1_mm": [25, 50, 26],
+                "control_2_mm": [75, 50, 26], "end_mm": [100, 50, 0]}
         calls = [
             (lambda: doc.planar_surface(2, "Planar", 11), {
                 "type": "surface_body",
@@ -244,6 +247,31 @@ class ClientTests(unittest.TestCase):
                     "continuity": "position",
                     "guide_feature_id": 13,
                     "rail_feature_id": 14,
+                },
+            }),
+            (lambda: doc.boundary_surface(2, "Patch", [loop_line]), {
+                "type": "surface_body",
+                "source": {"type": "boundary", "segments": [loop_line]},
+            }),
+            (lambda: doc.boundary_surface(2, "Dome", [loop_line], inner=[arch]), {
+                "type": "surface_body",
+                "source": {"type": "boundary", "segments": [loop_line], "inner": [arch]},
+            }),
+            (lambda: doc.blend_surfaces(2, "Blend", 21, 22, first_continuity="curvature"), {
+                "type": "surface_body",
+                "source": {
+                    "type": "blend",
+                    "first_feature_id": 21, "first_continuity": "curvature",
+                    "second_feature_id": 22, "second_continuity": "tangent",
+                },
+            }),
+            (lambda: doc.move_surface_control_point(2, "Moved", 23, 2, 16, (0, 0, -5),
+                                                    keep=[(21, "tangent")]), {
+                "type": "surface_body",
+                "source": {
+                    "type": "control_point", "target_feature_id": 23,
+                    "u_index": 2, "v_index": 16, "offset_mm": [0, 0, -5],
+                    "keep": [{"surface_feature_id": 21, "continuity": "tangent"}],
                 },
             }),
             (lambda: doc.trim_surface(2, "Trim", 21, 22), {

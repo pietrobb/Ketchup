@@ -499,12 +499,47 @@ class Document:
             source["rail_feature_id"] = rail_feature_id
         return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
 
-    def boundary_surface(self, definition_id, name, segments):
-        """Fill one closed loop of spatial line/circular_arc/cubic_bezier segments."""
-        return self.append_feature(definition_id, name, {
-            "type": "surface_body",
-            "source": {"type": "boundary", "segments": list(segments)},
-        })
+    def boundary_surface(self, definition_id, name, segments, inner=None):
+        """Fill one closed loop of spatial line/circular_arc/cubic_bezier segments.
+
+        ``inner`` lists curves of a network inside the loop, each on its own,
+        that the surface must also pass through (at most 64).
+        """
+        source = {"type": "boundary", "segments": list(segments)}
+        if inner:
+            source["inner"] = list(inner)
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
+
+    def blend_surfaces(self, definition_id, name, first_feature_id, second_feature_id, *,
+                       first_continuity="tangent", second_continuity="tangent"):
+        """Bridge the gap between the facing edges of two single-face surfaces.
+
+        Each continuity is "position", "tangent" or "curvature"; both surfaces stay.
+        """
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": {
+            "type": "blend",
+            "first_feature_id": first_feature_id, "first_continuity": first_continuity,
+            "second_feature_id": second_feature_id, "second_continuity": second_continuity,
+        }})
+
+    def move_surface_control_point(self, definition_id, name, target_feature_id, u_index, v_index,
+                                   offset_mm=(0.0, 0.0, 0.0), *, weight=None, keep=()):
+        """Move one control point of a single-face surface's B-spline form.
+
+        `keep` lists (surface_feature_id, continuity) seams that must still hold
+        "position", "tangent" or "curvature" continuity, or the move is refused.
+        The earlier surface stays.
+        """
+        source = {
+            "type": "control_point", "target_feature_id": target_feature_id,
+            "u_index": u_index, "v_index": v_index, "offset_mm": list(offset_mm),
+        }
+        if weight is not None:
+            source["weight"] = weight
+        if keep:
+            source["keep"] = [{"surface_feature_id": surface, "continuity": continuity}
+                              for surface, continuity in keep]
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
 
     def trim_surface(self, definition_id, name, target_feature_id, cutter_feature_id):
         return self.append_feature(definition_id, name, {

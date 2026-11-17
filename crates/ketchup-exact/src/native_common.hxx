@@ -227,6 +227,9 @@ class ShapeIndex {
   mutable std::optional<TopTools_IndexedMapOfShape> edges_;
 };
 
+// The only face of a non-solid single-face surface body, or null.
+TopoDS_Face single_surface_face(const NativeOperationResult& body);
+
 HistoryRecord history_record(
     std::string role,
     std::string relation,

@@ -415,6 +415,8 @@ pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
         operation,
         ExactBRepOperation::SurfaceThicken { .. }
             | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceControlPoint { .. }
             | ExactBRepOperation::Loft { rail: Some(_), .. }
             | ExactBRepOperation::LoftSurface { rail: Some(_), .. }
             | ExactBRepOperation::Draft(_)
@@ -669,6 +671,48 @@ pub(super) fn valid_operation_profiles(
     }
 }
 
+/// The operation's result is an open surface body, an operand of surface trims, blends and knits.
+fn produces_surface(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::PlanarSurface { .. }
+            | ExactBRepOperation::LoftSurface { .. }
+            | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::SurfaceTrim { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceControlPoint { .. }
+            | ExactBRepOperation::SurfaceExtend { .. }
+            | ExactBRepOperation::SurfaceKnit {
+                make_solid: false,
+                ..
+            }
+    )
+}
+
+/// A finite offset within the model and a positive weight that change
+/// something, and distinct kept surfaces other than the target.
+fn valid_control_point(
+    target: ExactBRepNodeId,
+    offset_bits: &[u64; 3],
+    weight_bits: Option<u64>,
+    keep: &[ExactBRepSurfaceSeam],
+    is_surface_node: impl Fn(ExactBRepNodeId) -> bool,
+) -> bool {
+    let offset = offset_bits.map(f64::from_bits);
+    let weight = weight_bits.map(f64::from_bits);
+    let mut kept = std::collections::BTreeSet::new();
+    offset
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
+        && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
+        && (weight.is_some() || offset.iter().any(|value| *value != 0.0))
+        && keep.len() <= limits::FEATURE_REFERENCES
+        && is_surface_node(target)
+        && keep.iter().all(|seam| {
+            seam.surface != target && is_surface_node(seam.surface) && kept.insert(seam.surface)
+        })
+}
+
 pub(super) fn valid_operation(
     operation: &ExactBRepOperation,
     document_id: u64,
@@ -685,20 +729,9 @@ pub(super) fn valid_operation(
         value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_COORDINATE_MM
     };
     let is_surface_node = |id: ExactBRepNodeId| {
-        prior_nodes.get(id.0 as usize).is_some_and(|node| {
-            matches!(
-                node.operation,
-                ExactBRepOperation::PlanarSurface { .. }
-                    | ExactBRepOperation::LoftSurface { .. }
-                    | ExactBRepOperation::BoundarySurface { .. }
-                    | ExactBRepOperation::SurfaceTrim { .. }
-                    | ExactBRepOperation::SurfaceExtend { .. }
-                    | ExactBRepOperation::SurfaceKnit {
-                        make_solid: false,
-                        ..
-                    }
-            )
-        })
+        prior_nodes
+            .get(id.0 as usize)
+            .is_some_and(|node| produces_surface(&node.operation))
     };
     match operation {
         ExactBRepOperation::Extrude {
@@ -724,9 +757,19 @@ pub(super) fn valid_operation(
                     .is_none_or(|digest| !digest.is_empty() && digest.len() <= 256)
         }
         ExactBRepOperation::Boolean { target, tool, .. } => target != tool,
-        ExactBRepOperation::SurfaceTrim { target, cutter } => {
-            target != cutter && is_surface_node(*target) && is_surface_node(*cutter)
-        }
+        ExactBRepOperation::SurfaceTrim { target, cutter }
+        | ExactBRepOperation::SurfaceBlend {
+            first: target,
+            second: cutter,
+            ..
+        } => target != cutter && is_surface_node(*target) && is_surface_node(*cutter),
+        ExactBRepOperation::SurfaceControlPoint {
+            target,
+            offset_bits,
+            weight_bits,
+            keep,
+            ..
+        } => valid_control_point(*target, offset_bits, *weight_bits, keep, is_surface_node),
         ExactBRepOperation::SurfaceExtend {
             target,
             distance_bits,
@@ -1022,8 +1065,8 @@ pub(super) fn valid_operation(
             planar_offset_distance(f64::from_bits(*distance_bits)).is_ok()
         }
         ExactBRepOperation::PlanarSurface { .. } => true,
-        ExactBRepOperation::BoundarySurface { boundary } => {
-            valid_boundary_path(boundary, tolerance_mm)
+        ExactBRepOperation::BoundarySurface { boundary, inner } => {
+            valid_boundary_surface(boundary, inner.as_ref(), tolerance_mm)
         }
         ExactBRepOperation::Sweep { profile, path } => profile != path,
         ExactBRepOperation::SpatialSweep { path, .. } => valid_spatial_path(path, tolerance_mm),

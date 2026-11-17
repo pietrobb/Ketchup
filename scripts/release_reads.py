@@ -63,9 +63,10 @@ REVIEWED = {
     "v0.2.0": {
         # MD-60: `fits_format_103` writes an import in one of these units as 104.
         "ImportLengthUnit": {"Decimetre", "Kilometre", "Mile", "Yard"},
-        # `format_of` writes a document with a boundary surface as 115.
-        "SurfaceBodySpec": {"Boundary"},
-        "ExactBRepOperation": {"BoundarySurface"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.0": {
         # CD-61: `format_of` writes a document with a stretched line as 107.
@@ -83,9 +84,10 @@ REVIEWED = {
         },
         # `format_of` writes a document with a drawn hatch as 109 (review 2026-11-08 §5.3).
         "DrawnShape": {"Hatch"},
-        # `format_of` writes a document with a boundary surface as 115.
-        "SurfaceBodySpec": {"Boundary"},
-        "ExactBRepOperation": {"BoundarySurface"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.1": {
         "DxfEditRefusal": {
@@ -93,9 +95,10 @@ REVIEWED = {
             "DrawnHatchInDxf12",
         },
         "DrawnShape": {"Hatch"},
-        # `format_of` writes a document with a boundary surface as 115.
-        "SurfaceBodySpec": {"Boundary"},
-        "ExactBRepOperation": {"BoundarySurface"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.2": {
         "DxfEditRefusal": {
@@ -103,14 +106,16 @@ REVIEWED = {
             "DrawnHatchInDxf12",
         },
         "DrawnShape": {"Hatch"},
-        # `format_of` writes a document with a boundary surface as 115.
-        "SurfaceBodySpec": {"Boundary"},
-        "ExactBRepOperation": {"BoundarySurface"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.3": {
-        # `format_of` writes a document with a boundary surface as 115.
-        "SurfaceBodySpec": {"Boundary"},
-        "ExactBRepOperation": {"BoundarySurface"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
 }
 

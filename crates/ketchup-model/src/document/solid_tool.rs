@@ -236,6 +236,40 @@ fn remap_surface_body(
             rail: remap_optional_feature(*rail, mapping)?,
         },
         boundary @ SurfaceBodySpec::Boundary { .. } => boundary.clone(),
+        SurfaceBodySpec::Blend {
+            first,
+            first_continuity,
+            second,
+            second_continuity,
+        } => SurfaceBodySpec::Blend {
+            first: remapped(mapping, first)?,
+            first_continuity: *first_continuity,
+            second: remapped(mapping, second)?,
+            second_continuity: *second_continuity,
+        },
+        SurfaceBodySpec::ControlPoint {
+            target,
+            u_index,
+            v_index,
+            offset_mm,
+            weight,
+            keep,
+        } => SurfaceBodySpec::ControlPoint {
+            target: remapped(mapping, target)?,
+            u_index: *u_index,
+            v_index: *v_index,
+            offset_mm: *offset_mm,
+            weight: *weight,
+            keep: keep
+                .iter()
+                .map(|seam| {
+                    Ok(SurfaceSeam {
+                        surface: remapped(mapping, &seam.surface)?,
+                        continuity: seam.continuity,
+                    })
+                })
+                .collect::<Result<_, CanonicalError>>()?,
+        },
     })
 }
 
