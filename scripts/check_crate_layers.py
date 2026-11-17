@@ -95,7 +95,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
     "crates/ketchup-scheduler/src/exact_worker.rs": 4213,
-    "crates/ketchup-scheduler/src/lib.rs": 3103,
+    "crates/ketchup-scheduler/src/lib.rs": 3102,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review
