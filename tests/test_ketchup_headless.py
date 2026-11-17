@@ -393,6 +393,50 @@ class ClientTests(unittest.TestCase):
                 mesh_levels=levels[:1], confirmed=True,
             )
 
+    def test_fea_assembly_review_helper_sends_parts_joints_and_mode_count(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        levels = [
+            {"surface_deflection_mm": 0.5, "angular_deflection_rad": 0.5,
+             "max_tetrahedra": 128, "max_relative_volume_error": 0.05,
+             "min_tetrahedron_quality": 1.0e-5},
+            {"surface_deflection_mm": 0.2, "angular_deflection_rad": 0.2,
+             "max_tetrahedra": 256, "max_relative_volume_error": 0.02,
+             "min_tetrahedron_quality": 1.0e-5},
+        ]
+        steel = {"id": 1, "youngs_modulus_mpa": 200000, "poisson_ratio": 0.3,
+                 "yield_strength_mpa": 250, "density_kg_per_m3": 7850}
+        parts = [
+            {"occurrence_id": 7, "feature_id": 33, "material": steel,
+             "constrained_face_ordinals": [0], "face_tractions": []},
+            {"occurrence_id": 8, "feature_id": 33, "material": steel,
+             "constrained_face_ordinals": [],
+             "face_tractions": [{"face_ordinal": 1, "traction_local_n_per_mm2": [0, 0, -1]}]},
+        ]
+        joints = [{"faces": [{"part": 0, "face_ordinal": 1}, {"part": 1, "face_ordinal": 0}],
+                   "kind": {"type": "rigid"}}]
+        doc.fea_assembly_review("stack", parts=parts, joints=joints, mesh_levels=levels,
+                                mode_count=3, confirmed=True)
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "fea_assembly_review")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        self.assertEqual(request["params"]["parts"], parts)
+        self.assertEqual(request["params"]["joints"], joints)
+        self.assertEqual(request["params"]["mate_joints"], [])
+        self.assertEqual(request["params"]["mode_count"], 3)
+        self.assertTrue(request["params"]["confirmed"])
+        mates = [{"mate_id": 12, "kind": {"type": "rigid"}}]
+        doc.fea_assembly_review("stack", parts=parts, joints=[], mate_joints=mates,
+                                mesh_levels=levels, confirmed=True)
+        self.assertEqual(process.requests[-1]["params"]["mate_joints"], mates)
+        for refused in ({"parts": []}, {"mode_count": 65}, {"mode_count": -1},
+                        {"joints": [1]}, {"mate_joints": [1]}, {"mate_joints": {}},
+                        {"mesh_levels": levels[:1]}):
+            arguments = {"parts": parts, "joints": joints, "mesh_levels": levels,
+                         "confirmed": True, **refused}
+            with self.assertRaises(ValueError):
+                doc.fea_assembly_review("stack", **arguments)
+
     def test_local_pdm_helpers_are_guarded_and_keep_confirmation_explicit(self):
         process = FakeProcess()
         doc = self.session(process).new_document()

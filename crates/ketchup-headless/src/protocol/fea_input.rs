@@ -1,17 +1,72 @@
+//! The `fea_review` and `fea_assembly_review` requests and their answer.
+
 use super::{Error, Result};
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_analysis::fea::{FeaCouplingKind, FeaMaterial, FeaSolveSettings};
 use ketchup_application::fea_workflow::{
-    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
-    FeaReviewSummary, FeaStudyRequest,
+    ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaFaceTraction, ExactFeaJoint,
+    ExactFeaJointFace, ExactFeaMateJoint, ExactFeaSetup, ExactVolumeMeshWireOptions,
+    FeaAssemblyStudyRequest, FeaReviewError, FeaReviewSummary, FeaStudyRequest,
 };
+use ketchup_model::assembly::AssemblyMateId;
 use ketchup_model::document::{DefinitionId, FeatureId, InstancePath, OccurrenceId};
-use ketchup_model::tolerance::limits::NAME_BYTES;
+use ketchup_model::tolerance::limits;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
+
+pub(super) const REVIEW_FIELDS: &[&str] = &[
+    "definition_id",
+    "feature_id",
+    "occurrence_id",
+    "case_id",
+    "material",
+    "constrained_face_ordinals",
+    "face_tractions",
+    "mesh_levels",
+    "solve_settings",
+    "mode_count",
+    "confirmed",
+];
+pub(super) const ASSEMBLY_REVIEW_FIELDS: &[&str] = &[
+    "case_id",
+    "parts",
+    "joints",
+    "mate_joints",
+    "mesh_levels",
+    "solve_settings",
+    "mode_count",
+    "confirmed",
+];
+/// Fields a request may leave out.
+const OPTIONAL_FIELDS: &[&str] = &["mode_count", "mate_joints"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct FeaSolveSettingsInput {
+struct FeaMaterialInput {
+    id: u64,
+    youngs_modulus_mpa: f64,
+    poisson_ratio: f64,
+    yield_strength_mpa: Option<f64>,
+    /// Needed only to find natural frequencies.
+    #[serde(default)]
+    density_kg_per_m3: Option<f64>,
+}
+
+impl From<FeaMaterialInput> for FeaMaterial {
+    fn from(input: FeaMaterialInput) -> Self {
+        Self {
+            id: input.id,
+            youngs_modulus_mpa: input.youngs_modulus_mpa,
+            poisson_ratio: input.poisson_ratio,
+            yield_strength_mpa: input.yield_strength_mpa,
+            density_kg_per_m3: input.density_kg_per_m3,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaSolveSettingsInput {
     maximum_nodes: usize,
     relative_pivot_tolerance: f64,
     maximum_small_deformation_ratio: f64,
@@ -33,6 +88,22 @@ impl From<FeaSolveSettingsInput> for FeaSolveSettings {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct FeaFaceTractionInput {
+    face_ordinal: u32,
+    traction_local_n_per_mm2: [f64; 3],
+}
+
+impl From<FeaFaceTractionInput> for ExactFeaFaceTraction {
+    fn from(input: FeaFaceTractionInput) -> Self {
+        Self {
+            face_ordinal: input.face_ordinal,
+            traction_local_n_per_mm2: input.traction_local_n_per_mm2,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FeaReviewInput {
     definition_id: u64,
     feature_id: u64,
@@ -43,23 +114,82 @@ struct FeaReviewInput {
     face_tractions: Vec<FeaFaceTractionInput>,
     mesh_levels: Vec<ExactVolumeMeshWireOptions>,
     solve_settings: FeaSolveSettingsInput,
+    #[serde(default)]
+    mode_count: usize,
     confirmed: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FeaMaterialInput {
-    id: u64,
-    youngs_modulus_mpa: f64,
-    poisson_ratio: f64,
-    yield_strength_mpa: Option<f64>,
+struct FeaAssemblyPartInput {
+    occurrence_id: u64,
+    /// The solid feature of the occurrence's definition.
+    feature_id: u64,
+    material: FeaMaterialInput,
+    constrained_face_ordinals: Vec<u32>,
+    face_tractions: Vec<FeaFaceTractionInput>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FeaFaceTractionInput {
+struct FeaJointFaceInput {
+    part: usize,
     face_ordinal: u32,
-    traction_local_n_per_mm2: [f64; 3],
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum FeaJointKindInput {
+    Rigid,
+    Spring {
+        translation_n_per_mm: [f64; 3],
+        rotation_n_mm_per_rad: [f64; 3],
+    },
+}
+
+impl From<FeaJointKindInput> for FeaCouplingKind {
+    fn from(input: FeaJointKindInput) -> Self {
+        match input {
+            FeaJointKindInput::Rigid => Self::Rigid,
+            FeaJointKindInput::Spring {
+                translation_n_per_mm,
+                rotation_n_mm_per_rad,
+            } => Self::Spring {
+                translation_n_per_mm,
+                rotation_n_mm_per_rad,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaJointInput {
+    faces: [FeaJointFaceInput; 2],
+    kind: FeaJointKindInput,
+}
+
+/// A face-to-face mate of the document joined at the faces it names.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaMateJointInput {
+    mate_id: u64,
+    kind: FeaJointKindInput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeaAssemblyReviewInput {
+    case_id: String,
+    parts: Vec<FeaAssemblyPartInput>,
+    joints: Vec<FeaJointInput>,
+    #[serde(default)]
+    mate_joints: Vec<FeaMateJointInput>,
+    mesh_levels: Vec<ExactVolumeMeshWireOptions>,
+    solve_settings: FeaSolveSettingsInput,
+    #[serde(default)]
+    mode_count: usize,
+    confirmed: bool,
 }
 
 impl From<FeaReviewError> for Error {
@@ -68,44 +198,41 @@ impl From<FeaReviewError> for Error {
             FeaReviewError::ConfirmationRequired => "confirmation_required",
             FeaReviewError::WorkerUnavailable => "exact_worker_unavailable",
             FeaReviewError::InvalidRefinementLevels => "fea_refinement_invalid",
-            FeaReviewError::InvalidTarget(..) => "fea_target_rejected",
-            FeaReviewError::Meshing(..) => "fea_meshing_rejected",
-            FeaReviewError::Setup(..) => "fea_setup_rejected",
-            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(..) => "fea_solve_rejected",
+            FeaReviewError::InvalidTarget(_) => "fea_target_rejected",
+            FeaReviewError::Meshing(_) => "fea_meshing_rejected",
+            FeaReviewError::Setup(_) => "fea_setup_rejected",
+            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(_) => "fea_solve_rejected",
         };
         Self::caused_by(code, &error)
     }
 }
 
-pub(super) fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
+/// Reads `fields` of `p`, every one required but those that may be left out.
+fn input<T: DeserializeOwned>(p: &Map<String, Value>, fields: &[&str]) -> Result<T> {
     let mut payload = Map::new();
-    for field in [
-        "definition_id",
-        "feature_id",
-        "occurrence_id",
-        "case_id",
-        "material",
-        "constrained_face_ordinals",
-        "face_tractions",
-        "mesh_levels",
-        "solve_settings",
-        "confirmed",
-    ] {
-        payload.insert(
-            field.to_owned(),
-            p.get(field)
-                .cloned()
-                .ok_or_else(|| Error::invalid(format!("missing {field}")))?,
-        );
+    for field in fields {
+        match p.get(*field) {
+            Some(value) => {
+                payload.insert((*field).to_owned(), value.clone());
+            }
+            None if OPTIONAL_FIELDS.contains(field) => {}
+            None => return Err(Error::invalid(format!("missing {field}"))),
+        }
     }
-    let input: FeaReviewInput = serde_json::from_value(Value::Object(payload))
-        .map_err(|error| Error::invalid_because(&error))?;
+    serde_json::from_value(Value::Object(payload)).map_err(|error| Error::invalid_because(&error))
+}
+
+fn bounded_case(case_id: &str) -> bool {
+    !case_id.trim().is_empty() && case_id.len() <= limits::NAME_BYTES
+}
+
+pub(super) fn review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
+    let input: FeaReviewInput = input(p, REVIEW_FIELDS)?;
     if input.definition_id == 0
         || input.feature_id == 0
         || input.occurrence_id == 0
         || input.material.id == 0
-        || input.case_id.trim().is_empty()
-        || input.case_id.len() > NAME_BYTES
+        || !bounded_case(&input.case_id)
     {
         return Err(Error::invalid(
             "FEA target, material and case IDs must be bounded and nonzero",
@@ -118,31 +245,84 @@ pub(super) fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequ
             setup: ExactFeaSetup {
                 case_id: input.case_id,
                 instance_path: InstancePath::root(OccurrenceId(input.occurrence_id)),
-                material: FeaMaterial {
-                    id: input.material.id,
-                    youngs_modulus_mpa: input.material.youngs_modulus_mpa,
-                    poisson_ratio: input.material.poisson_ratio,
-                    yield_strength_mpa: input.material.yield_strength_mpa,
-                    density_kg_per_m3: None,
-                },
+                material: input.material.into(),
                 constrained_face_ordinals: input.constrained_face_ordinals,
-                face_tractions: input
-                    .face_tractions
-                    .into_iter()
-                    .map(|traction| ExactFeaFaceTraction {
-                        face_ordinal: traction.face_ordinal,
-                        traction_local_n_per_mm2: traction.traction_local_n_per_mm2,
-                    })
-                    .collect(),
+                face_tractions: input.face_tractions.into_iter().map(Into::into).collect(),
             },
             mesh_levels: input.mesh_levels,
             solve_settings: input.solve_settings.into(),
+            mode_count: input.mode_count,
         },
         input.confirmed,
     ))
 }
 
-pub(super) fn fea_review_value(review: &FeaReviewSummary) -> Value {
+pub(super) fn assembly_review_request(
+    p: &Map<String, Value>,
+) -> Result<(FeaAssemblyStudyRequest, bool)> {
+    let input: FeaAssemblyReviewInput = input(p, ASSEMBLY_REVIEW_FIELDS)?;
+    if !bounded_case(&input.case_id)
+        || input
+            .parts
+            .iter()
+            .any(|part| part.occurrence_id == 0 || part.feature_id == 0 || part.material.id == 0)
+    {
+        return Err(Error::invalid(
+            "FEA part, material and case IDs must be bounded and nonzero",
+        ));
+    }
+    let part_features = input
+        .parts
+        .iter()
+        .map(|part| FeatureId(part.feature_id))
+        .collect();
+    let parts = input
+        .parts
+        .into_iter()
+        .map(|part| ExactFeaAssemblyPart {
+            instance_path: InstancePath::root(OccurrenceId(part.occurrence_id)),
+            material: part.material.into(),
+            constrained_face_ordinals: part.constrained_face_ordinals,
+            face_tractions: part.face_tractions.into_iter().map(Into::into).collect(),
+        })
+        .collect();
+    let joints = input
+        .joints
+        .into_iter()
+        .map(|joint| ExactFeaJoint {
+            faces: joint.faces.map(|face| ExactFeaJointFace {
+                part: face.part,
+                face_ordinal: face.face_ordinal,
+            }),
+            kind: joint.kind.into(),
+        })
+        .collect();
+    let mate_joints = input
+        .mate_joints
+        .into_iter()
+        .map(|joint| ExactFeaMateJoint {
+            mate_id: AssemblyMateId(joint.mate_id),
+            kind: joint.kind.into(),
+        })
+        .collect();
+    Ok((
+        FeaAssemblyStudyRequest {
+            part_features,
+            setup: ExactFeaAssemblySetup {
+                case_id: input.case_id,
+                parts,
+                joints,
+                mate_joints,
+            },
+            mesh_levels: input.mesh_levels,
+            solve_settings: input.solve_settings.into(),
+            mode_count: input.mode_count,
+        },
+        input.confirmed,
+    ))
+}
+
+pub(super) fn review_value(review: &FeaReviewSummary) -> Value {
     json!({
         "review_digest":review.review_digest,
         "source":{"document_id":review.document_id,"revision":review.revision,"canonical_digest":review.canonical_digest},
@@ -171,6 +351,12 @@ pub(super) fn fea_review_value(review: &FeaReviewSummary) -> Value {
         },
         "all_levels_within_declared_limits":review.all_levels_within_declared_limits,
         "excluded_physics":review.excluded_physics,
+        "modes":review.modes.as_ref().map(|modes| json!({
+            "solver_version":modes.solver_version,
+            "total_mass_kg":modes.total_mass_kg,
+            "frequencies_hz":modes.frequencies_hz,
+            "maximum_relative_residual":modes.maximum_relative_residual,
+        })),
         "document_mutated":false,
     })
 }

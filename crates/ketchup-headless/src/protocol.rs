@@ -82,6 +82,7 @@ const METHODS: &[&str] = &[
     "cam_export",
     "fea_review",
     "thermal_review",
+    "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
     "pdm_catalog",
@@ -108,6 +109,7 @@ const GUARDED_METHODS: &[&str] = &[
     "cam_export",
     "fea_review",
     "thermal_review",
+    "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
     "pdm_catalog",
@@ -778,21 +780,8 @@ impl Server {
             ),
             "cam_preview" => (&["plan_id", "operations", "fixtures", "dialect"], true),
             "cam_export" => (&["review_token", "path", "confirmed"], true),
-            "fea_review" => (
-                &[
-                    "definition_id",
-                    "feature_id",
-                    "occurrence_id",
-                    "case_id",
-                    "material",
-                    "constrained_face_ordinals",
-                    "face_tractions",
-                    "mesh_levels",
-                    "solve_settings",
-                    "confirmed",
-                ],
-                true,
-            ),
+            "fea_review" => (fea_input::REVIEW_FIELDS, true),
+            "fea_assembly_review" => (fea_input::ASSEMBLY_REVIEW_FIELDS, true),
             "thermal_review" => (thermal_input::FIELDS, true),
             "pdm_release_create" => (
                 &[
@@ -970,13 +959,22 @@ impl Server {
                 Ok(json!({"exported":true,"path":path,"review":cam_review_value(&review)}))
             }
             "fea_review" => {
-                let (request, confirmed) = fea_input::fea_review_request(p)?;
+                let (request, confirmed) = fea_input::review_request(p)?;
                 let snapshot = self.session.snapshot();
                 let cancelled = AtomicBool::new(false);
                 let review = self
                     .fea_reviews
                     .review(&snapshot, &request, confirmed, &cancelled)?;
-                Ok(fea_input::fea_review_value(&review))
+                Ok(fea_input::review_value(&review))
+            }
+            "fea_assembly_review" => {
+                let (request, confirmed) = fea_input::assembly_review_request(p)?;
+                let snapshot = self.session.snapshot();
+                let cancelled = AtomicBool::new(false);
+                let review = self
+                    .fea_reviews
+                    .review_assembly(&snapshot, &request, confirmed, &cancelled)?;
+                Ok(fea_input::review_value(&review))
             }
             "thermal_review" => {
                 let (request, confirmed) = thermal_input::thermal_review_request(p)?;
@@ -1547,6 +1545,7 @@ pub fn serve(
 mod tests {
     use super::*;
     mod cam_faces;
+    mod fea_assembly;
     mod thermal;
 
     #[test]

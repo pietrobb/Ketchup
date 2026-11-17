@@ -184,6 +184,7 @@ impl KetchupApp {
                 },
             ],
             solve_settings: FeaSolveSettings::default(),
+            mode_count: 0,
         };
         Ok(FeaStudy {
             workflow: FeaReviewWorkflow::new(Some(self.exact_worker_executable()?)),
@@ -459,6 +460,7 @@ mod tests {
             converged: true,
             all_levels_within_declared_limits: true,
             excluded_physics: ["", "", "", "", ""],
+            modes: None,
         }
     }
 
