@@ -175,8 +175,8 @@ pub(super) fn operation_bounds(
         ExactBRepOperation::PlanarSurface { profile } => {
             planar_surface_bounds(&profiles[profile.0 as usize]).map(Some)
         }
-        ExactBRepOperation::BoundarySurface { boundary } => {
-            boundary_surface_bounds(boundary, tolerance_mm).map(Some)
+        ExactBRepOperation::BoundarySurface { boundary, inner } => {
+            boundary_surface_bounds(boundary, inner.as_ref(), tolerance_mm).map(Some)
         }
         ExactBRepOperation::Sweep { profile, path } => sweep_profile_bounds(
             &profiles[profile.0 as usize],
@@ -986,13 +986,22 @@ pub(super) fn spatial_sweep_bounds(
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }
 
-/// The surface spanning a closed boundary loop bounded by its curves.
+/// The surface spanning a closed boundary loop, and passing through the inner
+/// curves of a network, bounded by all those curves.
 pub(super) fn boundary_surface_bounds(
     boundary: &ExactBRepSpatialPath,
+    inner: Option<&ExactBRepSpatialPath>,
     tolerance_mm: f64,
 ) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
-    let bounds = spatial_path_hull(boundary, 0.0);
-    (valid_boundary_path(boundary, tolerance_mm) && valid_surface_bounds(bounds))
+    let mut bounds = spatial_path_hull(boundary, 0.0);
+    if let Some(inner) = inner {
+        let inner_bounds = spatial_path_hull(inner, 0.0);
+        for axis in 0..3 {
+            bounds[0][axis] = bounds[0][axis].min(inner_bounds[0][axis]);
+            bounds[1][axis] = bounds[1][axis].max(inner_bounds[1][axis]);
+        }
+    }
+    (valid_boundary_surface(boundary, inner, tolerance_mm) && valid_surface_bounds(bounds))
         .then_some(bounds)
         .ok_or(ExactBRepGraphError::InvalidParameter)
 }

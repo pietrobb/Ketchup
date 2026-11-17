@@ -2685,25 +2685,35 @@ fn public_boundary_surface_program_fills_a_closed_loop_of_curves() {
         ]))
         .unwrap();
     let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
-    let boundary = |segments| {
+    let networked = |segments, inner| {
         program(vec![AssistantCadEditOperation::AppendFeature {
             definition_id: definition.0.into(),
             name: "Patch".into(),
             feature: AssistantCadBodyFeature::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Boundary { segments },
+                source: AssistantCadSurfaceBodySource::Boundary { segments, inner },
             },
         }])
     };
-    let input = boundary(vec![
-        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
-        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
-        line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
-        line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
-    ]);
+    let boundary = |segments| networked(segments, Vec::new());
+    let square = || {
+        vec![
+            line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+            line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+            line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
+            line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
+        ]
+    };
+    let input = boundary(square());
     let serialized = serde_json::to_value(&input).unwrap();
     assert_eq!(
         serialized["operations"][0]["feature"]["source"]["type"],
         "boundary"
+    );
+    assert!(
+        serialized["operations"][0]["feature"]["source"]
+            .get("inner")
+            .is_none(),
+        "a loop without a network serializes as before"
     );
     assert_eq!(
         serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
@@ -2720,8 +2730,35 @@ fn public_boundary_surface_program_fills_a_closed_loop_of_curves() {
     let preview = document.preview_batch(&batch).unwrap();
     assert!(matches!(
         preview.feature(FeatureId(1)).unwrap().kind(),
-        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments }) if segments.len() == 4
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments, inner })
+            if segments.len() == 4 && inner.is_empty()
     ));
+
+    // A network: the surface also passes through a curve across the loop.
+    let through = networked(square(), vec![line([0.0, 15.0, 5.0], [40.0, 15.0, 5.0])]);
+    assert_eq!(through.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &through,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(1)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { inner, .. }) if inner.len() == 1
+    ));
+    let too_many = networked(
+        square(),
+        (0..65)
+            .map(|index| {
+                let x = 0.5 + f64::from(index) * 0.5;
+                line([x, 0.0, 5.0], [x, 30.0, 5.0])
+            })
+            .collect(),
+    );
+    assert!(too_many.validate().is_err());
 
     let baseline = document.current().canonical_digest();
     let open = boundary(vec![

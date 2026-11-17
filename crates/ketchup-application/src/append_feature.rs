@@ -62,8 +62,12 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
             continuity: loft_continuity(*continuity),
             rail: rail_feature_id.as_ref().map(resolved),
         },
-        AssistantCadSurfaceBodySource::Boundary { segments } => SurfaceBodySpec::Boundary {
+        AssistantCadSurfaceBodySource::Boundary { segments, inner } => SurfaceBodySpec::Boundary {
             segments: segments
+                .iter()
+                .map(AssistantSpatialPathSegment::canonical)
+                .collect(),
+            inner: inner
                 .iter()
                 .map(AssistantSpatialPathSegment::canonical)
                 .collect(),

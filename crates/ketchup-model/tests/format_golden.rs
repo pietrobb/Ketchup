@@ -991,6 +991,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: shaft_threads",
     "document.rs: tolerance",
     "document.rs: underlays",
+    "document/entities.rs: inner", // Format 117.
     "document/entities.rs: logical",
     "document/entities.rs: look",
     "document/entities.rs: modeled",
@@ -1005,6 +1006,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: fillet_radius_stations",
     "exact_brep_graph.rs: guide",
     "exact_brep_graph.rs: guide",
+    "exact_brep_graph.rs: inner",
     "exact_brep_graph.rs: name",
     "exact_brep_graph.rs: profile_edges",
     "exact_brep_graph.rs: profile_faces",
@@ -1221,6 +1223,7 @@ fn a_boundary_surface_needs_format_115_and_reopens_as_saved() {
                         line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
                         line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
                     ],
+                    inner: Vec::new(),
                 }),
             },
         ]))

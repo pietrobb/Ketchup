@@ -1168,11 +1168,11 @@ pub(super) fn validate_feature_kind(
         }
         FeatureKind::SheetMetal(spec) => spec.validate().map_err(CanonicalError::InvalidSheetMetal),
         FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { .. }) => Ok(()),
-        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments }) => {
-            if !is_valid_boundary_loop(segments, tolerance_mm) {
-                return Err(CanonicalError::InvalidSweep);
-            }
-            Ok(())
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments, inner }) => {
+            (is_valid_boundary_loop(segments, tolerance_mm)
+                && are_valid_network_curves(inner, tolerance_mm))
+            .then_some(())
+            .ok_or(CanonicalError::InvalidSweep)
         }
         FeatureKind::Loft {
             sections,
@@ -2283,6 +2283,18 @@ pub fn is_valid_boundary_loop(segments: &[SpatialPathSegment], tolerance_mm: f64
             .iter()
             .zip(segments.iter().cycle().skip(1))
             .all(|(segment, next)| segment.end_mm() == next.start_mm())
+}
+
+/// Whether `curves` can be the inner curves of a surface network: at most
+/// [`limits::PATH_SEGMENTS`] bounded lines, arcs and cubic Beziers, each on
+/// its own, so they need not meet.
+pub fn are_valid_network_curves(curves: &[SpatialPathSegment], tolerance_mm: f64) -> bool {
+    curves.len() <= limits::PATH_SEGMENTS
+        && curves.iter().all(|curve| {
+            spatial_segment_metrics(curve, tolerance_mm).is_some_and(|(length, ..)| {
+                (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&length)
+            })
+        })
 }
 
 pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm: f64) -> bool {

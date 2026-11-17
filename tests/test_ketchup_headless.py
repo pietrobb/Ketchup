@@ -208,6 +208,9 @@ class ClientTests(unittest.TestCase):
     def test_surface_helpers_emit_only_typed_append_feature_operations(self):
         process = FakeProcess()
         doc = self.session(process).new_document()
+        loop_line = {"type": "line", "start_mm": [0, 0, 0], "end_mm": [100, 0, 0]}
+        arch = {"type": "cubic_bezier", "start_mm": [0, 50, 0], "control_1_mm": [25, 50, 26],
+                "control_2_mm": [75, 50, 26], "end_mm": [100, 50, 0]}
         calls = [
             (lambda: doc.planar_surface(2, "Planar", 11), {
                 "type": "surface_body",
@@ -245,6 +248,14 @@ class ClientTests(unittest.TestCase):
                     "guide_feature_id": 13,
                     "rail_feature_id": 14,
                 },
+            }),
+            (lambda: doc.boundary_surface(2, "Patch", [loop_line]), {
+                "type": "surface_body",
+                "source": {"type": "boundary", "segments": [loop_line]},
+            }),
+            (lambda: doc.boundary_surface(2, "Dome", [loop_line], inner=[arch]), {
+                "type": "surface_body",
+                "source": {"type": "boundary", "segments": [loop_line], "inner": [arch]},
             }),
             (lambda: doc.trim_surface(2, "Trim", 21, 22), {
                 "type": "surface_trim", "target_feature_id": 21,

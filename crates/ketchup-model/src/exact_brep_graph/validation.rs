@@ -1022,8 +1022,8 @@ pub(super) fn valid_operation(
             planar_offset_distance(f64::from_bits(*distance_bits)).is_ok()
         }
         ExactBRepOperation::PlanarSurface { .. } => true,
-        ExactBRepOperation::BoundarySurface { boundary } => {
-            valid_boundary_path(boundary, tolerance_mm)
+        ExactBRepOperation::BoundarySurface { boundary, inner } => {
+            valid_boundary_surface(boundary, inner.as_ref(), tolerance_mm)
         }
         ExactBRepOperation::Sweep { profile, path } => profile != path,
         ExactBRepOperation::SpatialSweep { path, .. } => valid_spatial_path(path, tolerance_mm),

@@ -1408,9 +1408,8 @@ impl DigestV3 {
                         self.byte(1);
                         self.u64(profile.0);
                     }
-                    crate::document::SurfaceBodySpec::Boundary { segments } => {
-                        self.byte(3);
-                        self.spatial_segments(segments);
+                    crate::document::SurfaceBodySpec::Boundary { segments, inner } => {
+                        self.boundary_surface(segments, inner);
                     }
                     crate::document::SurfaceBodySpec::Loft {
                         sections,
@@ -2319,6 +2318,16 @@ impl DigestV3 {
                     }
                 }
             }
+        }
+    }
+
+    // No inner curves add nothing, so digests of earlier boundary surfaces stay.
+    fn boundary_surface(&mut self, segments: &[SpatialPathSegment], inner: &[SpatialPathSegment]) {
+        self.byte(3);
+        self.spatial_segments(segments);
+        if !inner.is_empty() {
+            self.byte(1);
+            self.spatial_segments(inner);
         }
     }
 

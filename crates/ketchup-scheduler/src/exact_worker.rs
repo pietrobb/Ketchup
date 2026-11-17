@@ -915,7 +915,7 @@ fn evaluate_exact_brep_graph(
             loft @ ExactBRepOperation::LoftSurface { .. } => {
                 exact_brep_loft_node(backend, graph, loft)?
             }
-            ExactBRepOperation::BoundarySurface { boundary } => fill_boundary(backend, boundary)?,
+            op @ ExactBRepOperation::BoundarySurface { .. } => fill_boundary(backend, graph, op)?,
             ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
                 &outputs[target.0 as usize].body,
                 &outputs[cutter.0 as usize].body,

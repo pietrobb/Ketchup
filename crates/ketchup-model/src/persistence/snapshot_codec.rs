@@ -25,7 +25,8 @@
 //! ([`ketchup_geometry::sketch::SketchSpec::released_readers_refuse`]), such as the
 //! profile of a standard part; 115 a surface spanning a loop of boundary curves
 //! ([`crate::document::SurfaceBodySpec::Boundary`]); 116 a Loft stretched to a rail
-//! (`FeatureKind::Loft::rail`). Older files have no generated ownership and need no
+//! (`FeatureKind::Loft::rail`); 117 a boundary surface through a network of inner
+//! curves (`SurfaceBodySpec::Boundary::inner`). Older files have no generated ownership and need no
 //! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
@@ -43,7 +44,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 116;
+pub(super) const SNAPSHOT_FORMAT: u16 = 117;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -52,8 +53,9 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 116;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 116 with a Loft stretched to a rail, which a Kečup that writes 115 does not
-/// know, else 115 with a boundary surface, which no released Kečup
+/// 117 with a boundary surface through inner curves, which a Kečup that writes
+/// 116 does not know, else 116 with a Loft stretched to a rail, which a Kečup
+/// that writes 115 does not know, else 115 with a boundary surface, which no released Kečup
 /// knows, else 114 with a
 /// sketch every released Kečup takes for damaged, else 113 with a hole
 /// callout bound to its source, else
@@ -97,13 +99,22 @@ fn format_of(product: &ProductModel) -> u16 {
     if product.features.values().any(|feature| {
         matches!(
             feature.kind(),
+            crate::document::FeatureKind::SurfaceBody(
+                crate::document::SurfaceBodySpec::Boundary { inner, .. }
+            ) if !inner.is_empty()
+        )
+    }) {
+        SNAPSHOT_FORMAT
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
             crate::document::FeatureKind::Loft { rail: Some(_), .. }
                 | crate::document::FeatureKind::SurfaceBody(
                     crate::document::SurfaceBodySpec::Loft { rail: Some(_), .. }
                 )
         )
     }) {
-        SNAPSHOT_FORMAT
+        116
     } else if product.features.values().any(|feature| {
         matches!(
             feature.kind(),

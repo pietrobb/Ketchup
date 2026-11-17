@@ -907,6 +907,11 @@ pub enum SurfaceBodySpec {
     /// and cubic Beziers, which may meet at corners.
     Boundary {
         segments: Vec<SpatialPathSegment>,
+        /// Curves of a network inside the loop the surface must also pass
+        /// through, each on its own: up to 64 lines, arcs and cubic Beziers.
+        /// Format 117.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inner: Vec<SpatialPathSegment>,
     },
 }
 

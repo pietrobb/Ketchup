@@ -605,13 +605,11 @@ impl<'a> GraphCompiler<'a> {
                 continuity,
                 rail,
             }) => self.compile_loft(sections, [*guide, *rail], *continuity, false)?,
-            FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments }) => {
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments, inner }) => {
+                let tolerance_mm = self.snapshot.tolerance().linear_mm();
                 ExactBRepOperation::BoundarySurface {
-                    boundary: boundary_path(
-                        feature_id,
-                        segments,
-                        self.snapshot.tolerance().linear_mm(),
-                    )?,
+                    boundary: boundary_path(feature_id, segments, tolerance_mm)?,
+                    inner: network_curves(feature_id, inner, tolerance_mm)?,
                 }
             }
             FeatureKind::SheetMetal(spec) => ExactBRepOperation::SheetMetal {

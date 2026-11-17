@@ -507,6 +507,10 @@ pub enum ExactBRepOperation {
     /// turn at corners; see `SurfaceBodySpec::Boundary`.
     BoundarySurface {
         boundary: ExactBRepSpatialPath,
+        /// Curves of a network the surface also passes through, each on its
+        /// own; see `SurfaceBodySpec::Boundary::inner`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inner: Option<ExactBRepSpatialPath>,
     },
     SurfaceTrim {
         target: ExactBRepNodeId,
@@ -1306,8 +1310,11 @@ impl ExactBRepGraph {
         for (index, node) in self.nodes.iter().enumerate() {
             let id = ExactBRepNodeId(index as u32);
             let spatial_segment_count = match &node.operation {
-                ExactBRepOperation::SpatialSweep { path, .. }
-                | ExactBRepOperation::BoundarySurface { boundary: path } => path.segments.len(),
+                ExactBRepOperation::SpatialSweep { path, .. } => path.segments.len(),
+                ExactBRepOperation::BoundarySurface { boundary, inner } => boundary
+                    .segments
+                    .len()
+                    .saturating_add(inner.as_ref().map_or(0, |inner| inner.segments.len())),
                 ExactBRepOperation::Loft { guide, rail, .. }
                 | ExactBRepOperation::LoftSurface { guide, rail, .. } => guide
                     .iter()
