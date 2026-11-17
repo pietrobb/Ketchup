@@ -44,6 +44,7 @@ fn axial_bar(element_count: usize, force_n: f64) -> FeaModel {
         .map(|node| FeaConstraint {
             node,
             displacement_mm: [(node == 0).then_some(0.0), Some(0.0), Some(0.0)],
+            rotation_rad: [None; 3],
         })
         .collect();
     FeaModel {
@@ -189,18 +190,22 @@ fn tetrahedron_patch_matches_constant_uniaxial_stress() {
             FeaConstraint {
                 node: 0,
                 displacement_mm: [Some(0.0), Some(0.0), Some(0.0)],
+                rotation_rad: [None; 3],
             },
             FeaConstraint {
                 node: 1,
                 displacement_mm: [None, Some(0.0), Some(0.0)],
+                rotation_rad: [None; 3],
             },
             FeaConstraint {
                 node: 2,
                 displacement_mm: [Some(0.0), None, Some(0.0)],
+                rotation_rad: [None; 3],
             },
             FeaConstraint {
                 node: 3,
                 displacement_mm: [Some(0.0), Some(0.0), None],
+                rotation_rad: [None; 3],
             },
         ],
         loads: vec![FeaLoad::SurfaceTraction {
@@ -272,6 +277,7 @@ fn incomplete_singular_and_out_of_scope_models_fail_closed() {
     singular.constraints = vec![FeaConstraint {
         node: 0,
         displacement_mm: [Some(0.0), None, None],
+        rotation_rad: [None; 3],
     }];
     assert_eq!(
         singular.solve(FeaSolveSettings::default()),
@@ -309,6 +315,7 @@ fn nonzero_dirichlet_displacement_produces_analytical_stress_and_reactions() {
     model.constraints.push(FeaConstraint {
         node: 1,
         displacement_mm: [Some(1.0), None, None],
+        rotation_rad: [None; 3],
     });
 
     let solution = model.solve(FeaSolveSettings::default()).unwrap();
@@ -362,6 +369,7 @@ fn traction_on_an_internal_tetrahedron_face_is_rejected() {
         constraints: vec![FeaConstraint {
             node: 0,
             displacement_mm: [Some(0.0), Some(0.0), Some(0.0)],
+            rotation_rad: [None; 3],
         }],
         loads: vec![FeaLoad::SurfaceTraction {
             nodes: [0, 1, 2],
