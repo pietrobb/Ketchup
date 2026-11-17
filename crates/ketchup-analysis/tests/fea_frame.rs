@@ -84,6 +84,7 @@ fn beam_line(
         elements,
         constraints: vec![clamp(0)],
         loads: Vec::new(),
+        couplings: Vec::new(),
     }
 }
 

@@ -1,3 +1,7 @@
+use crate::fea_coupling::{
+    Joints, add_springs, joint_definition, spring_energy, turning_leaders, validate_couplings,
+    validate_turns,
+};
 use crate::fea_frame::{
     ElementAxes, FRAME_DOFS, FrameError, consistent_load, local_stiffness, multiply,
     peak_von_mises, valid_section,
@@ -16,6 +20,7 @@ pub const MAX_FEA_NODES: usize = 200_000;
 pub const MAX_FEA_ELEMENTS: usize = 1_000_000;
 pub const MAX_FEA_CONSTRAINTS: usize = MAX_FEA_NODES;
 pub const MAX_FEA_LOADS: usize = 1_000_000;
+pub const MAX_FEA_COUPLINGS: usize = MAX_FEA_NODES;
 /// The default memory for the factored stiffness matrix: 512 MiB.
 pub const DEFAULT_FEA_FACTOR_BYTES: usize = 512 << 20;
 
@@ -97,6 +102,47 @@ impl FeaConstraint {
     }
 }
 
+/// A joint between two nodes, usually of different parts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeaCoupling {
+    pub nodes: [usize; 2],
+    pub kind: FeaCouplingKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FeaCouplingKind {
+    /// The second node follows the first as if a rigid link joined them: it
+    /// moves by the first's move plus the first's turn about the offset
+    /// between them, and turns with it. A first node another sits away from,
+    /// or one whose follower turns, turns even when no frame element ends at it.
+    Rigid,
+    /// Springs along the model's axes between two nodes at one place; a turn
+    /// stiffness needs both nodes to turn. A zero stiffness leaves that axis free.
+    Spring {
+        translation_n_per_mm: [f64; 3],
+        rotation_n_mm_per_rad: [f64; 3],
+    },
+}
+
+/// Why a coupling cannot be built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FeaCouplingProblem {
+    /// A node is outside the mesh, or both nodes are the same.
+    InvalidNode,
+    /// A stiffness is not finite or negative, or every stiffness is zero.
+    InvalidStiffness,
+    /// A spring joins nodes at different places.
+    SpringNodesApart,
+    /// A turn stiffness joins a node that does not turn.
+    TurnSpringNeedsTurningNodes,
+    /// The second node already follows another rigid coupling.
+    FollowsTwice,
+    /// Rigid couplings follow each other round in a circle.
+    Cycle,
+    /// A constraint holds the node that follows; hold the node it follows.
+    ConstrainedFollower,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeaLoad {
     NodalForce {
@@ -129,6 +175,7 @@ pub struct FeaModel {
     pub elements: Vec<FeaElement>,
     pub constraints: Vec<FeaConstraint>,
     pub loads: Vec<FeaLoad>,
+    pub couplings: Vec<FeaCoupling>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -196,6 +243,11 @@ pub enum FeaError {
     MissingConstraint,
     InvalidConstraint,
     ConflictingConstraint,
+    /// The coupling at index `coupling` of the model's couplings.
+    InvalidCoupling {
+        coupling: usize,
+        problem: FeaCouplingProblem,
+    },
     MissingLoad,
     InvalidLoad,
     NonBoundaryTraction,
@@ -317,7 +369,7 @@ struct ConstraintSupport {
 
 type ConstraintDefinition = BTreeMap<(usize, u64), ConstraintSupport>;
 
-struct DofLayout {
+pub(crate) struct DofLayout {
     /// Three moves per node come first.
     translations: usize,
     /// The turning nodes, in slot order.
@@ -332,7 +384,7 @@ impl DofLayout {
     }
 
     /// The unknown of `axis` (0–2 moves, 3–5 turns) at `node`.
-    fn dof(&self, node: usize, axis: usize) -> Option<usize> {
+    pub(crate) fn dof(&self, node: usize, axis: usize) -> Option<usize> {
         if axis < 3 {
             Some(node * 3 + axis)
         } else {
@@ -403,14 +455,23 @@ impl FeaModel {
                 }
             }
         }
+        add_springs(self, &layout, &mut entries)?;
         self.assemble_loads(&layout, &mut forces)?;
+        // A rigid coupling's follower is no unknown of its own: its rows and
+        // forces go to the unknowns it follows, and it is set from them after.
+        let joints = Joints::new(self, &layout)?;
+        let entries = joints.reduce(entries, &mut forces);
 
         let original_stiffness = SymmetricMatrix::from_entries(dof_count, entries);
         let mut stiffness = original_stiffness.clone();
         let original_forces = forces.clone();
+        let follower_scale = stiffness.largest_magnitude().max(1.0);
+        for dof in joints.follower_dofs() {
+            stiffness.prescribe(dof, 0.0, follower_scale, &mut forces);
+        }
         let constrained = self.apply_constraints(&layout, &mut stiffness, &mut forces)?;
         let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
-        let displacement = stiffness
+        let mut displacement = stiffness
             .factor(threshold, settings.maximum_factor_bytes)
             .map_err(|error| match error {
                 FactorError::Singular => FeaError::SingularSystem,
@@ -430,6 +491,7 @@ impl FeaModel {
             .zip(&original_forces)
             .map(|(internal, applied)| internal - applied)
             .collect::<Vec<_>>();
+        joints.recover(&mut displacement);
         let mut maximum_free_dof_residual_n: f64 = 0.0;
         let mut reactions = vec![[0.0; 3]; self.nodes.len()];
         let mut reaction_moments = layout.per_turning_node([0.0; 3]);
@@ -476,7 +538,8 @@ impl FeaModel {
         let total_strain_energy_n_mm = element_results
             .iter()
             .map(|result| result.strain_energy_n_mm)
-            .sum();
+            .sum::<f64>()
+            + spring_energy(self, &layout, &displacement);
         let characteristic_length_mm = self.characteristic_length();
         let maximum_displacement_ratio = maximum_displacement_mm / characteristic_length_mm;
         let all_yield_strengths_supplied = self
@@ -548,6 +611,7 @@ impl FeaModel {
             || self.elements.len() > MAX_FEA_ELEMENTS
             || self.constraints.len() > MAX_FEA_CONSTRAINTS
             || self.loads.len() > MAX_FEA_LOADS
+            || self.couplings.len() > MAX_FEA_COUPLINGS
         {
             return Err(FeaError::ModelTooLarge);
         }
@@ -689,10 +753,13 @@ impl FeaModel {
             }
         }
 
+        validate_couplings(self)?;
+        let layout = self.dof_layout();
+        validate_turns(self, &layout)?;
         if self.constraints.is_empty() {
             return Err(FeaError::MissingConstraint);
         }
-        let turning = self.dof_layout().slots;
+        let turning = layout.slots;
         let mut prescribed = BTreeMap::<(usize, usize), f64>::new();
         for constraint in &self.constraints {
             if constraint.node >= self.nodes.len()
@@ -778,7 +845,8 @@ impl FeaModel {
         Ok(())
     }
 
-    /// Unknowns: three moves per node, then three turns per node a frame element ends at.
+    /// Unknowns: three moves per node, then three turns per node a frame element
+    /// ends at, then per node only rigid couplings make turn.
     fn dof_layout(&self) -> DofLayout {
         let mut slots = vec![None; self.nodes.len()];
         let mut owners = Vec::new();
@@ -792,6 +860,14 @@ impl FeaModel {
                         owners.push(node);
                     }
                 }
+            }
+        }
+        let mut turning = slots.iter().map(Option::is_some).collect::<Vec<_>>();
+        turning_leaders(self, &mut turning);
+        for (node, turns) in turning.into_iter().enumerate() {
+            if turns && slots[node].is_none() {
+                slots[node] = Some(owners.len());
+                owners.push(node);
             }
         }
         DofLayout {
@@ -1480,6 +1556,26 @@ impl FeaModel {
                 }
             }
         }
+        // Couplings likewise come last and only when there are any.
+        if !self.couplings.is_empty() {
+            hasher.update(b"couplings");
+            for coupling in &self.couplings {
+                for node in coupling.nodes {
+                    hash_index(&mut hasher, node);
+                }
+                match coupling.kind {
+                    FeaCouplingKind::Rigid => hasher.update([1]),
+                    FeaCouplingKind::Spring {
+                        translation_n_per_mm,
+                        rotation_n_mm_per_rad,
+                    } => {
+                        hasher.update([2]);
+                        hash_f64s(&mut hasher, &translation_n_per_mm);
+                        hash_f64s(&mut hasher, &rotation_n_mm_per_rad);
+                    }
+                }
+            }
+        }
         format!("{:x}", hasher.finalize())
     }
 }
@@ -1545,6 +1641,14 @@ pub fn solve_convergence_study(
     if levels.iter().skip(1).any(|level| {
         !same_constraint_definition(&level.constraint_definition(), &constraint_definition)
     }) {
+        return Err(FeaConvergenceError::ConstraintMismatch);
+    }
+    let joints = joint_definition(&levels[0]);
+    if levels
+        .iter()
+        .skip(1)
+        .any(|level| joint_definition(level) != joints)
+    {
         return Err(FeaConvergenceError::ConstraintMismatch);
     }
     let solutions = levels

@@ -58,6 +58,7 @@ fn axial_bar(element_count: usize, force_n: f64) -> FeaModel {
             node: element_count,
             force_n: [force_n, 0.0, 0.0],
         }],
+        couplings: Vec::new(),
     }
 }
 
@@ -212,6 +213,7 @@ fn tetrahedron_patch_matches_constant_uniaxial_stress() {
             nodes: [1, 2, 3],
             traction_n_per_mm2: [200.0 * face_normal_x, 0.0, 0.0],
         }],
+        couplings: Vec::new(),
     };
 
     let solution = model.solve(FeaSolveSettings::default()).unwrap();
@@ -375,6 +377,7 @@ fn traction_on_an_internal_tetrahedron_face_is_rejected() {
             nodes: [0, 1, 2],
             traction_n_per_mm2: [1.0, 0.0, 0.0],
         }],
+        couplings: Vec::new(),
     };
 
     assert_eq!(
