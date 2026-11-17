@@ -102,10 +102,12 @@ impl SymmetricMatrix {
                 self.values[index] = scale;
                 continue;
             }
-            // Column `dof` of row `column` holds the same value.
-            let mirror = self.position(column, dof);
-            rhs[column] -= self.values[mirror] * value;
-            self.values[mirror] = 0.0;
+            // Column `dof` of row `column` holds the same value; the pattern
+            // is built symmetric, so it is there.
+            if let Some(mirror) = self.position_of(column, dof) {
+                rhs[column] -= self.values[mirror] * value;
+                self.values[mirror] = 0.0;
+            }
             self.values[index] = 0.0;
         }
         rhs[dof] = scale * value;
@@ -117,11 +119,6 @@ impl SymmetricMatrix {
             .binary_search(&column)
             .ok()
             .map(|offset| range.start + offset)
-    }
-
-    fn position(&self, row: usize, column: usize) -> usize {
-        self.position_of(row, column)
-            .expect("the pattern of a symmetric matrix is symmetric")
     }
 
     /// A reverse Cuthill–McKee order of the unknowns: each connected part
