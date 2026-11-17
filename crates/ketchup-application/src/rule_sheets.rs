@@ -206,14 +206,7 @@ pub(crate) fn append(
                     report
                         .diagnostics
                         .iter()
-                        .map(|diagnostic| {
-                            format!(
-                                "feature {}: {}; {}",
-                                diagnostic.source.feature_id.0,
-                                diagnostic.reason,
-                                diagnostic.fix_hint
-                            )
-                        })
+                        .map(|diagnostic| diagnostic.describe(&snapshot))
                         .collect::<Vec<_>>()
                         .join("; "),
                 ));

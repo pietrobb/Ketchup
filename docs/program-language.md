@@ -191,9 +191,12 @@ sheet_angular("corner", sheet="Detail", view="front",
 metric threads, including quantities such as `4×`. Depth is the finished cylinder's
 axial span, not cutter travel or proof of a blind/through hole. Each callout has a
 leader to one of its holes in a sheet view that shows the hole as a circle; holes no
-view shows that way are refused. Threads require
-sufficient blind-hole runout; modeled threads, interrupted cylinders and unsupported
-cut provenance are refused rather than silently omitted. Reapplying the program
+view shows that way are refused. The text is read from the finished exact faces:
+through or a flat or drilled bottom, counterbores, a countersink, and a cosmetic or
+modeled thread (called out like a cosmetic one). Threads require sufficient
+blind-hole runout; a hole whose wall another cut breaks, that widens below its entry
+or that has two threads, and unsupported cut provenance, are refused with the cut's
+name and the reason rather than silently omitted. Reapplying the program
 regenerates its sheets; removing a declaration removes its sheet. Manual sheets are
 preserved and ambiguous name collisions are refused. Geometry and sheets publish in
 one Undo step and survive Save/Open. Export the resulting sheet as SVG, DXF or PDF

@@ -222,7 +222,7 @@ Manual tools, rule programs, plugins and AI all change the model through one com
 
 Honest limits, so you know where it stands next to a mature mechanical CAD such as SolidWorks:
 
-- **Automatic hole callouts have a limited scope.** They cover intact circular cuts and cosmetic metric threads, grouping equal holes as `4×`. Depth is the verified cylindrical span, not a blind/through designation. Each callout has a leader to one of its holes in a view that shows the hole as a circle, and the leader follows that view; a hole no view shows as a circle gets no callout and is reported. Modeled threads, altered bores and other unsupported cuts are reported rather than guessed; use reviewed manual notes for them. After a source changes, regenerate its callouts before exporting.
+- **Automatic hole callouts read one bore per hole.** A callout describes what the exact part has: a through hole or a flat or drilled bottom, counterbores, a countersink, and a cosmetic or modeled metric thread, grouping equal holes as `4×`. A hole whose wall another cut breaks, that widens below its entry (an undercut or a groove), or that carries two threads is reported with the cut's name and the reason, not guessed; use a reviewed manual note for it. Each callout has a leader to one of its holes in a view that shows the hole as a circle; a hole no view shows as a circle is reported. After a source changes, regenerate its callouts before exporting.
 - **No native SolidWorks or Parasolid files, and no writing of SketchUp `.skp`.** Use STEP or IGES (exact) for CAD exchange; SketchUp `.skp` files are read, and COLLADA or `.kscene` take a model back to SketchUp.
 - **The catalogue of standard mechanical parts is small.** Rule programs can place deep-groove ball bearings 6000 to 6012 and 6200 to 6212, HIWIN MGN9, MGN12 and MGN15 carriages and the mounting holes of their rails, and DIN 69051 ball screw nuts and shafts, NEMA 17 and 23 stepper motors and Motedis 20, 30 and 40 mm slot profiles, with the supplier's dimensions. The library has no rail cross-section: HIWIN's catalogue does not dimension it and HIWIN's terms of use do not allow its CAD files to be published, so you supply it from HIWIN's CAD file. Ball tracks and seals are not modelled, and other sizes and suppliers come in as STEP.
 - **Simulation is basic.** Load paths, EC5 timber checks and a linear-static FEA (trusses and tetrahedra, up to 65,536 tetrahedra per mesh of an exact part and as many elements as fit 512 MiB of solver memory) — not nonlinear, thermal, dynamic or fatigue analysis.
@@ -236,9 +236,8 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 
 The next steps that would move Ketchup furthest toward a full production CAD:
 
-1. Broader automatic hole/thread callouts, including modeled threads and complex bores.
-2. Broader exact modeling: more fillet and shell cases, and freeform surfaces beyond lofts and filled patches.
-3. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
+1. Broader exact modeling: more fillet and shell cases, and freeform surfaces beyond lofts and filled patches.
+2. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
 
 With these, Ketchup could design a machine like its own CNC router end to end: frame from aluminium profiles, ball screws and linear-guide carriages from the parts library (a first set of sizes is there) on rails whose cross-section comes from the supplier's CAD file, drawings with tolerances for the machined plates, and toolpaths to make those plates.
 

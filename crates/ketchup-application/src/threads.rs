@@ -137,6 +137,42 @@ impl CosmeticThreadGraph {
     }
 }
 
+/// The body `graph` makes with its modelled threads cosmetic, which drawings
+/// show by ISO 6410, evaluated by `worker` right after the body itself, whose
+/// output cache already holds the nodes before the grooves. `None` when the
+/// graph models no thread or the body cannot be made; the threaded body
+/// stands either way, and drawings of it say the cosmetic one is missing.
+pub(crate) fn cosmetic_thread_body(
+    worker: &mut ketchup_scheduler::ExactWorkerSupervisor,
+    graph: &ExactBRepGraph,
+    imported_sources: &[&[u8]],
+    cancelled: &AtomicBool,
+) -> Option<ketchup_model::exact_product::ExactBodyPackage> {
+    let plain = match graph.without_thread_grooves() {
+        Ok(plain) => plain?,
+        Err(error) => {
+            ketchup_rejection::log!("modelled threads cannot be left out: {error}");
+            return None;
+        }
+    };
+    match worker.evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+        &plain,
+        imported_sources,
+        cancelled,
+    ) {
+        Ok(package) => Some(ketchup_model::exact_product::ExactBodyPackage::Graph(
+            package,
+        )),
+        Err(error) => {
+            ketchup_rejection::log!(
+                "the body of definition {} with its threads cosmetic failed: {error}",
+                graph.definition_id
+            );
+            None
+        }
+    }
+}
+
 /// Every thread of `snapshot`; the outside threads of program parts only
 /// with the program's `evaluated` model.
 #[must_use]

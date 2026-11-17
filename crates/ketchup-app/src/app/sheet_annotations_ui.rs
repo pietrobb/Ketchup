@@ -145,6 +145,9 @@ impl KetchupApp {
                 }
                 if let Some(error) = &fields.error {
                     ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                    for cause in error.causes() {
+                        ui.label(cause);
+                    }
                 }
             }
         });
