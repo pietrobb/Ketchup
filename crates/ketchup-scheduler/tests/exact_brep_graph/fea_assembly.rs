@@ -4,10 +4,13 @@
 
 use super::*;
 use ketchup_analysis::fea::{FeaCouplingKind, FeaSolution};
+use ketchup_model::assembly::{
+    AssemblyMate, AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind,
+};
 use ketchup_model::exact_product::ExactBRepGraphFaceEvidence;
 use ketchup_scheduler::{
     ExactBRepVolumeMeshPackage, ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaJoint,
-    ExactFeaJointFace, assembly_bound_model,
+    ExactFeaJointFace, ExactFeaMateJoint, assembly_bound_model,
 };
 
 const HEIGHT_MM: f64 = 5.0;
@@ -72,6 +75,7 @@ fn stack_setup(
             ],
             kind,
         }],
+        mate_joints: Vec::new(),
     }
 }
 
@@ -277,5 +281,133 @@ fn assembly_joints_that_cannot_be_built_are_refused() {
     assert_eq!(
         assembly_bound_model(&snapshot, &[&package], &setup).unwrap_err(),
         ExactFeaSetupError::IncompleteSetup
+    );
+}
+
+fn block_mesh(
+    supervisor: &mut ExactWorkerSupervisor,
+    snapshot: &Snapshot,
+    definition: DefinitionId,
+    extrusion: FeatureId,
+) -> ExactBRepVolumeMeshPackage {
+    let graph = ExactBRepGraph::from_snapshot(snapshot, definition, extrusion).unwrap();
+    supervisor
+        .evaluate_exact_brep_graph_volume_mesh(
+            &graph,
+            ExactVolumeMeshWireOptions {
+                surface_deflection_mm: 0.1,
+                angular_deflection_rad: 0.2,
+                max_tetrahedra: 64,
+                max_relative_volume_error: 1.0e-10,
+                min_tetrahedron_quality: 1.0e-5,
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_face_to_face_mate_joins_the_faces_it_names() {
+    let _turn = crate::integration_support::file_turn();
+    let (mut document, definition, extrusion, lower) = simple_extrusion_document();
+    let upper = OccurrenceId(903);
+    let beside = OccurrenceId(904);
+    let placed = |id, name: &str, transform| CanonicalCommand::CreateOccurrence {
+        id,
+        definition_id: definition,
+        name: name.into(),
+        transform,
+        parent: None,
+        tags: Default::default(),
+        visible: true,
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            placed(
+                upper,
+                "Stacked occurrence",
+                Transform::from_translation(0.0, 0.0, HEIGHT_MM).unwrap(),
+            ),
+            placed(
+                beside,
+                "Beside occurrence",
+                Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
+            ),
+        ]))
+        .unwrap();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let evidence = block_mesh(&mut supervisor, &document.current(), definition, extrusion);
+    let face = |role| {
+        evidence
+            .source
+            .planar_face_attachments
+            .iter()
+            .find(|attachment| attachment.reference().role() == Some(role))
+            .unwrap()
+            .clone()
+    };
+    let mate = AssemblyMateId(77);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyMate(AssemblyMate::new(
+                mate,
+                AssemblyMateEndpoint::resolved_planar_face(lower, face(ExactFaceRole::Top)),
+                AssemblyMateEndpoint::resolved_planar_face(upper, face(ExactFaceRole::Bottom)),
+                AssemblyMateKind::CoincidentPlanar {
+                    offset_mm: 0.0,
+                    reversed: true,
+                },
+            )),
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let package = block_mesh(&mut supervisor, &snapshot, definition, extrusion);
+    let packages = [&package, &package];
+    let explicit = stack_setup(
+        lower,
+        upper,
+        bottom_and_top(&package),
+        FeaCouplingKind::Rigid,
+    );
+    let mut by_mate = explicit.clone();
+    by_mate.joints.clear();
+    by_mate.mate_joints = vec![ExactFeaMateJoint {
+        mate_id: mate,
+        kind: FeaCouplingKind::Rigid,
+    }];
+    // The mate's faces are the top of the lower block and the bottom of the upper.
+    assert_eq!(
+        assembly_bound_model(&snapshot, &packages, &by_mate)
+            .unwrap()
+            .model,
+        assembly_bound_model(&snapshot, &packages, &explicit)
+            .unwrap()
+            .model
+    );
+
+    let refused = |setup: &ExactFeaAssemblySetup| {
+        assembly_bound_model(&snapshot, &packages, setup).unwrap_err()
+    };
+    let mut unknown = by_mate.clone();
+    unknown.mate_joints[0].mate_id = AssemblyMateId(78);
+    assert_eq!(
+        refused(&unknown),
+        ExactFeaSetupError::InvalidMate {
+            mate_id: AssemblyMateId(78)
+        }
+    );
+    // The mate's upper end is not one of the studied parts.
+    let mut elsewhere = by_mate.clone();
+    elsewhere.parts[1].instance_path = InstancePath::root(beside);
+    assert_eq!(
+        refused(&elsewhere),
+        ExactFeaSetupError::InvalidMate { mate_id: mate }
+    );
+    // A mate joins its faces once, explicitly or by the mate.
+    let mut twice = by_mate.clone();
+    twice.joints = explicit.joints.clone();
+    assert_eq!(
+        refused(&twice),
+        ExactFeaSetupError::InvalidJoint { joint: 1 }
     );
 }

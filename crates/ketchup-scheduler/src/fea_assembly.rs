@@ -14,9 +14,12 @@ use ketchup_analysis::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaCoupling, FeaCouplingKind, FeaElement, FeaElementKind,
     FeaLoad, FeaMaterial, FeaModel, FeaNode,
 };
-use ketchup_geometry::linalg::{add, cross, length, scale, sub};
+use ketchup_geometry::linalg::{add, cross, dot, length, scale, sub};
+use ketchup_model::assembly::{
+    AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth,
+};
 use ketchup_model::document::{InstancePath, Snapshot};
-use ketchup_model::tolerance::NEGLIGIBLE;
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, NEGLIGIBLE};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -42,11 +45,21 @@ pub struct ExactFeaJoint {
     pub kind: FeaCouplingKind,
 }
 
+/// A face-to-face (coincident planar) mate of the document, joined at the two
+/// faces it names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactFeaMateJoint {
+    pub mate_id: AssemblyMateId,
+    pub kind: FeaCouplingKind,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactFeaAssemblySetup {
     pub case_id: String,
     pub parts: Vec<ExactFeaAssemblyPart>,
     pub joints: Vec<ExactFeaJoint>,
+    /// Joined after `joints`, so they number on from them.
+    pub mate_joints: Vec<ExactFeaMateJoint>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,7 +222,14 @@ pub fn assembly_bound_model(
         return Err(ExactFeaSetupError::IncompleteSetup);
     }
 
-    let (couplings, joint_nodes) = joints(&mut nodes, &placed, &held, &setup.joints)?;
+    let mut all_joints = setup.joints.clone();
+    for mate in &setup.mate_joints {
+        all_joints.push(ExactFeaJoint {
+            faces: mate_faces(snapshot, packages, setup, mate.mate_id)?,
+            kind: mate.kind,
+        });
+    }
+    let (couplings, joint_nodes) = joints(&mut nodes, &placed, &held, &all_joints)?;
     Ok(AssemblyBoundFeaModel {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),
@@ -226,6 +246,53 @@ pub fn assembly_bound_model(
             couplings,
         },
     })
+}
+
+/// The faces a coincident planar mate names. Each end's part is the setup part
+/// at the end's instance path, and its face the one face of that part's exact
+/// evidence with the end's reference role and source element, facing the way
+/// the end does.
+fn mate_faces(
+    snapshot: &Snapshot,
+    packages: &[&ExactBRepVolumeMeshPackage],
+    setup: &ExactFeaAssemblySetup,
+    mate_id: AssemblyMateId,
+) -> Result<[ExactFeaJointFace; 2], ExactFeaSetupError> {
+    let refused = ExactFeaSetupError::InvalidMate { mate_id };
+    let mate = snapshot
+        .assembly_mate(mate_id)
+        .filter(|mate| matches!(mate.kind(), AssemblyMateKind::CoincidentPlanar { .. }))
+        .ok_or(refused.clone())?;
+    let face = |end: &AssemblyMateEndpoint| {
+        let attachment = end
+            .planar_face_attachment()
+            .filter(|_| end.health() == AssemblyReferenceHealth::Resolved)?;
+        let part = setup
+            .parts
+            .iter()
+            .position(|part| part.instance_path == *end.instance_path())?;
+        let source = &packages.get(part)?.source;
+        let reference = attachment.reference();
+        if reference.definition_id != source.identity.definition_id
+            || reference.producer_feature_id != source.identity.producer_feature_id
+        {
+            return None;
+        }
+        let mut named = source.face_evidence.iter().filter(|face| {
+            face.semantic_role == reference.semantic_role
+                && face.source_element_id == reference.source_element_id
+        });
+        let face = named.next().filter(|_| named.next().is_none())?;
+        (1.0 - dot(face.unit_normal, attachment.local_unit_normal()) <= ACCUMULATED_ROUNDING)
+            .then_some(ExactFeaJointFace {
+                part,
+                face_ordinal: face.face_ordinal,
+            })
+    };
+    face(mate.endpoint_a())
+        .zip(face(mate.endpoint_b()))
+        .map(|(first, second)| [first, second])
+        .ok_or(refused)
 }
 
 /// The area centroid of a face's triangles.

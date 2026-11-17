@@ -5,10 +5,7 @@ use ketchup_application::evaluation::{
     EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationSelection,
     ExactEvaluationTask, ExactSource, ProducerKey, exact_worker_candidates,
 };
-use ketchup_application::fea_workflow::{
-    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
-    FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
-};
+use ketchup_application::fea_workflow::{FeaReviewError, FeaReviewWorkflow};
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
@@ -81,6 +78,7 @@ const METHODS: &[&str] = &[
     "cam_preview",
     "cam_export",
     "fea_review",
+    "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
     "pdm_catalog",
@@ -106,6 +104,7 @@ const GUARDED_METHODS: &[&str] = &[
     "cam_preview",
     "cam_export",
     "fea_review",
+    "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
     "pdm_catalog",
@@ -385,28 +384,6 @@ struct Request {
     id: Value,
     method: String,
     params: Value,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaReviewInput {
-    definition_id: u64,
-    feature_id: u64,
-    occurrence_id: u64,
-    case_id: String,
-    material: fea_input::FeaMaterialInput,
-    constrained_face_ordinals: Vec<u32>,
-    face_tractions: Vec<FeaFaceTractionInput>,
-    mesh_levels: Vec<ExactVolumeMeshWireOptions>,
-    solve_settings: fea_input::FeaSolveSettingsInput,
-    confirmed: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaFaceTractionInput {
-    face_ordinal: u32,
-    traction_local_n_per_mm2: [f64; 3],
 }
 
 #[derive(Deserialize)]
@@ -811,21 +788,8 @@ impl Server {
             ),
             "cam_preview" => (&["plan_id", "operations", "fixtures", "dialect"], true),
             "cam_export" => (&["review_token", "path", "confirmed"], true),
-            "fea_review" => (
-                &[
-                    "definition_id",
-                    "feature_id",
-                    "occurrence_id",
-                    "case_id",
-                    "material",
-                    "constrained_face_ordinals",
-                    "face_tractions",
-                    "mesh_levels",
-                    "solve_settings",
-                    "confirmed",
-                ],
-                true,
-            ),
+            "fea_review" => (fea_input::REVIEW_FIELDS, true),
+            "fea_assembly_review" => (fea_input::ASSEMBLY_REVIEW_FIELDS, true),
             "pdm_release_create" => (
                 &[
                     "repository",
@@ -1002,13 +966,22 @@ impl Server {
                 Ok(json!({"exported":true,"path":path,"review":cam_review_value(&review)}))
             }
             "fea_review" => {
-                let (request, confirmed) = fea_review_request(p)?;
+                let (request, confirmed) = fea_input::review_request(p)?;
                 let snapshot = self.session.snapshot();
                 let cancelled = AtomicBool::new(false);
                 let review = self
                     .fea_reviews
                     .review(&snapshot, &request, confirmed, &cancelled)?;
-                Ok(fea_review_value(&review))
+                Ok(fea_input::review_value(&review))
+            }
+            "fea_assembly_review" => {
+                let (request, confirmed) = fea_input::assembly_review_request(p)?;
+                let snapshot = self.session.snapshot();
+                let cancelled = AtomicBool::new(false);
+                let review = self
+                    .fea_reviews
+                    .review_assembly(&snapshot, &request, confirmed, &cancelled)?;
+                Ok(fea_input::review_value(&review))
             }
             "pdm_release_create" => {
                 let current = PdmDocumentState::observed(
@@ -1286,98 +1259,6 @@ fn ids(p: &Map<String, Value>, key: &str, empty: bool) -> Result<Vec<u64>> {
     }
     Ok(ids)
 }
-fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
-    let mut payload = Map::new();
-    for field in [
-        "definition_id",
-        "feature_id",
-        "occurrence_id",
-        "case_id",
-        "material",
-        "constrained_face_ordinals",
-        "face_tractions",
-        "mesh_levels",
-        "solve_settings",
-        "confirmed",
-    ] {
-        payload.insert(
-            field.to_owned(),
-            p.get(field)
-                .cloned()
-                .ok_or_else(|| Error::invalid(format!("missing {field}")))?,
-        );
-    }
-    let input: FeaReviewInput = serde_json::from_value(Value::Object(payload))
-        .map_err(|error| Error::invalid_because(&error))?;
-    if input.definition_id == 0
-        || input.feature_id == 0
-        || input.occurrence_id == 0
-        || input.material.id == 0
-        || input.case_id.trim().is_empty()
-        || input.case_id.len() > 128
-    {
-        return Err(Error::invalid(
-            "FEA target, material and case IDs must be bounded and nonzero",
-        ));
-    }
-    Ok((
-        FeaStudyRequest {
-            definition_id: DefinitionId(input.definition_id),
-            feature_id: FeatureId(input.feature_id),
-            setup: ExactFeaSetup {
-                case_id: input.case_id,
-                instance_path: InstancePath::root(OccurrenceId(input.occurrence_id)),
-                material: input.material.into(),
-                constrained_face_ordinals: input.constrained_face_ordinals,
-                face_tractions: input
-                    .face_tractions
-                    .into_iter()
-                    .map(|traction| ExactFeaFaceTraction {
-                        face_ordinal: traction.face_ordinal,
-                        traction_local_n_per_mm2: traction.traction_local_n_per_mm2,
-                    })
-                    .collect(),
-            },
-            mesh_levels: input.mesh_levels,
-            solve_settings: input.solve_settings.into(),
-        },
-        input.confirmed,
-    ))
-}
-
-fn fea_review_value(review: &FeaReviewSummary) -> Value {
-    json!({
-        "review_digest":review.review_digest,
-        "source":{"document_id":review.document_id,"revision":review.revision,"canonical_digest":review.canonical_digest},
-        "graph_digest":review.graph_digest,
-        "case_id":review.case_id,
-        "units":review.units,
-        "solver_version":review.solver_version,
-        "levels":review.levels.iter().map(|level| json!({
-            "node_count":level.node_count,
-            "element_count":level.element_count,
-            "mesh_fingerprint":level.mesh_fingerprint,
-            "relative_volume_error":level.relative_volume_error,
-            "minimum_quality":level.minimum_quality,
-            "maximum_edge_ratio":level.maximum_edge_ratio,
-            "maximum_displacement_mm":level.maximum_displacement_mm,
-            "maximum_von_mises_stress_mpa":level.maximum_von_mises_stress_mpa,
-            "maximum_free_dof_residual_n":level.maximum_free_dof_residual_n,
-            "force_balance_n":level.force_balance_n,
-            "within_declared_limits":level.within_declared_limits,
-        })).collect::<Vec<_>>(),
-        "convergence":{
-            "final_displacement_relative_change":review.final_displacement_relative_change,
-            "final_energy_relative_change":review.final_energy_relative_change,
-            "required_relative_tolerance":review.required_relative_tolerance,
-            "converged":review.converged,
-        },
-        "all_levels_within_declared_limits":review.all_levels_within_declared_limits,
-        "excluded_physics":review.excluded_physics,
-        "document_mutated":false,
-    })
-}
-
 fn pdm_create_request(p: &Map<String, Value>) -> Result<PdmCreateReleaseRequest> {
     let dependencies: Vec<PdmDependencyInput> = serde_json::from_value(
         p.get("dependencies")
@@ -1660,6 +1541,7 @@ pub fn serve(
 mod tests {
     use super::*;
     mod cam_faces;
+    mod fea_assembly;
 
     #[test]
     fn underlay_binding_rejection_keeps_its_structured_repair_and_cause() {
