@@ -26,12 +26,14 @@ mod digest;
 mod feature_control_frame;
 pub mod hole_callouts;
 mod polyline_curves;
+mod source_body;
 pub use bom_item::{BomItem, BomItems};
 pub(crate) use digest::{drawing_layout_digest, drawing_result_digest};
 pub use feature_control_frame::DrawingFeatureControlFrameCell;
 pub(crate) use feature_control_frame::FEATURE_CONTROL_FRAME_TEXT_HEIGHT_MM;
 use feature_control_frame::layout_feature_control_frames;
 pub use polyline_curves::ProjectedPolylineCurve;
+use source_body::unique_current_package;
 
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V1: &str = "ketchup.orthographic-drawing.v1";
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V2: &str = "ketchup.orthographic-drawing.v2";
@@ -2231,6 +2233,8 @@ pub enum DrawingError {
     SourceStale,
     SourceFailed,
     SourceAmbiguous,
+    /// The body with the source's modelled threads cosmetic is not evaluated.
+    CosmeticThreadsPending,
     /// The sheet draws an assembly that is not a resolved rigid component.
     SourceNotRigid(DrawingSheetId),
     ScaledPlacement(ScaledPlacement),
@@ -2292,6 +2296,9 @@ impl fmt::Display for DrawingError {
             Self::SourceStale => "drawing source geometry is stale",
             Self::SourceFailed => "drawing source geometry failed or is unavailable",
             Self::SourceAmbiguous => "drawing source geometry is ambiguous",
+            Self::CosmeticThreadsPending => {
+                "the drawing body with the source's modelled threads cosmetic is not evaluated yet"
+            }
             Self::InvalidGeometry => "drawing source geometry is invalid",
             Self::ResourceLimit => "drawing projection exceeded its resource limit",
         })
@@ -2609,31 +2616,6 @@ fn drawing_instances_for_paths(
             })
         })
         .collect()
-}
-
-fn unique_current_package(
-    snapshot: &Snapshot,
-    results: &ExactResultRegistry,
-    definition_id: DefinitionId,
-) -> Result<Arc<ExactBodyPackage>, DrawingError> {
-    let mut current = results
-        .render_values(snapshot)
-        .filter(|package| package.definition_id() == definition_id);
-    let package = current.next();
-    if current.next().is_some() {
-        return Err(DrawingError::SourceAmbiguous);
-    }
-    if let Some(package) = package {
-        return Ok(Arc::clone(package));
-    }
-    if results
-        .values()
-        .any(|package| package.definition_id() == definition_id)
-    {
-        Err(DrawingError::SourceStale)
-    } else {
-        Err(DrawingError::SourceFailed)
-    }
 }
 
 fn stable_source_identity(source: &DrawingSource, instances: &[DrawingInstance]) -> String {

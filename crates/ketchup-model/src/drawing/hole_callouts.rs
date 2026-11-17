@@ -407,9 +407,6 @@ fn thread_label(
     let Some(thread) = snapshot.tapped_hole(id) else {
         return Err(HoleUnsupported::ThreadNotCircle);
     };
-    if thread.modeled {
-        return Err(HoleUnsupported::ModeledThread);
-    }
     // Depths from the cut's start, where the thread starts.
     let from_cut = |depth: f64| depth - profile.entry + entry;
     let last = profile.bores.len() - 1;

@@ -61,7 +61,6 @@ pub(super) enum HoleUnsupported {
     NotOneBore,
     TwoThreads,
     ThreadNotCircle,
-    ModeledThread,
     NoThreadBore,
     ThreadStartsElsewhere,
     /// The thread does not suit the bore it is tapped into.
@@ -85,7 +84,6 @@ impl std::fmt::Display for HoleUnsupported {
             Self::NotOneBore => "The hole's faces do not form one bore from its entry",
             Self::TwoThreads => "More than one thread is tapped into this hole",
             Self::ThreadNotCircle => "The thread's hole is not one circle cut from its profile plane",
-            Self::ModeledThread => "The thread is modelled; make it cosmetic for its callout",
             Self::NoThreadBore => "The hole has no bore of the thread's diameter",
             Self::ThreadStartsElsewhere => "The thread does not start where its bore does",
             Self::Thread(mismatch) => return mismatch.fmt(formatter),

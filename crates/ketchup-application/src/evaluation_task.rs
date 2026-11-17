@@ -91,6 +91,8 @@ pub struct ExactEvaluationProducts {
     pub(super) source: ExactSource,
     pub(super) render_packages: Vec<Arc<ExactBodyPackage>>,
     pub(super) topology_packages: Vec<Arc<ExactBodyPackage>>,
+    /// Render bodies with their modelled threads cosmetic, for drawings.
+    pub(super) cosmetic_packages: Vec<Arc<ExactBodyPackage>>,
     pub(super) report: EvaluationReport,
 }
 pub type ExactEvaluationResult = Result<ExactEvaluationProducts, ExactEvaluationError>;
@@ -250,6 +252,20 @@ pub fn materialize_exact_products(
         topology_results
             .insert_current(snapshot, package)
             .map_err(ExactEvaluationError::Package)?;
+    }
+    for cosmetic in products.cosmetic_packages {
+        let threaded = results
+            .values()
+            .find(|package| {
+                package.definition_id() == cosmetic.definition_id()
+                    && package.producer_feature_id() == cosmetic.producer_feature_id()
+            })
+            .cloned();
+        if let Some(threaded) = threaded {
+            results
+                .insert_cosmetic_threads(&threaded, cosmetic)
+                .map_err(ExactEvaluationError::Package)?;
+        }
     }
     Ok((results, topology_results, products.report))
 }
@@ -418,6 +434,7 @@ mod tests {
             source: source.clone(),
             render_packages: vec![Arc::new(package)],
             topology_packages: Vec::new(),
+            cosmetic_packages: Vec::new(),
             report: EvaluationReport {
                 source,
                 selection: ExactEvaluationSelection::Full,

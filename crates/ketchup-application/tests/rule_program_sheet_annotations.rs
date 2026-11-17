@@ -354,6 +354,55 @@ drawing_sheet('Bores', source='plate', hole_callouts=True)
     );
 }
 
+/// A modelled thread is called out as its cosmetic twin (ISO 6410): the
+/// helical groove in the real body is the thread, and the drilling around it
+/// is still read from the body's faces.
+#[test]
+fn r8_sheet_annotations_call_out_modeled_threads_as_cosmetic_ones() {
+    let _turn = crate::integration_support::file_turn();
+    let labels = |modeled: &str| {
+        let mut session = DocumentSession::default();
+        let program = format!(
+            r#"
+p = box('plate', (50, 30, 20))
+hole(p, 'z+', at=(12, 15), depth=14, thread=('M5', 8), modeled_thread={modeled})
+hole(p, 'z+', at=(30, 15), depth=20, through=True, thread=('M6', 20), modeled_thread={modeled})
+hole(p, 'x+', at=(15, 10), depth=12, thread=('M4', 6), modeled_thread={modeled})
+drawing_sheet('Taps', source='plate', hole_callouts=True)
+"#
+        );
+        session.apply_rule_program(source(&program), false).unwrap();
+        // Bodies carried to the next revision keep their cosmetic twins.
+        session
+            .apply_rule_program(source(&format!("{program}# again\n")), false)
+            .unwrap();
+        let snapshot = session.snapshot();
+        assert!(
+            snapshot
+                .hole_threads()
+                .all(|(id, _)| snapshot.hole_thread_is_modeled(id) == (modeled == "True"))
+        );
+        let mut labels = snapshot
+            .drawing_sheets()
+            .next()
+            .unwrap()
+            .notes()
+            .iter()
+            .map(|note| note.text_template().to_owned())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        labels
+    };
+    let cosmetic = labels("False");
+    assert_eq!(cosmetic.len(), 3, "{cosmetic:?}");
+    assert!(
+        cosmetic
+            .contains(&"M5 x 0.8 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM".into()),
+        "{cosmetic:?}"
+    );
+    assert_eq!(labels("True"), cosmetic);
+}
+
 #[test]
 fn r1_sheet_annotations_generate_real_exact_hole_callouts_and_update_depth() {
     let _turn = crate::integration_support::file_turn();
