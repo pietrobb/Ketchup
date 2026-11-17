@@ -289,7 +289,8 @@ fn filleted(backend: &ExactBackend, body: &ExactBody, edges: &[u32], radius: f64
         .expect("filleted base")
 }
 
-const NOT_COMPLETED: &str = "did not complete";
+/// A round that cannot be made names the selected edges it failed on.
+const ROUND_DOES_NOT_FIT: &str = "does not fit on edge";
 const NOT_OFFSET: &str = "Shell could not offset the body by the wall thickness";
 const STEPPED_CLOSED_RUN: &str = "closed run of edges must end with the radius it starts with";
 /// What one 2 mm round takes off a straight edge, per mm of its length.
@@ -337,6 +338,8 @@ fn assert_census(cases: &[(&str, Outcome, Expect)]) {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // `cargo test finish_census -- --nocapture` prints the census.
+    println!("{table}");
     assert_eq!(mismatches, 0, "cases marked !! differ:\n{table}");
 }
 
@@ -380,12 +383,12 @@ fn census_of_constant_fillets() {
         (
             "fillet every edge, radius half the height",
             fillet(&backend, block_body, &all_edges(block_body), HEIGHT / 2.0),
-            Expect::Refused(NOT_COMPLETED),
+            Expect::Refused(ROUND_DOES_NOT_FIT),
         ),
         (
             "fillet one edge, radius above the height",
             fillet(&backend, block_body, &top_edge, HEIGHT + 5.0),
-            Expect::Refused(NOT_COMPLETED),
+            Expect::Refused(ROUND_DOES_NOT_FIT),
         ),
         (
             "fillet cylinder top circle",
