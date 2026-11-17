@@ -278,6 +278,10 @@ bool segment_bounded(const NativeSegment& segment, double limit);
 // The cubic Bezier of a planar segment, lifted to height z.
 TopoDS_Edge cubic_bezier_edge(const NativeSegment& segment, double z);
 
+// The edge of one spatial line, circular arc (about its normal) or cubic
+// Bezier segment; null when the segment does not make an edge.
+TopoDS_Edge spatial_segment_edge(const NativeSegment& segment);
+
 template <typename Operation>
 std::unique_ptr<NativeOperationResult> guarded(Operation&& operation) noexcept {
   try {

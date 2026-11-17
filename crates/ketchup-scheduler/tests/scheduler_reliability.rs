@@ -2,10 +2,13 @@ use ketchup_exact::GeometryErrorCode;
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
+use ketchup_scheduler::memory_budget::MemoryBudget;
 use ketchup_scheduler::protocol::{MAX_REQUEST_FRAME_BYTES, WorkerRequest, encode_frame};
 use ketchup_scheduler::{ExactWorkerClient, WorkerError};
 use std::io::Write as _;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const NODE: NodeId = NodeId(1);
@@ -71,6 +74,39 @@ fn the_exact_worker_is_stopped_past_its_memory_limit() {
     );
     let mut next = ExactWorkerClient::spawn(worker_path()).unwrap();
     next.ping().unwrap();
+}
+
+/// Workers each within the limit of their kind but together past the window's
+/// budget: the largest is stopped and its request says what each used, the other
+/// keeps running (README "One memory limit per kind of background job").
+#[test]
+fn workers_together_past_the_window_budget_stop_the_largest() {
+    let _turn = crate::integration_support::file_turn();
+    let budget = MemoryBudget::watched(768 << 20);
+    let mut small = ExactWorkerClient::spawn_within(worker_path(), &budget).unwrap();
+    let mut large = ExactWorkerClient::spawn_within(worker_path(), &budget).unwrap();
+    // Each holds its block in the middle of a request, until the other is stopped.
+    let hold = Duration::from_secs(60);
+    let done = Arc::new(AtomicBool::new(false));
+    let small_done = Arc::clone(&done);
+    let small_request = std::thread::spawn(move || {
+        small
+            .allocate_probe_holding(256 << 20, hold, &small_done)
+            .map(|()| small)
+    });
+    let stopped = large.allocate_probe_holding(640 << 20, hold, &AtomicBool::new(false));
+    done.store(true, Ordering::Release);
+    let Err(WorkerError::MemoryBudget(stop)) = stopped else {
+        panic!("{stopped:?}");
+    };
+    assert_eq!(stop.total, 768 << 20);
+    assert!(stop.used + stop.others > stop.total, "{stop:?}");
+    assert!(stop.used > stop.others, "{stop:?}");
+    // The smaller one was not stopped: only cancelled now that the test is done.
+    assert!(matches!(
+        small_request.join().unwrap(),
+        Err(WorkerError::Cancelled)
+    ));
 }
 
 fn exercise_proposal_race() -> usize {

@@ -387,7 +387,30 @@ pub(super) fn spatial_path(
     segments: &[SpatialPathSegment],
     tolerance_mm: f64,
 ) -> Result<ExactBRepSpatialPath, ExactBRepGraphError> {
-    let path = ExactBRepSpatialPath {
+    let path = spatial_path_bits(source_feature_id, segments);
+    valid_spatial_path(&path, tolerance_mm)
+        .then_some(path)
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
+/// The closed loop of a boundary surface; see
+/// [`crate::document::is_valid_boundary_loop`].
+pub(super) fn boundary_path(
+    source_feature_id: FeatureId,
+    segments: &[SpatialPathSegment],
+    tolerance_mm: f64,
+) -> Result<ExactBRepSpatialPath, ExactBRepGraphError> {
+    let path = spatial_path_bits(source_feature_id, segments);
+    valid_boundary_path(&path, tolerance_mm)
+        .then_some(path)
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
+fn spatial_path_bits(
+    source_feature_id: FeatureId,
+    segments: &[SpatialPathSegment],
+) -> ExactBRepSpatialPath {
+    ExactBRepSpatialPath {
         source_feature_id: source_feature_id.0,
         segments: segments
             .iter()
@@ -424,18 +447,21 @@ pub(super) fn spatial_path(
                 },
             })
             .collect(),
-    };
-    valid_spatial_path(&path, tolerance_mm)
-        .then_some(path)
-        .ok_or(ExactBRepGraphError::InvalidParameter)
+    }
 }
 
 pub(super) fn valid_spatial_path(path: &ExactBRepSpatialPath, tolerance_mm: f64) -> bool {
-    if path.source_feature_id == 0 {
-        return false;
-    }
-    let segments = path
-        .segments
+    path.source_feature_id != 0
+        && crate::document::is_valid_spatial_sweep_path(&model_segments(path), tolerance_mm)
+}
+
+pub(super) fn valid_boundary_path(path: &ExactBRepSpatialPath, tolerance_mm: f64) -> bool {
+    path.source_feature_id != 0
+        && crate::document::is_valid_boundary_loop(&model_segments(path), tolerance_mm)
+}
+
+fn model_segments(path: &ExactBRepSpatialPath) -> Vec<SpatialPathSegment> {
+    path.segments
         .iter()
         .map(|segment| match segment {
             ExactBRepSpatialPathSegment::Line {
@@ -470,8 +496,7 @@ pub(super) fn valid_spatial_path(path: &ExactBRepSpatialPath, tolerance_mm: f64)
                 end_mm: end_bits.map(f64::from_bits),
             },
         })
-        .collect::<Vec<_>>();
-    crate::document::is_valid_spatial_sweep_path(&segments, tolerance_mm)
+        .collect()
 }
 
 pub(super) fn profile_segment(
