@@ -103,6 +103,9 @@ cmake -S "$src" -B "$build" -G Ninja \
 
 cmake --build "$build" --parallel "$jobs"
 cmake --install "$build"
+# The Linux package ships OCCT's license texts beside its notices, as the
+# Windows install and the Mac app have them.
+cp "$src/LICENSE_LGPL_21.txt" "$src/OCCT_LGPL_EXCEPTION.txt" "$install/"
 
 # Gate: no OCCT library may take a transcendental function from glibc's libm
 # (that is what makes results platform dependent), and none may export the

@@ -3,6 +3,8 @@
 pub mod background;
 mod child_process;
 pub mod exact_worker;
+pub mod memory_budget;
+pub use memory_budget::exact_worker_memory_bytes;
 pub mod pair_query;
 pub mod plugin;
 pub mod program_worker;
@@ -423,6 +425,9 @@ pub enum WorkerError {
     MemoryLimit {
         bytes: usize,
     },
+    /// The background jobs of the window together used more than its memory budget,
+    /// and the worker was stopped in the middle of the request.
+    MemoryBudget(memory_budget::BudgetStop),
 }
 
 impl fmt::Display for WorkerError {
@@ -472,6 +477,7 @@ impl fmt::Display for WorkerError {
                 "the worker needed more than {:.1} GiB of memory and was stopped",
                 f64::from(u32::try_from(bytes >> 20).unwrap_or(u32::MAX)) / 1024.0
             ),
+            Self::MemoryBudget(stop) => stop.fmt(formatter),
         }
     }
 }
@@ -922,20 +928,6 @@ fn verify_exact_worker_identity(
     Ok(guarded)
 }
 
-/// Memory the exact workers of one request may commit: half of this computer's, so a
-/// hostile or huge STEP or IGES file stops the worker instead of exhausting the system
-/// and the window with it. Workers running side by side share it
-/// ([`ExactWorkerSupervisor::spawn_sharing`]). 4 GiB when the system does not say how
-/// much it has.
-pub fn exact_worker_memory_bytes() -> usize {
-    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *BYTES.get_or_init(|| {
-        process_wrap::std::physical_memory_bytes()
-            .and_then(|bytes| usize::try_from(bytes / 2).ok())
-            .unwrap_or(4 << 30)
-    })
-}
-
 /// `memory_limit`: bytes each process of the worker's job may commit.
 fn spawn_limited_worker_command(
     command: Command,
@@ -983,6 +975,8 @@ pub struct ExactWorkerClient {
     /// the worker exits: a failed allocation names itself there before it aborts.
     memory_limit: usize,
     stderr_tail: Option<Receiver<Vec<u8>>>,
+    /// The worker in the window's memory budget, which may stop it.
+    budget: Option<memory_budget::Registration>,
     _temp_directory: tempfile::TempDir,
 }
 

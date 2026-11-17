@@ -175,6 +175,9 @@ pub(super) fn operation_bounds(
         ExactBRepOperation::PlanarSurface { profile } => {
             planar_surface_bounds(&profiles[profile.0 as usize]).map(Some)
         }
+        ExactBRepOperation::BoundarySurface { boundary } => {
+            boundary_surface_bounds(boundary, tolerance_mm).map(Some)
+        }
         ExactBRepOperation::Sweep { profile, path } => sweep_profile_bounds(
             &profiles[profile.0 as usize],
             &profiles[path.0 as usize],
@@ -977,11 +980,31 @@ pub(super) fn spatial_sweep_bounds(
         .abs()
         .max(max_u.abs())
         .hypot(min_v.abs().max(max_v.abs()));
+    let bounds = spatial_path_hull(path, section_radius);
+    valid_bounds(bounds)
+        .then_some(bounds)
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
+/// The surface spanning a closed boundary loop bounded by its curves.
+pub(super) fn boundary_surface_bounds(
+    boundary: &ExactBRepSpatialPath,
+    tolerance_mm: f64,
+) -> Result<[[f64; 3]; 2], ExactBRepGraphError> {
+    let bounds = spatial_path_hull(boundary, 0.0);
+    (valid_boundary_path(boundary, tolerance_mm) && valid_surface_bounds(bounds))
+        .then_some(bounds)
+        .ok_or(ExactBRepGraphError::InvalidParameter)
+}
+
+/// Axis-aligned bounds of every point within `pad` of `path`: arcs count as
+/// their whole circle, Beziers as their control points.
+fn spatial_path_hull(path: &ExactBRepSpatialPath, pad: f64) -> [[f64; 3]; 2] {
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
     let mut include = |point: [f64; 3]| {
         for axis in 0..3 {
-            bounds[0][axis] = bounds[0][axis].min(point[axis] - section_radius);
-            bounds[1][axis] = bounds[1][axis].max(point[axis] + section_radius);
+            bounds[0][axis] = bounds[0][axis].min(point[axis] - pad);
+            bounds[1][axis] = bounds[1][axis].max(point[axis] + pad);
         }
     };
     for segment in &path.segments {
@@ -1019,9 +1042,7 @@ pub(super) fn spatial_sweep_bounds(
             }
         }
     }
-    valid_bounds(bounds)
-        .then_some(bounds)
-        .ok_or(ExactBRepGraphError::InvalidParameter)
+    bounds
 }
 
 pub(super) fn sweep_profile_geometry(

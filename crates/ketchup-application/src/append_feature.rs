@@ -8,7 +8,7 @@ use crate::topology::{
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
     AssistantCadFeatureReference, AssistantCadLoftContinuity, AssistantCadShellDirection,
-    AssistantCadSurfaceBodySource,
+    AssistantCadSurfaceBodySource, AssistantSpatialPathSegment,
 };
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
@@ -30,6 +30,43 @@ fn resolved(reference: &AssistantCadFeatureReference) -> FeatureId {
             .existing_id()
             .expect("Assistant feature references are resolved before feature planning"),
     )
+}
+
+fn loft_continuity(continuity: AssistantCadLoftContinuity) -> LoftContinuity {
+    match continuity {
+        AssistantCadLoftContinuity::Position => LoftContinuity::Position,
+        AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
+        AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
+    }
+}
+
+fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec {
+    match source {
+        AssistantCadSurfaceBodySource::Planar { profile_feature_id } => SurfaceBodySpec::Planar {
+            profile: resolved(profile_feature_id),
+        },
+        AssistantCadSurfaceBodySource::Loft {
+            sections,
+            guide_feature_id,
+            continuity,
+        } => SurfaceBodySpec::Loft {
+            sections: sections
+                .iter()
+                .map(|section| LoftSection {
+                    profile: resolved(&section.profile_feature_id),
+                    elevation_mm: section.elevation_mm,
+                })
+                .collect(),
+            guide: guide_feature_id.as_ref().map(resolved),
+            continuity: loft_continuity(*continuity),
+        },
+        AssistantCadSurfaceBodySource::Boundary { segments } => SurfaceBodySpec::Boundary {
+            segments: segments
+                .iter()
+                .map(AssistantSpatialPathSegment::canonical)
+                .collect(),
+        },
+    }
 }
 
 pub(crate) fn plan_feature_kind(
@@ -390,39 +427,12 @@ pub(crate) fn plan_feature_kind(
             FeatureKind::Loft {
                 sections: loft_sections,
                 guide,
-                continuity: match continuity {
-                    AssistantCadLoftContinuity::Position => LoftContinuity::Position,
-                    AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
-                    AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
-                },
+                continuity: loft_continuity(*continuity),
             }
         }
-        AssistantCadBodyFeature::SurfaceBody { source } => FeatureKind::SurfaceBody(match source {
-            AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
-                SurfaceBodySpec::Planar {
-                    profile: resolved(profile_feature_id),
-                }
-            }
-            AssistantCadSurfaceBodySource::Loft {
-                sections,
-                guide_feature_id,
-                continuity,
-            } => SurfaceBodySpec::Loft {
-                sections: sections
-                    .iter()
-                    .map(|section| LoftSection {
-                        profile: resolved(&section.profile_feature_id),
-                        elevation_mm: section.elevation_mm,
-                    })
-                    .collect(),
-                guide: guide_feature_id.as_ref().map(resolved),
-                continuity: match continuity {
-                    AssistantCadLoftContinuity::Position => LoftContinuity::Position,
-                    AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
-                    AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
-                },
-            },
-        }),
+        AssistantCadBodyFeature::SurfaceBody { source } => {
+            FeatureKind::SurfaceBody(surface_body_spec(source))
+        }
         AssistantCadBodyFeature::SurfaceTrim {
             target_feature_id,
             cutter_feature_id,

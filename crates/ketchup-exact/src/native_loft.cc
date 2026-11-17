@@ -208,44 +208,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
         if (has_previous && previous_end.Distance(start) > tolerances().linear_mm) {
           return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path is disconnected");
         }
-        TopoDS_Edge edge;
-        if (segment.kind == NativeSegmentKind::Line) {
-          BRepBuilderAPI_MakeEdge builder(start, end);
-          if (builder.IsDone()) edge = builder.Edge();
-        } else if (segment.kind == NativeSegmentKind::CubicBezier) {
-          TColgp_Array1OfPnt poles(1, 4);
-          poles.SetValue(1, start);
-          poles.SetValue(2, spatial_point(segment.control_1));
-          poles.SetValue(3, spatial_point(segment.control_2));
-          poles.SetValue(4, end);
-          occ::handle<Geom_BezierCurve> curve = new Geom_BezierCurve(poles);
-          BRepBuilderAPI_MakeEdge builder(curve);
-          if (builder.IsDone()) edge = builder.Edge();
-        } else if (segment.kind == NativeSegmentKind::CircularArc) {
-          const gp_Pnt center = spatial_point(segment.center);
-          const gp_Vec normal(segment.normal.x, segment.normal.y, segment.normal.z);
-          const gp_Vec start_radius(center, start);
-          const gp_Vec end_radius(center, end);
-          if (normal.SquareMagnitude() <= tolerances().rounding * tolerances().rounding
-              || start_radius.SquareMagnitude() <= tolerances().rounding * tolerances().rounding) {
-            return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft arc is degenerate");
-          }
-          const double signed_angle = std::atan2(
-              normal.Dot(start_radius.Crossed(end_radius)), start_radius.Dot(end_radius));
-          const bool clockwise = segment.clockwise;
-          const double full_turn = 2.0 * std::acos(-1.0);
-          double angle = std::fmod(clockwise ? -signed_angle : signed_angle, full_turn);
-          if (angle <= 0.0) angle += full_turn;
-          const gp_Vec middle_radius = start_radius.Rotated(
-              gp_Ax1(center, gp_Dir(normal)), (clockwise ? -angle : angle) / 2.0);
-          GC_MakeArcOfCircle arc_builder(start, center.Translated(middle_radius), end);
-          if (arc_builder.IsDone()) {
-            BRepBuilderAPI_MakeEdge builder(arc_builder.Value());
-            if (builder.IsDone()) edge = builder.Edge();
-          }
-        } else {
-          return error_result(STATUS_INVALID_PARAMETER, "OCCT guided Loft path kind is invalid");
-        }
+        const TopoDS_Edge edge = spatial_segment_edge(segment);
         if (edge.IsNull()) {
           return error_result(STATUS_INVALID_SHAPE, "OCCT guided Loft path edge is null");
         }
