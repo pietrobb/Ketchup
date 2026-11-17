@@ -435,3 +435,4 @@ mod cad_imports;
 mod documents_and_exports;
 mod file_menu;
 mod menu_paths_in_docs;
+mod thermal_review;

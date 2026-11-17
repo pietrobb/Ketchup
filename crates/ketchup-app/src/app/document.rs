@@ -81,6 +81,7 @@ impl KetchupApp {
         // Its ids are of the document that goes; dropping its run stops it
         // (review 2026-11-04 r19 MCP-160).
         self.reviews.fea_review_dialog = None;
+        self.reviews.thermal_review_dialog = None;
         self.viewer_prep = crate::app_state::ViewerPrepState::default();
         self.push_pull.smart_proposal = None;
         self.push_pull.smart_planning = None;
@@ -1227,6 +1228,10 @@ impl KetchupApp {
                     Err(error) => self.digest = error.reason_text().to_owned(),
                 }
             }
+            AppCommand::ReviewSteadyThermal => match ThermalReviewDialog::for_selection(self) {
+                Ok(dialog) => self.reviews.thermal_review_dialog = Some(dialog),
+                Err(error) => self.digest = error.reason_text().to_owned(),
+            },
             AppCommand::ReviewLocalPdm => {
                 let snapshot = self.document.current();
                 let repository = self

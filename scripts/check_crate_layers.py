@@ -69,7 +69,7 @@ OVERSIZED = {}
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
-    "crates/ketchup-app/src/lib.rs": 2347,
+    "crates/ketchup-app/src/lib.rs": 2343,
     "crates/ketchup-model/src/document.rs": 380,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
     "crates/ketchup-manufacturing/src/fabrication.rs": 4628,
@@ -87,7 +87,7 @@ FROZEN_MODULES = {
     "crates/ketchup-application/src/validation.rs": 4053,
     "crates/ketchup-assistant/src/sidecar.rs": 4236,
     "crates/ketchup-geometry/src/sketch.rs": 3055,
-    "crates/ketchup-headless/src/protocol.rs": 3199,
+    "crates/ketchup-headless/src/protocol.rs": 3072,
     "crates/ketchup-model/src/drawing.rs": 4459,
     "crates/ketchup-model/src/exact_product.rs": 4210,
     "crates/ketchup-model/src/persistence.rs": 4323,
@@ -95,7 +95,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
     "crates/ketchup-scheduler/src/exact_worker.rs": 4213,
-    "crates/ketchup-scheduler/src/lib.rs": 3259,
+    "crates/ketchup-scheduler/src/lib.rs": 3250,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review

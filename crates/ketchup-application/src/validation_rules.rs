@@ -20,12 +20,23 @@ pub struct MaterialProperties {
     /// Density with the standard it comes from; absent where the rules name none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub density: Option<Density>,
+    /// Thermal conductivity with the standard it comes from; a part whose
+    /// material names none cannot be given a thermal analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermal_conductivity: Option<ThermalConductivity>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Density {
     pub kg_m3: f64,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThermalConductivity {
+    pub w_m_k: f64,
     pub source: String,
 }
 

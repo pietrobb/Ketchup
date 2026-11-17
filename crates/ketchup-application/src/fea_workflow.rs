@@ -225,7 +225,15 @@ impl FeaReviewWorkflow {
 }
 
 fn validate_refinement_levels(levels: &[ExactVolumeMeshWireOptions]) -> Result<(), FeaReviewError> {
-    if !(MIN_FEA_REFINEMENT_LEVELS..=MAX_FEA_REFINEMENT_LEVELS).contains(&levels.len())
+    if !refinement_levels_are_valid(levels) {
+        return Err(FeaReviewError::InvalidRefinementLevels);
+    }
+    Ok(())
+}
+
+/// Two to four bounded mesh levels, each strictly finer than the one before.
+pub(crate) fn refinement_levels_are_valid(levels: &[ExactVolumeMeshWireOptions]) -> bool {
+    !(!(MIN_FEA_REFINEMENT_LEVELS..=MAX_FEA_REFINEMENT_LEVELS).contains(&levels.len())
         || levels.iter().any(|level| {
             !level.surface_deflection_mm.is_finite()
                 || level.surface_deflection_mm <= 0.0
@@ -242,14 +250,10 @@ fn validate_refinement_levels(levels: &[ExactVolumeMeshWireOptions]) -> Result<(
             pair[1].surface_deflection_mm >= pair[0].surface_deflection_mm
                 || pair[1].angular_deflection_rad >= pair[0].angular_deflection_rad
                 || pair[1].max_tetrahedra < pair[0].max_tetrahedra
-        })
-    {
-        return Err(FeaReviewError::InvalidRefinementLevels);
-    }
-    Ok(())
+        }))
 }
 
-fn relative_change(previous: f64, current: f64) -> f64 {
+pub(crate) fn relative_change(previous: f64, current: f64) -> f64 {
     (current - previous).abs() / current.abs().max(previous.abs()).max(NEGLIGIBLE)
 }
 

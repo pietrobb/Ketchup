@@ -4,7 +4,11 @@
 //! MCP-101).
 
 use crate::*;
-use ketchup_application::fea_workflow::FeaReviewError;
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_application::fea_workflow::{
+    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
+    FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
+};
 
 pub(crate) struct FeaReviewDialog {
     /// The document the dialog's ids are of; another closes it (review
