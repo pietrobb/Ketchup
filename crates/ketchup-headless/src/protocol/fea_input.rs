@@ -123,6 +123,7 @@ pub(super) fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequ
                     youngs_modulus_mpa: input.material.youngs_modulus_mpa,
                     poisson_ratio: input.material.poisson_ratio,
                     yield_strength_mpa: input.material.yield_strength_mpa,
+                    density_kg_per_m3: None,
                 },
                 constrained_face_ordinals: input.constrained_face_ordinals,
                 face_tractions: input

@@ -113,6 +113,7 @@ fn tetrahedral_bar(cells: usize, side: usize, cell_mm: f64) -> FeaModel {
             youngs_modulus_mpa: YOUNG_MPA,
             poisson_ratio: POISSON,
             yield_strength_mpa: Some(250.0),
+            density_kg_per_m3: None,
         }],
         elements,
         constraints,

@@ -6,6 +6,7 @@
 pub mod fea;
 mod fea_coupling;
 mod fea_frame;
+mod fea_modal;
 pub mod fea_thermal;
 mod sparse;
 pub mod validator_hosting;

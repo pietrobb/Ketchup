@@ -4,6 +4,7 @@
 mod fea;
 mod fea_coupling;
 mod fea_frame;
+mod fea_modal;
 mod fea_sparse;
 mod fea_thermal;
 mod signed_validator_packages;

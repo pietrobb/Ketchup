@@ -151,6 +151,7 @@ fn exact_volume_mesh_builds_occurrence_bound_fea_and_rejects_stale_or_unknown_fa
             youngs_modulus_mpa: 200_000.0,
             poisson_ratio: 0.3,
             yield_strength_mpa: Some(250.0),
+            density_kg_per_m3: None,
         },
         constrained_face_ordinals: vec![bottom],
         face_tractions: vec![ExactFeaFaceTraction {
