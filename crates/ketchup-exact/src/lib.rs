@@ -13,6 +13,7 @@ pub mod naming;
 
 mod blend;
 mod booleans;
+mod control_points;
 mod evidence;
 mod exchange;
 mod mesh;
@@ -25,6 +26,7 @@ mod sweep_loft;
 mod thread;
 mod validation;
 pub use blend::SeamContinuity;
+pub use control_points::{SurfaceControlNet, SurfaceControlPoint};
 pub use evidence::*;
 pub use exchange::*;
 pub use ketchup_geometry::contact_patch::ContactPatch;
@@ -96,6 +98,16 @@ mod ffi {
         normal_angle_rad: f64,
         curvature_difference_per_mm: f64,
         second_curvature_per_mm: f64,
+    }
+
+    /// The control net of a surface's B-spline form: x, y, z and weight of
+    /// every control point, v fastest.
+    struct NativeControlNet {
+        status: u8,
+        diagnostic: String,
+        u_count: u32,
+        v_count: u32,
+        values: Vec<f64>,
     }
 
     extern "Rust" {
@@ -369,6 +381,14 @@ mod ffi {
             first: &NativeOperationResult,
             second: &NativeOperationResult,
         ) -> NativeSeam;
+        fn surface_control_net_native(body: &NativeOperationResult) -> NativeControlNet;
+        fn move_surface_control_point_native(
+            body: &NativeOperationResult,
+            u_index: u32,
+            v_index: u32,
+            offset: NativePoint,
+            weight: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn extend_planar_surface_native(
             target: &NativeOperationResult,
             distance: f64,

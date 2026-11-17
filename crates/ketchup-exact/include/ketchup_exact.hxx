@@ -20,6 +20,7 @@ struct NativeVolumeMeshTetrahedron;
 struct NativeTopologySummary;
 struct NativePairQuery;
 struct NativeSeam;
+struct NativeControlNet;
 struct NativePoint;
 struct NativeSegment;
 struct NativeLoftSection;
@@ -115,6 +116,10 @@ std::unique_ptr<NativeOperationResult> blend_surfaces_native(
 NativeSeam measure_seam_native(
     const NativeOperationResult& first,
     const NativeOperationResult& second) noexcept;
+NativeControlNet surface_control_net_native(const NativeOperationResult& body) noexcept;
+std::unique_ptr<NativeOperationResult> move_surface_control_point_native(
+    const NativeOperationResult& body, std::uint32_t u_index, std::uint32_t v_index,
+    NativePoint offset, double weight) noexcept;
 std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
     const NativeOperationResult& target, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> combine_surfaces_native(

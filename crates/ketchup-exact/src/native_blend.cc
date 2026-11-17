@@ -24,15 +24,6 @@ namespace {
 // free sides, are not part of the seam.
 constexpr int SEAM_SAMPLES = 16;
 
-// The only face of a non-solid single-face surface body, or null.
-TopoDS_Face single_surface_face(const NativeOperationResult& body) {
-  if (!body.valid() || body.impl().shape.IsNull()
-      || body.impl().summary.solid_count != 0 || body.impl().summary.face_count != 1) {
-    return {};
-  }
-  return TopoDS::Face(TopExp_Explorer(body.impl().shape, TopAbs_FACE).Current());
-}
-
 double distance_to(const gp_Pnt& point, const TopoDS_Shape& shape) {
   BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(), shape);
   if (!distance.IsDone() || distance.NbSolution() < 1) {
@@ -293,6 +284,14 @@ std::array<gp_Pnt, 6> blend_section(
 }
 
 }  // namespace
+
+TopoDS_Face single_surface_face(const NativeOperationResult& body) {
+  if (!body.valid() || body.impl().shape.IsNull()
+      || body.impl().summary.solid_count != 0 || body.impl().summary.face_count != 1) {
+    return {};
+  }
+  return TopoDS::Face(TopExp_Explorer(body.impl().shape, TopAbs_FACE).Current());
+}
 
 std::unique_ptr<NativeOperationResult> blend_surfaces_native(
     const NativeOperationResult& first, std::uint8_t first_order,
