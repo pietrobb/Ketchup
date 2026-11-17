@@ -1,3 +1,4 @@
+use crate::sparse::{FactorError, SymmetricMatrix};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
@@ -7,9 +8,12 @@ pub const FEA_MODEL_SCHEMA_V1: &str = "ketchup.fea-model.v1";
 pub const FEA_SOLUTION_SCHEMA_V1: &str = "ketchup.fea-solution.v1";
 pub const FEA_SOLVER_VERSION_V1: &str = "ketchup.linear-static-fem.v1";
 pub const MAX_FEA_MATERIALS: usize = 4_096;
-pub const MAX_FEA_ELEMENTS: usize = 4_096;
-pub const MAX_FEA_CONSTRAINTS: usize = 768;
-pub const MAX_FEA_LOADS: usize = 16_384;
+pub const MAX_FEA_NODES: usize = 200_000;
+pub const MAX_FEA_ELEMENTS: usize = 1_000_000;
+pub const MAX_FEA_CONSTRAINTS: usize = MAX_FEA_NODES;
+pub const MAX_FEA_LOADS: usize = 1_000_000;
+/// The default memory for the factored stiffness matrix: 512 MiB.
+pub const DEFAULT_FEA_FACTOR_BYTES: usize = 512 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeaNode {
@@ -78,15 +82,19 @@ pub struct FeaSolveSettings {
     pub relative_pivot_tolerance: f64,
     pub maximum_small_deformation_ratio: f64,
     pub convergence_relative_tolerance: f64,
+    /// The memory the factored stiffness matrix may take; a larger model is
+    /// refused with the size it would need.
+    pub maximum_factor_bytes: usize,
 }
 
 impl Default for FeaSolveSettings {
     fn default() -> Self {
         Self {
-            maximum_nodes: 256,
+            maximum_nodes: MAX_FEA_NODES,
             relative_pivot_tolerance: NEGLIGIBLE,
             maximum_small_deformation_ratio: 0.05,
             convergence_relative_tolerance: 0.02,
+            maximum_factor_bytes: DEFAULT_FEA_FACTOR_BYTES,
         }
     }
 }
@@ -130,6 +138,12 @@ pub enum FeaError {
     NonBoundaryTraction,
     InvalidSettings,
     SingularSystem,
+    /// The factored stiffness matrix would need `needed_bytes`, more than
+    /// the `budget_bytes` the settings allow.
+    FactorTooLarge {
+        needed_bytes: usize,
+        budget_bytes: usize,
+    },
     NonFiniteSolution,
 }
 
@@ -238,7 +252,10 @@ impl FeaModel {
     pub fn solve(&self, settings: FeaSolveSettings) -> Result<FeaSolution, FeaError> {
         self.validate(settings)?;
         let dof_count = self.nodes.len() * 3;
-        let mut stiffness = vec![vec![0.0; dof_count]; dof_count];
+        // Every unknown has a diagonal entry, so a constraint can set it.
+        let mut entries = (0..dof_count)
+            .map(|dof| (dof, dof, 0.0))
+            .collect::<Vec<_>>();
         let mut forces = vec![0.0; dof_count];
 
         for element in &self.elements {
@@ -247,23 +264,35 @@ impl FeaModel {
                     nodes,
                     material_id,
                     area_mm2,
-                } => self.assemble_truss(nodes, material_id, area_mm2, &mut stiffness),
+                } => self.assemble_truss(nodes, material_id, area_mm2, &mut entries),
                 FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
-                    self.assemble_tetrahedron(nodes, material_id, &mut stiffness)
+                    self.assemble_tetrahedron(nodes, material_id, &mut entries)
                 }
             }
         }
         self.assemble_loads(&mut forces);
 
-        let original_stiffness = stiffness.clone();
+        let original_stiffness = SymmetricMatrix::from_entries(dof_count, entries);
+        let mut stiffness = original_stiffness.clone();
         let original_forces = forces.clone();
         let constrained = self.apply_constraints(&mut stiffness, &mut forces)?;
-        let displacement = solve_dense(stiffness, forces, settings.relative_pivot_tolerance)?;
+        let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
+        let displacement = stiffness
+            .factor(threshold, settings.maximum_factor_bytes)
+            .map_err(|error| match error {
+                FactorError::Singular => FeaError::SingularSystem,
+                FactorError::TooLarge { needed_bytes } => FeaError::FactorTooLarge {
+                    needed_bytes,
+                    budget_bytes: settings.maximum_factor_bytes,
+                },
+            })?
+            .solve(&forces);
         if displacement.iter().any(|value| !value.is_finite()) {
             return Err(FeaError::NonFiniteSolution);
         }
 
-        let residual = matrix_vector(&original_stiffness, &displacement)
+        let residual = original_stiffness
+            .multiply(&displacement)
             .into_iter()
             .zip(&original_forces)
             .map(|(internal, applied)| internal - applied)
@@ -359,7 +388,7 @@ impl FeaModel {
         }
         if settings.maximum_nodes == 0
             || self.nodes.len() > settings.maximum_nodes
-            || self.nodes.len() > 256
+            || self.nodes.len() > MAX_FEA_NODES
             || self.materials.len() > MAX_FEA_MATERIALS
             || self.elements.len() > MAX_FEA_ELEMENTS
             || self.constraints.len() > MAX_FEA_CONSTRAINTS
@@ -373,6 +402,7 @@ impl FeaModel {
             || settings.maximum_small_deformation_ratio >= 1.0
             || !finite_positive(settings.convergence_relative_tolerance)
             || settings.convergence_relative_tolerance >= 1.0
+            || settings.maximum_factor_bytes == 0
         {
             return Err(FeaError::InvalidSettings);
         }
@@ -614,7 +644,7 @@ impl FeaModel {
         nodes: [usize; 2],
         material_id: u64,
         area_mm2: f64,
-        stiffness: &mut [Vec<f64>],
+        stiffness: &mut Vec<(usize, usize, f64)>,
     ) {
         let (length, direction) = self.truss_geometry(nodes).expect("validated truss");
         let factor = self.material(material_id).youngs_modulus_mpa * area_mm2 / length;
@@ -624,8 +654,11 @@ impl FeaModel {
                 let sign_j = if local_j < 3 { -1.0 } else { 1.0 };
                 let global_i = nodes[local_i / 3] * 3 + local_i % 3;
                 let global_j = nodes[local_j / 3] * 3 + local_j % 3;
-                stiffness[global_i][global_j] +=
-                    factor * sign_i * sign_j * direction[local_i % 3] * direction[local_j % 3];
+                stiffness.push((
+                    global_i,
+                    global_j,
+                    factor * sign_i * sign_j * direction[local_i % 3] * direction[local_j % 3],
+                ));
             }
         }
     }
@@ -634,7 +667,7 @@ impl FeaModel {
         &self,
         nodes: [usize; 4],
         material_id: u64,
-        stiffness: &mut [Vec<f64>],
+        stiffness: &mut Vec<(usize, usize, f64)>,
     ) {
         let (volume, gradients) = self
             .tetrahedron_geometry(nodes)
@@ -653,7 +686,7 @@ impl FeaModel {
                     * volume;
                 let global_i = nodes[local_i / 3] * 3 + local_i % 3;
                 let global_j = nodes[local_j / 3] * 3 + local_j % 3;
-                stiffness[global_i][global_j] += value;
+                stiffness.push((global_i, global_j, value));
             }
         }
     }
@@ -687,7 +720,7 @@ impl FeaModel {
 
     fn apply_constraints(
         &self,
-        stiffness: &mut [Vec<f64>],
+        stiffness: &mut SymmetricMatrix,
         forces: &mut [f64],
     ) -> Result<BTreeSet<usize>, FeaError> {
         let mut prescribed = BTreeMap::<usize, f64>::new();
@@ -698,22 +731,9 @@ impl FeaModel {
                 }
             }
         }
-        let constraint_scale = stiffness
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(|value| value.abs())
-            .fold(0.0, f64::max)
-            .max(1.0);
+        let constraint_scale = stiffness.largest_magnitude().max(1.0);
         for (&dof, &value) in &prescribed {
-            for row in 0..stiffness.len() {
-                if row != dof {
-                    forces[row] -= stiffness[row][dof] * value;
-                    stiffness[row][dof] = 0.0;
-                    stiffness[dof][row] = 0.0;
-                }
-            }
-            stiffness[dof][dof] = constraint_scale;
-            forces[dof] = constraint_scale * value;
+            stiffness.prescribe(dof, value, constraint_scale, forces);
         }
         if prescribed.is_empty() {
             return Err(FeaError::MissingConstraint);
@@ -1095,56 +1115,6 @@ pub fn solve_convergence_study(
     })
 }
 
-fn solve_dense(
-    mut matrix: Vec<Vec<f64>>,
-    mut right_hand_side: Vec<f64>,
-    relative_tolerance: f64,
-) -> Result<Vec<f64>, FeaError> {
-    let size = matrix.len();
-    let scale = matrix
-        .iter()
-        .flat_map(|row| row.iter())
-        .map(|value| value.abs())
-        .fold(0.0, f64::max)
-        .max(1.0);
-    let threshold = scale * relative_tolerance;
-    for column in 0..size {
-        let pivot = (column..size)
-            .max_by(|left, right| {
-                matrix[*left][column]
-                    .abs()
-                    .total_cmp(&matrix[*right][column].abs())
-            })
-            .expect("non-empty pivot range");
-        if matrix[pivot][column].abs() <= threshold {
-            return Err(FeaError::SingularSystem);
-        }
-        matrix.swap(column, pivot);
-        right_hand_side.swap(column, pivot);
-        let pivot_row = matrix[column].clone();
-        let pivot_value = pivot_row[column];
-        let pivot_right_hand_side = right_hand_side[column];
-        for (row, row_right_hand_side) in
-            matrix.iter_mut().zip(&mut right_hand_side).skip(column + 1)
-        {
-            let factor = row[column] / pivot_value;
-            row[column] = 0.0;
-            for (value, pivot_value) in row.iter_mut().zip(&pivot_row).skip(column + 1) {
-                *value -= factor * pivot_value;
-            }
-            *row_right_hand_side -= factor * pivot_right_hand_side;
-        }
-    }
-    let mut solution = vec![0.0; size];
-    for row in (0..size).rev() {
-        let known = ((row + 1)..size)
-            .map(|column| matrix[row][column] * solution[column])
-            .sum::<f64>();
-        solution[row] = (right_hand_side[row] - known) / matrix[row][row];
-    }
-    Ok(solution)
-}
-
 fn elasticity(material: &FeaMaterial) -> [[f64; 6]; 6] {
     let young = material.youngs_modulus_mpa;
     let poisson = material.poisson_ratio;
@@ -1214,18 +1184,6 @@ fn matrix_vector6x12(matrix: [[f64; 12]; 6], vector: [f64; 12]) -> [f64; 6] {
             .sum();
     }
     result
-}
-
-fn matrix_vector(matrix: &[Vec<f64>], vector: &[f64]) -> Vec<f64> {
-    matrix
-        .iter()
-        .map(|row| {
-            row.iter()
-                .zip(vector)
-                .map(|(left, right)| left * right)
-                .sum()
-        })
-        .collect()
 }
 
 fn vector_sum(vector: &[f64]) -> [f64; 3] {

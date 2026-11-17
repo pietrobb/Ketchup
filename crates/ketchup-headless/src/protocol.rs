@@ -15,9 +15,10 @@ use ketchup_application::pdm_workflow::{
 use ketchup_model::tolerance::limits;
 use ketchup_rejection::{Reason, dropped};
 mod cam_input;
+mod fea_input;
 mod model_tools;
 mod production;
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_analysis::fea::FeaMaterial;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
@@ -398,7 +399,7 @@ struct FeaReviewInput {
     constrained_face_ordinals: Vec<u32>,
     face_tractions: Vec<FeaFaceTractionInput>,
     mesh_levels: Vec<ExactVolumeMeshWireOptions>,
-    solve_settings: FeaSolveSettingsInput,
+    solve_settings: fea_input::FeaSolveSettingsInput,
     confirmed: bool,
 }
 
@@ -416,15 +417,6 @@ struct FeaMaterialInput {
 struct FeaFaceTractionInput {
     face_ordinal: u32,
     traction_local_n_per_mm2: [f64; 3],
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaSolveSettingsInput {
-    maximum_nodes: usize,
-    relative_pivot_tolerance: f64,
-    maximum_small_deformation_ratio: f64,
-    convergence_relative_tolerance: f64,
 }
 
 #[derive(Deserialize)]
@@ -1362,14 +1354,7 @@ fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)>
                     .collect(),
             },
             mesh_levels: input.mesh_levels,
-            solve_settings: FeaSolveSettings {
-                maximum_nodes: input.solve_settings.maximum_nodes,
-                relative_pivot_tolerance: input.solve_settings.relative_pivot_tolerance,
-                maximum_small_deformation_ratio: input
-                    .solve_settings
-                    .maximum_small_deformation_ratio,
-                convergence_relative_tolerance: input.solve_settings.convergence_relative_tolerance,
-            },
+            solve_settings: input.solve_settings.into(),
         },
         input.confirmed,
     ))
