@@ -12,6 +12,9 @@
 #include <TopoDS_Iterator.hxx>
 #include <gp_Ax3.hxx>
 
+#include <algorithm>
+#include <cstdio>
+
 namespace ketchup::exact {
 
 namespace {
@@ -788,6 +791,63 @@ TopoDS_Shape share_continued_side_surfaces(
   return shared;
 }
 
+// Why OCCT could not round a run of edges, in the user's terms.
+const char* round_failure_cause(ChFiDS_ErrorStatus status) {
+  switch (status) {
+    case ChFiDS_WalkingFailure:
+      return "the round runs out of room on a neighbouring face";
+    case ChFiDS_StartsolFailure:
+      return "no round of this radius touches both faces next to the edge";
+    case ChFiDS_TwistedSurface:
+      return "the round would fold over itself";
+    default:
+      return "OCCT could not build the round";
+  }
+}
+
+// Names the selected edges whose round failed and why, so the user can lower
+// the radius or leave those edges out instead of guessing.
+std::string fillet_failure(
+    const BRepFilletAPI_MakeFillet& operation,
+    const std::vector<TopoDS_Edge>& selected,
+    rust::Slice<const std::uint32_t> edge_ordinals,
+    double radius) {
+  char radius_text[32];
+  std::snprintf(radius_text, sizeof(radius_text), "%g", radius);
+  std::string message = std::string("Fillet of radius ") + radius_text + " mm";
+  std::vector<std::uint32_t> failed;
+  const char* cause = nullptr;
+  for (int index = 1; index <= operation.NbFaultyContours(); ++index) {
+    const int contour = operation.FaultyContour(index);
+    if (cause == nullptr) {
+      cause = round_failure_cause(operation.StripeStatus(contour));
+    }
+    for (int edge = 1; edge <= operation.NbEdges(contour); ++edge) {
+      for (std::size_t chosen = 0; chosen < selected.size(); ++chosen) {
+        if (selected[chosen].IsSame(operation.Edge(contour, edge))
+            && std::find(failed.begin(), failed.end(), edge_ordinals[chosen]) == failed.end()) {
+          failed.push_back(edge_ordinals[chosen]);
+        }
+      }
+    }
+  }
+  if (failed.empty()) {
+    // OCCT failed where the rounds meet, not along one run: every selected
+    // edge is a candidate.
+    failed.assign(edge_ordinals.begin(), edge_ordinals.end());
+    cause = operation.NbFaultyVertices() > 0
+        ? "the rounds cannot be joined where these edges meet"
+        : "the rounds leave no face between them";
+  }
+  std::sort(failed.begin(), failed.end());
+  message += failed.size() == 1 ? " does not fit on edge " : " does not fit on edges ";
+  for (std::size_t index = 0; index < failed.size(); ++index) {
+    if (index > 0) message += ", ";
+    message += std::to_string(failed[index]);
+  }
+  return message + ": " + cause + "; use a smaller radius or fewer edges";
+}
+
 }  // namespace
 
 std::unique_ptr<NativeOperationResult> offset_body_face_native(
@@ -924,7 +984,6 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
     }
 
     const auto collect_finished = [&](auto& operation) -> std::unique_ptr<NativeOperationResult> {
-      operation.Build();
       if (!operation.IsDone() || operation.Shape().IsNull()) {
         return error_result(STATUS_INVALID_SHAPE, "OCCT body edge finish did not complete");
       }
@@ -993,6 +1052,28 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
           }
         }
       }
+      operation.Build();
+      // A round OCCT finishes may still be no solid (rounds crossing where
+      // they leave no face between them): treat it like one it could not make.
+      if (!operation.IsDone() || operation.Shape().IsNull()
+          || !BRepCheck_Analyzer(operation.Shape()).IsValid()) {
+        const TopoDS_Shape full_round =
+            fillet_radius_stations.empty() && selected.size() == body.impl().summary.edge_count
+                ? full_round_of_convex_polyhedron(body.impl().shape, amount)
+                : TopoDS_Shape();
+        if (!full_round.IsNull()) {
+          // Every face and edge of the body is rebuilt from primitives, so
+          // none carries over; the selected edges are all consumed.
+          std::vector<EdgeHistoryRecord> edge_history;
+          for (const std::uint32_t ordinal : edge_ordinals) {
+            edge_history.push_back(EdgeHistoryRecord{
+                "", "fillet_selected_consumed",
+                "generated-result/edge/" + std::to_string(ordinal), 0, false});
+          }
+          return success_result(full_round, {}, false, false, std::move(edge_history));
+        }
+        return error_result(STATUS_INVALID_SHAPE, fillet_failure(operation, selected, edge_ordinals, amount));
+      }
       return collect_finished(operation);
     }
     BRepFilletAPI_MakeChamfer operation(body.impl().shape);
@@ -1008,6 +1089,7 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
         operation.Add(amount, selected[index]);
       }
     }
+    operation.Build();
     return collect_finished(operation);
   });
 }
