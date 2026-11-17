@@ -158,6 +158,8 @@ pub enum WorkerRequest {
     Crash,
     Allocate {
         bytes: u64,
+        /// How long the worker holds the block before it answers.
+        hold: std::time::Duration,
     },
 }
 

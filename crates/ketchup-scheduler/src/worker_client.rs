@@ -37,15 +37,37 @@ impl ExactWorkerClient {
         Self::spawn_guarded(executable)
     }
 
+    /// Like [`Self::spawn`], in `budget` instead of the window's memory budget.
+    pub fn spawn_within(
+        executable: impl AsRef<Path>,
+        budget: &std::sync::Arc<memory_budget::MemoryBudget>,
+    ) -> Result<Self, WorkerError> {
+        let executable = guarded_exact_worker_identity(executable.as_ref())?;
+        Self::spawn_guarded_within(executable, exact_worker_memory_bytes(), budget)
+    }
+
     pub(crate) fn spawn_guarded(executable: GuardedExactWorker) -> Result<Self, WorkerError> {
         Self::spawn_guarded_with(executable, exact_worker_memory_bytes())
     }
 
     /// The worker may commit `memory_limit` bytes; past them it is stopped and the
-    /// request fails with [`WorkerError::MemoryLimit`].
+    /// request fails with [`WorkerError::MemoryLimit`]. What it uses counts in the
+    /// window's memory budget, which may stop it too ([`WorkerError::MemoryBudget`]).
     pub(crate) fn spawn_guarded_with(
         executable: GuardedExactWorker,
         memory_limit: usize,
+    ) -> Result<Self, WorkerError> {
+        Self::spawn_guarded_within(
+            executable,
+            memory_limit,
+            memory_budget::window_memory_budget(),
+        )
+    }
+
+    fn spawn_guarded_within(
+        executable: GuardedExactWorker,
+        memory_limit: usize,
+        budget: &std::sync::Arc<memory_budget::MemoryBudget>,
     ) -> Result<Self, WorkerError> {
         let working_directory = executable
             .executable
@@ -73,6 +95,7 @@ impl ExactWorkerClient {
         command.env("MALLOC_ARENA_MAX", "2");
         let mut child = spawn_limited_worker_command(command, Some(memory_limit))
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+        let budget = memory_budget::track(budget, &*child);
         let stderr_tail = Some(stderr_tail(child.stderr().take()));
         let stdin = child
             .stdin()
@@ -93,6 +116,7 @@ impl ExactWorkerClient {
             response_receiver,
             memory_limit,
             stderr_tail,
+            budget,
             _temp_directory: temp_directory,
         };
         Ok(client)
@@ -781,10 +805,21 @@ impl ExactWorkerClient {
 
     /// Has the worker hold one block of `bytes`.
     pub fn allocate_probe(&mut self, bytes: u64) -> Result<(), WorkerError> {
+        self.allocate_probe_holding(bytes, Duration::ZERO, &NEVER_CANCELLED)
+    }
+
+    /// Has the worker hold one block of `bytes` and answer only after `hold`, so it
+    /// holds the block in the middle of a request.
+    pub fn allocate_probe_holding(
+        &mut self,
+        bytes: u64,
+        hold: Duration,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
         self.call_done(
-            &WorkerRequest::Allocate { bytes },
-            &NEVER_CANCELLED,
-            DEFAULT_WORKER_REQUEST_TIMEOUT,
+            &WorkerRequest::Allocate { bytes, hold },
+            cancelled,
+            DEFAULT_WORKER_REQUEST_TIMEOUT.saturating_add(hold),
         )
     }
 
@@ -873,6 +908,7 @@ impl ExactWorkerClient {
     ) -> Result<WorkerReply, WorkerError> {
         // Writing and receiving share one budget; cancellation still polls at 10 ms.
         let deadline = Instant::now() + timeout;
+        let _guard = self.budget.as_ref().map(memory_budget::Registration::busy);
         self.write_request_until_with_cancellation(request, deadline, cancelled, timeout)?;
         match self.next_response_until_with_cancellation(deadline, cancelled, timeout)? {
             WorkerResponse::Reply(reply) => Ok(*reply),
@@ -1030,7 +1066,8 @@ impl ExactWorkerClient {
     }
 
     /// Stops the worker; one that died of a failed allocation, or that the memory
-    /// watch killed (macOS), fails with [`WorkerError::MemoryLimit`] instead of `error`.
+    /// watch killed (macOS), fails with [`WorkerError::MemoryLimit`] instead of `error`,
+    /// and one the window's memory budget stopped with [`WorkerError::MemoryBudget`].
     fn fail<T>(&mut self, error: WorkerError) -> Result<T, WorkerError> {
         self.terminate_worker();
         if matches!(
@@ -1038,6 +1075,13 @@ impl ExactWorkerClient {
             WorkerError::Cancelled | WorkerError::RequestTimedOut(_)
         ) {
             return Err(error);
+        }
+        if let Some(stop) = self
+            .budget
+            .as_ref()
+            .and_then(memory_budget::Registration::stopped)
+        {
+            return Err(WorkerError::MemoryBudget(stop));
         }
         if process_wrap::std::memory_limit_exceeded(&*self.child) {
             return Err(WorkerError::MemoryLimit {

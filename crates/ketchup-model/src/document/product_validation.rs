@@ -661,6 +661,21 @@ fn validate_definitions(product: &ProductModel) -> Result<(), CanonicalError> {
     Ok(())
 }
 
+/// A planar surface spans one closed profile or one solved sketch region.
+fn is_planar_surface_profile(kind: &FeatureKind) -> bool {
+    matches!(
+        kind,
+        FeatureKind::Profile {
+            segments,
+            closed: true,
+        } if segments.len() >= 2
+    ) || matches!(
+        kind,
+        FeatureKind::Sketch(sketch)
+            if sketch.solved_regions().is_ok_and(|regions| regions.len() == 1)
+    )
+}
+
 fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
@@ -966,20 +981,9 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     .iter()
                     .position(|candidate| *candidate == profile)
                     .is_some_and(|position| position < feature_position);
-                let valid_profile = matches!(
-                    &source.kind,
-                    FeatureKind::Profile {
-                        segments,
-                        closed: true,
-                    } if segments.len() >= 2
-                ) || matches!(
-                    &source.kind,
-                    FeatureKind::Sketch(sketch)
-                        if sketch.solved_regions().is_ok_and(|regions| regions.len() == 1)
-                );
                 if source.definition_id != feature.definition_id
                     || !source_precedes_surface
-                    || !valid_profile
+                    || !is_planar_surface_profile(&source.kind)
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
@@ -1352,6 +1356,7 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
             FeatureKind::Profile { .. }
             | FeatureKind::SheetMetal(_)
             | FeatureKind::SpatialPath { .. }
+            | FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { .. })
             | FeatureKind::ConstructionPoint { .. }
             | FeatureKind::ConstructionAxis { .. }
             | FeatureKind::ConstructionPlane { .. } => {}

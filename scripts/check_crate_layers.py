@@ -83,9 +83,9 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
     "crates/ketchup-app/src/live_bridge.rs": 3455,
-    "crates/ketchup-application/src/planner.rs": 4364,
+    "crates/ketchup-application/src/planner.rs": 4334,
     "crates/ketchup-application/src/validation.rs": 4053,
-    "crates/ketchup-assistant/src/sidecar.rs": 4284,
+    "crates/ketchup-assistant/src/sidecar.rs": 4261,
     "crates/ketchup-geometry/src/sketch.rs": 3055,
     "crates/ketchup-headless/src/protocol.rs": 3184,
     "crates/ketchup-model/src/drawing.rs": 4477,
@@ -94,8 +94,8 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/persistence/legacy.rs": 4721,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4389,
-    "crates/ketchup-scheduler/src/lib.rs": 3108,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4338,
+    "crates/ketchup-scheduler/src/lib.rs": 3102,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review
@@ -109,23 +109,23 @@ MAX_FUNCTION_LINES = 400
 LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
-    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 660,
+    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 633,
     "crates/ketchup-application/src/collision.rs::collision_report": 630,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1745,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
-    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 676,
-    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
+    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 640,
+    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 688,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 755,
-    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 423,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 568,
+    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 412,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 559,
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1379,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 674,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 509,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 508,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its
@@ -551,8 +551,9 @@ CASTS_AND_ALLOWS = {
     "ketchup-viewer-android unsafe": 4,
     # The vendored crates the workspace patches in build into the release too (review
     # 2026-11-13 r95 P3: the count saw none of them): starlark's value heap and
-    # process-wrap's process groups and job objects.
-    "third_party/process-wrap unsafe": 49,
+    # process-wrap's process groups and job objects, and its ProcessMeter (8: the window's
+    # memory budget reads and stops worker processes through their handle or pid).
+    "third_party/process-wrap unsafe": 57,
     "third_party/starlark unsafe": 596,
 }
 
