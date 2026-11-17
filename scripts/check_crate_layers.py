@@ -87,15 +87,15 @@ FROZEN_MODULES = {
     "crates/ketchup-application/src/validation.rs": 4053,
     "crates/ketchup-assistant/src/sidecar.rs": 4236,
     "crates/ketchup-geometry/src/sketch.rs": 3055,
-    "crates/ketchup-headless/src/protocol.rs": 3214,
-    "crates/ketchup-model/src/drawing.rs": 4477,
-    "crates/ketchup-model/src/exact_product.rs": 4316,
+    "crates/ketchup-headless/src/protocol.rs": 3199,
+    "crates/ketchup-model/src/drawing.rs": 4459,
+    "crates/ketchup-model/src/exact_product.rs": 4210,
     "crates/ketchup-model/src/persistence.rs": 4323,
     "crates/ketchup-model/src/persistence/legacy.rs": 4679,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
     "crates/ketchup-scheduler/src/exact_worker.rs": 4213,
-    "crates/ketchup-scheduler/src/lib.rs": 3262,
+    "crates/ketchup-scheduler/src/lib.rs": 3102,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review

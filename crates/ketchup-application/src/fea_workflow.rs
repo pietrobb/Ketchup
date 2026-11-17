@@ -10,6 +10,9 @@ use std::sync::atomic::AtomicBool;
 
 pub const MIN_FEA_REFINEMENT_LEVELS: usize = 2;
 pub const MAX_FEA_REFINEMENT_LEVELS: usize = 4;
+/// The most tetrahedra the exact volume mesher makes for one level; the
+/// sparse solver takes them all.
+pub const MAX_FEA_MESH_TETRAHEDRA: u32 = 65_536;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeaStudyRequest {
@@ -229,7 +232,7 @@ fn validate_refinement_levels(levels: &[ExactVolumeMeshWireOptions]) -> Result<(
                 || !level.angular_deflection_rad.is_finite()
                 || level.angular_deflection_rad <= 0.0
                 || level.max_tetrahedra == 0
-                || level.max_tetrahedra > 4096
+                || level.max_tetrahedra > MAX_FEA_MESH_TETRAHEDRA
                 || !level.max_relative_volume_error.is_finite()
                 || !(0.0..1.0).contains(&level.max_relative_volume_error)
                 || !level.min_tetrahedron_quality.is_finite()
@@ -278,4 +281,36 @@ fn review_digest(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level(surface_deflection_mm: f64, max_tetrahedra: u32) -> ExactVolumeMeshWireOptions {
+        ExactVolumeMeshWireOptions {
+            surface_deflection_mm,
+            angular_deflection_rad: surface_deflection_mm,
+            max_tetrahedra,
+            max_relative_volume_error: 0.05,
+            min_tetrahedron_quality: 1.0e-6,
+        }
+    }
+
+    /// The solver no longer stops at 4 096 elements; the mesher's own limit
+    /// is the bound.
+    #[test]
+    fn refinement_levels_reach_the_mesher_limit_and_no_further() {
+        assert_eq!(
+            validate_refinement_levels(&[level(0.3, 8_192), level(0.1, MAX_FEA_MESH_TETRAHEDRA)]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_refinement_levels(&[
+                level(0.3, 8_192),
+                level(0.1, MAX_FEA_MESH_TETRAHEDRA + 1)
+            ]),
+            Err(FeaReviewError::InvalidRefinementLevels)
+        );
+    }
 }

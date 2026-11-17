@@ -348,7 +348,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(request["method"], "fea_review")
         self.assertEqual(request["params"]["expected_revision"], 1)
         self.assertEqual(request["params"]["mesh_levels"], levels)
-        self.assertEqual(request["params"]["solve_settings"]["maximum_nodes"], 256)
+        self.assertEqual(request["params"]["solve_settings"]["maximum_nodes"], 200_000)
         self.assertTrue(request["params"]["confirmed"])
         with self.assertRaises(ValueError):
             doc.fea_review(
