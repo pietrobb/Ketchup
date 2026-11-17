@@ -162,6 +162,48 @@ pub(crate) fn local_stiffness(
     matrix
 }
 
+/// The element's consistent mass in its own axes (tonnes and tonne·mm², so
+/// that with newtons and millimetres a frequency comes out per second): the
+/// same shape functions as its stiffness, the turn about its axis carrying
+/// the section's polar moment of area.
+pub(crate) fn local_mass(
+    density_t_per_mm3: f64,
+    section: &FeaFrameSection,
+    length_mm: f64,
+) -> FrameMatrix {
+    fn put(matrix: &mut FrameMatrix, row: usize, column: usize, value: f64) {
+        matrix[row][column] += value;
+        if row != column {
+            matrix[column][row] += value;
+        }
+    }
+    let mut matrix = [[0.0; FRAME_DOFS]; FRAME_DOFS];
+    let mass = density_t_per_mm3 * section.area_mm2 * length_mm;
+    let polar =
+        density_t_per_mm3 * (section.second_moment_y_mm4 + section.second_moment_z_mm4) * length_mm;
+    for (first, second, total) in [(0, 6, mass), (3, 9, polar)] {
+        put(&mut matrix, first, first, total / 3.0);
+        put(&mut matrix, second, second, total / 3.0);
+        put(&mut matrix, first, second, total / 6.0);
+    }
+    let unit = mass / 420.0;
+    let length = length_mm;
+    for (translation, rotation, sign) in [(1, 5, 1.0), (2, 4, -1.0)] {
+        let (v1, r1, v2, r2) = (translation, rotation, translation + 6, rotation + 6);
+        put(&mut matrix, v1, v1, 156.0 * unit);
+        put(&mut matrix, v1, r1, sign * 22.0 * length * unit);
+        put(&mut matrix, v1, v2, 54.0 * unit);
+        put(&mut matrix, v1, r2, -sign * 13.0 * length * unit);
+        put(&mut matrix, r1, r1, 4.0 * length.powi(2) * unit);
+        put(&mut matrix, r1, v2, sign * 13.0 * length * unit);
+        put(&mut matrix, r1, r2, -3.0 * length.powi(2) * unit);
+        put(&mut matrix, v2, v2, 156.0 * unit);
+        put(&mut matrix, v2, r2, -sign * 22.0 * length * unit);
+        put(&mut matrix, r2, r2, 4.0 * length.powi(2) * unit);
+    }
+    matrix
+}
+
 /// The nodal forces and moments, in the element's axes, that do the same work
 /// as a uniform load `load` (N/mm, element axes) along the whole element.
 pub(crate) fn consistent_load(load: [f64; 3], length_mm: f64) -> [f64; FRAME_DOFS] {

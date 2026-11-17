@@ -6,6 +6,9 @@ use crate::fea_frame::{
     ElementAxes, FRAME_DOFS, FrameError, consistent_load, local_stiffness, multiply,
     peak_von_mises, valid_section,
 };
+pub use crate::fea_modal::{
+    FEA_MODAL_SOLVER_VERSION_V1, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
+};
 use crate::sparse::{FactorError, SymmetricMatrix};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
@@ -35,6 +38,8 @@ pub struct FeaMaterial {
     pub youngs_modulus_mpa: f64,
     pub poisson_ratio: f64,
     pub yield_strength_mpa: Option<f64>,
+    /// Needed for natural frequencies; a static solve does without it.
+    pub density_kg_per_m3: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -260,6 +265,15 @@ pub enum FeaError {
         budget_bytes: usize,
     },
     NonFiniteSolution,
+    /// Natural frequencies need the density of the material with this id.
+    MissingDensity {
+        material: u64,
+    },
+    /// No modes asked for, more than `MAX_FEA_MODES`, or more than the model
+    /// has free unknowns with mass.
+    InvalidModeCount,
+    /// The subspace iteration did not settle on the lowest modes.
+    ModesNotConverged,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -371,15 +385,15 @@ type ConstraintDefinition = BTreeMap<(usize, u64), ConstraintSupport>;
 
 pub(crate) struct DofLayout {
     /// Three moves per node come first.
-    translations: usize,
+    pub(crate) translations: usize,
     /// The turning nodes, in slot order.
     owners: Vec<usize>,
     /// Each turning node's place among the turning nodes.
-    slots: Vec<Option<usize>>,
+    pub(crate) slots: Vec<Option<usize>>,
 }
 
 impl DofLayout {
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.translations + self.owners.len() * 3
     }
 
@@ -393,7 +407,11 @@ impl DofLayout {
     }
 
     /// The unknowns of a frame element; both its nodes turn by construction.
-    fn frame_dofs(&self, element: u64, nodes: [usize; 2]) -> Result<[usize; FRAME_DOFS], FeaError> {
+    pub(crate) fn frame_dofs(
+        &self,
+        element: u64,
+        nodes: [usize; 2],
+    ) -> Result<[usize; FRAME_DOFS], FeaError> {
         let mut dofs = [0; FRAME_DOFS];
         for (local, dof) in dofs.iter_mut().enumerate() {
             *dof = self
@@ -418,44 +436,8 @@ impl FeaModel {
         self.validate(settings)?;
         let layout = self.dof_layout();
         let dof_count = layout.count();
-        // Every unknown has a diagonal entry, so a constraint can set it.
-        let mut entries = (0..dof_count)
-            .map(|dof| (dof, dof, 0.0))
-            .collect::<Vec<_>>();
+        let entries = self.stiffness_entries(&layout)?;
         let mut forces = vec![0.0; dof_count];
-
-        for element in &self.elements {
-            match element.kind {
-                FeaElementKind::LinearTruss2 {
-                    nodes,
-                    material_id,
-                    area_mm2,
-                } => self.assemble_truss(nodes, material_id, area_mm2, &mut entries),
-                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
-                    self.assemble_tetrahedron(nodes, material_id, &mut entries)
-                }
-                FeaElementKind::Frame2 {
-                    nodes,
-                    material_id,
-                    section,
-                    orientation,
-                } => {
-                    let frame = self.element_axes(element.id, nodes, orientation)?;
-                    let stiffness = frame.global_stiffness(&self.frame_local_stiffness(
-                        material_id,
-                        &section,
-                        frame.length_mm,
-                    ));
-                    let dofs = layout.frame_dofs(element.id, nodes)?;
-                    for (row, values) in stiffness.iter().enumerate() {
-                        for (column, value) in values.iter().enumerate() {
-                            entries.push((dofs[row], dofs[column], *value));
-                        }
-                    }
-                }
-            }
-        }
-        add_springs(self, &layout, &mut entries)?;
         self.assemble_loads(&layout, &mut forces)?;
         // A rigid coupling's follower is no unknown of its own: its rows and
         // forces go to the unknowns it follows, and it is set from them after.
@@ -594,7 +576,60 @@ impl FeaModel {
         })
     }
 
+    /// The stiffness of every element and spring as `(row, column, value)`
+    /// entries, with a diagonal entry for every unknown so a constraint can set it.
+    pub(crate) fn stiffness_entries(
+        &self,
+        layout: &DofLayout,
+    ) -> Result<Vec<(usize, usize, f64)>, FeaError> {
+        let mut entries = (0..layout.count())
+            .map(|dof| (dof, dof, 0.0))
+            .collect::<Vec<_>>();
+        for element in &self.elements {
+            match element.kind {
+                FeaElementKind::LinearTruss2 {
+                    nodes,
+                    material_id,
+                    area_mm2,
+                } => self.assemble_truss(nodes, material_id, area_mm2, &mut entries),
+                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
+                    self.assemble_tetrahedron(nodes, material_id, &mut entries)
+                }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    orientation,
+                } => {
+                    let frame = self.element_axes(element.id, nodes, orientation)?;
+                    let stiffness = frame.global_stiffness(&self.frame_local_stiffness(
+                        material_id,
+                        &section,
+                        frame.length_mm,
+                    ));
+                    let dofs = layout.frame_dofs(element.id, nodes)?;
+                    for (row, values) in stiffness.iter().enumerate() {
+                        for (column, value) in values.iter().enumerate() {
+                            entries.push((dofs[row], dofs[column], *value));
+                        }
+                    }
+                }
+            }
+        }
+        add_springs(self, layout, &mut entries)?;
+        Ok(entries)
+    }
+
     fn validate(&self, settings: FeaSolveSettings) -> Result<(), FeaError> {
+        self.validate_model(settings, true)
+    }
+
+    /// Everything [`Self::solve`] checks; natural frequencies need no load.
+    pub(crate) fn validate_model(
+        &self,
+        settings: FeaSolveSettings,
+        loads_required: bool,
+    ) -> Result<(), FeaError> {
         if self.schema != FEA_MODEL_SCHEMA_V1 {
             return Err(FeaError::UnsupportedSchema);
         }
@@ -644,7 +679,9 @@ impl FeaModel {
                 || !(-1.0..0.5).contains(&material.poisson_ratio)
                 || material
                     .yield_strength_mpa
-                    .is_some_and(|value| !finite_positive(value))
+                    .into_iter()
+                    .chain(material.density_kg_per_m3)
+                    .any(|value| !finite_positive(value))
             {
                 return Err(FeaError::InvalidMaterial);
             }
@@ -794,7 +831,7 @@ impl FeaModel {
             }
         }
 
-        if self.loads.is_empty() {
+        if loads_required && self.loads.is_empty() {
             return Err(FeaError::MissingLoad);
         }
         for load in &self.loads {
@@ -847,7 +884,7 @@ impl FeaModel {
 
     /// Unknowns: three moves per node, then three turns per node a frame element
     /// ends at, then per node only rigid couplings make turn.
-    fn dof_layout(&self) -> DofLayout {
+    pub(crate) fn dof_layout(&self) -> DofLayout {
         let mut slots = vec![None; self.nodes.len()];
         let mut owners = Vec::new();
         for element in &self.elements {
@@ -877,7 +914,7 @@ impl FeaModel {
         }
     }
 
-    fn element_axes(
+    pub(crate) fn element_axes(
         &self,
         element: u64,
         nodes: [usize; 2],
@@ -925,7 +962,7 @@ impl FeaModel {
         loads
     }
 
-    fn material(&self, id: u64) -> &FeaMaterial {
+    pub(crate) fn material(&self, id: u64) -> &FeaMaterial {
         self.materials
             .iter()
             .find(|material| material.id == id)
@@ -970,7 +1007,7 @@ impl FeaModel {
         distribution
     }
 
-    fn truss_geometry(&self, nodes: [usize; 2]) -> Option<(f64, [f64; 3])> {
+    pub(crate) fn truss_geometry(&self, nodes: [usize; 2]) -> Option<(f64, [f64; 3])> {
         if nodes.iter().any(|node| *node >= self.nodes.len()) {
             return None;
         }
@@ -982,7 +1019,7 @@ impl FeaModel {
         (length > ROUNDING).then(|| (length, scale(delta, 1.0 / length)))
     }
 
-    fn tetrahedron_geometry(&self, nodes: [usize; 4]) -> Option<(f64, [[f64; 3]; 4])> {
+    pub(crate) fn tetrahedron_geometry(&self, nodes: [usize; 4]) -> Option<(f64, [[f64; 3]; 4])> {
         if nodes.iter().any(|node| *node >= self.nodes.len()) {
             return None;
         }
@@ -1553,6 +1590,23 @@ impl FeaModel {
                         }
                         None => hasher.update([0]),
                     }
+                }
+            }
+        }
+        // Densities likewise come last and only when there are any.
+        if self
+            .materials
+            .iter()
+            .any(|material| material.density_kg_per_m3.is_some())
+        {
+            hasher.update(b"densities");
+            for material in &self.materials {
+                match material.density_kg_per_m3 {
+                    Some(value) => {
+                        hasher.update([1]);
+                        hasher.update(value.to_bits().to_le_bytes());
+                    }
+                    None => hasher.update([0]),
                 }
             }
         }

@@ -155,6 +155,7 @@ impl KetchupApp {
                     youngs_modulus_mpa,
                     poisson_ratio,
                     yield_strength_mpa: Some(yield_strength_mpa),
+                    density_kg_per_m3: None,
                 },
                 constrained_face_ordinals,
                 face_tractions: vec![ExactFeaFaceTraction {
@@ -179,6 +180,7 @@ impl KetchupApp {
                 },
             ],
             solve_settings: FeaSolveSettings::default(),
+            mode_count: 0,
         };
         Ok(FeaStudy {
             workflow: FeaReviewWorkflow::new(Some(self.exact_worker_executable()?)),
@@ -454,6 +456,7 @@ mod tests {
             converged: true,
             all_levels_within_declared_limits: true,
             excluded_physics: ["", "", "", "", ""],
+            modes: None,
         }
     }
 
