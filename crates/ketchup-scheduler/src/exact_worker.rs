@@ -199,9 +199,8 @@ fn handle_request(
         // Ends without a reply like a crash, but without abort(): on Windows every abort
         // files a Windows Error Reporting report and holds the process ~1.5 s.
         WorkerRequest::Crash => std::process::exit(1),
-        WorkerRequest::Allocate { bytes } => {
-            let block = vec![0_u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
-            std::hint::black_box(&block);
+        WorkerRequest::Allocate { bytes, hold } => {
+            crate::child_process::hold_block(bytes, hold);
             Ok(WorkerReply::Done)
         }
     }
