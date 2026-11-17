@@ -4,7 +4,8 @@
 
 use ketchup_tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_ANGULAR_TOLERANCE_RAD,
-    DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
+    DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, RAIL_LOFT_APPROXIMATION_MM,
+    ROUNDING,
 };
 use std::fmt;
 
@@ -54,6 +55,7 @@ const fn native_tolerances() -> ffi::NativeTolerances {
         approximation: APPROXIMATION,
         negligible: NEGLIGIBLE,
         angular_rad: DEFAULT_ANGULAR_TOLERANCE_RAD,
+        rail_loft_approximation_mm: RAIL_LOFT_APPROXIMATION_MM,
         planar_profile_segments: ketchup_tolerance::limits::PLANAR_PROFILE_SEGMENTS,
     }
 }
@@ -70,6 +72,7 @@ mod ffi {
         approximation: f64,
         negligible: f64,
         angular_rad: f64,
+        rail_loft_approximation_mm: f64,
         planar_profile_segments: usize,
     }
 
@@ -393,6 +396,7 @@ mod ffi {
             segments: &[NativeSegment],
             spline_points: &[NativePoint],
             guide_segments: &[NativeSegment],
+            rail_segments: &[NativeSegment],
             continuity: u8,
             make_solid: bool,
         ) -> UniquePtr<NativeOperationResult>;

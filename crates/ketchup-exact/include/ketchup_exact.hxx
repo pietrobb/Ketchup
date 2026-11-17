@@ -148,6 +148,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     rust::Slice<const NativeSegment> segments,
     rust::Slice<const NativePoint> spline_points,
     rust::Slice<const NativeSegment> guide_segments,
+    rust::Slice<const NativeSegment> rail_segments,
     std::uint8_t continuity,
     bool make_solid) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(

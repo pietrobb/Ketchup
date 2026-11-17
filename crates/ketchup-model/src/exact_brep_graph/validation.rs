@@ -415,6 +415,8 @@ pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
         operation,
         ExactBRepOperation::SurfaceThicken { .. }
             | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::Loft { rail: Some(_), .. }
+            | ExactBRepOperation::LoftSurface { rail: Some(_), .. }
             | ExactBRepOperation::Draft(_)
             | ExactBRepOperation::Scale { .. }
             | ExactBRepOperation::ThreadGroove(_)
@@ -1029,16 +1031,20 @@ pub(super) fn valid_operation(
             sections,
             guide,
             continuity,
+            rail,
         }
         | ExactBRepOperation::LoftSurface {
             sections,
             guide,
             continuity,
+            rail,
         } => {
             guide
-                .as_ref()
-                .is_none_or(|path| valid_spatial_path(path, tolerance_mm))
+                .iter()
+                .chain(rail)
+                .all(|path| valid_spatial_path(path, tolerance_mm))
                 && !(guide.is_some() && *continuity == ExactBRepLoftContinuity::Curvature)
+                && (rail.is_none() || (guide.is_some() && rail != guide))
                 && (2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 && sections.windows(2).all(|pair| {
                     let lower = f64::from_bits(pair[0].elevation_bits);

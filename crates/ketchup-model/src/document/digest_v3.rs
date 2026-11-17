@@ -1416,19 +1416,10 @@ impl DigestV3 {
                         sections,
                         guide,
                         continuity,
+                        rail,
                     } => {
                         self.byte(2);
-                        self.length(sections.len());
-                        for section in sections {
-                            self.u64(section.profile.0);
-                            self.u64(section.elevation_mm.to_bits());
-                        }
-                        self.u64(guide.map_or(0, |guide| guide.0));
-                        self.byte(match continuity {
-                            crate::document::LoftContinuity::Position => 1,
-                            crate::document::LoftContinuity::Tangent => 2,
-                            crate::document::LoftContinuity::Curvature => 3,
-                        });
+                        self.loft(sections, *guide, *continuity, *rail);
                     }
                 }
             }
@@ -1476,19 +1467,10 @@ impl DigestV3 {
                 sections,
                 guide,
                 continuity,
+                rail,
             } => {
                 self.byte(15);
-                self.length(sections.len());
-                for section in sections {
-                    self.u64(section.profile.0);
-                    self.u64(section.elevation_mm.to_bits());
-                }
-                self.u64(guide.map_or(0, |guide| guide.0));
-                self.byte(match continuity {
-                    crate::document::LoftContinuity::Position => 1,
-                    crate::document::LoftContinuity::Tangent => 2,
-                    crate::document::LoftContinuity::Curvature => 3,
-                });
+                self.loft(sections, *guide, *continuity, *rail);
             }
             FeatureKind::Revolve {
                 profile,
@@ -2337,6 +2319,31 @@ impl DigestV3 {
                     }
                 }
             }
+        }
+    }
+
+    // An absent rail adds nothing, so digests of earlier Lofts stay.
+    fn loft(
+        &mut self,
+        sections: &[crate::document::LoftSection],
+        guide: Option<FeatureId>,
+        continuity: crate::document::LoftContinuity,
+        rail: Option<FeatureId>,
+    ) {
+        self.length(sections.len());
+        for section in sections {
+            self.u64(section.profile.0);
+            self.u64(section.elevation_mm.to_bits());
+        }
+        self.u64(guide.map_or(0, |guide| guide.0));
+        self.byte(match continuity {
+            crate::document::LoftContinuity::Position => 1,
+            crate::document::LoftContinuity::Tangent => 2,
+            crate::document::LoftContinuity::Curvature => 3,
+        });
+        if let Some(rail) = rail {
+            self.byte(1);
+            self.u64(rail.0);
         }
     }
 
