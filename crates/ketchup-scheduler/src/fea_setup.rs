@@ -15,17 +15,7 @@ impl ExactBRepVolumeMeshPackage {
         snapshot: &Snapshot,
         setup: &ExactFeaSetup,
     ) -> Result<OccurrenceBoundFeaModel, ExactFeaSetupError> {
-        if !self.is_current(snapshot) {
-            return Err(ExactFeaSetupError::StaleGeometry);
-        }
-        if snapshot
-            .resolve_instance_path(&setup.instance_path)
-            .map_err(ExactFeaSetupError::InvalidInstancePath)?
-            .definition_id
-            != self.source.identity.definition_id
-        {
-            return Err(ExactFeaSetupError::OccurrenceMismatch);
-        }
+        self.check_occurrence(snapshot, &setup.instance_path)?;
         if setup.case_id.trim().is_empty()
             || setup.constrained_face_ordinals.is_empty()
             || setup.face_tractions.is_empty()

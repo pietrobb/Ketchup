@@ -5,7 +5,7 @@ use ketchup_analysis::fea::{FeaCouplingKind, FeaMaterial, FeaSolveSettings};
 use ketchup_application::fea_workflow::{
     ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaFaceTraction, ExactFeaJoint,
     ExactFeaJointFace, ExactFeaMateJoint, ExactFeaSetup, ExactVolumeMeshWireOptions,
-    FeaAssemblyStudyRequest, FeaReviewSummary, FeaStudyRequest,
+    FeaAssemblyStudyRequest, FeaReviewError, FeaReviewSummary, FeaStudyRequest,
 };
 use ketchup_model::assembly::AssemblyMateId;
 use ketchup_model::document::{DefinitionId, FeatureId, InstancePath, OccurrenceId};
@@ -190,6 +190,21 @@ struct FeaAssemblyReviewInput {
     #[serde(default)]
     mode_count: usize,
     confirmed: bool,
+}
+
+impl From<FeaReviewError> for Error {
+    fn from(error: FeaReviewError) -> Self {
+        let code = match &error {
+            FeaReviewError::ConfirmationRequired => "confirmation_required",
+            FeaReviewError::WorkerUnavailable => "exact_worker_unavailable",
+            FeaReviewError::InvalidRefinementLevels => "fea_refinement_invalid",
+            FeaReviewError::InvalidTarget(..) => "fea_target_rejected",
+            FeaReviewError::Meshing(..) => "fea_meshing_rejected",
+            FeaReviewError::Setup(..) => "fea_setup_rejected",
+            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(..) => "fea_solve_rejected",
+        };
+        Self::caused_by(code, &error)
+    }
 }
 
 /// Reads `fields` of `p`, every one required but those that may be left out.

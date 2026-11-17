@@ -110,6 +110,7 @@ mod takeoff;
 #[cfg(test)]
 #[path = "app/takeoff_tests.rs"]
 mod takeoff_tests;
+mod thermal_review;
 mod thread_display;
 #[cfg(test)]
 #[path = "app/thread_display_tests.rs"]
@@ -163,5 +164,6 @@ pub(crate) use section::SECTION_COLOR;
 pub(crate) use section::{plane_at, section_json};
 pub(crate) use shell::*;
 pub(crate) use structure::*;
+pub(crate) use thermal_review::ThermalReviewDialog;
 pub(crate) use transform::*;
 pub(crate) use viewport::*;

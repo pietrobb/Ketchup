@@ -357,6 +357,42 @@ class ClientTests(unittest.TestCase):
                 mesh_levels=levels[:1], confirmed=True,
             )
 
+    def test_thermal_review_helper_emits_guarded_faces_and_confirmation(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        levels = [
+            {"surface_deflection_mm": 0.5, "angular_deflection_rad": 0.5,
+             "max_tetrahedra": 128, "max_relative_volume_error": 0.05,
+             "min_tetrahedron_quality": 1.0e-5},
+            {"surface_deflection_mm": 0.2, "angular_deflection_rad": 0.2,
+             "max_tetrahedra": 256, "max_relative_volume_error": 0.02,
+             "min_tetrahedron_quality": 1.0e-5},
+        ]
+        doc.thermal_review(
+            2, 33, 7, "heated-pin",
+            held_faces=[{"face_ordinal": 0, "temperature_c": 20.0}],
+            convection_faces=[{"face_ordinal": 1, "film_coefficient_w_per_m2_k": 25.0,
+                               "ambient_c": 20.0}],
+            flux_faces=[{"face_ordinal": 2, "flux_w_per_m2": 5000.0}],
+            mesh_levels=levels, confirmed=True,
+        )
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "thermal_review")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        self.assertEqual(request["params"]["held_faces"][0]["temperature_c"], 20.0)
+        self.assertEqual(request["params"]["flux_faces"][0]["flux_w_per_m2"], 5000.0)
+        self.assertEqual(request["params"]["mesh_levels"], levels)
+        self.assertEqual(request["params"]["convergence_relative_tolerance"], 0.02)
+        self.assertTrue(request["params"]["confirmed"])
+        with self.assertRaises(ValueError):
+            doc.thermal_review(2, 33, 7, "heated-pin", mesh_levels=levels, confirmed=True)
+        with self.assertRaises(ValueError):
+            doc.thermal_review(
+                2, 33, 7, "heated-pin",
+                held_faces=[{"face_ordinal": 0, "temperature_c": 20.0}],
+                mesh_levels=levels[:1], confirmed=True,
+            )
+
     def test_fea_assembly_review_helper_sends_parts_joints_and_mode_count(self):
         process = FakeProcess()
         doc = self.session(process).new_document()

@@ -206,6 +206,140 @@ fn exact_volume_mesh_builds_occurrence_bound_fea_and_rejects_stale_or_unknown_fa
     );
 }
 
+/// The 8 × 6 × 5 mm steel block conducts between its bottom and top faces
+/// only, so its temperature is linear in height on any tetrahedral mesh.
+#[test]
+fn exact_volume_mesh_builds_occurrence_bound_heat_conduction_on_exact_faces() {
+    use ketchup_analysis::fea_thermal::{
+        ThermalMaterial, ThermalSolveSettings, solve_steady_conduction,
+    };
+    use ketchup_scheduler::thermal_setup::{
+        ExactThermalFaceConvection, ExactThermalFaceTemperature, ExactThermalSetup,
+    };
+
+    let _turn = crate::integration_support::file_turn();
+    let (document, definition, extrusion, occurrence) = simple_extrusion_document();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, extrusion).unwrap();
+    let options = ExactVolumeMeshWireOptions {
+        surface_deflection_mm: 0.1,
+        angular_deflection_rad: 0.2,
+        max_tetrahedra: 64,
+        max_relative_volume_error: 1.0e-10,
+        min_tetrahedron_quality: 1.0e-5,
+    };
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor
+        .evaluate_exact_brep_graph_volume_mesh(&graph, options)
+        .unwrap();
+    let by_height = |pick: fn(f64, f64) -> bool| {
+        package
+            .source
+            .face_evidence
+            .iter()
+            .reduce(|best, face| {
+                if pick(face.centroid_mm[2], best.centroid_mm[2]) {
+                    face
+                } else {
+                    best
+                }
+            })
+            .unwrap()
+            .face_ordinal
+    };
+    let bottom = by_height(|face, best| face < best);
+    let top = by_height(|face, best| face > best);
+    let conductivity = 53.334;
+    let mut setup = ExactThermalSetup {
+        case_id: "block-between-two-temperatures".into(),
+        instance_path: InstancePath::root(occurrence),
+        material: ThermalMaterial {
+            id: 1,
+            conductivity_w_per_m_k: conductivity,
+        },
+        held_faces: vec![
+            ExactThermalFaceTemperature {
+                face_ordinal: bottom,
+                temperature_c: 20.0,
+            },
+            ExactThermalFaceTemperature {
+                face_ordinal: top,
+                temperature_c: 70.0,
+            },
+        ],
+        flux_faces: Vec::new(),
+        convection_faces: Vec::new(),
+    };
+
+    let bound = package
+        .occurrence_bound_thermal_model(&snapshot, &setup)
+        .unwrap();
+    assert_eq!(bound.graph_digest, graph.graph_digest);
+    assert_eq!(bound.mesh_fingerprint, package.mesh.mesh_fingerprint);
+    assert_eq!(bound.source_revision, snapshot.revision_id());
+    let solution = solve_steady_conduction(&bound.model, ThermalSolveSettings::default()).unwrap();
+    for (node, temperature) in bound.model.nodes.iter().zip(&solution.temperatures_c) {
+        let expected = 20.0 + 10.0 * node.position_mm[2];
+        assert!(
+            (temperature - expected).abs() < 1e-8,
+            "{temperature} vs {expected}"
+        );
+    }
+    // k A ΔT / h with A = 48 mm² and h = 5 mm, in W.
+    let power_w = conductivity * 48.0e-6 * 50.0 / 5.0e-3;
+    assert!((solution.heat_into_held_nodes_w - power_w).abs() < 1e-8 * power_w);
+    assert!(solution.heat_balance_w.abs() < 1e-8);
+
+    // A film on the top face instead: k (T₀ − T_top) / h = film (T_top − T∞).
+    setup.held_faces.truncate(1);
+    setup.held_faces[0].temperature_c = 100.0;
+    setup.convection_faces.push(ExactThermalFaceConvection {
+        face_ordinal: top,
+        film_coefficient_w_per_m2_k: 1_000.0,
+        ambient_c: 20.0,
+    });
+    let bound = package
+        .occurrence_bound_thermal_model(&snapshot, &setup)
+        .unwrap();
+    let solution = solve_steady_conduction(&bound.model, ThermalSolveSettings::default()).unwrap();
+    let conductance = conductivity / 5.0e-3;
+    let top_c = (conductance * 100.0 + 1_000.0 * 20.0) / (conductance + 1_000.0);
+    for (node, temperature) in bound.model.nodes.iter().zip(&solution.temperatures_c) {
+        let expected = 100.0 + (top_c - 100.0) * node.position_mm[2] / 5.0;
+        assert!(
+            (temperature - expected).abs() < 1e-8,
+            "{temperature} vs {expected}"
+        );
+    }
+
+    let mut twice = setup.clone();
+    twice.convection_faces[0].face_ordinal = bottom;
+    assert_eq!(
+        package
+            .occurrence_bound_thermal_model(&snapshot, &twice)
+            .unwrap_err(),
+        ExactFeaSetupError::InvalidBoundarySelection
+    );
+    let mut unknown = setup.clone();
+    unknown.convection_faces[0].face_ordinal = u32::MAX;
+    assert_eq!(
+        package
+            .occurrence_bound_thermal_model(&snapshot, &unknown)
+            .unwrap_err(),
+        ExactFeaSetupError::InvalidBoundarySelection
+    );
+    let mut floating = setup;
+    floating.held_faces.clear();
+    floating.convection_faces.clear();
+    assert_eq!(
+        package
+            .occurrence_bound_thermal_model(&snapshot, &floating)
+            .unwrap_err(),
+        ExactFeaSetupError::IncompleteSetup
+    );
+}
+
 #[test]
 fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refusals() {
     let _turn = crate::integration_support::file_turn();

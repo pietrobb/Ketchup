@@ -46,6 +46,7 @@ mod rule_tags;
 mod rule_threads;
 mod sketch;
 mod structure_change;
+pub mod thermal_workflow;
 pub mod threads;
 pub mod topology;
 pub mod transforms;

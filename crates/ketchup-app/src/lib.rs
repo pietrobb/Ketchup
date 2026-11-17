@@ -11,16 +11,11 @@ pub(crate) use gesture::{
     ToolSession, ToolSessionPhase, TransformInputEvent, TransformInputInterpreter,
 };
 use gesture::{Gesture, MirrorPlane, PushPullAnchor, ZoomWindowDrag};
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection, assistant_rejection,
 };
 use ketchup_application::evaluation::{ExactEvaluationTask, ExactSource, exact_worker_candidates};
-use ketchup_application::fea_workflow::{
-    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewSummary,
-    FeaReviewWorkflow, FeaStudyRequest,
-};
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmSourceIdentity,
 };
@@ -991,6 +986,7 @@ pub enum AppCommand {
     ExportHomagMpr,
     ReviewCamExport,
     ReviewStaticFea,
+    ReviewSteadyThermal,
     ReviewLocalPdm,
     ExportHundeggerBtlx,
     ExportWorkshopPackage,
