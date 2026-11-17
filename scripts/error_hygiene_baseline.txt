@@ -229,7 +229,6 @@ crates/ketchup-mcp/src/tools.rs eprintln 1
 crates/ketchup-mcp/src/tools.rs formatted_cause 7
 crates/ketchup-mcp/src/tools.rs or_default 2
 crates/ketchup-model/src/assembly_recipe.rs dropped_error 1
-crates/ketchup-model/src/cam.rs formatted_cause 2
 crates/ketchup-model/src/document.rs or_default 2
 crates/ketchup-model/src/document/entities.rs dropped_error 1
 crates/ketchup-model/src/document/error.rs stringified_field 1

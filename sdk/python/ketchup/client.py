@@ -21,6 +21,17 @@ PROTOCOL = "ketchup.headless.v1"
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
 MAX_TIMEOUT_MS = 300_000
+MAX_FEA_MODES = 64
+
+
+def _check_study(mesh_levels, mode_count, confirmed):
+    """Refuse an FEA study's levels, mode count or confirmation before sending it."""
+    if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
+        raise ValueError("mesh_levels must contain two to four refinement levels")
+    if type(mode_count) is not int or not 0 <= mode_count <= MAX_FEA_MODES:
+        raise ValueError(f"mode_count must be an integer from 0 to {MAX_FEA_MODES}")
+    if type(confirmed) is not bool:
+        raise ValueError("confirmed must be boolean")
 
 
 class HeadlessError(RuntimeError):
@@ -628,8 +639,12 @@ class Document:
                    constrained_face_ordinals, face_tractions, mesh_levels,
                    maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
                    maximum_small_deformation_ratio=0.05,
-                   convergence_relative_tolerance=0.02, confirmed=False):
-        """Run a guarded exact-mesh linear-static convergence review without mutation."""
+                   convergence_relative_tolerance=0.02, mode_count=0, confirmed=False):
+        """Run a guarded exact-mesh linear-static convergence review without mutation.
+
+        With ``mode_count`` the review also gives that many of the lowest natural
+        frequencies of the finest mesh; the material then needs ``density_kg_per_m3``.
+        """
         for name, value in (("definition_id", definition_id), ("feature_id", feature_id),
                             ("occurrence_id", occurrence_id)):
             if type(value) is not int or value <= 0:
@@ -642,10 +657,7 @@ class Document:
             raise ValueError("constrained_face_ordinals must be a nonempty list or tuple")
         if not isinstance(face_tractions, (list, tuple)) or not face_tractions:
             raise ValueError("face_tractions must be a nonempty list or tuple")
-        if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
-            raise ValueError("mesh_levels must contain two to four refinement levels")
-        if type(confirmed) is not bool:
-            raise ValueError("confirmed must be boolean")
+        _check_study(mesh_levels, mode_count, confirmed)
         return self._call("fea_review", {
             "definition_id": definition_id,
             "feature_id": feature_id,
@@ -661,6 +673,44 @@ class Document:
                 "maximum_small_deformation_ratio": maximum_small_deformation_ratio,
                 "convergence_relative_tolerance": convergence_relative_tolerance,
             },
+            "mode_count": mode_count,
+            "confirmed": confirmed,
+        }, guarded=True)
+
+    def fea_assembly_review(self, case_id, *, parts, joints, mesh_levels,
+                            maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
+                            maximum_small_deformation_ratio=0.05,
+                            convergence_relative_tolerance=0.02, mode_count=0,
+                            confirmed=False):
+        """Review several occurrences joined face to face as one model, without mutation.
+
+        Each part is a dict with ``occurrence_id``, ``feature_id`` (the solid of its
+        definition), ``material``, ``constrained_face_ordinals`` and ``face_tractions``.
+        Each joint names two faces, ``{"part": index, "face_ordinal": n}``, of different
+        parts and a ``kind``: ``{"type": "rigid"}`` or ``{"type": "spring",
+        "translation_n_per_mm": [x, y, z], "rotation_n_mm_per_rad": [x, y, z]}``.
+        """
+        if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
+            raise ValueError("case_id must be a nonempty string of at most 128 characters")
+        if not isinstance(parts, (list, tuple)) or not parts:
+            raise ValueError("parts must be a nonempty list or tuple")
+        if any(not isinstance(part, dict) for part in parts):
+            raise ValueError("each part must be a dict")
+        if not isinstance(joints, (list, tuple)) or any(not isinstance(joint, dict) for joint in joints):
+            raise ValueError("joints must be a list or tuple of dicts")
+        _check_study(mesh_levels, mode_count, confirmed)
+        return self._call("fea_assembly_review", {
+            "case_id": case_id,
+            "parts": [dict(part) for part in parts],
+            "joints": [dict(joint) for joint in joints],
+            "mesh_levels": [dict(level) for level in mesh_levels],
+            "solve_settings": {
+                "maximum_nodes": maximum_nodes,
+                "relative_pivot_tolerance": relative_pivot_tolerance,
+                "maximum_small_deformation_ratio": maximum_small_deformation_ratio,
+                "convergence_relative_tolerance": convergence_relative_tolerance,
+            },
+            "mode_count": mode_count,
             "confirmed": confirmed,
         }, guarded=True)
 
