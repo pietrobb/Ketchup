@@ -365,6 +365,7 @@ impl KetchupApp {
             | AppCommand::ExportHomagMpr
             | AppCommand::ReviewCamExport
             | AppCommand::ReviewStaticFea
+            | AppCommand::ReviewSteadyThermal
             | AppCommand::ReviewLocalPdm
             | AppCommand::ExportHundeggerBtlx
             | AppCommand::ExportWorkshopPackage => {

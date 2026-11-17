@@ -241,6 +241,7 @@ impl KetchupApp {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
                 fea_review_dialog: None,
+                thermal_review_dialog: None,
                 pdm: LocalPdmWorkflow::new(),
                 pdm_review_dialog: None,
             },
@@ -1621,6 +1622,7 @@ impl KetchupApp {
         self.show_cam_export_window(context);
         self.show_presentation_window(context);
         self.show_fea_review_window(context);
+        self.show_thermal_review_window(context);
         self.show_pdm_review_window(context);
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);

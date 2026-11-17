@@ -5,16 +5,19 @@ use ketchup_application::evaluation::{
     EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationSelection,
     ExactEvaluationTask, ExactSource, ProducerKey, exact_worker_candidates,
 };
-use ketchup_application::fea_workflow::{FeaReviewError, FeaReviewWorkflow};
+use ketchup_application::fea_workflow::FeaReviewWorkflow;
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
+use ketchup_application::thermal_workflow::ThermalReviewWorkflow;
+use ketchup_application::validation_rules::ValidationRules;
 use ketchup_model::tolerance::limits;
 use ketchup_rejection::{Reason, dropped};
 mod cam_input;
 mod fea_input;
 mod model_tools;
 mod production;
+mod thermal_input;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
@@ -78,6 +81,7 @@ const METHODS: &[&str] = &[
     "cam_preview",
     "cam_export",
     "fea_review",
+    "thermal_review",
     "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
@@ -104,6 +108,7 @@ const GUARDED_METHODS: &[&str] = &[
     "cam_preview",
     "cam_export",
     "fea_review",
+    "thermal_review",
     "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
@@ -179,21 +184,6 @@ impl From<CamReviewError> for Error {
             CamReviewError::InvalidPath => "invalid_path",
             CamReviewError::FileExists => "file_exists",
             CamReviewError::Write(_) => "io_error",
-        };
-        Self::caused_by(code, &error)
-    }
-}
-
-impl From<FeaReviewError> for Error {
-    fn from(error: FeaReviewError) -> Self {
-        let code = match &error {
-            FeaReviewError::ConfirmationRequired => "confirmation_required",
-            FeaReviewError::WorkerUnavailable => "exact_worker_unavailable",
-            FeaReviewError::InvalidRefinementLevels => "fea_refinement_invalid",
-            FeaReviewError::InvalidTarget(_) => "fea_target_rejected",
-            FeaReviewError::Meshing(_) => "fea_meshing_rejected",
-            FeaReviewError::Setup(_) => "fea_setup_rejected",
-            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(_) => "fea_solve_rejected",
         };
         Self::caused_by(code, &error)
     }
@@ -446,6 +436,7 @@ pub struct Server {
     next_verify_job: u64,
     cam_reviews: CamReviewWorkflow,
     fea_reviews: FeaReviewWorkflow,
+    thermal_reviews: ThermalReviewWorkflow,
     pdm: LocalPdmWorkflow,
     compact_result: bool,
     /// One deadline for each program request: evaluation, report, exact
@@ -471,7 +462,8 @@ impl Server {
             verify_job_key: RandomState::new(),
             next_verify_job: 1,
             cam_reviews: CamReviewWorkflow::new(worker_path.clone()),
-            fea_reviews: FeaReviewWorkflow::new(worker_path),
+            fea_reviews: FeaReviewWorkflow::new(worker_path.clone()),
+            thermal_reviews: ThermalReviewWorkflow::new(worker_path),
             pdm: LocalPdmWorkflow::new(),
             compact_result: false,
             check_time: PROGRAM_CHECK_TIME,
@@ -790,6 +782,7 @@ impl Server {
             "cam_export" => (&["review_token", "path", "confirmed"], true),
             "fea_review" => (fea_input::REVIEW_FIELDS, true),
             "fea_assembly_review" => (fea_input::ASSEMBLY_REVIEW_FIELDS, true),
+            "thermal_review" => (thermal_input::FIELDS, true),
             "pdm_release_create" => (
                 &[
                     "repository",
@@ -982,6 +975,17 @@ impl Server {
                     .fea_reviews
                     .review_assembly(&snapshot, &request, confirmed, &cancelled)?;
                 Ok(fea_input::review_value(&review))
+            }
+            "thermal_review" => {
+                let (request, confirmed) = thermal_input::thermal_review_request(p)?;
+                let review = self.thermal_reviews.review(
+                    &self.session.snapshot(),
+                    &request,
+                    ValidationRules::library(),
+                    confirmed,
+                    &AtomicBool::new(false),
+                )?;
+                Ok(thermal_input::thermal_review_value(&review))
             }
             "pdm_release_create" => {
                 let current = PdmDocumentState::observed(
@@ -1542,6 +1546,7 @@ mod tests {
     use super::*;
     mod cam_faces;
     mod fea_assembly;
+    mod thermal;
 
     #[test]
     fn underlay_binding_rejection_keeps_its_structured_repair_and_cause() {

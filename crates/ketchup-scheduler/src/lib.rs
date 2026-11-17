@@ -19,6 +19,7 @@ pub mod plugin;
 pub mod program_worker;
 pub mod protocol;
 mod request_budget;
+pub mod thermal_setup;
 pub mod underlay_reading;
 pub use pair_query::{
     ExactPairAnswer, ExactPairCandidate, ExactPairQueryResult, ExactPairRelation,
@@ -57,14 +58,13 @@ use process_wrap::std::{ChildWrapper, CommandWrap};
 use process_wrap::std::{CreationFlags, JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
+use std::{fmt, fs};
 #[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 

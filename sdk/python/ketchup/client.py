@@ -766,6 +766,49 @@ class Document:
             "confirmed": confirmed,
         }, guarded=True)
 
+    def thermal_review(self, definition_id, feature_id, occurrence_id, case_id, *,
+                       mesh_levels, held_faces=(), flux_faces=(), convection_faces=(),
+                       maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
+                       convergence_relative_tolerance=0.02, confirmed=False):
+        """Run a guarded steady heat-conduction review of one exact part without mutation.
+
+        The conductivity comes from the part's material in the library rules.
+        Faces are held at a temperature (°C), take a heat flux (W/m²) or
+        exchange heat by convection (W/(m² K) to an ambient °C).
+        """
+        for name, value in (("definition_id", definition_id), ("feature_id", feature_id),
+                            ("occurrence_id", occurrence_id)):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
+            raise ValueError("case_id must be a nonempty string of at most 128 characters")
+        for name, faces in (("held_faces", held_faces), ("flux_faces", flux_faces),
+                            ("convection_faces", convection_faces)):
+            if not isinstance(faces, (list, tuple)):
+                raise ValueError(f"{name} must be a list or tuple")
+        if not held_faces and not convection_faces:
+            raise ValueError("hold a face at a temperature or cool one by convection")
+        if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
+            raise ValueError("mesh_levels must contain two to four refinement levels")
+        if type(confirmed) is not bool:
+            raise ValueError("confirmed must be boolean")
+        return self._call("thermal_review", {
+            "definition_id": definition_id,
+            "feature_id": feature_id,
+            "occurrence_id": occurrence_id,
+            "case_id": case_id,
+            "held_faces": [dict(face) for face in held_faces],
+            "flux_faces": [dict(face) for face in flux_faces],
+            "convection_faces": [dict(face) for face in convection_faces],
+            "mesh_levels": [dict(level) for level in mesh_levels],
+            "solve_settings": {
+                "maximum_nodes": maximum_nodes,
+                "relative_pivot_tolerance": relative_pivot_tolerance,
+            },
+            "convergence_relative_tolerance": convergence_relative_tolerance,
+            "confirmed": confirmed,
+        }, guarded=True)
+
     def pdm_release(self, repository, *, parent_release_id=None, dependencies=(),
                     actor, created_unix_ms, note="", confirmed=False):
         """Create an immutable local release; disk writes require explicit confirmation."""

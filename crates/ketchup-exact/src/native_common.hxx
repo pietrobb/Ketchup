@@ -269,6 +269,10 @@ std::unique_ptr<NativeOperationResult> loft_stretched_to_rail(
     const TopoDS_Wire& guide, const TopoDS_Wire& rail, const std::vector<TopoDS_Wire>& wires,
     std::uint8_t continuity, bool make_solid);
 
+// Every edge of a convex polyhedron rounded by `radius` when the rounds use up
+// whole faces; a null shape for any other body (native_full_round.cc).
+TopoDS_Shape full_round_of_convex_polyhedron(const TopoDS_Shape& body, double radius);
+
 inline gp_Pnt planar_point(const NativePoint& point, double z) {
   return gp_Pnt(point.x, point.y, z);
 }
