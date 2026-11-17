@@ -260,6 +260,12 @@ std::unique_ptr<NativeOperationResult> success_result(
     std::vector<EdgeHistoryRecord> edge_history = {},
     bool allow_surface = false);
 
+// A Loft through `wires` along `guide` with every section across the guide
+// stretched so its border meets `rail` (native_loft_rail.cc).
+std::unique_ptr<NativeOperationResult> loft_stretched_to_rail(
+    const TopoDS_Wire& guide, const TopoDS_Wire& rail, const std::vector<TopoDS_Wire>& wires,
+    std::uint8_t continuity, bool make_solid);
+
 inline gp_Pnt planar_point(const NativePoint& point, double z) {
   return gp_Pnt(point.x, point.y, z);
 }

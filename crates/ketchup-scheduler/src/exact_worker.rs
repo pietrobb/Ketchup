@@ -17,8 +17,7 @@ use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
 use ketchup_exact::{
     AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
     EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
-    ExactPairRelation, ExactVolumeMeshOptions, FramedLoftProfile, FramedLoftSection,
-    FramedLoftSpec, LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, Point3,
+    ExactPairRelation, ExactVolumeMeshOptions, PlanarProfileLoop, PlanarProfileSegment, Point3,
     RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
     StepXdeExportNode, StepXdeExportPart, ThreadGrooveSpec,
 };
@@ -27,12 +26,11 @@ use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepDraft, ExactBRepEdgeFinishKind,
-    ExactBRepGraph, ExactBRepImportedFormat, ExactBRepLinearInterval, ExactBRepLoftContinuity,
-    ExactBRepLoftSection, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, ExactBRepProfile, ExactBRepProfileFaceReference,
-    ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
-    ExactBRepThreadGroove, ExactBRepTopologyKind, ExactBRepTopologySelector,
-    ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
+    ExactBRepGraph, ExactBRepImportedFormat, ExactBRepLinearInterval, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
+    ExactBRepSpatialPathSegment, ExactBRepThreadGroove, ExactBRepTopologyKind,
+    ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
 use ketchup_model::exact_product::{
@@ -55,6 +53,7 @@ type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
 mod cam_simulation;
 mod failure;
+mod loft;
 mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
@@ -62,6 +61,7 @@ mod source_document;
 mod surfaces;
 
 use failure::{backend_failure, geometry_failure};
+use loft::exact_brep_loft_node;
 use source_document::{SourceDocument, XdeFormat};
 use surfaces::{fill_boundary, planar_face};
 
@@ -905,23 +905,16 @@ fn evaluate_exact_brep_graph(
                 *policy,
                 *primary,
             )?,
-            ExactBRepOperation::Loft {
-                sections,
-                guide,
-                continuity,
-            } => {
-                let output =
-                    exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, true)?;
+            loft @ ExactBRepOperation::Loft { .. } => {
+                let output = exact_brep_loft_node(backend, graph, loft)?;
                 if needs_names[node_index] {
                     produced_face_names = Some(exact_brep_loft_face_names(graph, &output)?);
                 }
                 output
             }
-            ExactBRepOperation::LoftSurface {
-                sections,
-                guide,
-                continuity,
-            } => exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, false)?,
+            loft @ ExactBRepOperation::LoftSurface { .. } => {
+                exact_brep_loft_node(backend, graph, loft)?
+            }
             ExactBRepOperation::BoundarySurface { boundary } => fill_boundary(backend, boundary)?,
             ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
                 &outputs[target.0 as usize].body,
@@ -1608,124 +1601,6 @@ fn exact_brep_chamfer_ordinal_pairs(
         ));
     }
     Ok(pairs.into_iter().unzip())
-}
-
-fn exact_brep_loft(
-    backend: &ExactBackend,
-    graph: &ExactBRepGraph,
-    sections: &[ExactBRepLoftSection],
-    guide: Option<&ExactBRepSpatialPath>,
-    continuity: ExactBRepLoftContinuity,
-    make_solid: bool,
-) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let guide_segments = guide.map(|guide| {
-        guide
-            .segments
-            .iter()
-            .map(exact_brep_spatial_path_segment)
-            .collect::<Vec<_>>()
-    });
-    let continuity = match continuity {
-        ExactBRepLoftContinuity::Position => LoftSurfaceContinuity::Position,
-        ExactBRepLoftContinuity::Tangent => LoftSurfaceContinuity::Tangent,
-        ExactBRepLoftContinuity::Curvature => LoftSurfaceContinuity::Curvature,
-    };
-    let mut outer_sections = Vec::with_capacity(sections.len());
-    let mut hole_sections: Option<Vec<Vec<FramedLoftSection>>> = None;
-    for section in sections {
-        let profile = &graph.profiles[section.profile.0 as usize];
-        let (outer, holes) = match &profile.geometry {
-            ExactBRepPlanarGeometry::Spline { control_point_bits } => (
-                FramedLoftProfile::Spline {
-                    control_points_mm: control_point_bits
-                        .iter()
-                        .map(|point| point.map(f64::from_bits))
-                        .collect(),
-                },
-                Vec::new(),
-            ),
-            ExactBRepPlanarGeometry::Circle { .. }
-            | ExactBRepPlanarGeometry::Boundary { closed: true, .. } => (
-                FramedLoftProfile::Planar(exact_brep_planar_offset_loop(profile)?),
-                Vec::new(),
-            ),
-            ExactBRepPlanarGeometry::Region { outer, holes } => (
-                FramedLoftProfile::Planar(exact_brep_planar_loop(outer)),
-                holes
-                    .iter()
-                    .map(|hole| FramedLoftProfile::Planar(exact_brep_planar_loop(hole)))
-                    .collect(),
-            ),
-            _ => {
-                return Err(exact_brep_profile_error(
-                    profile,
-                    "exact Loft requires closed line/arc/circle/cubic or spline sections",
-                ));
-            }
-        };
-        let elevation_mm = f64::from_bits(section.elevation_bits);
-        let frame = profile.frame();
-        let hole_groups = hole_sections.get_or_insert_with(|| {
-            (0..holes.len())
-                .map(|_| Vec::with_capacity(sections.len()))
-                .collect()
-        });
-        if hole_groups.len() != holes.len() {
-            return Err(exact_brep_profile_error(
-                profile,
-                "exact Loft requires the same hole count in every section",
-            ));
-        }
-        outer_sections.push(FramedLoftSection {
-            elevation_mm,
-            frame,
-            profile: outer,
-        });
-        for (group, hole) in hole_groups.iter_mut().zip(holes) {
-            group.push(FramedLoftSection {
-                elevation_mm,
-                frame,
-                profile: hole,
-            });
-        }
-    }
-    let mut output = if make_solid {
-        backend.loft_framed_profiles_with_controls(
-            &FramedLoftSpec {
-                sections: outer_sections,
-            },
-            guide_segments.as_deref(),
-            continuity,
-        )?
-    } else {
-        backend.loft_framed_surface(
-            &FramedLoftSpec {
-                sections: outer_sections,
-            },
-            guide_segments.as_deref(),
-            continuity,
-        )?
-    };
-    let hole_sections = hole_sections.unwrap_or_default();
-    if !make_solid && !hole_sections.is_empty() {
-        return Err(ketchup_exact::GeometryError {
-            code: ketchup_exact::GeometryErrorCode::InvalidProfile,
-            diagnostic: "Loft surface holes are not supported".to_owned(),
-            operation: "loft_framed_surface",
-            input_digest: graph.canonical_input_digest.clone(),
-            backend_fingerprint: ketchup_exact::backend_fingerprint(),
-        });
-    }
-    for sections in hole_sections {
-        let tool = backend.loft_framed_profiles_with_controls(
-            &FramedLoftSpec { sections },
-            guide_segments.as_deref(),
-            continuity,
-        )?;
-        output =
-            backend.boolean_bodies(&output.body, &tool.body, ExactBodyBooleanOperation::Cut)?;
-    }
-    Ok(output)
 }
 
 const fn body_boolean(operation: &ExactBRepBooleanOperation) -> ExactBodyBooleanOperation {

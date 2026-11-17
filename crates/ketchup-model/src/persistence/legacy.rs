@@ -38,12 +38,12 @@ use crate::document::{
     FeatureBodyOwnership, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterProvenance, FeatureParameterTarget, FilletRadiusStation, Group, GroupId,
     ImportedExactBodySpec, InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey,
-    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, LoftContinuity, LoftSection,
-    MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId, ParameterPath,
-    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
-    ProductModel, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection,
-    SpatialPathSegment, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem, WeldmentJointPolicy,
-    WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
+    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, MeshAuthority, MeshBodySpec, NodeId,
+    Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileEdgeReference,
+    ProfileFaceReference, ProfileSegment, ShellDirection, SpatialPathSegment, SurfaceBodySpec, Tag,
+    TagId, Transform, UnitSystem, WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec,
+    WeldmentMemberSpec,
 };
 use crate::drawing::{
     DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
@@ -93,6 +93,8 @@ use ketchup_geometry::sketch::{
 };
 
 use super::{MAGIC, MigrationLoss, PersistenceError};
+
+mod loft;
 
 const MESH_BODY_SCHEMA: u16 = 16;
 const SPACE_CLEARANCE_SCHEMA: u16 = 17;
@@ -3460,32 +3462,12 @@ fn read_product(
                     profile: FeatureId(reader.u64()?),
                 },
                 2 => {
-                    let mut sections = Vec::new();
-                    for _ in 0..reader.count_with_limit(16)? {
-                        sections.push(LoftSection {
-                            profile: FeatureId(reader.u64()?),
-                            elevation_mm: f64::from_bits(reader.u64()?),
-                        });
-                    }
-                    let guide = match reader.u8()? {
-                        0 => None,
-                        1 => Some(FeatureId(reader.u64()?)),
-                        value => return Err(PersistenceError::InvalidBoolean(value)),
-                    };
-                    let continuity = match reader.u8()? {
-                        1 => LoftContinuity::Position,
-                        2 => LoftContinuity::Tangent,
-                        3 => LoftContinuity::Curvature,
-                        value => {
-                            return Err(PersistenceError::Legacy(LegacyError::InvalidFeatureKind(
-                                value,
-                            )));
-                        }
-                    };
+                    let (sections, guide, continuity) = loft::read(reader, true)?;
                     SurfaceBodySpec::Loft {
                         sections,
                         guide,
                         continuity,
+                        rail: None,
                     }
                 }
                 value => {
@@ -3532,37 +3514,13 @@ fn read_product(
                 },
             },
             15 if capabilities.loft_spline => {
-                let mut sections = Vec::new();
-                for _ in 0..reader.count_with_limit(16)? {
-                    sections.push(LoftSection {
-                        profile: FeatureId(reader.u64()?),
-                        elevation_mm: f64::from_bits(reader.u64()?),
-                    });
-                }
-                let (guide, continuity) = if capabilities.loft_guide_continuity {
-                    let guide = match reader.u8()? {
-                        0 => None,
-                        1 => Some(FeatureId(reader.u64()?)),
-                        value => return Err(PersistenceError::InvalidBoolean(value)),
-                    };
-                    let continuity = match reader.u8()? {
-                        1 => LoftContinuity::Position,
-                        2 => LoftContinuity::Tangent,
-                        3 => LoftContinuity::Curvature,
-                        value => {
-                            return Err(PersistenceError::Legacy(LegacyError::InvalidFeatureKind(
-                                value,
-                            )));
-                        }
-                    };
-                    (guide, continuity)
-                } else {
-                    (None, LoftContinuity::Position)
-                };
+                let (sections, guide, continuity) =
+                    loft::read(reader, capabilities.loft_guide_continuity)?;
                 FeatureKind::Loft {
                     sections,
                     guide,
                     continuity,
+                    rail: None,
                 }
             }
             24 if capabilities.rigid_transform_feature => {

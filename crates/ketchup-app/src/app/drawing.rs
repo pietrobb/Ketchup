@@ -750,11 +750,7 @@ impl KetchupApp {
             id: generated_feature_id,
             definition_id: source.definition_id,
             name: self.catalog.text("model-loft-feature"),
-            kind: FeatureKind::Loft {
-                sections: source.sections.clone(),
-                guide: None,
-                continuity: LoftContinuity::Position,
-            },
+            kind: FeatureKind::loft(source.sections.clone()),
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;

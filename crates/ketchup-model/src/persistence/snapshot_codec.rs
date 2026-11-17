@@ -24,7 +24,8 @@
 //! hole callout notes; 114 a sketch every released Kečup takes for damaged
 //! ([`ketchup_geometry::sketch::SketchSpec::released_readers_refuse`]), such as the
 //! profile of a standard part; 115 a surface spanning a loop of boundary curves
-//! ([`crate::document::SurfaceBodySpec::Boundary`]). Older files have no generated ownership and need no
+//! ([`crate::document::SurfaceBodySpec::Boundary`]); 116 a Loft stretched to a rail
+//! (`FeatureKind::Loft::rail`). Older files have no generated ownership and need no
 //! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
@@ -42,7 +43,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 115;
+pub(super) const SNAPSHOT_FORMAT: u16 = 116;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -51,7 +52,9 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 115;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 115 with a boundary surface, which no released Kečup knows, else 114 with a
+/// 116 with a Loft stretched to a rail, which a Kečup that writes 115 does not
+/// know, else 115 with a boundary surface, which no released Kečup
+/// knows, else 114 with a
 /// sketch every released Kečup takes for damaged, else 113 with a hole
 /// callout bound to its source, else
 /// 112 with a mesh that shows a picture, which a Kečup that writes 111 refuses as newer,
@@ -94,12 +97,22 @@ fn format_of(product: &ProductModel) -> u16 {
     if product.features.values().any(|feature| {
         matches!(
             feature.kind(),
+            crate::document::FeatureKind::Loft { rail: Some(_), .. }
+                | crate::document::FeatureKind::SurfaceBody(
+                    crate::document::SurfaceBodySpec::Loft { rail: Some(_), .. }
+                )
+        )
+    }) {
+        SNAPSHOT_FORMAT
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
             crate::document::FeatureKind::SurfaceBody(
                 crate::document::SurfaceBodySpec::Boundary { .. }
             )
         )
     }) {
-        SNAPSHOT_FORMAT
+        115
     } else if product.features.values().any(|feature| {
         matches!(feature.kind(), crate::document::FeatureKind::Sketch(sketch)
             if sketch.released_readers_refuse())

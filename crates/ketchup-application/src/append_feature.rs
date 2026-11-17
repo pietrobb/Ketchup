@@ -49,6 +49,7 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
             sections,
             guide_feature_id,
             continuity,
+            rail_feature_id,
         } => SurfaceBodySpec::Loft {
             sections: sections
                 .iter()
@@ -59,6 +60,7 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
                 .collect(),
             guide: guide_feature_id.as_ref().map(resolved),
             continuity: loft_continuity(*continuity),
+            rail: rail_feature_id.as_ref().map(resolved),
         },
         AssistantCadSurfaceBodySource::Boundary { segments } => SurfaceBodySpec::Boundary {
             segments: segments
@@ -67,6 +69,42 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
                 .collect(),
         },
     }
+}
+
+/// A Loft guide or rail is one bounded C1 spatial path of the Loft's definition.
+fn check_loft_path(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    operation_name: &str,
+    role: &str,
+    path: FeatureId,
+) -> AssistantPlanningResult<()> {
+    let source = snapshot.feature(path).ok_or_else(|| {
+        assistant_canonical_rejection(
+            CanonicalError::FeatureNotFound(path),
+            operation_name,
+            &format!("feature:{}", path.0),
+        )
+    })?;
+    if source.definition_id() != definition_id
+        || snapshot.feature_is_suppressed(path)
+        || !matches!(
+            source.kind(),
+            FeatureKind::SpatialPath { segments }
+                if is_valid_spatial_sweep_path(segments, snapshot.tolerance().linear_mm())
+        )
+    {
+        return Err(assistant_planning_rejection(
+            "planning.cad_feature_input_unsupported",
+            operation_name,
+            &format!("feature:{}", path.0),
+            format!(
+                "The requested Loft {role} is not one bounded C1 spatial path in the same definition."
+            ),
+            "Use an unsuppressed line/arc/cubic SpatialPath that satisfies the exact path contract.",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn plan_feature_kind(
@@ -351,6 +389,7 @@ pub(crate) fn plan_feature_kind(
             sections,
             guide_feature_id,
             continuity,
+            rail_feature_id,
         } => {
             let mut loft_sections = Vec::with_capacity(sections.len());
             for section in sections {
@@ -399,35 +438,17 @@ pub(crate) fn plan_feature_kind(
                 });
             }
             let guide = guide_feature_id.as_ref().map(resolved);
-            if let Some(guide) = guide {
-                let source = snapshot.feature(guide).ok_or_else(|| {
-                    assistant_canonical_rejection(
-                        CanonicalError::FeatureNotFound(guide),
-                        operation_name,
-                        &format!("feature:{}", guide.0),
-                    )
-                })?;
-                if source.definition_id() != definition_id
-                    || snapshot.feature_is_suppressed(guide)
-                    || !matches!(
-                        source.kind(),
-                        FeatureKind::SpatialPath { segments }
-                            if is_valid_spatial_sweep_path(segments, snapshot.tolerance().linear_mm())
-                    )
-                {
-                    return Err(assistant_planning_rejection(
-                        "planning.cad_feature_input_unsupported",
-                        operation_name,
-                        &format!("feature:{}", guide.0),
-                        "The requested Loft guide is not one bounded C1 spatial path in the same definition.",
-                        "Use an unsuppressed line/arc/cubic SpatialPath that satisfies the exact path contract.",
-                    ));
+            let rail = rail_feature_id.as_ref().map(resolved);
+            for (role, path) in [("guide", guide), ("rail", rail)] {
+                if let Some(path) = path {
+                    check_loft_path(snapshot, definition_id, operation_name, role, path)?;
                 }
             }
             FeatureKind::Loft {
                 sections: loft_sections,
                 guide,
                 continuity: loft_continuity(*continuity),
+                rail,
             }
         }
         AssistantCadBodyFeature::SurfaceBody { source } => {

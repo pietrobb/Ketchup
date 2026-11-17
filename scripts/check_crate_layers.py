@@ -70,31 +70,31 @@ OVERSIZED = {}
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
     "crates/ketchup-app/src/lib.rs": 2347,
-    "crates/ketchup-model/src/document.rs": 514,
+    "crates/ketchup-model/src/document.rs": 380,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
     "crates/ketchup-manufacturing/src/fabrication.rs": 4628,
     "crates/ketchup-model/src/import/dxf.rs": 4467,
     # Past FREEZE_AT_LINES when the check began to require it (review 2026-11-08 TST-253);
     # live_bridge.rs and exact_worker.rs are the ones that review found growing.
-    "crates/ketchup-app/src/app/drawing.rs": 3798,
+    "crates/ketchup-app/src/app/drawing.rs": 3794,
     "crates/ketchup-app/src/app/structure.rs": 3390,
     "crates/ketchup-app/src/app/transform.rs": 3876,
     "crates/ketchup-app/src/app/viewport.rs": 4857,
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
     "crates/ketchup-app/src/live_bridge.rs": 3455,
-    "crates/ketchup-application/src/planner.rs": 4334,
+    "crates/ketchup-application/src/planner.rs": 4323,
     "crates/ketchup-application/src/validation.rs": 4053,
-    "crates/ketchup-assistant/src/sidecar.rs": 4261,
+    "crates/ketchup-assistant/src/sidecar.rs": 4236,
     "crates/ketchup-geometry/src/sketch.rs": 3055,
     "crates/ketchup-headless/src/protocol.rs": 3184,
-    "crates/ketchup-model/src/drawing.rs": 4477,
-    "crates/ketchup-model/src/exact_product.rs": 4316,
+    "crates/ketchup-model/src/drawing.rs": 4459,
+    "crates/ketchup-model/src/exact_product.rs": 4210,
     "crates/ketchup-model/src/persistence.rs": 4323,
-    "crates/ketchup-model/src/persistence/legacy.rs": 4721,
+    "crates/ketchup-model/src/persistence/legacy.rs": 4679,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4338,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4213,
     "crates/ketchup-scheduler/src/lib.rs": 3102,
 }
 
@@ -109,23 +109,23 @@ MAX_FUNCTION_LINES = 400
 LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
-    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 633,
+    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 616,
     "crates/ketchup-application/src/collision.rs::collision_report": 630,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1745,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
-    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 640,
-    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 688,
+    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 622,
+    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 674,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 755,
-    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 412,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 559,
-    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1379,
+    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 404,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 553,
+    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1335,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 674,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 508,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 501,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its
@@ -152,7 +152,7 @@ LONG_TESTS = {
     "crates/ketchup-model/tests/pad_pocket.rs::face_supported_pocket_and_topology_history_make_unique_losslessly": 453,
     "crates/ketchup-model/tests/workplane_sketch.rs::all_principal_planes_and_one_resolved_planar_face_support_are_canonical": 310,
     "crates/ketchup-scheduler/tests/exact_brep_graph/exchange_booleans_and_lofts.rs::worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh": 375,
-    "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 336,
+    "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 332,
     "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance": 376,
 }
 

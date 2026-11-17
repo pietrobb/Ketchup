@@ -994,6 +994,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document/entities.rs: logical",
     "document/entities.rs: look",
     "document/entities.rs: modeled",
+    "document/entities.rs: rail", // Format 116.
+    "document/entities.rs: rail", // Format 116.
     "document/entities.rs: section",
     "document/entities.rs: up",
     "document/revision.rs: variants",
@@ -1006,6 +1008,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: name",
     "exact_brep_graph.rs: profile_edges",
     "exact_brep_graph.rs: profile_faces",
+    "exact_brep_graph.rs: rail",
+    "exact_brep_graph.rs: rail",
     "exact_brep_graph.rs: segment_entity_ids",
     "exact_brep_graph.rs: source_format",
     "exact_brep_graph.rs: source_part_index",
