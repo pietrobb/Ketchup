@@ -415,6 +415,7 @@ pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
         operation,
         ExactBRepOperation::SurfaceThicken { .. }
             | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
             | ExactBRepOperation::Loft { rail: Some(_), .. }
             | ExactBRepOperation::LoftSurface { rail: Some(_), .. }
             | ExactBRepOperation::Draft(_)
@@ -669,6 +670,23 @@ pub(super) fn valid_operation_profiles(
     }
 }
 
+/// The operation's result is an open surface body, an operand of surface trims, blends and knits.
+fn produces_surface(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::PlanarSurface { .. }
+            | ExactBRepOperation::LoftSurface { .. }
+            | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::SurfaceTrim { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceExtend { .. }
+            | ExactBRepOperation::SurfaceKnit {
+                make_solid: false,
+                ..
+            }
+    )
+}
+
 pub(super) fn valid_operation(
     operation: &ExactBRepOperation,
     document_id: u64,
@@ -685,20 +703,9 @@ pub(super) fn valid_operation(
         value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_COORDINATE_MM
     };
     let is_surface_node = |id: ExactBRepNodeId| {
-        prior_nodes.get(id.0 as usize).is_some_and(|node| {
-            matches!(
-                node.operation,
-                ExactBRepOperation::PlanarSurface { .. }
-                    | ExactBRepOperation::LoftSurface { .. }
-                    | ExactBRepOperation::BoundarySurface { .. }
-                    | ExactBRepOperation::SurfaceTrim { .. }
-                    | ExactBRepOperation::SurfaceExtend { .. }
-                    | ExactBRepOperation::SurfaceKnit {
-                        make_solid: false,
-                        ..
-                    }
-            )
-        })
+        prior_nodes
+            .get(id.0 as usize)
+            .is_some_and(|node| produces_surface(&node.operation))
     };
     match operation {
         ExactBRepOperation::Extrude {
@@ -724,9 +731,12 @@ pub(super) fn valid_operation(
                     .is_none_or(|digest| !digest.is_empty() && digest.len() <= 256)
         }
         ExactBRepOperation::Boolean { target, tool, .. } => target != tool,
-        ExactBRepOperation::SurfaceTrim { target, cutter } => {
-            target != cutter && is_surface_node(*target) && is_surface_node(*cutter)
-        }
+        ExactBRepOperation::SurfaceTrim { target, cutter }
+        | ExactBRepOperation::SurfaceBlend {
+            first: target,
+            second: cutter,
+            ..
+        } => target != cutter && is_surface_node(*target) && is_surface_node(*cutter),
         ExactBRepOperation::SurfaceExtend {
             target,
             distance_bits,

@@ -63,7 +63,7 @@ mod surfaces;
 use failure::{backend_failure, geometry_failure};
 use loft::exact_brep_loft_node;
 use source_document::{SourceDocument, XdeFormat};
-use surfaces::{fill_boundary, planar_face};
+use surfaces::{fill_boundary, join_surfaces, planar_face};
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
@@ -916,10 +916,10 @@ fn evaluate_exact_brep_graph(
                 exact_brep_loft_node(backend, graph, loft)?
             }
             op @ ExactBRepOperation::BoundarySurface { .. } => fill_boundary(backend, graph, op)?,
-            ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
-                &outputs[target.0 as usize].body,
-                &outputs[cutter.0 as usize].body,
-            )?,
+            op @ (ExactBRepOperation::SurfaceTrim { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }) => {
+                join_surfaces(backend, graph, &outputs, op)?
+            }
             ExactBRepOperation::SurfaceExtend {
                 target,
                 distance_bits,

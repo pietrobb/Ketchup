@@ -913,6 +913,15 @@ pub enum SurfaceBodySpec {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         inner: Vec<SpatialPathSegment>,
     },
+    /// A surface across the gap between two earlier single-face surfaces,
+    /// from the edge of each that faces the other, meeting each in position,
+    /// tangent plane or curvature. Both stay as they are. Format 118.
+    Blend {
+        first: FeatureId,
+        first_continuity: LoftContinuity,
+        second: FeatureId,
+        second_continuity: LoftContinuity,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1544,7 +1553,9 @@ impl FeatureKind {
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
             | Self::SurfaceBody(
-                SurfaceBodySpec::Planar { .. } | SurfaceBodySpec::Boundary { .. },
+                SurfaceBodySpec::Planar { .. }
+                | SurfaceBodySpec::Boundary { .. }
+                | SurfaceBodySpec::Blend { .. },
             )
             | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
@@ -1636,7 +1647,12 @@ impl FeatureKind {
             Self::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                 [*profile].into_iter().collect()
             }
-            Self::SurfaceTrim { target, cutter } => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceTrim { target, cutter }
+            | Self::SurfaceBody(SurfaceBodySpec::Blend {
+                first: target,
+                second: cutter,
+                ..
+            }) => [*target, *cutter].into_iter().collect(),
             Self::SurfaceExtend { target, .. } | Self::SurfaceThicken { target, .. } => {
                 [*target].into_iter().collect()
             }

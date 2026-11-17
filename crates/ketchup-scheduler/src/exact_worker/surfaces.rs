@@ -1,7 +1,8 @@
-//! Exact surface bodies: a planar face bounded by a profile and the smoothest
+//! Exact surface bodies: a planar face bounded by a profile, the smoothest
 //! surface spanning a closed loop of spatial curves, also through the inner
-//! curves of a network.
+//! curves of a network, and surfaces made from two earlier ones.
 
+use super::loft::surface_continuity;
 use super::{
     exact_brep_boundary_segments, exact_brep_graph_error, exact_brep_planar_loop,
     exact_brep_profile_error, exact_brep_spatial_path_segment, transform_local_to_profile_frame,
@@ -9,8 +10,8 @@ use super::{
 use ketchup_exact::PlanarProfileSegment;
 use ketchup_exact::{ExactBackend, ExactOpOutput, GeometryError, PlanarProfileLoop};
 use ketchup_model::exact_brep_graph::{
-    ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepProfileId,
-    ExactBRepSpatialPath,
+    ExactBRepGraph, ExactBRepNodeId, ExactBRepOperation, ExactBRepPlanarGeometry,
+    ExactBRepProfileId, ExactBRepSpatialPath,
 };
 
 pub(super) fn planar_face(
@@ -90,4 +91,35 @@ pub(super) fn fill_boundary(
         None => Vec::new(),
     };
     backend.fill_network_surface(&segments(boundary), &inner)
+}
+
+/// The surface of a `SurfaceTrim` or `SurfaceBlend` node from the two earlier
+/// surfaces it joins.
+pub(super) fn join_surfaces(
+    backend: &ExactBackend,
+    graph: &ExactBRepGraph,
+    outputs: &[ExactOpOutput],
+    operation: &ExactBRepOperation,
+) -> Result<ExactOpOutput, GeometryError> {
+    let body = |node: ExactBRepNodeId| &outputs[node.index()].body;
+    match operation {
+        ExactBRepOperation::SurfaceTrim { target, cutter } => {
+            backend.trim_surface(body(*target), body(*cutter))
+        }
+        ExactBRepOperation::SurfaceBlend {
+            first,
+            first_continuity,
+            second,
+            second_continuity,
+        } => backend.blend_surfaces(
+            body(*first),
+            surface_continuity(*first_continuity),
+            body(*second),
+            surface_continuity(*second_continuity),
+        ),
+        _ => Err(exact_brep_graph_error(
+            graph,
+            "the node does not join two surfaces",
+        )),
+    }
 }

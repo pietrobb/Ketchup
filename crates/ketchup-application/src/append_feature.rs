@@ -72,6 +72,17 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
                 .map(AssistantSpatialPathSegment::canonical)
                 .collect(),
         },
+        AssistantCadSurfaceBodySource::Blend {
+            first_feature_id,
+            first_continuity,
+            second_feature_id,
+            second_continuity,
+        } => SurfaceBodySpec::Blend {
+            first: resolved(first_feature_id),
+            first_continuity: loft_continuity(*first_continuity),
+            second: resolved(second_feature_id),
+            second_continuity: loft_continuity(*second_continuity),
+        },
     }
 }
 

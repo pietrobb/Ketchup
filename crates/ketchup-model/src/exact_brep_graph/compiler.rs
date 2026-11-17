@@ -74,7 +74,12 @@ impl<'a> GraphCompiler<'a> {
                 | FeatureKind::SurfaceTrim {
                     target,
                     cutter: tool,
-                } => {
+                }
+                | FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
+                    first: target,
+                    second: tool,
+                    ..
+                }) => {
                     pending.push((*tool, false));
                     pending.push((*target, false));
                 }
@@ -344,27 +349,7 @@ impl<'a> GraphCompiler<'a> {
                 axis_end_mm,
                 angle_degrees,
             } => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 ExactBRepOperation::Revolve {
                     profile: compiled_profile,
                     axis_start_bits: axis_start_mm.map(f64::to_bits),
@@ -373,54 +358,14 @@ impl<'a> GraphCompiler<'a> {
                 }
             }
             FeatureKind::PlanarOffset { profile, distance } => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 ExactBRepOperation::PlanarOffset {
                     profile: compiled_profile,
                     distance_bits: planar_offset_distance(distance.millimetres())?,
                 }
             }
             FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 ExactBRepOperation::PlanarSurface {
                     profile: compiled_profile,
                 }
@@ -428,6 +373,17 @@ impl<'a> GraphCompiler<'a> {
             FeatureKind::SurfaceTrim { target, cutter } => ExactBRepOperation::SurfaceTrim {
                 target: self.body_id(*target)?,
                 cutter: self.body_id(*cutter)?,
+            },
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
+                first,
+                first_continuity,
+                second,
+                second_continuity,
+            }) => ExactBRepOperation::SurfaceBlend {
+                first: self.body_id(*first)?,
+                first_continuity: (*first_continuity).into(),
+                second: self.body_id(*second)?,
+                second_continuity: (*second_continuity).into(),
             },
             FeatureKind::SurfaceExtend { target, distance } => ExactBRepOperation::SurfaceExtend {
                 target: self.body_id(*target)?,
@@ -461,27 +417,7 @@ impl<'a> GraphCompiler<'a> {
                 direction: (*direction).into(),
             },
             FeatureKind::Sweep { profile, path, up } => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 self.compile_sweep(compiled_profile, *path, *up)?
             }
             FeatureKind::WeldmentMember(spec) => {
@@ -678,6 +614,27 @@ impl<'a> GraphCompiler<'a> {
         self.visiting.remove(&feature_id);
         self.compiled_bodies.insert(feature_id, id);
         self.threaded(feature_id, id)
+    }
+
+    /// A sketch with exactly one solved region along its normal, or any other profile feature as is.
+    fn compile_single_region_profile(
+        &mut self,
+        profile: FeatureId,
+    ) -> Result<ExactBRepProfileId, ExactBRepGraphError> {
+        match self.snapshot.feature(profile).map(|feature| feature.kind()) {
+            Some(FeatureKind::Sketch(sketch)) => {
+                let regions = sketch
+                    .solved_regions()
+                    .map_err(|error| ExactBRepGraphError::UnsolvedProfile(profile, error))?;
+                let [region] = regions.as_slice() else {
+                    return Err(ExactBRepGraphError::UnsupportedProfile(profile));
+                };
+                Ok(self
+                    .compile_sketch_profile(profile, region.id, FeatureDirection::AlongNormal)?
+                    .0)
+            }
+            _ => self.compile_profile(profile, None, identity_frame()),
+        }
     }
 
     fn face_offset(

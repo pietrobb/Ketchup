@@ -257,6 +257,14 @@ class ClientTests(unittest.TestCase):
                 "type": "surface_body",
                 "source": {"type": "boundary", "segments": [loop_line], "inner": [arch]},
             }),
+            (lambda: doc.blend_surfaces(2, "Blend", 21, 22, first_continuity="curvature"), {
+                "type": "surface_body",
+                "source": {
+                    "type": "blend",
+                    "first_feature_id": 21, "first_continuity": "curvature",
+                    "second_feature_id": 22, "second_continuity": "tangent",
+                },
+            }),
             (lambda: doc.trim_surface(2, "Trim", 21, 22), {
                 "type": "surface_trim", "target_feature_id": 21,
                 "cutter_feature_id": 22,

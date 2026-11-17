@@ -2777,6 +2777,98 @@ fn public_boundary_surface_program_fills_a_closed_loop_of_curves() {
     assert_eq!(document.current().canonical_digest(), baseline);
 }
 
+/// The AI blends two surfaces it has just made, choosing how the blend meets
+/// each; a blend of a surface with itself is refused before planning.
+#[test]
+fn public_blend_program_joins_two_earlier_surfaces() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Blended surfaces".into(),
+            },
+        ]))
+        .unwrap();
+    let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
+    let plate = |x: f64, z: f64| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Plate".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::Boundary {
+                segments: vec![
+                    line([x, 0.0, z], [x + 30.0, 0.0, z]),
+                    line([x + 30.0, 0.0, z], [x + 30.0, 20.0, z]),
+                    line([x + 30.0, 20.0, z], [x, 20.0, z]),
+                    line([x, 20.0, z], [x, 0.0, z]),
+                ],
+                inner: Vec::new(),
+            },
+        },
+    };
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let blend = |first, second| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Blend".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::Blend {
+                first_feature_id: first,
+                first_continuity: AssistantCadLoftContinuity::Curvature,
+                second_feature_id: second,
+                second_continuity: AssistantCadLoftContinuity::Tangent,
+            },
+        },
+    };
+    let input = program(vec![
+        plate(0.0, 0.0),
+        plate(60.0, 20.0),
+        blend(earlier_body(0), earlier_body(1)),
+    ]);
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][2]["feature"]["source"]["type"],
+        "blend"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
+            first: FeatureId(1),
+            first_continuity: ketchup_model::document::LoftContinuity::Curvature,
+            second: FeatureId(2),
+            second_continuity: ketchup_model::document::LoftContinuity::Tangent,
+        })
+    ));
+    assert_eq!(
+        preview.feature(FeatureId(3)).unwrap().kind().body_kind(),
+        Some(BodyKind::Surface)
+    );
+
+    let itself = program(vec![
+        plate(0.0, 0.0),
+        blend(earlier_body(0), earlier_body(0)),
+    ]);
+    assert!(itself.validate().is_err());
+}
+
 #[test]
 fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
     let definition = DefinitionId(1);

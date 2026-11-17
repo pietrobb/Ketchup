@@ -707,6 +707,24 @@ fn validate_loft_paths(
     Ok(())
 }
 
+/// `operand` is a surface body feature of `feature`'s definition placed before it.
+fn is_earlier_surface(product: &ProductModel, feature: &Feature, operand: FeatureId) -> bool {
+    let definition = &product.definitions[&feature.definition_id];
+    let position = |id: FeatureId| {
+        definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+    };
+    product.features.get(&operand).is_some_and(|source| {
+        source.definition_id == feature.definition_id
+            && source.kind.body_kind() == Some(BodyKind::Surface)
+            && position(operand)
+                .zip(position(feature.id))
+                .is_some_and(|(operand, feature)| operand < feature)
+    })
+}
+
 fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
@@ -1019,47 +1037,22 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::SurfaceTrim { target, cutter } => {
-                let feature_position = definition
-                    .feature_ids
-                    .iter()
-                    .position(|candidate| *candidate == feature.id)
-                    .expect("validated definition contains feature");
-                let valid_surface_operand = |operand: FeatureId| {
-                    product.features.get(&operand).is_some_and(|source| {
-                        source.definition_id == feature.definition_id
-                            && source.kind.body_kind() == Some(BodyKind::Surface)
-                            && definition
-                                .feature_ids
-                                .iter()
-                                .position(|candidate| *candidate == operand)
-                                .is_some_and(|position| position < feature_position)
-                    })
-                };
+            FeatureKind::SurfaceTrim { target, cutter }
+            | FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
+                first: target,
+                second: cutter,
+                ..
+            }) => {
                 if target == cutter
-                    || !valid_surface_operand(target)
-                    || !valid_surface_operand(cutter)
+                    || !is_earlier_surface(product, feature, target)
+                    || !is_earlier_surface(product, feature, cutter)
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
             FeatureKind::SurfaceExtend { target, .. }
             | FeatureKind::SurfaceThicken { target, .. } => {
-                let feature_position = definition
-                    .feature_ids
-                    .iter()
-                    .position(|candidate| *candidate == feature.id)
-                    .expect("validated definition contains feature");
-                let valid_target = product.features.get(&target).is_some_and(|source| {
-                    source.definition_id == feature.definition_id
-                        && source.kind.body_kind() == Some(BodyKind::Surface)
-                        && definition
-                            .feature_ids
-                            .iter()
-                            .position(|candidate| *candidate == target)
-                            .is_some_and(|position| position < feature_position)
-                });
-                if !valid_target {
+                if !is_earlier_surface(product, feature, target) {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }

@@ -1401,27 +1401,7 @@ impl DigestV3 {
                     crate::document::WeldmentJointPrimary::Second => 2,
                 });
             }
-            FeatureKind::SurfaceBody(spec) => {
-                self.byte(32);
-                match spec {
-                    crate::document::SurfaceBodySpec::Planar { profile } => {
-                        self.byte(1);
-                        self.u64(profile.0);
-                    }
-                    crate::document::SurfaceBodySpec::Boundary { segments, inner } => {
-                        self.boundary_surface(segments, inner);
-                    }
-                    crate::document::SurfaceBodySpec::Loft {
-                        sections,
-                        guide,
-                        continuity,
-                        rail,
-                    } => {
-                        self.byte(2);
-                        self.loft(sections, *guide, *continuity, *rail);
-                    }
-                }
-            }
+            FeatureKind::SurfaceBody(spec) => self.surface_body(spec),
             FeatureKind::SurfaceTrim { target, cutter } => {
                 self.byte(33);
                 self.u64(target.0);
@@ -2322,6 +2302,40 @@ impl DigestV3 {
     }
 
     // No inner curves add nothing, so digests of earlier boundary surfaces stay.
+    fn surface_body(&mut self, spec: &crate::document::SurfaceBodySpec) {
+        self.byte(32);
+        match spec {
+            crate::document::SurfaceBodySpec::Planar { profile } => {
+                self.byte(1);
+                self.u64(profile.0);
+            }
+            crate::document::SurfaceBodySpec::Boundary { segments, inner } => {
+                self.boundary_surface(segments, inner);
+            }
+            crate::document::SurfaceBodySpec::Loft {
+                sections,
+                guide,
+                continuity,
+                rail,
+            } => {
+                self.byte(2);
+                self.loft(sections, *guide, *continuity, *rail);
+            }
+            crate::document::SurfaceBodySpec::Blend {
+                first,
+                first_continuity,
+                second,
+                second_continuity,
+            } => {
+                self.byte(4);
+                self.u64(first.0);
+                self.continuity(*first_continuity);
+                self.u64(second.0);
+                self.continuity(*second_continuity);
+            }
+        }
+    }
+
     fn boundary_surface(&mut self, segments: &[SpatialPathSegment], inner: &[SpatialPathSegment]) {
         self.byte(3);
         self.spatial_segments(segments);
@@ -2345,15 +2359,19 @@ impl DigestV3 {
             self.u64(section.elevation_mm.to_bits());
         }
         self.u64(guide.map_or(0, |guide| guide.0));
+        self.continuity(continuity);
+        if let Some(rail) = rail {
+            self.byte(1);
+            self.u64(rail.0);
+        }
+    }
+
+    fn continuity(&mut self, continuity: crate::document::LoftContinuity) {
         self.byte(match continuity {
             crate::document::LoftContinuity::Position => 1,
             crate::document::LoftContinuity::Tangent => 2,
             crate::document::LoftContinuity::Curvature => 3,
         });
-        if let Some(rail) = rail {
-            self.byte(1);
-            self.u64(rail.0);
-        }
     }
 
     fn sweep(&mut self, profile: FeatureId, path: FeatureId, up: Option<[f64; 3]>) {

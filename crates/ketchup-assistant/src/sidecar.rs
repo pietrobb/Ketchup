@@ -19,6 +19,7 @@ use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
 mod loft;
 mod spatial_path;
+mod structure_change;
 
 pub use spatial_path::validated_spatial_path_segments;
 
@@ -928,6 +929,17 @@ pub enum AssistantCadSurfaceBodySource {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         inner: Vec<AssistantSpatialPathSegment>,
     },
+    /// A surface across the gap between two earlier single-face surfaces,
+    /// from the edge of each that faces the other, meeting each in position,
+    /// tangent plane or curvature. Both surfaces stay.
+    Blend {
+        first_feature_id: AssistantCadFeatureReference,
+        #[serde(default)]
+        first_continuity: AssistantCadLoftContinuity,
+        second_feature_id: AssistantCadFeatureReference,
+        #[serde(default)]
+        second_continuity: AssistantCadLoftContinuity,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -1248,6 +1260,19 @@ impl AssistantCadBodyFeature {
             } if spatial_path::network_counts_fit(segments, inner) => Ok(()),
             Self::SurfaceBody {
                 source:
+                    AssistantCadSurfaceBodySource::Blend {
+                        first_feature_id,
+                        second_feature_id,
+                        ..
+                    },
+            } if first_feature_id.validate().is_ok()
+                && second_feature_id.validate().is_ok()
+                && first_feature_id != second_feature_id =>
+            {
+                Ok(())
+            }
+            Self::SurfaceBody {
+                source:
                     AssistantCadSurfaceBodySource::Loft {
                         sections,
                         guide_feature_id,
@@ -1529,6 +1554,14 @@ impl AssistantCadBodyFeature {
             Self::SurfaceTrim {
                 target_feature_id,
                 cutter_feature_id,
+            }
+            | Self::SurfaceBody {
+                source:
+                    AssistantCadSurfaceBodySource::Blend {
+                        first_feature_id: target_feature_id,
+                        second_feature_id: cutter_feature_id,
+                        ..
+                    },
             } => {
                 validate_reference(*target_feature_id)?;
                 validate_reference(*cutter_feature_id)?;
@@ -2193,55 +2226,6 @@ pub enum AssistantStructureChange {
     DeleteDefinition {
         definition_id: u64,
     },
-}
-
-impl AssistantStructureChange {
-    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
-        let name_is_valid = |name: &str| {
-            !name.trim().is_empty()
-                && name.len() <= limits::NAME_BYTES
-                && !name.chars().any(char::is_control)
-        };
-        let valid = match self {
-            Self::CreateGroup {
-                group_id,
-                name,
-                parent_group_id,
-            } => *group_id != 0 && name_is_valid(name) && *parent_group_id != Some(0),
-            Self::MoveOccurrence {
-                occurrence_id,
-                group_id,
-            } => *occurrence_id != 0 && *group_id != Some(0),
-            Self::MoveGroup {
-                group_id,
-                parent_group_id,
-            } => {
-                *group_id != 0 && *parent_group_id != Some(0) && *parent_group_id != Some(*group_id)
-            }
-            Self::SetGroupTranslation {
-                group_id,
-                translation_mm,
-            } => *group_id != 0 && assistant_cad_vector_is_bounded(*translation_mm),
-            Self::MakeComponent { group_id, name } => *group_id != 0 && name_is_valid(name),
-            Self::ReplaceDefinition {
-                occurrence_id,
-                definition_id,
-            } => *occurrence_id != 0 && *definition_id != 0,
-            Self::RenameDefinition {
-                definition_id,
-                name,
-            } => *definition_id != 0 && name_is_valid(name),
-            Self::SetOccurrenceVisibility { occurrence_id, .. } => *occurrence_id != 0,
-            Self::DeleteGroup { group_id } => *group_id != 0,
-            Self::DeleteTag { tag_id } => *tag_id != 0,
-            Self::DeleteDefinition { definition_id } => *definition_id != 0,
-        };
-        if valid {
-            Ok(())
-        } else {
-            Err(AssistantRequestInvalid::invalid("CAD structure change"))
-        }
-    }
 }
 
 fn assistant_cad_vector_is_bounded(vector: [f64; 3]) -> bool {

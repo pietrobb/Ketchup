@@ -103,6 +103,26 @@ pub(super) fn operation_bounds(
             [first.0 as usize]
             .zip(node_bounds[second.0 as usize])
             .map(|(first, second)| bounds_union(first, second))),
+        // The blend's cross sections leave each surface along its tangent and
+        // may bulge beyond both; they stay within the reach across the two.
+        ExactBRepOperation::SurfaceBlend { first, second, .. } => {
+            let Some(union) = node_bounds[first.index()]
+                .zip(node_bounds[second.index()])
+                .map(|(first, second)| bounds_union(first, second))
+            else {
+                return Ok(None);
+            };
+            let reach = (0..3)
+                .map(|axis| union[1][axis] - union[0][axis])
+                .fold(0.0, f64::max);
+            let expanded = [
+                [0, 1, 2].map(|axis| union[0][axis] - reach),
+                [0, 1, 2].map(|axis| union[1][axis] + reach),
+            ];
+            valid_bounds(expanded)
+                .then_some(Some(expanded))
+                .ok_or(ExactBRepGraphError::ResourceLimit)
+        }
         ExactBRepOperation::SurfaceTrim { target, cutter } => Ok(node_bounds[target.0 as usize]
             .zip(node_bounds[cutter.0 as usize])
             .and_then(|(target, cutter)| bounds_intersection(target, cutter))),

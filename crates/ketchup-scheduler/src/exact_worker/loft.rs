@@ -48,6 +48,16 @@ pub(super) fn exact_brep_loft_node(
     exact_brep_loft(backend, graph, sections, paths, continuity, make_solid)
 }
 
+pub(super) const fn surface_continuity(
+    continuity: ExactBRepLoftContinuity,
+) -> LoftSurfaceContinuity {
+    match continuity {
+        ExactBRepLoftContinuity::Position => LoftSurfaceContinuity::Position,
+        ExactBRepLoftContinuity::Tangent => LoftSurfaceContinuity::Tangent,
+        ExactBRepLoftContinuity::Curvature => LoftSurfaceContinuity::Curvature,
+    }
+}
+
 fn exact_brep_loft(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
@@ -64,11 +74,7 @@ fn exact_brep_loft(
     };
     let guide_segments = guide.map(segments);
     let rail_segments = rail.map(segments);
-    let continuity = match continuity {
-        ExactBRepLoftContinuity::Position => LoftSurfaceContinuity::Position,
-        ExactBRepLoftContinuity::Tangent => LoftSurfaceContinuity::Tangent,
-        ExactBRepLoftContinuity::Curvature => LoftSurfaceContinuity::Curvature,
-    };
+    let continuity = surface_continuity(continuity);
     let mut outer_sections = Vec::with_capacity(sections.len());
     let mut hole_sections: Option<Vec<Vec<FramedLoftSection>>> = None;
     for section in sections {

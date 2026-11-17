@@ -24,6 +24,21 @@ pub(super) fn resolve(
                 .into();
         }
         AssistantCadSurfaceBodySource::Boundary { .. } => {}
+        AssistantCadSurfaceBodySource::Blend {
+            first_feature_id,
+            second_feature_id,
+            ..
+        } => {
+            for surface in [first_feature_id, second_feature_id] {
+                *surface = staged_planning
+                    .resolve_program_feature(
+                        *surface,
+                        AssistantCadProgramFeatureOutput::BodyFeature,
+                        operation,
+                    )?
+                    .into();
+            }
+        }
         AssistantCadSurfaceBodySource::Loft {
             sections,
             guide_feature_id,

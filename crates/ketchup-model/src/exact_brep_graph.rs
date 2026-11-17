@@ -516,6 +516,14 @@ pub enum ExactBRepOperation {
         target: ExactBRepNodeId,
         cutter: ExactBRepNodeId,
     },
+    /// A surface across the gap between two single-face surfaces; see
+    /// `SurfaceBodySpec::Blend`.
+    SurfaceBlend {
+        first: ExactBRepNodeId,
+        first_continuity: ExactBRepLoftContinuity,
+        second: ExactBRepNodeId,
+        second_continuity: ExactBRepLoftContinuity,
+    },
     SurfaceExtend {
         target: ExactBRepNodeId,
         distance_bits: u64,
@@ -676,7 +684,8 @@ impl ExactBRepOperation {
                 target,
                 cutter: tool,
             } => vec![target, tool],
-            Self::WeldmentJoint { first, second, .. } => vec![first, second],
+            Self::WeldmentJoint { first, second, .. }
+            | Self::SurfaceBlend { first, second, .. } => vec![first, second],
             Self::SurfaceKnit { surfaces, .. } => surfaces.iter_mut().collect(),
             Self::Extrude { .. }
             | Self::Revolve { .. }
@@ -707,6 +716,7 @@ impl ExactBRepOperation {
             Self::Boolean { .. }
             | Self::BoundarySurface { .. }
             | Self::SurfaceTrim { .. }
+            | Self::SurfaceBlend { .. }
             | Self::SurfaceExtend { .. }
             | Self::SurfaceKnit { .. }
             | Self::SurfaceThicken { .. }
@@ -1022,6 +1032,7 @@ impl ExactBRepGraph {
                 | ExactBRepOperation::LoftSurface { .. }
                 | ExactBRepOperation::BoundarySurface { .. }
                 | ExactBRepOperation::SurfaceTrim { .. }
+                | ExactBRepOperation::SurfaceBlend { .. }
                 | ExactBRepOperation::SurfaceExtend { .. },
             ) => BodyKind::Surface,
             _ => BodyKind::Solid,

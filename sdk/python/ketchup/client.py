@@ -499,6 +499,18 @@ class Document:
             source["inner"] = list(inner)
         return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
 
+    def blend_surfaces(self, definition_id, name, first_feature_id, second_feature_id, *,
+                       first_continuity="tangent", second_continuity="tangent"):
+        """Bridge the gap between the facing edges of two single-face surfaces.
+
+        Each continuity is "position", "tangent" or "curvature"; both surfaces stay.
+        """
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": {
+            "type": "blend",
+            "first_feature_id": first_feature_id, "first_continuity": first_continuity,
+            "second_feature_id": second_feature_id, "second_continuity": second_continuity,
+        }})
+
     def trim_surface(self, definition_id, name, target_feature_id, cutter_feature_id):
         return self.append_feature(definition_id, name, {
             "type": "surface_trim", "target_feature_id": target_feature_id,

@@ -206,6 +206,10 @@ std::optional<EdgeFrame> edge_frame(
   return EdgeFrame{point, across * sign, gp_Vec(local->normal), local->cross_curvature};
 }
 
+// How far off the middle of an edge `leaving_sign` probes, as a share of the
+// edge's length (of at least 1 mm).
+constexpr double LEAVING_PROBE_SHARE = 0.001;
+
 // +1 when normal x tangent leaves `face` across `edge`, -1 when it enters,
 // probed a little off the middle of the edge; 0 when undecided.
 double leaving_sign(const TopoDS_Face& face, const TopoDS_Edge& edge) {
@@ -217,7 +221,7 @@ double leaving_sign(const TopoDS_Face& face, const TopoDS_Edge& edge) {
   if (!frame) {
     return 0.0;
   }
-  const double step = 1.0e-3 * std::max(GCPnts_AbscissaPoint::Length(curve), 1.0);
+  const double step = LEAVING_PROBE_SHARE * std::max(GCPnts_AbscissaPoint::Length(curve), 1.0);
   const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(face);
   for (const double sign : {1.0, -1.0}) {
     GeomAPI_ProjectPointOnSurf projection(

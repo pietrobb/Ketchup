@@ -1167,13 +1167,11 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::SheetMetal(spec) => spec.validate().map_err(CanonicalError::InvalidSheetMetal),
-        FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { .. }) => Ok(()),
-        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments, inner }) => {
-            (is_valid_boundary_loop(segments, tolerance_mm)
-                && are_valid_network_curves(inner, tolerance_mm))
-            .then_some(())
-            .ok_or(CanonicalError::InvalidSweep)
-        }
+        FeatureKind::SurfaceBody(
+            spec @ (SurfaceBodySpec::Planar { .. }
+            | SurfaceBodySpec::Blend { .. }
+            | SurfaceBodySpec::Boundary { .. }),
+        ) => validate_unlofted_surface_body(spec, tolerance_mm),
         FeatureKind::Loft {
             sections,
             guide,
@@ -1209,6 +1207,25 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::Boolean { .. } => Ok(()),
+    }
+}
+
+/// A planar, blend or boundary surface body; lofts share `validate_feature_kind`'s loft rules.
+fn validate_unlofted_surface_body(
+    spec: &SurfaceBodySpec,
+    tolerance_mm: f64,
+) -> Result<(), CanonicalError> {
+    match spec {
+        SurfaceBodySpec::Blend { first, second, .. } => (first != second)
+            .then_some(())
+            .ok_or(CanonicalError::InvalidFeatureOwnership(*first)),
+        SurfaceBodySpec::Boundary { segments, inner } => {
+            (is_valid_boundary_loop(segments, tolerance_mm)
+                && are_valid_network_curves(inner, tolerance_mm))
+            .then_some(())
+            .ok_or(CanonicalError::InvalidSweep)
+        }
+        SurfaceBodySpec::Planar { .. } | SurfaceBodySpec::Loft { .. } => Ok(()),
     }
 }
 

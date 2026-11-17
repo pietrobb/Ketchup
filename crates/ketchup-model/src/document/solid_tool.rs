@@ -236,6 +236,17 @@ fn remap_surface_body(
             rail: remap_optional_feature(*rail, mapping)?,
         },
         boundary @ SurfaceBodySpec::Boundary { .. } => boundary.clone(),
+        SurfaceBodySpec::Blend {
+            first,
+            first_continuity,
+            second,
+            second_continuity,
+        } => SurfaceBodySpec::Blend {
+            first: remapped(mapping, first)?,
+            first_continuity: *first_continuity,
+            second: remapped(mapping, second)?,
+            second_continuity: *second_continuity,
+        },
     })
 }
 
