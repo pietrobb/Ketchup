@@ -4,6 +4,7 @@
 mod fea;
 mod fea_frame;
 mod fea_sparse;
+mod fea_thermal;
 mod signed_validator_packages;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
