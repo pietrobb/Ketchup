@@ -493,6 +493,7 @@ fn generated_boolean_document(
 
 mod cam_regions;
 mod exchange_booleans_and_lofts;
+mod fea_assembly;
 mod imported_parts;
 mod sketch_sweeps_and_drafts;
 mod surfaces_offsets_and_finishes;
