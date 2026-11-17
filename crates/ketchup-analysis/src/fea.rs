@@ -340,11 +340,15 @@ impl DofLayout {
         }
     }
 
-    fn frame_dofs(&self, nodes: [usize; 2]) -> [usize; FRAME_DOFS] {
-        std::array::from_fn(|local| {
-            self.dof(nodes[local / 6], local % 6)
-                .expect("a frame element's nodes turn")
-        })
+    /// The unknowns of a frame element; both its nodes turn by construction.
+    fn frame_dofs(&self, element: u64, nodes: [usize; 2]) -> Result<[usize; FRAME_DOFS], FeaError> {
+        let mut dofs = [0; FRAME_DOFS];
+        for (local, dof) in dofs.iter_mut().enumerate() {
+            *dof = self
+                .dof(nodes[local / 6], local % 6)
+                .ok_or(FeaError::InvalidElementNode { element })?;
+        }
+        Ok(dofs)
     }
 
     fn turn_of(&self, dof: usize) -> (usize, usize) {
@@ -384,13 +388,13 @@ impl FeaModel {
                     section,
                     orientation,
                 } => {
-                    let frame = self.element_axes(nodes, orientation);
+                    let frame = self.element_axes(element.id, nodes, orientation)?;
                     let stiffness = frame.global_stiffness(&self.frame_local_stiffness(
                         material_id,
                         &section,
                         frame.length_mm,
                     ));
-                    let dofs = layout.frame_dofs(nodes);
+                    let dofs = layout.frame_dofs(element.id, nodes)?;
                     for (row, values) in stiffness.iter().enumerate() {
                         for (column, value) in values.iter().enumerate() {
                             entries.push((dofs[row], dofs[column], *value));
@@ -399,7 +403,7 @@ impl FeaModel {
                 }
             }
         }
-        self.assemble_loads(&layout, &mut forces);
+        self.assemble_loads(&layout, &mut forces)?;
 
         let original_stiffness = SymmetricMatrix::from_entries(dof_count, entries);
         let mut stiffness = original_stiffness.clone();
@@ -464,7 +468,7 @@ impl FeaModel {
             .iter()
             .map(|value| length(*value))
             .fold(0.0, f64::max);
-        let element_results = self.element_results(&layout, &displacement);
+        let element_results = self.element_results(&layout, &displacement)?;
         let maximum_von_mises_stress_mpa = element_results
             .iter()
             .map(|result| result.von_mises_stress_mpa)
@@ -674,23 +678,7 @@ impl FeaModel {
                             element: element_id,
                         });
                     }
-                    match ElementAxes::new(
-                        self.nodes[nodes[0]].position_mm,
-                        self.nodes[nodes[1]].position_mm,
-                        orientation,
-                    ) {
-                        Ok(_) => {}
-                        Err(FrameError::Degenerate) => {
-                            return Err(FeaError::DegenerateElement {
-                                element: element_id,
-                            });
-                        }
-                        Err(FrameError::Orientation) => {
-                            return Err(FeaError::InvalidFrameOrientation {
-                                element: element_id,
-                            });
-                        }
-                    }
+                    self.element_axes(element_id, nodes, orientation)?;
                     frames.insert(element_id);
                 }
             }
@@ -813,13 +801,21 @@ impl FeaModel {
         }
     }
 
-    fn element_axes(&self, nodes: [usize; 2], orientation: [f64; 3]) -> ElementAxes {
+    fn element_axes(
+        &self,
+        element: u64,
+        nodes: [usize; 2],
+        orientation: [f64; 3],
+    ) -> Result<ElementAxes, FeaError> {
         ElementAxes::new(
             self.nodes[nodes[0]].position_mm,
             self.nodes[nodes[1]].position_mm,
             orientation,
         )
-        .expect("validated frame element")
+        .map_err(|error| match error {
+            FrameError::Degenerate => FeaError::DegenerateElement { element },
+            FrameError::Orientation => FeaError::InvalidFrameOrientation { element },
+        })
     }
 
     fn frame_local_stiffness(
@@ -987,7 +983,7 @@ impl FeaModel {
         }
     }
 
-    fn assemble_loads(&self, layout: &DofLayout, forces: &mut [f64]) {
+    fn assemble_loads(&self, layout: &DofLayout, forces: &mut [f64]) -> Result<(), FeaError> {
         let frame_loads = self.frame_loads();
         for element in &self.elements {
             if let FeaElementKind::Frame2 {
@@ -995,9 +991,9 @@ impl FeaModel {
             } = element.kind
                 && let Some(load) = frame_loads.get(&element.id)
             {
-                let frame = self.element_axes(nodes, orientation);
+                let frame = self.element_axes(element.id, nodes, orientation)?;
                 let nodal = frame.global12(consistent_load(frame.local(*load), frame.length_mm));
-                for (dof, value) in layout.frame_dofs(nodes).into_iter().zip(nodal) {
+                for (dof, value) in layout.frame_dofs(element.id, nodes)?.into_iter().zip(nodal) {
                     forces[dof] += value;
                 }
             }
@@ -1026,13 +1022,14 @@ impl FeaModel {
                 }
                 FeaLoad::NodalMoment { node, moment_n_mm } => {
                     for (axis, moment) in moment_n_mm.into_iter().enumerate() {
-                        let dof = layout.dof(node, axis + 3).expect("validated moment");
+                        let dof = layout.dof(node, axis + 3).ok_or(FeaError::InvalidLoad)?;
                         forces[dof] += moment;
                     }
                 }
                 FeaLoad::FrameDistributed { .. } => {}
             }
         }
+        Ok(())
     }
 
     fn apply_constraints(
@@ -1053,7 +1050,7 @@ impl FeaModel {
                 if let Some(value) = value {
                     let dof = layout
                         .dof(constraint.node, axis)
-                        .expect("validated constraint");
+                        .ok_or(FeaError::InvalidConstraint)?;
                     prescribed.insert(dof, value);
                 }
             }
@@ -1068,96 +1065,104 @@ impl FeaModel {
         Ok(prescribed.into_keys().collect())
     }
 
-    fn element_results(&self, layout: &DofLayout, displacement: &[f64]) -> Vec<FeaElementResult> {
+    fn element_results(
+        &self,
+        layout: &DofLayout,
+        displacement: &[f64],
+    ) -> Result<Vec<FeaElementResult>, FeaError> {
         let frame_loads = self.frame_loads();
         self.elements
             .iter()
-            .map(|element| match element.kind {
-                FeaElementKind::LinearTruss2 {
-                    nodes,
-                    material_id,
-                    area_mm2,
-                } => {
-                    let material = self.material(material_id);
-                    let (length, direction) = self.truss_geometry(nodes).expect("validated truss");
-                    let relative_displacement = [
-                        displacement[nodes[1] * 3] - displacement[nodes[0] * 3],
-                        displacement[nodes[1] * 3 + 1] - displacement[nodes[0] * 3 + 1],
-                        displacement[nodes[1] * 3 + 2] - displacement[nodes[0] * 3 + 2],
-                    ];
-                    let strain = dot(relative_displacement, direction) / length;
-                    let stress = material.youngs_modulus_mpa * strain;
-                    FeaElementResult {
-                        element_id: element.id,
-                        strain_energy_n_mm: 0.5 * stress * strain * area_mm2 * length,
-                        von_mises_stress_mpa: stress.abs(),
-                        yield_utilization: material
-                            .yield_strength_mpa
-                            .map(|limit| stress.abs() / limit),
+            .map(|element| {
+                Ok(match element.kind {
+                    FeaElementKind::LinearTruss2 {
+                        nodes,
+                        material_id,
+                        area_mm2,
+                    } => {
+                        let material = self.material(material_id);
+                        let (length, direction) =
+                            self.truss_geometry(nodes).expect("validated truss");
+                        let relative_displacement = [
+                            displacement[nodes[1] * 3] - displacement[nodes[0] * 3],
+                            displacement[nodes[1] * 3 + 1] - displacement[nodes[0] * 3 + 1],
+                            displacement[nodes[1] * 3 + 2] - displacement[nodes[0] * 3 + 2],
+                        ];
+                        let strain = dot(relative_displacement, direction) / length;
+                        let stress = material.youngs_modulus_mpa * strain;
+                        FeaElementResult {
+                            element_id: element.id,
+                            strain_energy_n_mm: 0.5 * stress * strain * area_mm2 * length,
+                            von_mises_stress_mpa: stress.abs(),
+                            yield_utilization: material
+                                .yield_strength_mpa
+                                .map(|limit| stress.abs() / limit),
+                        }
                     }
-                }
-                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
-                    let material = self.material(material_id);
-                    let (volume, gradients) = self
-                        .tetrahedron_geometry(nodes)
-                        .expect("validated tetrahedron");
-                    let b = strain_displacement(gradients);
-                    let d = elasticity(material);
-                    let mut local_displacement = [0.0; 12];
-                    for local in 0..12 {
-                        local_displacement[local] = displacement[nodes[local / 3] * 3 + local % 3];
+                    FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
+                        let material = self.material(material_id);
+                        let (volume, gradients) = self
+                            .tetrahedron_geometry(nodes)
+                            .expect("validated tetrahedron");
+                        let b = strain_displacement(gradients);
+                        let d = elasticity(material);
+                        let mut local_displacement = [0.0; 12];
+                        for local in 0..12 {
+                            local_displacement[local] =
+                                displacement[nodes[local / 3] * 3 + local % 3];
+                        }
+                        let strain = matrix_vector6x12(b, local_displacement);
+                        let stress = matrix_vector6(d, strain);
+                        let von_mises = von_mises(stress);
+                        FeaElementResult {
+                            element_id: element.id,
+                            strain_energy_n_mm: 0.5 * volume * dot6(strain, stress),
+                            von_mises_stress_mpa: von_mises,
+                            yield_utilization: material
+                                .yield_strength_mpa
+                                .map(|limit| von_mises / limit),
+                        }
                     }
-                    let strain = matrix_vector6x12(b, local_displacement);
-                    let stress = matrix_vector6(d, strain);
-                    let von_mises = von_mises(stress);
-                    FeaElementResult {
-                        element_id: element.id,
-                        strain_energy_n_mm: 0.5 * volume * dot6(strain, stress),
-                        von_mises_stress_mpa: von_mises,
-                        yield_utilization: material
-                            .yield_strength_mpa
-                            .map(|limit| von_mises / limit),
+                    FeaElementKind::Frame2 {
+                        nodes,
+                        material_id,
+                        section,
+                        orientation,
+                    } => {
+                        let material = self.material(material_id);
+                        let frame = self.element_axes(element.id, nodes, orientation)?;
+                        let stiffness =
+                            self.frame_local_stiffness(material_id, &section, frame.length_mm);
+                        let dofs = layout.frame_dofs(element.id, nodes)?;
+                        let local_displacement = frame.local12(dofs.map(|dof| displacement[dof]));
+                        let internal = multiply(&stiffness, local_displacement);
+                        // A frame element without a load of its own carries none along it.
+                        let load = frame_loads
+                            .get(&element.id)
+                            .map_or([0.0; 3], |load| frame.local(*load));
+                        // What the nodes put on the element: its stiffness response
+                        // less the share of the load it carries to them.
+                        let equivalent = consistent_load(load, frame.length_mm);
+                        let mut end_forces = internal;
+                        for (value, share) in end_forces.iter_mut().zip(equivalent) {
+                            *value -= share;
+                        }
+                        let von_mises = peak_von_mises(&section, end_forces, load, frame.length_mm);
+                        FeaElementResult {
+                            element_id: element.id,
+                            strain_energy_n_mm: 0.5
+                                * local_displacement
+                                    .iter()
+                                    .zip(internal)
+                                    .map(|(moved, force)| moved * force)
+                                    .sum::<f64>(),
+                            von_mises_stress_mpa: von_mises,
+                            yield_utilization: material
+                                .yield_strength_mpa
+                                .map(|limit| von_mises / limit),
+                        }
                     }
-                }
-                FeaElementKind::Frame2 {
-                    nodes,
-                    material_id,
-                    section,
-                    orientation,
-                } => {
-                    let material = self.material(material_id);
-                    let frame = self.element_axes(nodes, orientation);
-                    let stiffness =
-                        self.frame_local_stiffness(material_id, &section, frame.length_mm);
-                    let dofs = layout.frame_dofs(nodes);
-                    let local_displacement = frame.local12(dofs.map(|dof| displacement[dof]));
-                    let internal = multiply(&stiffness, local_displacement);
-                    // A frame element without a load of its own carries none along it.
-                    let load = frame_loads
-                        .get(&element.id)
-                        .map_or([0.0; 3], |load| frame.local(*load));
-                    // What the nodes put on the element: its stiffness response
-                    // less the share of the load it carries to them.
-                    let equivalent = consistent_load(load, frame.length_mm);
-                    let mut end_forces = internal;
-                    for (value, share) in end_forces.iter_mut().zip(equivalent) {
-                        *value -= share;
-                    }
-                    let von_mises = peak_von_mises(&section, end_forces, load, frame.length_mm);
-                    FeaElementResult {
-                        element_id: element.id,
-                        strain_energy_n_mm: 0.5
-                            * local_displacement
-                                .iter()
-                                .zip(internal)
-                                .map(|(moved, force)| moved * force)
-                                .sum::<f64>(),
-                        von_mises_stress_mpa: von_mises,
-                        yield_utilization: material
-                            .yield_strength_mpa
-                            .map(|limit| von_mises / limit),
-                    }
-                }
+                })
             })
             .collect()
     }
@@ -1803,11 +1808,8 @@ fn hash_text(hasher: &mut Sha256, value: &str) {
 }
 
 fn hash_index(hasher: &mut Sha256, index: usize) {
-    hasher.update(
-        u64::try_from(index)
-            .expect("an index fits 64 bits")
-            .to_le_bytes(),
-    );
+    // An index past 64 bits cannot occur on a platform the crate builds for.
+    hasher.update(u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes());
 }
 
 fn hash_f64s(hasher: &mut Sha256, values: &[f64]) {
