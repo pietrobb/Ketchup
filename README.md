@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Open source · Exact geometry (Open CASCADE) · Rule programs · Safe, undoable AI over MCP · Windows and macOS, Linux from source · Apache-2.0
+  Open source · Exact geometry (Open CASCADE) · Rule programs · Safe, undoable AI over MCP · Windows, macOS and Linux · Apache-2.0
 </p>
 
 Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, cabinets, a garden studio, a timber-frame house, a machine part. You can draw by hand, describe the model in a few lines of a rule program, or let the AI assistant you already use build it for you. Every change, by hand or by AI, goes through the same checks and the same Undo. When the design is ready, Ketchup gives you drawing sets, cut lists, material takeoffs, quotes and files for CNC machines, and a Viewer package you can send to a customer.
@@ -123,6 +123,8 @@ Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (o
 
 **On a Mac** (since 0.3.3): download **`Ketchup-0.3.3-macOS.dmg`** from the same release, open it and drag **Ketchup** (the app `Kečup.app` in 0.3.3) into Applications. **`Ketchup-Viewer-0.3.3-macOS.dmg`** holds **Ketchup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`.
 
+**On Linux** (from the release after 0.3.3): download **`Ketchup-<version>-Linux-x86_64.tar.gz`** from the release, unpack it anywhere and run `ketchup-app` (Ketchup) or `ketchup-viewer` (Ketchup Viewer) in the folder; the workers and the OCCT libraries are beside them, nothing is installed. It needs an x86-64 Linux with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 or newer), Vulkan drivers and X11 or Wayland: on Ubuntu the packages in [`scripts/linux/runtime-packages.txt`](scripts/linux/runtime-packages.txt). `sha256sum -c SHA256SUMS.txt --ignore-missing` checks the download.
+
 ## Examples you can open right away
 
 The examples are in `Ketchup-0.3.3-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
@@ -227,7 +229,7 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 - **CAM is 2.5D.** Contours, pockets and drilling are cut from the top with one tool per program; there is no 3D surface machining, no adaptive clearing and no tool library. The window's CAM review machines one selected face per program; a connected AI or the headless SDK can list several. Faces bounded by B-spline or ellipse edges are refused, and so is an inside corner whose radius equals the cutter's. woodWOP has no contour milling, round pockets or through cuts yet.
 - **Exact operations are bounded.** Fillet, shell, sweep, loft and Booleans cover tested cases and fail with an explanation rather than produce doubtful geometry. Freeform surfacing is not there.
 - **Undo history lives in memory** for the session and reaches back 30 edits; Save writes only the current revision. A work-recovery copy keeps your edits and their Undo steps through a crash.
-- **Windows and macOS are the supported desktop platforms.** Ketchup on macOS needs Apple Silicon. Linux builds work from source (below) and have no release package.
+- **Windows, macOS and Linux x86-64 are the desktop platforms.** Ketchup on macOS needs Apple Silicon. The Linux package is an archive to unpack, not signed and without a menu entry or file associations.
 - **No stable public API or long-term file-format promise yet.** A newer Ketchup opens older files. A document without underlays and annotations whose imports stay within the limits of 0.2.0 (at most 1 024 objects made by one import, a DXF source of at most 8 MiB, other sources of at most 32 MiB) is saved so that 0.2.0 opens it too. Ketchup 0.2.0 and later refuse a file a newer version saved and change nothing. **Do not open files saved by a later version in 0.1.0:** it takes them for damaged files and may open an older `.recovery` copy instead, and saving there can overwrite the newer file.
 
 ## Where it goes next
@@ -272,6 +274,14 @@ git -C third_party/occt-src checkout b8f597c677811d1f9f4d8a97f5ae2825c0353a42
 scripts/linux/build-occt.sh
 export RUSTFLAGS="-C link-arg=-Wl,-rpath,$PWD/third_party/occt-install-r0-v1/lib"
 cargo build --locked --release
+scripts/linux/build-package.sh        # Ketchup-<version>-Linux-x86_64.tar.gz in artifacts/linux-package/<version>
+```
+
+`build-package.sh` (it also needs patchelf and cargo-about) puts the programs, the workers and the OCCT libraries they load into one folder, points the programs at `lib/` beside them, and checks the archive with `scripts/linux/check-package.sh`: every library is in it or on the system, each worker answers its Hello, the app verifies its install and reads a document, the Viewer opens a package. For a release, pushing the tag `v<version>` runs the **Linux package** workflow, which builds the archive and checks it again in a clean Ubuntu 24.04 container that has only the packages of `scripts/linux/runtime-packages.txt`; its artifact `linux-package` holds the archive and its `SHA256SUMS.txt`. Download it, check it (`sha256sum -c SHA256SUMS.txt` in its folder, in Git Bash), and give it to the Windows release script beside the macOS packages, so the release's `SHA256SUMS.txt` names it:
+
+```powershell
+gh run download (gh run list --workflow linux-package.yml --branch v<version> --limit 1 --json databaseId -q ".[0].databaseId") --name linux-package --dir artifacts\linux-package\<version>
+scripts\windows\build-installer.ps1 -Sign -MacPackages <app.dmg>,<viewer.dmg> -LinuxPackage artifacts\linux-package\<version>\Ketchup-<version>-Linux-x86_64.tar.gz
 ```
 
 On an Apple Silicon Mac, with the Xcode command line tools, CMake and Ninja, `scripts/macos/build-occt.sh` builds the same pinned OCCT 8.0.1 with CORE-MATH linked in (arm64; `KETCHUP_OCCT_ARCHS` for others). The libraries carry their install path, so `cargo build` and `cargo test` find them without an rpath:
