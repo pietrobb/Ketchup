@@ -1,5 +1,5 @@
-//! The sandbox of a client's write targets (review 2026-11-08 §5.4): a client
-//! writes into the project's folders unasked, anywhere else only after the user
+//! The sandbox of a client's exports (review 2026-11-08 §5.4): a client
+//! exports into the project's folders unasked, anywhere else only after the user
 //! agrees in the window, and the folder agreed to is the project's from then on.
 
 use super::*;
@@ -195,12 +195,12 @@ fn a_link_whose_target_is_gone_is_no_folder_still_to_be_made() {
 }
 
 /// Review 2026-11-08 SEC-240 held for `save_as` only: `apply_and_verify` saved
-/// the document under any name in any folder. It saves a `.ketchup` document
-/// only, into the project's folders unless the user agrees.
+/// the document under any name. It saves a `.ketchup` document only, in any
+/// folder, as `save_as` does.
 #[test]
-fn apply_and_verify_saves_only_a_ketchup_document_into_the_projects_folders() {
+fn apply_and_verify_saves_only_a_ketchup_document() {
     let directory = tempfile::tempdir().unwrap();
-    let dialogs = ScriptedFileDialogs::new().queue_refused_high_risk();
+    let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let (mut app, _bridge, _document) = saved_window(directory.path(), dialogs, None);
     let saved_at = |path: &Path| Request::ApplyAndVerify {
@@ -222,13 +222,12 @@ fn apply_and_verify_saves_only_a_ketchup_document_into_the_projects_folders() {
             Some("invalid_path")
         );
     }
-    assert!(probe.high_risk_prompts().is_empty());
     assert_eq!(
         crate::live_bridge::write_targets::refusal(
             &mut app,
             &saved_at(&startup.join("house.ketchup"))
         ),
-        Some("save_declined")
+        None
     );
-    assert_eq!(probe.high_risk_prompts().len(), 1);
+    assert!(probe.high_risk_prompts().is_empty());
 }

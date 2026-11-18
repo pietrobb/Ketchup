@@ -720,7 +720,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "save_declined",
         Validation,
         "save",
-        "The user refused to overwrite the file, to save without the Undo history, or to save in a folder that is neither the document's nor one in Open Recent.",
+        "The user refused to overwrite the file or to save without the Undo history.",
         "Ask the user, or save as a new path; nothing was written.",
     ),
     entry(

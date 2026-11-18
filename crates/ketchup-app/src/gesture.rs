@@ -93,6 +93,8 @@ pub(crate) struct MeasureGesture {
     pub(crate) end: Option<Vec3>,
     /// While Ctrl is held: the whole edge under the pointer and its length in mm.
     pub(crate) edge: Option<(Vec<Vec3>, f64)>,
+    /// The axis the arrow keys pinned the second point to, through the first.
+    pub(crate) axis_lock: Option<Axis>,
 }
 
 /// Copy and axis-lock modifiers of the transform tools. Axis locks are kept

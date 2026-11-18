@@ -38,7 +38,7 @@ impl DockTab {
         }
     }
 
-    const fn icon(self) -> Icon {
+    pub(crate) const fn icon(self) -> Icon {
         match self {
             Self::Layers => Icon::Layers,
             Self::Program => Icon::Code,
@@ -247,7 +247,7 @@ impl KetchupApp {
             .validator_report()
             .map_or(0, |report| report.issue_count);
         let connected = self.live.consent_attached || self.live.launch_attached;
-        let width = ui.available_width() * TAB_SHARE;
+        let width = (ui.available_width() - super::dock_fold::DOCK_FOLD_WIDTH) * TAB_SHARE;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             for tab in DockTab::ALL {
@@ -351,6 +351,7 @@ impl KetchupApp {
                     self.window.dock_tab = Some(tab);
                 }
             }
+            self.dock_fold_button(ui, Vec2::new(super::dock_fold::DOCK_FOLD_WIDTH, TAB_HEIGHT));
         });
         let line = ui.cursor().top();
         ui.painter().hline(

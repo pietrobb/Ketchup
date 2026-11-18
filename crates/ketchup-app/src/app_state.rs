@@ -231,6 +231,8 @@ pub(crate) struct Panes {
     pub(crate) manual_cad_tools_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) about_open: bool,
+    /// The right dock is folded to a strip of its tab icons.
+    pub(crate) dock_collapsed: bool,
 }
 
 /// The right dock's pages.

@@ -627,15 +627,12 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
 
 /// Review 2026-11-08 SEC-240: `save_as` wrote any name in any folder, such as
 /// a startup folder or `~/.ssh/authorized_keys`, and the next Ctrl+S wrote
-/// there again. It writes a `.ketchup` document only, never a hidden file, and
-/// in a folder neither the document's nor one of Open Recent only after the
-/// user agrees in the window.
+/// there again. It writes a `.ketchup` document only, never a hidden file, in
+/// any folder the user may write into, without asking about the folder.
 #[test]
-fn save_as_writes_a_ketchup_document_and_asks_before_a_new_folder() {
+fn save_as_writes_a_ketchup_document_into_any_folder() {
     let directory = tempfile::tempdir().unwrap();
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_refused_high_risk()
-        .queue_high_risk_approval(9);
+    let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     // The test's folder is under the temporary folder, which is the project's.
@@ -669,20 +666,17 @@ fn save_as_writes_a_ketchup_document_and_asks_before_a_new_folder() {
         "refused before asking"
     );
 
+    // A folder neither the document's nor one of Open Recent is no reason to
+    // ask: the user saves wherever the system lets them write.
     let new_folder = directory.path().join("new").join("house.ketchup");
     std::fs::create_dir_all(new_folder.parent().unwrap()).unwrap();
-    assert_eq!(save_as(&mut app, &new_folder), Err("save_declined"));
-    assert!(!new_folder.exists());
-    assert!(app.file.path.is_none());
     save_as(&mut app, &new_folder).unwrap();
-    assert_eq!(probe.high_risk_prompts().len(), 2);
     assert_eq!(app.file.path.as_deref(), Some(new_folder.as_path()));
-
-    // Beside the document, or as another name in its folder, nobody is asked.
-    let beside = directory.path().join("new").join("HOUSE-v2.KETCHUP");
-    save_as(&mut app, &beside).unwrap();
-    assert_eq!(probe.high_risk_prompts().len(), 2);
-    assert!(beside.exists());
+    let elsewhere = directory.path().join("elsewhere").join("HOUSE-v2.KETCHUP");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    save_as(&mut app, &elsewhere).unwrap();
+    assert!(elsewhere.exists());
+    assert!(probe.high_risk_prompts().is_empty());
 }
 
 #[test]

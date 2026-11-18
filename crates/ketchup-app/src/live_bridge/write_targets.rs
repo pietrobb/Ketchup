@@ -1,13 +1,14 @@
-//! The sandbox of a connected AI's write targets (review 2026-11-08 §5.4). A
-//! client writes a file, a document saved or anything exported, only into a
-//! folder of this project: the document's folder and those under it, a folder
-//! of a document in Open Recent, the system's temporary folder, or a folder the
-//! user let the AI write into for this document. A file anywhere else, such as
-//! a startup folder or `~/.ssh`, the window asks the user about first, and the
-//! folder they agree to is the project's from then on
-//! ([`KetchupApp::grant_write_target`]); the AI cannot grant it itself.
-//! Replacing a file inside the sandbox follows the rules of each export (only
-//! its own file unasked, `replace`/`take_over` asking in the window).
+//! The sandbox of a connected AI's exports (review 2026-11-08 §5.4). A client
+//! saves the document, a `.ketchup` file that is never hidden, in any folder the
+//! system lets the user write into. It exports only into a folder of this
+//! project: the document's folder and those under it, a folder of a document in
+//! Open Recent, the system's temporary folder, or a folder the user let the AI
+//! write into for this document. An export anywhere else, such as a startup
+//! folder or `~/.ssh`, the window asks the user about first, and the folder they
+//! agree to is the project's from then on ([`KetchupApp::grant_write_target`]);
+//! the AI cannot grant it itself. Replacing a file follows the rules of each
+//! export (only its own file unasked, `replace`/`take_over` asking in the
+//! window) and of Save As (the window asks).
 
 use super::*;
 
@@ -43,8 +44,8 @@ fn saves_document(request: &Request) -> bool {
 /// The code refusing the file `request` writes, its reason recorded, or none:
 /// a document saved as anything but a `.ketchup` file, or as a hidden one, is
 /// `invalid_path` (review 2026-11-08 SEC-240, now for `apply_and_verify` too),
-/// and a folder outside the sandbox the user did not agree to is
-/// `save_declined` or `write_target_declined`. A path that is not local and
+/// and an export into a folder outside the sandbox the user did not agree to
+/// is `write_target_declined`. A path that is not local and
 /// absolute is left to the request, which refuses it as it did.
 pub(super) fn refusal(app: &mut KetchupApp, request: &Request) -> Option<&'static str> {
     let path = written_path(request)?;
@@ -53,14 +54,11 @@ pub(super) fn refusal(app: &mut KetchupApp, request: &Request) -> Option<&'stati
     }
     take_error_details();
     let path = Path::new(path);
+    // A document is saved into any folder the system lets the user write into:
+    // a `.ketchup` file runs nothing, and a file already there is asked about
+    // as replacing it.
     if saves_document(request) {
-        if let Some(refused) = document_name_refusal(path) {
-            return Some(refused);
-        }
-        // A file already there is asked about as replacing it.
-        if path.exists() {
-            return None;
-        }
+        return document_name_refusal(path);
     }
     let folder = match folder_of(path) {
         Ok(Some(folder)) => folder,
@@ -82,25 +80,12 @@ pub(super) fn refusal(app: &mut KetchupApp, request: &Request) -> Option<&'stati
     if in_sandbox(app, path, &folder) {
         return None;
     }
-    let (title, risk, operation) = if saves_document(request) {
-        (
-            "dialog-save-as-new-folder-title",
-            "dialog-save-as-new-folder-risk",
-            "save-document-in-new-folder",
-        )
-    } else {
-        (
-            "dialog-write-target-title",
-            "dialog-write-target-risk",
-            "write-into-new-folder",
-        )
-    };
-    let title = app.catalog.text(title);
-    let risk = app.catalog.text(risk);
+    let title = app.catalog.text("dialog-write-target-title");
+    let risk = app.catalog.text("dialog-write-target-risk");
     app.side_effect_receipts.clear();
     match app.authorize_path_side_effect(
         crate::HighRiskClass::CapabilityExpansion,
-        operation,
+        "write-into-new-folder",
         &title,
         &risk,
         &folder,
@@ -111,11 +96,7 @@ pub(super) fn refusal(app: &mut KetchupApp, request: &Request) -> Option<&'stati
             None
         }
         Err(rejection) => Some(failure(
-            if saves_document(request) {
-                "save_declined"
-            } else {
-                "write_target_declined"
-            },
+            "write_target_declined",
             format!(
                 "{} The folder is not one this project writes into (the document's, one in Open Recent, the temporary folder, or one the user let the AI write into); ask the user to write there, or write beside the document.",
                 rejection.reason_text()
