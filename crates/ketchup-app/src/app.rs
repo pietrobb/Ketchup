@@ -16,6 +16,10 @@ pub(crate) mod dimensions_ui;
 #[path = "app/dimensions_ui_tests.rs"]
 mod dimensions_ui_tests;
 pub(crate) mod dock;
+mod dock_fold;
+#[cfg(test)]
+#[path = "app/dock_fold_tests.rs"]
+mod dock_fold_tests;
 mod document;
 pub(crate) mod draft;
 mod drawing;
@@ -56,6 +60,7 @@ pub(crate) mod joints_ui;
 mod joints_ui_tests;
 mod local_outliner;
 mod local_time;
+pub(crate) mod measure_axis;
 pub(crate) mod mesh_export_activity;
 mod mirror;
 mod outliner;

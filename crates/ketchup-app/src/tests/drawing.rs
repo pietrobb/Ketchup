@@ -63,6 +63,7 @@ fn new_keeps_every_setting_of_the_window() {
         manual_cad_tools_visible: true,
         shortcuts_open: true,
         about_open: true,
+        dock_collapsed: true,
     };
     app.window.dock_tab = Some(crate::DockTab::Views);
     app.window.recent.add(Path::new("dom.ketchup")).unwrap();
@@ -105,14 +106,20 @@ fn new_keeps_every_setting_of_the_window() {
         manual_cad_tools_visible,
         shortcuts_open,
         about_open,
+        dock_collapsed,
     } = *panes;
     assert_eq!(
         [outliner_visible, tags_visible, dimensions_visible],
         [false; 3]
     );
     assert_eq!(
-        [manual_cad_tools_visible, shortcuts_open, about_open],
-        [true; 3]
+        [
+            manual_cad_tools_visible,
+            shortcuts_open,
+            about_open,
+            dock_collapsed
+        ],
+        [true; 4]
     );
     assert_eq!(*dock_tab, Some(crate::DockTab::Views));
     assert_eq!(recent.files(), recent_files);
