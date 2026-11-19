@@ -1188,9 +1188,19 @@ fn floor_levels<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> Vec<f
 /// its edge; r23 P3: tables beside the floor were marked; 2026-11-07 P3: a
 /// table past the gallery's edge and a bed over an opening in it were measured
 /// against the floor under the most of them, and a platform beside the hall
-/// against a landing elsewhere). None once `stop` is set.
+/// against a landing elsewhere). Nor the top of a layer another covers all
+/// of, as the storeys are found (review 2026-11-10 r2 MF-500: the lining
+/// under the floor structure was marked +2,512). None once `stop` is set.
 fn marked_floor_levels(solids: &[DrawingSolid], stop: &AtomicBool) -> Option<Vec<f64>> {
-    let levels = upward_levels(solids);
+    let covered = storey_table::standing_levels(solids, stop)?
+        .into_iter()
+        .filter(|level| !level.stands_on())
+        .map(|level| level.height_mm)
+        .collect::<Vec<_>>();
+    let levels = upward_levels(solids)
+        .into_iter()
+        .filter(|(height, _)| !covered.contains(height))
+        .collect::<Vec<_>>();
     let largest = levels
         .iter()
         .map(|(_, level)| level.area)
@@ -1266,13 +1276,39 @@ pub struct Storey {
 /// floor: a floor counts as a storey of its own only above the plan cut of the
 /// storey below it and that far below the model's top, so a landing or a
 /// top deck is no storey. A model with no such floor is one storey cut
-/// through its middle; no solid, no storey.
+/// through its middle; no solid, no storey. The floors are those
+/// [`ModelFloors::table`] fills the table of storeys with, so the top of a
+/// ceiling's lining under the floor structure is no floor (review 2026-11-10 r2
+/// MF-500: the export without a table cut the upper storey at 3912 for 4154).
 #[must_use]
 pub fn storeys(solids: &[DrawingSolid], above_floor_mm: f64) -> Vec<Storey> {
+    storeys_of(solids, ModelFloors::of(solids), above_floor_mm)
+}
+
+/// [`storeys`], on the worker of an export.
+///
+/// # Errors
+/// [`ProjectDrawingError::Cancelled`] once `stop` is set.
+pub fn storeys_until(
+    solids: &[DrawingSolid],
+    above_floor_mm: f64,
+    stop: &AtomicBool,
+) -> Result<Vec<Storey>, ProjectDrawingError> {
+    let floors = ModelFloors::of_until(solids, stop)?;
+    Ok(storeys_of(solids, floors, above_floor_mm))
+}
+
+/// [`storeys`] of `solids` on their `floors`.
+fn storeys_of(
+    solids: &[DrawingSolid],
+    floors: Option<ModelFloors>,
+    above_floor_mm: f64,
+) -> Vec<Storey> {
     let Some((min, max)) = bounds(solids) else {
         return Vec::new();
     };
-    let mut storeys = storeys_on(&floor_levels(solids), max[2], above_floor_mm);
+    let floors = floors.map_or_else(Vec::new, |floors| floors.storey_floors_mm);
+    let mut storeys = storeys_on(&floors, max[2], above_floor_mm);
     if storeys.is_empty() {
         storeys.push(Storey {
             floor_mm: None,

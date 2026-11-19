@@ -614,6 +614,7 @@ fn storey_problem(problem: StoreyTableProblem) -> Value {
         StoreyTableProblem::OutsideModel => json!("outside_model"),
         StoreyTableProblem::ThickBuildUp => json!("thick_build_up"),
         StoreyTableProblem::NoFloorInModel => json!("no_floor_in_model"),
+        StoreyTableProblem::NotInTable => json!("not_in_table"),
     }
 }
 
@@ -914,7 +915,11 @@ pub(super) fn finish_export(
             "finished_floor_mm": issue.levels.finished_floor_mm,
             "structural_mm": issue.levels.structural_mm,
             "problem": storey_problem(issue.problem),
-            "message": format!("{issue}; the sheets mark the table's levels. Correct the row if the model is right."),
+            "message": if issue.problem == StoreyTableProblem::NotInTable {
+                format!("{issue}. Add a row for it, or pass storeys: auto, if the model is right.")
+            } else {
+                format!("{issue}; the sheets mark the table's levels. Correct the row if the model is right.")
+            },
         })).collect::<Vec<_>>(),
         "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
         "north_deg": settings.north_deg().map_or(json!("none"), |north| json!(north)),
