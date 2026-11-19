@@ -212,14 +212,7 @@ fn main() -> ExitCode {
             for line in unused_set_lines(&report.unused_overrides, &names) {
                 eprintln!("{line}");
             }
-            // A `--set` the program has no parameter of evaluated it otherwise than
-            // asked, so its verdict is not one (review 2026-11-09 PG-245).
-            let code = match (report.ok, report.statics()) {
-                _ if !report.unused_overrides.is_empty() => ExitCode::from(2),
-                (false, _) | (_, ketchup_program::Statics::Failed) => ExitCode::from(1),
-                (true, ketchup_program::Statics::NotVerified) => ExitCode::from(3),
-                _ => ExitCode::SUCCESS,
-            };
+            let code = ExitCode::from(report.exit_code());
             if let Some(language) = options.calculation {
                 print!(
                     "{}",

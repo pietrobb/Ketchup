@@ -904,7 +904,10 @@ fn perf_a_cancel_stops_the_shadows_of_many_large_triangles_within_a_second() {
         "{:?}",
         rendered.map(|image| (image.width, image.height))
     );
-    assert!(waited < std::time::Duration::from_secs(1), "{waited:?}");
+    assert!(
+        waited < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+        "{waited:?}"
+    );
 }
 
 /// A label far from the model is refused instead of framing a speck (review 2026-11-12

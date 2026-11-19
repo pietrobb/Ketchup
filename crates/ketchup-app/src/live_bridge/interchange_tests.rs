@@ -259,7 +259,7 @@ fn a_dxf_without_units_needs_a_unit_and_nothing_changes_until_it_has_one() {
         target.with_extension("dxf.loss.txt").display().to_string()
     );
 
-    // An existing file is never replaced from outside the window.
+    // Without overwrite an existing file is kept, and nobody is asked.
     std::fs::write(&target, b"user drawing").unwrap();
     assert_eq!(
         bridge.execute(&mut app, export(&target, "dxf"), false),
@@ -373,24 +373,46 @@ fn overwrite_replaces_a_glb_kecup_wrote_and_its_loss_report_together() {
     assert_eq!(names, ["model.glb", "model.glb.loss.txt"]);
 }
 
-/// U3: `overwrite` never replaces a file Kečup did not write there, nor one
-/// that was changed after Kečup wrote it.
+/// U3 and owner decision R1 (review 2026-11-19 og-6): `overwrite` replaces a file
+/// Kečup did not write there, or one changed after Kečup wrote it, only once the
+/// user agrees in the window, asked once for each existing file of the pair.
 #[test]
-fn overwrite_refuses_a_file_kecup_did_not_write_or_that_was_changed_since() {
+fn overwrite_asks_before_replacing_a_file_kecup_did_not_write_or_that_was_changed_since() {
     let (mut app, mut bridge, directory) = window();
     crate::tests::install_initial_graph_result(&mut app);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(7)
+        .queue_high_risk_approval(7)
+        .queue_refused_high_risk();
+    app.dialogs = Box::new(dialogs.clone());
 
-    // Someone else's file, without a loss report.
+    // Someone else's file, without a loss report: kept without overwrite and unasked.
     let foreign = directory.path().join("foreign.glb");
     std::fs::write(&foreign, b"someone's model").unwrap();
     assert_eq!(
-        bridge.execute(&mut app, export_over(&foreign, "glb"), false),
+        bridge.execute(&mut app, export(&foreign, "glb"), false),
         Err("export_failed")
     );
+    assert!(dialogs.high_risk_prompts().is_empty());
+    // With overwrite the user is asked; declined, it is kept.
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&foreign, "glb"), false),
+        Err("export_declined")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&foreign).unwrap(), b"someone's model");
     assert!(!foreign.with_extension("glb.loss.txt").exists());
+    // Agreed, the export replaces it and writes its loss report beside it.
+    bridge
+        .execute(&mut app, export_over(&foreign, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
+    assert!(std::fs::read(&foreign).unwrap().starts_with(b"glTF"));
+    assert!(foreign.with_extension("glb.loss.txt").is_file());
 
-    // Kečup's file the user changed afterwards (e.g. saved from Blender).
+    // Kečup's file the user changed afterwards (e.g. saved from Blender): the file
+    // and its loss report are each asked about, and one refusal keeps both.
     let edited = directory.path().join("edited.glb");
     bridge
         .execute(&mut app, export(&edited, "glb"), false)
@@ -399,27 +421,75 @@ fn overwrite_refuses_a_file_kecup_did_not_write_or_that_was_changed_since() {
     let report = std::fs::read(edited.with_extension("glb.loss.txt")).unwrap();
     assert_eq!(
         bridge.execute(&mut app, export_over(&edited, "glb"), false),
-        Err("export_failed")
+        Err("export_declined")
     );
+    assert_eq!(dialogs.high_risk_prompts().len(), 4);
     assert_eq!(std::fs::read(&edited).unwrap(), b"edited in Blender");
     assert_eq!(
         std::fs::read(edited.with_extension("glb.loss.txt")).unwrap(),
         report
     );
 
-    // A loss report of an older Kečup, which names no file, proves nothing.
+    // A file changed while the user was being asked is not replaced.
     let older = directory.path().join("older.glb");
     std::fs::write(&older, b"older export").unwrap();
-    std::fs::write(
-        older.with_extension("glb.loss.txt"),
-        "format=glTF 2.0 binary (GLB)\n",
-    )
-    .unwrap();
+    app.dialogs = Box::new(
+        ScriptedFileDialogs::new().queue_high_risk_approval_after_write(
+            7,
+            &older,
+            b"saved meanwhile".to_vec(),
+        ),
+    );
     assert_eq!(
         bridge.execute(&mut app, export_over(&older, "glb"), false),
         Err("export_failed")
     );
-    assert_eq!(std::fs::read(&older).unwrap(), b"older export");
+    assert_eq!(std::fs::read(&older).unwrap(), b"saved meanwhile");
+}
+
+/// Owner decision R1 (review 2026-11-19 og-6): an AI updates the architect's
+/// plan.dxf, or any DXF/DWG plan, once the user agrees in the window.
+#[test]
+fn a_plan_replaces_an_existing_dxf_or_dwg_once_the_user_agrees() {
+    let (mut app, mut bridge, directory) = window();
+    bridge
+        .execute(
+            &mut app,
+            super::program_access::apply_source("box('floor', (3000, 40, 5))\n"),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .always_confirm_high_risk_as(7);
+    app.dialogs = Box::new(dialogs.clone());
+    let plan = directory.path().join("plan.dxf");
+    std::fs::write(&plan, b"architect's plan").unwrap();
+
+    // Declined, the architect's plan is kept.
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&plan, "dxf"), false),
+        Err("export_declined")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read(&plan).unwrap(), b"architect's plan");
+    assert!(!plan.with_extension("dxf.loss.txt").exists());
+
+    // Agreed, it is the plan; a DWG likewise.
+    bridge
+        .execute(&mut app, export_over(&plan, "dxf"), false)
+        .unwrap_or_else(|code| panic!("dxf {code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
+    let written = std::fs::read_to_string(&plan).unwrap();
+    assert!(written.trim_end().ends_with("EOF"), "{written}");
+    assert!(plan.with_extension("dxf.loss.txt").is_file());
+    let dwg = directory.path().join("plan.dwg");
+    std::fs::write(&dwg, b"architect's plan").unwrap();
+    bridge
+        .execute(&mut app, export_over(&dwg, "dwg"), false)
+        .unwrap_or_else(|code| panic!("dwg {code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 3);
+    assert!(std::fs::read(&dwg).unwrap().starts_with(b"AC10"));
 }
 
 /// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one

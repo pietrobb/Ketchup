@@ -619,6 +619,10 @@ fn write_xml_escaped(xml: &mut BoundedString, value: &str) -> Result<(), ExactPr
     Ok(())
 }
 
+/// The ZIP flag (bit 11) saying an entry name is UTF-8; without it an
+/// unpacker reads a name that is not ASCII in its own code page.
+pub(crate) const UTF8_NAME: u16 = 1 << 11;
+
 /// A stored (uncompressed) ZIP of `entries`, at most `archive_limit` bytes.
 pub(crate) fn encode_package(
     entries: &[(&str, &[u8])],
@@ -626,6 +630,7 @@ pub(crate) fn encode_package(
 ) -> Result<Vec<u8>, ExactProductError> {
     struct CentralEntry<'a> {
         name: &'a str,
+        flags: u16,
         crc: u32,
         size: u32,
         offset: u32,
@@ -662,9 +667,10 @@ pub(crate) fn encode_package(
                 ExactProductError::InvalidMeshExport
             })?;
         let crc = crc32(bytes);
+        let flags = if name.is_ascii() { 0 } else { UTF8_NAME };
         archive.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
-        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&flags.to_le_bytes());
         archive.extend_from_slice(&0_u16.to_le_bytes());
         archive.extend_from_slice(&0_u16.to_le_bytes());
         archive.extend_from_slice(&0_u16.to_le_bytes());
@@ -677,6 +683,7 @@ pub(crate) fn encode_package(
         archive.extend_from_slice(bytes);
         central.push(CentralEntry {
             name,
+            flags,
             crc,
             size,
             offset,
@@ -693,7 +700,7 @@ pub(crate) fn encode_package(
         archive.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
-        archive.extend_from_slice(&0_u16.to_le_bytes());
+        archive.extend_from_slice(&entry.flags.to_le_bytes());
         archive.extend_from_slice(&0_u16.to_le_bytes());
         archive.extend_from_slice(&0_u16.to_le_bytes());
         archive.extend_from_slice(&0_u16.to_le_bytes());

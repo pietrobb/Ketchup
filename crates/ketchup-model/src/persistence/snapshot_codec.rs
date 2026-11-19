@@ -1142,7 +1142,10 @@ mod tests {
             let started = std::time::Instant::now();
             check();
             let elapsed = started.elapsed();
-            assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+            assert!(
+                elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(30)),
+                "{elapsed:?}"
+            );
         }
     }
 

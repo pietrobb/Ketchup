@@ -215,14 +215,20 @@ pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) -> [Duration
 /// [`pull`], and no frame of the drag, the held button or the release is slow.
 pub(super) fn perf_pull_within_budget(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
     let [drag, held, release, committed] = pull(harness, at);
-    assert!(drag < FRAME_BUDGET, "slowest Push/Pull frame {drag:?}");
-    assert!(held < RELEASE_BUDGET, "a held frame took {held:?}");
     assert!(
-        release < RELEASE_BUDGET,
+        drag < ketchup_test_env::perf_budget(FRAME_BUDGET),
+        "slowest Push/Pull frame {drag:?}"
+    );
+    assert!(
+        held < ketchup_test_env::perf_budget(RELEASE_BUDGET),
+        "a held frame took {held:?}"
+    );
+    assert!(
+        release < ketchup_test_env::perf_budget(RELEASE_BUDGET),
         "the release froze the window for {release:?}"
     );
     assert!(
-        committed < COMMIT_BUDGET,
+        committed < ketchup_test_env::perf_budget(COMMIT_BUDGET),
         "the pull committed {committed:?} after the release"
     );
 }
