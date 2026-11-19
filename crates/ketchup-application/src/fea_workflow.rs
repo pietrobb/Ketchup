@@ -8,7 +8,8 @@ use ketchup_scheduler::{
 };
 pub use ketchup_scheduler::{
     ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaFaceTraction, ExactFeaJoint,
-    ExactFeaJointFace, ExactFeaMateJoint, ExactFeaSetup, ExactVolumeMeshWireOptions,
+    ExactFeaJointFace, ExactFeaJointKind, ExactFeaMateJoint, ExactFeaSetup,
+    ExactVolumeMeshWireOptions,
 };
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
