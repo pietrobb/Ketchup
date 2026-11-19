@@ -15,11 +15,11 @@ use crate::{
 };
 use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
 use ketchup_exact::{
-    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
-    EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
-    ExactPairRelation, ExactVolumeMeshOptions, PlanarProfileLoop, PlanarProfileSegment, Point3,
-    RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
-    StepXdeExportNode, StepXdeExportPart, ThreadGrooveSpec,
+    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, AxialToolTip, BoxSpec,
+    CircleExtrudeSpec, EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel,
+    ExactOpOutput, ExactPairRelation, ExactVolumeMeshOptions, PlanarProfileLoop,
+    PlanarProfileSegment, Point3, RectangleOffsetSpec, ShellDirection as NativeShellDirection,
+    Size3, SpatialProfileSegment, StepXdeExportNode, StepXdeExportPart, ThreadGrooveSpec,
 };
 use ketchup_geometry::linalg::{self, Affine3, Vec3};
 use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;

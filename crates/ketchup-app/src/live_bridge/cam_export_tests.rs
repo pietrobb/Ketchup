@@ -81,6 +81,7 @@ fn cam_window_over(
             spindle_rpm: 10_000,
             feed_mm_per_min: 600.0,
             plunge_mm_per_min: 200.0,
+            point_angle_deg: None,
         },
         CamSetup {
             work_offset: CamWorkOffset::G54,

@@ -1,7 +1,7 @@
 //! CAM simulation: cuts the tool's sweeps out of the stock with the exact kernel and
 //! reports gouges and tool, holder and fixture collisions.
 use super::{
-    AxialToolMotion, AxialToolSweepSpec, BTreeSet, BoxSpec, CAM_SIMULATION_SCHEMA_V1,
+    AxialToolMotion, AxialToolSweepSpec, AxialToolTip, BTreeSet, BoxSpec, CAM_SIMULATION_SCHEMA_V1,
     CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireRequest,
     ExactBRepGraph, ExactBackend, ExactOpOutput, ExactPairRelation, MAX_COORDINATE_MM, Point3,
     Size3, WorkerFailure, WorkerReply, WorkerResult, evaluate_exact_brep_graph, geometry_failure,
@@ -79,9 +79,28 @@ pub(super) fn cam_simulation_response(
     {
         return Err(WorkerFailure::invalid_request());
     }
-    simulate_cam_geometry(backend, graph, request)
+    let tip = cutter_tip(request).ok_or_else(WorkerFailure::invalid_request)?;
+    simulate_cam_geometry(backend, graph, request, tip)
         .map(WorkerReply::Cam)
         .map_err(|error| geometry_failure(&error))
+}
+
+/// The cutting end `request` names, if it is one the cutter can have: a point or a
+/// ball shorter than the flutes, a ball as long as the radius.
+fn cutter_tip(request: &CamSimulationWireRequest) -> Option<AxialToolTip> {
+    let length = request.cutter_tip_length_mm;
+    let fits = length.is_finite() && length > 0.0 && length < request.cutter_length_mm;
+    match request.cutter_tip {
+        0 if length == 0.0 => Some(AxialToolTip::Flat),
+        1 if fits => Some(AxialToolTip::Cone { length_mm: length }),
+        2 if fits
+            && (length - request.cutter_radius_mm).abs()
+                <= ketchup_model::tolerance::ROUNDING * request.cutter_radius_mm.max(1.0) =>
+        {
+            Some(AxialToolTip::Ball)
+        }
+        _ => None,
+    }
 }
 
 /// `motion` in the setup frame, raised by `axial_offset_mm`, as an axial tool path.
@@ -114,11 +133,13 @@ fn cam_axial_sweep(
     radius_mm: f64,
     axial_length_mm: f64,
     axial_offset_mm: f64,
+    tip: AxialToolTip,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     backend.sweep_axial_tool(AxialToolSweepSpec {
         motion: cam_axial_motion(motion, axial_offset_mm),
         radius_mm,
         axial_length_mm,
+        tip,
     })
 }
 
@@ -176,8 +197,16 @@ fn cam_world_sweep(
     radius_mm: f64,
     axial_length_mm: f64,
     axial_offset_mm: f64,
+    tip: AxialToolTip,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let local = cam_axial_sweep(backend, motion, radius_mm, axial_length_mm, axial_offset_mm)?;
+    let local = cam_axial_sweep(
+        backend,
+        motion,
+        radius_mm,
+        axial_length_mm,
+        axial_offset_mm,
+        tip,
+    )?;
     backend.transform_body(&local.body, &request.setup_to_world)
 }
 
@@ -226,6 +255,7 @@ fn simulate_cam_geometry(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
     request: &CamSimulationWireRequest,
+    tip: AxialToolTip,
 ) -> Result<CamSimulationWireEvidence, ketchup_exact::GeometryError> {
     let target = evaluate_exact_brep_graph(backend, graph, &[])?;
     let tolerance_mm = graph.tolerance.linear_mm();
@@ -266,6 +296,7 @@ fn simulate_cam_geometry(
                 pending,
                 request.cutter_radius_mm,
                 request.cutter_length_mm,
+                tip,
                 &request.setup_to_world,
             )?;
             pending.clear();
@@ -310,6 +341,7 @@ fn simulate_cam_geometry(
                 request.cutter_radius_mm,
                 request.tool_length_mm,
                 0.0,
+                tip,
             )?)
         } else {
             None
@@ -327,6 +359,7 @@ fn simulate_cam_geometry(
                 request.holder_radius_mm,
                 request.holder_length_mm,
                 request.holder_offset_mm,
+                AxialToolTip::Flat,
             )?)
         } else {
             None
