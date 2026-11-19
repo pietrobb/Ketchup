@@ -177,6 +177,9 @@ pub struct MemberCheck {
     pub role: crate::wire_names::Name,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strength_class: Option<String>,
+    /// The class is glulam, whose k_h follows EN 1995-1-1 3.3.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub glulam: bool,
     /// Width and depth (bending) or the two sides (column).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section_mm: Option<[f64; 2]>,
@@ -226,6 +229,10 @@ pub struct DesignReport {
     #[serde(deserialize_with = "basis")]
     pub basis: Vec<String>,
     pub members: Vec<MemberCheck>,
+    /// The site of the basis, for the calculation to write in its own
+    /// language (review 2026-11-10 og PG-406).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<crate::site::Site>,
 }
 
 /// The basis comes back from the program worker as [`BASIS`], with at most
@@ -2699,6 +2706,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             part: load.part.clone(),
             role,
             strength_class: class.map(|c| c.strength_class.clone()),
+            glulam: class.is_some_and(|c| c.glulam),
             section_mm: shape.as_ref().ok().map(|s| [round3(s.b), round3(s.h)]),
             utilization: None,
             governing: None,
@@ -2879,7 +2887,11 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
     }
     let mut basis: Vec<String> = BASIS.iter().map(|line| (*line).to_owned()).collect();
     basis.extend(model.site.as_ref().map(crate::site::Site::basis));
-    DesignReport { basis, members }
+    DesignReport {
+        basis,
+        members,
+        site: model.site.clone(),
+    }
 }
 
 /// Governing check and status of a member from its checks. A check that is
@@ -2918,6 +2930,7 @@ mod tests {
             part: "beam".to_owned(),
             role: "beam",
             strength_class: None,
+            glulam: false,
             section_mm: None,
             utilization: None,
             governing: None,

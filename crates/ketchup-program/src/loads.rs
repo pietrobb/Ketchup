@@ -2169,6 +2169,19 @@ fn declared_bracing<'a>(
                     );
                     continue;
                 }
+                // A column buckles over its whole length; its check uses no
+                // bracing (review 2026-11-10 og PG-408).
+                let axis = frames[held].axis;
+                if axis[0].hypot(axis[1]) < crate::member_check::COLUMN_COS {
+                    ignore(
+                        names,
+                        format!(
+                            "{target} is a column, checked for buckling over its whole length; bracing a column is not used, so {brace} holds nothing"
+                        ),
+                        format!("Leave {target} out of brace()."),
+                    );
+                    continue;
+                }
                 if !fastened(by, held) {
                     ignore(
                         names,
