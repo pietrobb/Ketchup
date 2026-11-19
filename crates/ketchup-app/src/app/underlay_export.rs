@@ -27,6 +27,11 @@ use std::sync::atomic::AtomicU8;
 /// result once more, so this leaves room for a drawing many times its size.
 pub(crate) const UNDERLAY_EXPORT_TIME: Duration = Duration::from_secs(300);
 
+/// Whether `read` and `written` name one existing file, however each is spelled.
+fn same_file(read: &Path, written: &Path) -> bool {
+    matches!((read.canonicalize(), written.canonicalize()), (Ok(read), Ok(written)) if read == written)
+}
+
 /// Why a drawing was not written back.
 #[derive(Debug)]
 pub(crate) enum UnderlayExportError {
@@ -274,21 +279,44 @@ impl ClientUnderlayExport {
 
 impl KetchupApp {
     /// Starts writing underlay `id` with its changes to `output` on a thread, as
-    /// Tools > Export drawing writes it, so the window keeps drawing.
+    /// Tools > Export drawing writes it, so the window keeps drawing. A file at
+    /// `output` is replaced only while its SHA-256 is `replacing`, the one the
+    /// user agreed to replace (`None`: no file may be there).
     pub(crate) fn start_client_underlay_export(
         &self,
         id: UnderlayId,
         source: Option<&Path>,
         output: &Path,
+        replacing: Option<&str>,
         context: &egui::Context,
     ) -> Result<ClientUnderlayExport, UnderlayExportError> {
-        let job = self.underlay_export_job(id, source, output, None)?;
+        let job = self.underlay_export_job(id, source, output, replacing)?;
         let (cancel, gate, receiver) = start_underlay_export_thread(job, context.clone())?;
         Ok(ClientUnderlayExport {
             cancel,
             gate,
             receiver,
         })
+    }
+
+    /// The file underlay `id` is read again from: `source`, or else the one it was
+    /// imported from in this window.
+    fn underlay_export_source(&self, id: UnderlayId, source: Option<&Path>) -> Option<PathBuf> {
+        source
+            .map(Path::to_owned)
+            .or_else(|| self.file.activity.underlay.sources.get(&id).cloned())
+    }
+
+    /// Whether `output` is the file underlay `id` is read again from, which no
+    /// export replaces: the user is not asked to replace it.
+    pub(crate) fn underlay_export_reads(
+        &self,
+        id: UnderlayId,
+        source: Option<&Path>,
+        output: &Path,
+    ) -> bool {
+        self.underlay_export_source(id, source)
+            .is_some_and(|read| same_file(&read, output))
     }
 
     /// What writing underlay `id` with its changes to `output` takes, read again from
@@ -306,13 +334,10 @@ impl KetchupApp {
         let underlay = snapshot
             .underlay(id)
             .ok_or(UnderlayExportError::NotFound(id))?;
-        let source = source
-            .map(Path::to_owned)
-            .or_else(|| self.file.activity.underlay.sources.get(&id).cloned())
+        let source = self
+            .underlay_export_source(id, source)
             .ok_or(UnderlayExportError::NoSource(id))?;
-        if let (Ok(read), Ok(written)) = (source.canonicalize(), output.canonicalize())
-            && read == written
-        {
+        if same_file(&source, output) {
             return Err(UnderlayExportError::SameAsSource(output.to_owned()));
         }
         let blobs = self.file.container_data.blobs();
