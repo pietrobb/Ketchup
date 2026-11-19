@@ -22,7 +22,7 @@ They overrule every older finding they touch.
 | 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Fixed in #127: every dialect writes the safe header (G40 G49 G80 G94) and G43 H with the tool's length offset before the first cut |
 | 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Fixed in #128: a bonded joint ties only the part where the faces overlap (node to node or node to face), a rigid spider only for an explicit bolt, faces that do not touch are refused; two 1000×50×50 layers bonded by a face bend 0.342 mm at the end |
 | 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Fixed in #129: the anchorage path starts at the member (EA/L of the brace, buckling over its length, the stiffness of both connections) and a diaphragm is checked for every anchor |
-| 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Open |
+| 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Fixed in #130: the calculation opens with the overall verdict and the exit code of the command line and a warnings section listing every error and warning of the report; a lost load no longer leaves "Vyhovuje" alone; only the braces the check counted are listed, each with C and F_cap of its path to the ground |
 | 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Open |
 
 ## 2. Policy for an AI
@@ -44,8 +44,8 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 11. R1119og-EXA-801, CI-807: the nightly Windows run is red | Open |
-| 12. CI-407, CI-808: rerun and a flaky Connect test | Open |
+| 11. R1119og-EXA-801, CI-807: the nightly Windows run is red | Fixed in #136: the cause was runner load, not code (the panel test took 19 s on the last green nightly and 35 s on the red one beside three other house tests); the panel check runs as its own nightly step on one thread, `perf_*` budgets scale with the runner's measured speed, and a red scheduled run opens an issue |
+| 12. CI-407, CI-808: rerun and a flaky Connect test | Fixed in #136: GitHub refuses to rerun run 42661783930 (too old, HTTP 403); all its jobs and the checks of its commit are green, and the next nightly covers it. The Connect test gives one fixed AI set-up row and waits for it before the click, so rows arriving between frames no longer move the button |
 
 ## 5. Drawings for the authority
 
@@ -54,7 +54,7 @@ They overrule every older finding they touch.
 | 13. og:R1110r2-MF-500, MF-501: storeys | Open |
 | 14. og:R1110-CD-404, UO-406: rooms in DXF | Open |
 | 15. og:R1110-MF-404: DXF 2013 sheets | Open |
-| 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Open |
+| 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Fixed in pull request `fix/og-calc-texts`: only the highest row of the governing check says it governs; glulam cites k_h by 3.3 (3.2) and u_inst no longer cites (2.2); a column has no lateral torsional buckling text and `brace()` on it says a column's bracing is not used; the site line is in Slovak or Czech; a thermal failure prints "<" only where f_Rsi fails; the Slovak requirement is U_N (R_N on the ground); a site below sea level names the altitude 0 its s_k uses |
 | 17. R1119og-MF-805: hole callouts | Open |
 
 ## 6. Workshop, import, modelling
@@ -63,7 +63,7 @@ They overrule every older finding they touch.
 |---|---|
 | 18. og:R1110-MF-400, MF-401, MF-406, R1119og-MF-807: losses in the workshop package | Open |
 | 19. og:R1110-MF-402, MF-403: checking the package | Fixed in pull request `fix/og-zip-check`: the check compares each stored header with the central directory, refuses data no entry accounts for, names Windows cannot write and names equal by case or NFC; the package marks a non-ASCII name as UTF-8 (bit 11) and refuses such names when it is made |
-| 20. R1119og-SKP-800: a SketchUp component changed by Scale | Open |
+| 20. R1119og-SKP-800: a SketchUp component changed by Scale | Fixed in #142: a component stretched with the Scale tool has the stretch baked into its own part definitions, and group placements stay rigid |
 | 21. R1119og-IMG-800: the presentation image | Open |
 | 22. R1119og-EXA-800: a control point of a freeform surface | Open |
 

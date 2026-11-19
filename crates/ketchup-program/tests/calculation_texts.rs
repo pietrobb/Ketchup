@@ -30,7 +30,8 @@ box(\"deck\", (4000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = 
     )
 }
 
-const CZECH_SITE: &str = "site(\"CZ\", municipality = \"Brno\", altitude = 237, snow_zone = \"II\")";
+const CZECH_SITE: &str =
+    "site(\"CZ\", municipality = \"Brno\", altitude = 237, snow_zone = \"II\")";
 const SLOVAK_SITE: &str =
     "site(\"SK\", municipality = \"Poprad\", altitude = 672, snow_zone = \"2\")";
 
@@ -178,14 +179,22 @@ fn the_site_is_written_in_the_sheet_language() {
     );
     assert!(text.contains("snehová oblasť 2"), "{text}");
     assert!(text.contains("do 1000 m n. m."), "{text}");
-    for english in ["above sea level", "snow zone", "recommended values", "at most"] {
+    for english in [
+        "above sea level",
+        "snow zone",
+        "recommended values",
+        "at most",
+    ] {
         assert!(!text.contains(english), "{english}: {text}");
     }
 
     let report = self::report(&beam(CZECH_SITE, "C24"));
     let html = document("calculation.star", &report, Language::Czech);
     let text = body(&html);
-    assert!(text.contains("Místo stavby: CZ, Brno, 237 m n. m."), "{text}");
+    assert!(
+        text.contains("Místo stavby: CZ, Brno, 237 m n. m."),
+        "{text}"
+    );
     assert!(text.contains("sněhová oblast II"), "{text}");
     assert!(!text.contains("snow zone"), "{text}");
 }
@@ -233,11 +242,15 @@ thermal_check("thin", element = "wall", theta_e = -15, layers = [
         .find(|issue| issue.kind == THERMAL_FAILED)
         .expect("U fails");
     assert!(
-        failed
-            .message
-            .contains(&format!("f_Rsi {f:.3} >= {cr:.3}")),
+        failed.message.contains(&format!("f_Rsi {f:.3} >= {cr:.3}")),
         "{}",
         failed.message
     );
-    assert!(!report.thermal.basis.iter().any(|line| line.contains("U_r2")));
+    assert!(
+        !report
+            .thermal
+            .basis
+            .iter()
+            .any(|line| line.contains("U_r2"))
+    );
 }
