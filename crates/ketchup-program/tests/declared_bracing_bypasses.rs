@@ -507,3 +507,53 @@ box(\"pad\", (300, 80, 50), at = (1800, -80, 2400), material = \"GL24h\", tags =
         beam.missing
     );
 }
+
+/// R1119og-PG-801: a diaphragm's anchorage was not checked at all. Two deck
+/// boards on the beam anchored to four free-standing grounded posts 60 x 40 x
+/// 2400 passed, though each post gives about 0.8 N/mm against some 58 N/mm
+/// the beam asks (EN 1995-1-1 9.2.5.3); the same posts as anchors of a brace
+/// were refused. The deck holds the beam only through anchors stiff enough,
+/// side by side, with its own give; anchored to a wall it holds it.
+#[test]
+fn a_diaphragm_anchored_to_free_posts_is_too_flexible_and_to_a_wall_holds() {
+    let deck = |anchors: &str, names: &str| {
+        format!(
+            "{BEAM}box(\"deck a\", (2750, 1100, 20), at = (0, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
+box(\"deck b\", (2750, 1100, 20), at = (3150, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
+joint(\"deck a\", \"beam\", kind = \"screw\")
+joint(\"deck b\", \"beam\", kind = \"screw\")
+{anchors}diaphragm([\"deck\"], anchored_to = [{names}])
+"
+        )
+    };
+    let mut posts = String::new();
+    let mut names = Vec::new();
+    for (x, sheet) in [(200, "a"), (2400, "a"), (3400, "b"), (5600, "b")] {
+        posts.push_str(&format!(
+            "box(\"post {x}\", (60, 40, 2400), at = ({x}, 1050, 0), material = \"C24\", grounded = True)
+joint(\"deck {sheet}\", \"post {x}\", kind = \"screw\")
+"
+        ));
+        names.push(format!("\"post {x}\""));
+    }
+    let on_posts = report(&deck(&posts, &names.join(", ")));
+    let beam = checked(&on_posts, "beam");
+    assert_ne!(beam.status, "pass", "{beam:?}");
+    assert!(
+        beam.missing.iter().any(|reason| reason.contains("deck")
+            && reason.contains("too flexible or too slender")),
+        "{:?}",
+        beam.missing
+    );
+
+    let on_wall = report(&deck(
+        "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+joint(\"deck a\", \"wall\", kind = \"screw\")
+joint(\"deck b\", \"wall\", kind = \"screw\")
+",
+        "\"wall\"",
+    ));
+    let beam = checked(&on_wall, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
+    assert_eq!(beam.status, "pass");
+}
