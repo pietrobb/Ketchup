@@ -90,7 +90,7 @@ FROZEN_MODULES = {
     "crates/ketchup-headless/src/protocol.rs": 3071,
     "crates/ketchup-model/src/drawing.rs": 4459,
     "crates/ketchup-model/src/exact_product.rs": 4210,
-    "crates/ketchup-model/src/persistence.rs": 4323,
+    "crates/ketchup-model/src/persistence.rs": 4276,
     "crates/ketchup-model/src/persistence/legacy.rs": 4679,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
