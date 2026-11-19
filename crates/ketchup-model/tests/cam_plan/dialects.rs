@@ -85,6 +85,66 @@ fn every_library_dialect_writes_the_simulated_motions_and_reads_them_back() {
     }
 }
 
+/// R1119og-MF-801 and MF-804: on a controller with tool length offsets the Z of a program is the
+/// spindle's unless G43 applies the tool's length, so the tip would run that length lower. Every
+/// library G-code dialect resets the modal state, applies the length of the tool it changes to (or,
+/// without a tool change, says the tool is touched off), reaches the safe Z on its own and only then
+/// moves in X and Y, and keeps its comments in parentheses, which no controller reads as code.
+#[test]
+fn every_library_g_code_dialect_applies_the_tool_length_and_reaches_safe_z_before_moving_across() {
+    let ids = CamPostprocessorDialect::library_ids().unwrap();
+    for id in ids.iter().filter(|id| *id != "controller_neutral_json") {
+        let written = output(CamPostprocessorDialect::library(id).unwrap());
+        let text = std::str::from_utf8(&written.content).unwrap();
+        assert!(!text.contains(';'), "{id}: ';' comment in {text}");
+        let lines = text.lines().map(words).collect::<Vec<_>>();
+        let has = |line: &[String], word: &str| line.iter().any(|w| w == word);
+        let first_across = lines
+            .iter()
+            .position(|line| line.iter().any(|w| w.starts_with(['X', 'Y'])))
+            .unwrap_or_else(|| panic!("{id}: no motion in {text}"));
+        let before = &lines[..first_across];
+        for reset in ["G40", "G49", "G80", "G94"] {
+            assert!(
+                before.iter().any(|line| line
+                    .iter()
+                    .any(|w| w.trim_start_matches(['G', '0']) == &reset[1..])),
+                "{id}: no {reset} before the first motion in {text}"
+            );
+        }
+        let safe_z = written.program.safe_retract_z_mm;
+        let to_safe_z = before
+            .iter()
+            .position(|line| {
+                line.iter().any(|w| w == "G0" || w == "G00")
+                    && line.iter().any(|w| {
+                        w.strip_prefix('Z')
+                            .and_then(|z| z.parse::<f64>().ok())
+                            .is_some_and(|z| (z - safe_z).abs() < 1.0e-3)
+                    })
+            })
+            .unwrap_or_else(|| panic!("{id}: no rapid to Z{safe_z} alone before X/Y in {text}"));
+        let changes_tool = before
+            .iter()
+            .any(|line| has(line, "M6") || has(line, "M06"));
+        if changes_tool {
+            assert!(
+                before[..=to_safe_z]
+                    .iter()
+                    .any(|line| has(line, "G43") && has(line, "H1")),
+                "{id}: no G43 H1 by the first Z move in {text}"
+            );
+        } else {
+            assert!(text.contains("LOAD TOOL 1"), "{id}: {text}");
+        }
+        let first_motion = &written.program.motions[0];
+        assert!(
+            (first_motion.end_mm[2] - written.program.safe_retract_z_mm).abs() < 1.0e-9,
+            "{id}: the first motion leaves safe Z: {first_motion:?}"
+        );
+    }
+}
+
 #[test]
 fn grbl_program_uses_only_words_grbl_1_1_lists_and_names_the_tool_in_a_comment() {
     let text = library_text("grbl");

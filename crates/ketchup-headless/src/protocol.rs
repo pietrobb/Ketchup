@@ -2621,8 +2621,8 @@ mod tests {
         );
         assert_eq!(exported["result"]["exported"], true, "{exported}");
         let artifact = std::fs::read_to_string(&path).unwrap();
-        assert!(artifact.starts_with("%\n;KETCHUP_CAM_POSTPROCESSOR_V1\n"));
-        assert!(artifact.contains("\nG21\nG90\nG17\nG54\nT1 M6\nS10000 M3\n"));
+        assert!(artifact.starts_with("%\n(KETCHUP CAM POSTPROCESSOR V1)\n"));
+        assert!(artifact.contains("G40 G49 G80 G90 G94\nG54\nT1 M6\nS10000 M3\nG0 G43 H1 Z"));
         assert_eq!(server.state(), state);
 
         let second = request(&mut server, "cam_preview", preview_params());

@@ -242,7 +242,8 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
     let artifact = std::fs::read_to_string(&output).unwrap();
     let lines = artifact.lines().collect::<Vec<_>>();
     assert_eq!(lines.first(), Some(&"%"), "{artifact}");
-    assert!(artifact.contains("\nT1 M6\nG43 H1\n"), "{artifact}");
+    assert!(artifact.contains("\nT1 M6\nS"), "{artifact}");
+    assert!(artifact.contains(" M3\nG0 G43 H1 Z"), "{artifact}");
     assert_eq!(lines[lines.len() - 2], "M2", "{artifact}");
     assert_eq!(canonical_state(&shell), setup_state);
 
