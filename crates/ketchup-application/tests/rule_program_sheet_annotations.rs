@@ -396,8 +396,7 @@ drawing_sheet('Taps', source='plate', hole_callouts=True)
     let cosmetic = labels("False");
     assert_eq!(cosmetic.len(), 3, "{cosmetic:?}");
     assert!(
-        cosmetic
-            .contains(&"M5 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM".into()),
+        cosmetic.contains(&"M5 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM".into()),
         "{cosmetic:?}"
     );
     assert_eq!(labels("True"), cosmetic);
