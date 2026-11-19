@@ -159,6 +159,7 @@ pub(crate) fn storey_table_error_text(catalog: &LocaleCatalog, error: &StoreyTab
         StoreyTableProblem::OutsideModel => "drawings-storey-outside-model",
         StoreyTableProblem::ThickBuildUp => "drawings-storey-thick-build-up",
         StoreyTableProblem::NoFloorInModel => "drawings-storey-no-floor-in-model",
+        StoreyTableProblem::NotInTable => "drawings-storey-not-in-table",
     };
     catalog.format(key, &arguments)
 }
