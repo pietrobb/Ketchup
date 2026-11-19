@@ -2914,6 +2914,7 @@ fn public_control_point_program_reshapes_an_earlier_surface() {
                 target_feature_id: earlier_body(1),
                 u_index: 1,
                 v_index: 1,
+                from_mm: [15.0, 10.0, 0.0],
                 offset_mm,
                 weight: None,
                 keep: vec![AssistantCadSurfaceSeam {
@@ -2948,6 +2949,7 @@ fn public_control_point_program_reshapes_an_earlier_surface() {
     let preview = document.preview_batch(&batch).unwrap();
     let FeatureKind::SurfaceBody(SurfaceBodySpec::ControlPoint {
         target,
+        from_mm,
         offset_mm,
         keep,
         ..
@@ -2955,7 +2957,10 @@ fn public_control_point_program_reshapes_an_earlier_surface() {
     else {
         panic!("not a control-point move");
     };
-    assert_eq!((*target, *offset_mm), (FeatureId(2), [0.0, 0.0, 2.0]));
+    assert_eq!(
+        (*target, *from_mm, *offset_mm),
+        (FeatureId(2), [15.0, 10.0, 0.0], [0.0, 0.0, 2.0])
+    );
     assert_eq!(keep[0].surface, FeatureId(1));
     assert_eq!(
         preview.feature(FeatureId(3)).unwrap().kind().body_kind(),

@@ -116,6 +116,7 @@ pub(super) fn derived_surface(
             target,
             u_index,
             v_index,
+            from_bits,
             offset_bits,
             weight_bits,
             keep,
@@ -129,6 +130,7 @@ pub(super) fn derived_surface(
                 SurfaceControlPoint {
                     u_index: *u_index,
                     v_index: *v_index,
+                    from_mm: from_bits.map(f64::from_bits),
                     offset_mm: offset_bits.map(f64::from_bits),
                     weight: weight_bits.map(f64::from_bits),
                 },

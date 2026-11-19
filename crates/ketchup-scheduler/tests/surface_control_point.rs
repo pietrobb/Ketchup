@@ -79,6 +79,7 @@ fn kept(surface: FeatureId) -> SurfaceSeam {
 fn move_point(
     id: FeatureId,
     u_index: u32,
+    from_mm: [f64; 3],
     offset_mm: [f64; 3],
     weight: Option<f64>,
     keep: Vec<SurfaceSeam>,
@@ -91,6 +92,7 @@ fn move_point(
             target: BLEND,
             u_index,
             v_index: 16,
+            from_mm,
             offset_mm,
             weight,
             keep,
@@ -98,14 +100,50 @@ fn move_point(
     }
 }
 
+/// Where control point (`u_index`, 16) of the blend lies. A move that expects
+/// it elsewhere is refused with where it lies, which is how a caller without
+/// the control net learns it (review 2026-11-19 og EXA-800).
+fn pole(supervisor: &mut ExactWorkerSupervisor, u_index: u32) -> [f64; 3] {
+    let mut document = s_blend();
+    document
+        .apply_batch(&CommandBatch::new(vec![move_point(
+            MOVED,
+            u_index,
+            [0.0; 3],
+            [0.0, 0.0, -5.0],
+            None,
+            Vec::new(),
+        )]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, MOVED).unwrap();
+    let error = format!(
+        "{:?}",
+        supervisor.evaluate_exact_brep_graph(&graph).unwrap_err()
+    );
+    let at = error
+        .split("lies at (")
+        .nth(1)
+        .and_then(|rest| rest.split(") mm").next())
+        .unwrap_or_else(|| panic!("the refusal names where the point lies: {error}"));
+    let values = at
+        .split(", ")
+        .map(|value| value.parse::<f64>().unwrap())
+        .collect::<Vec<_>>();
+    values.try_into().unwrap()
+}
+
 #[test]
 fn a_moved_control_point_is_saved_compiled_and_moved_by_the_worker() {
     let _turn = crate::integration_support::file_turn();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let from_mm = pole(&mut supervisor, 2);
     let mut document = s_blend();
     document
         .apply_batch(&CommandBatch::new(vec![move_point(
             MOVED,
             2,
+            from_mm,
             [0.0, 0.0, -5.0],
             None,
             vec![kept(LOW), kept(HIGH)],
@@ -126,8 +164,6 @@ fn a_moved_control_point_is_saved_compiled_and_moved_by_the_worker() {
     assert_eq!(keep.len(), 2);
     assert_eq!(graph.nodes.len(), 4, "both plates, the blend and the move");
 
-    let mut supervisor =
-        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
     assert_eq!(package.topology_counts[4], 0, "a surface, not a solid");
     let [min, max] = package.bounds_mm;
@@ -146,19 +182,21 @@ fn a_moved_control_point_is_saved_compiled_and_moved_by_the_worker() {
 #[test]
 fn a_move_that_breaks_a_kept_seam_is_refused_by_the_worker() {
     let _turn = crate::integration_support::file_turn();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let from_mm = pole(&mut supervisor, 1);
     let mut document = s_blend();
     document
         .apply_batch(&CommandBatch::new(vec![move_point(
             MOVED,
             1,
+            from_mm,
             [0.0, 0.0, 5.0],
             None,
             vec![kept(LOW)],
         )]))
         .unwrap();
     let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, MOVED).unwrap();
-    let mut supervisor =
-        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
     let error = supervisor.evaluate_exact_brep_graph(&graph).unwrap_err();
     assert!(format!("{error:?}").contains("normals"), "{error:?}");
 }
@@ -178,6 +216,7 @@ fn invalid_control_point_moves_are_refused_before_anything_changes() {
         let refused = document.apply_batch(&CommandBatch::new(vec![move_point(
             MOVED,
             2,
+            [60.0, 25.0, 1.0],
             offset_mm,
             weight,
             keep.clone(),

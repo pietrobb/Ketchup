@@ -122,6 +122,30 @@ pub struct AxialToolSweepSpec {
     pub motion: AxialToolMotion,
     pub radius_mm: f64,
     pub axial_length_mm: f64,
+    pub tip: AxialToolTip,
+}
+
+/// The cutting end of an axial tool. The motion moves its lowest point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AxialToolTip {
+    Flat,
+    /// A drill's point, a cone `length_mm` long up to the full radius.
+    Cone {
+        length_mm: f64,
+    },
+    /// A ball end mill's half sphere of the tool's radius.
+    Ball,
+}
+
+impl AxialToolTip {
+    /// The kind and axial length the native sweep takes.
+    pub(crate) fn native(self, radius_mm: f64) -> (u8, f64) {
+        match self {
+            Self::Flat => (0, 0.0),
+            Self::Cone { length_mm } => (1, length_mm),
+            Self::Ball => (2, radius_mm),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
