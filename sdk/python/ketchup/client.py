@@ -740,8 +740,12 @@ class Document:
         Each part is a dict with ``occurrence_id``, ``feature_id`` (the solid of its
         definition), ``material``, ``constrained_face_ordinals`` and ``face_tractions``.
         Each joint names two faces, ``{"part": index, "face_ordinal": n}``, of different
-        parts and a ``kind``: ``{"type": "rigid"}`` or ``{"type": "spring",
-        "translation_n_per_mm": [x, y, z], "rotation_n_mm_per_rad": [x, y, z]}``.
+        parts and a ``kind``: ``{"type": "rigid"}`` glues the faces where they lie on
+        each other and nowhere else (faces that do not touch are refused);
+        ``{"type": "rigid_connector"}`` holds both whole faces plane as one rigid body,
+        as a bolt; ``{"type": "spring", "translation_n_per_mm": [x, y, z],
+        "rotation_n_mm_per_rad": [x, y, z]}`` holds each face plane with springs between
+        them, also as a bolt.
         Each mate joint, ``{"mate_id": id, "kind": kind}``, joins the two faces a
         face-to-face (coincident planar) mate of the document names; both mated
         occurrences must be parts of the study.

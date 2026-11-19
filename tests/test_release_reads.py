@@ -54,6 +54,36 @@ def test_a_new_variant_fails_until_reviewed_and_a_removed_one_always_fails():
     ]
 
 
+def test_an_extension_field_a_release_lacks_must_be_marked():
+    # Review 2026-11-10 REL-404: 0.3.2 dropped the north it did not know.
+    old = """
+pub struct SheetSettings {
+    #[serde(default)]
+    pub format: Option<SheetFormat>,
+    // pub north: Option<i32>,
+}
+"""
+    head = """
+pub struct SheetSettings {
+    pub format: Option<SheetFormat>,
+    pub north: Option<i32>,
+    pub scale: Option<u32>,
+}
+
+impl SheetSettings {
+    pub fn lost_by_released_readers(&self) -> bool {
+        let Self { format: _, scale: _, north } = self;
+        north.is_some()
+    }
+}
+"""
+    assert checker.struct_fields(old, "SheetSettings") == {"format"}
+    assert checker.field_problems("SheetSettings", "lost_by_released_readers", head, old, "0.3.2") == [
+        "SheetSettings::scale: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"
+    ]
+    assert checker.field_problems("SheetSettings", "lost_by_released_readers", head, "", "0.1.0") == []
+
+
 def test_what_a_release_reads_is_a_product_of_integers():
     assert checker.product("64 * 1024 * 1024") == 64 * 1024 * 1024
     assert checker.product("1_000") == 1000
@@ -103,6 +133,7 @@ spec = importlib.util.spec_from_file_location("release_reads", {str(ROOT / "scri
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 checker.serde_enums = lambda tag: {{}}
+checker.extension_problems = lambda tag: []
 checker.version = lambda tag: "0.3.0"
 checker.what_it_reads = lambda tag: []
 checker.old_workspace = lambda tag, target: pathlib.Path(".")
@@ -154,6 +185,7 @@ def test_a_failing_test_does_not_stop_the_reads_of_the_files_others_saved(tmp_pa
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker.subprocess, "CalledProcessError", subprocess.CalledProcessError)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "version", lambda tag: "0.3.0")
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: [])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
@@ -175,6 +207,7 @@ def test_a_file_a_release_opens_but_loses_a_field_of_when_saving_fails(tmp_path,
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
@@ -199,6 +232,7 @@ def test_no_release_restoring_the_history_fails(tmp_path, monkeypatch, capsys, r
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
@@ -219,6 +253,7 @@ def test_a_release_restoring_no_history_fails_while_another_restores_it(tmp_path
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
@@ -246,6 +281,7 @@ def test_a_file_the_tests_saved_but_did_not_keep_fails_the_reads(tmp_path, monke
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))

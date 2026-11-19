@@ -2,8 +2,8 @@
 # Checks a Linux package from scripts/linux/build-package.sh where it is unpacked:
 # every library its programs need is in it or on the system (CI: a clean container
 # with only scripts/linux/runtime-packages.txt installed), each worker answers the
-# typed Hello, the app verifies its install and reads a document, and the Viewer
-# opens a package. Run from the repository, which has the sample files.
+# typed Hello, the app verifies its install and reads a document, `ketchup-program`
+# writes a static calculation, and the Viewer opens a package. Run from the repository, which has the sample files.
 #
 #   scripts/linux/check-package.sh Ketchup-<version>-Linux-x86_64.tar.gz
 set -euo pipefail
@@ -38,4 +38,13 @@ cd "$package"
 ./ketchup-app --verify-install "$work/verify.ketchup"
 ./ketchup-app --inspect-native-document "$repo/examples/house-project.ketchup" >/dev/null
 ./ketchup-viewer --verify-open "$repo/viewer/samples/kitchen.ketchup-view"
+# The release notes offer `ketchup-program check --calculation sk` (review 2026-11-19
+# REL-800). It exits 1 or 3 for a structure that fails or is not verified, 2 when it
+# cannot evaluate.
+status=0
+./ketchup-program check "$repo/examples/programs/tiny-house.star" --calculation sk >"$work/calculation.html" || status=$?
+if [ "$status" -eq 2 ] || ! grep -q '<html lang="sk">' "$work/calculation.html"; then
+    echo "ketchup-program in the package wrote no static calculation (exit $status)" >&2
+    exit 1
+fi
 echo "OK: $(basename "$archive")"

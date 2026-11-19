@@ -36,9 +36,9 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 8. og:R1110-REL-404, R1119og-DOC-801: an older version drops the north arrow, revisions and storeys | Open |
-| 9. R1119og-REL-800: the structural calculation command is not in the packages | Open |
-| 10. R1119og-DOC-802: CHANGELOG 0.3.3 lists three entries not in the tag | Open |
+| 8. og:R1110-REL-404, R1119og-DOC-801: an older version drops the north arrow, revisions and storeys | Fixed in pull request `fix/og-release-data`: sheet language, ±0,000 level and altitude, storeys, north and revisions save as container schema 3, which every released reader refuses as newer; `release_reads.py` also checks persisted struct fields |
+| 9. R1119og-REL-800: the structural calculation command is not in the packages | Fixed in pull request `fix/og-release-data`: the Windows, Linux and macOS packages carry `ketchup-program`, and each package build checks it writes a calculation |
+| 10. R1119og-DOC-802: CHANGELOG 0.3.3 lists three entries not in the tag | Fixed in pull request `fix/og-release-data`: the three entries moved to Unreleased |
 
 ## 4. CI
 

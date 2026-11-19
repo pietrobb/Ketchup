@@ -1,5 +1,6 @@
 //! Joints between nodes, usually of different parts: a rigid link the second
-//! node follows, or springs between two nodes at one place.
+//! node follows, springs between two nodes at one place, or a tie of a node to
+//! a point of a triangle of three others.
 
 use crate::fea::{DofLayout, FeaCouplingKind, FeaCouplingProblem, FeaError, FeaModel};
 use ketchup_geometry::linalg::{length, sub};
@@ -29,6 +30,16 @@ fn rigid_followers(model: &FeaModel) -> BTreeMap<usize, (usize, usize)> {
         .enumerate()
         .filter(|(_, coupling)| coupling.kind == FeaCouplingKind::Rigid)
         .map(|(index, coupling)| (coupling.nodes[1], (index, coupling.nodes[0])))
+        .collect()
+}
+
+/// The nodes ties make follow.
+fn tie_followers(model: &FeaModel) -> BTreeSet<usize> {
+    model
+        .couplings
+        .iter()
+        .filter(|coupling| matches!(coupling.kind, FeaCouplingKind::Tie { .. }))
+        .map(|coupling| coupling.nodes[1])
         .collect()
 }
 
@@ -70,6 +81,49 @@ pub(crate) fn validate_couplings(model: &FeaModel) -> Result<(), FeaError> {
                     return Err(refused(index, FeaCouplingProblem::SpringNodesApart));
                 }
             }
+            FeaCouplingKind::Tie { others, weights } => {
+                let triangle = [first, others[0], others[1]];
+                if others.iter().any(|node| *node >= model.nodes.len()) {
+                    return Err(refused(index, FeaCouplingProblem::InvalidNode));
+                }
+                if triangle.contains(&second)
+                    || others[0] == others[1]
+                    || triangle[1..].contains(&first)
+                    || weights
+                        .iter()
+                        .any(|weight| !(-ROUNDING..=1.0 + ROUNDING).contains(weight))
+                    || (weights.iter().sum::<f64>() - 1.0).abs() > ROUNDING
+                {
+                    return Err(refused(index, FeaCouplingProblem::InvalidTie));
+                }
+                if !followers.insert(second) {
+                    return Err(refused(index, FeaCouplingProblem::FollowsTwice));
+                }
+                if model
+                    .constraints
+                    .iter()
+                    .any(|constraint| constraint.node == second)
+                {
+                    return Err(refused(index, FeaCouplingProblem::ConstrainedFollower));
+                }
+            }
+        }
+    }
+    // A tie is set out after every rigid link and from nodes that follow
+    // nothing, so its follower may lead no rigid link and its triangle follow
+    // nothing.
+    let tied = tie_followers(model);
+    for (index, coupling) in model.couplings.iter().enumerate() {
+        let leads_from_tied =
+            coupling.kind == FeaCouplingKind::Rigid && tied.contains(&coupling.nodes[0]);
+        let tie_on_follower = match coupling.kind {
+            FeaCouplingKind::Tie { others, .. } => [coupling.nodes[0], others[0], others[1]]
+                .iter()
+                .any(|node| followers.contains(node)),
+            _ => false,
+        };
+        if leads_from_tied || tie_on_follower {
+            return Err(refused(index, FeaCouplingProblem::TieChain));
         }
     }
     let leaders = rigid_followers(model);
@@ -226,6 +280,8 @@ pub(crate) fn joint_definition(model: &FeaModel) -> (BTreeSet<[u64; 3]>, Vec<[u6
                 }
                 springs.push(values);
             }
+            // A tie follows the mesh, which each level refines.
+            FeaCouplingKind::Tie { .. } => {}
         }
     }
     springs.sort_unstable();
@@ -258,6 +314,25 @@ impl Joints {
             for (follower, index, leader) in chain.into_iter().rev() {
                 joints.follow(model, layout, index, [leader, follower])?;
                 resolved.insert(follower);
+            }
+        }
+        for (index, coupling) in model.couplings.iter().enumerate() {
+            let FeaCouplingKind::Tie { others, weights } = coupling.kind else {
+                continue;
+            };
+            let triangle = [coupling.nodes[0], others[0], others[1]];
+            for axis in 0..3 {
+                let mut terms = Vec::with_capacity(3);
+                for (node, weight) in triangle.into_iter().zip(weights) {
+                    let dof = layout
+                        .dof(node, axis)
+                        .ok_or(refused(index, FeaCouplingProblem::InvalidNode))?;
+                    terms.push((dof, weight));
+                }
+                let follower = layout
+                    .dof(coupling.nodes[1], axis)
+                    .ok_or(refused(index, FeaCouplingProblem::InvalidNode))?;
+                joints.followers.insert(follower, terms);
             }
         }
         Ok(joints)

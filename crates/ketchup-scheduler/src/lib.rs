@@ -12,7 +12,7 @@ mod fea_assembly;
 mod fea_setup;
 pub use fea_assembly::{
     AssemblyBoundFeaModel, AssemblyBoundFeaPart, ExactFeaAssemblyPart, ExactFeaAssemblySetup,
-    ExactFeaJoint, ExactFeaJointFace, ExactFeaMateJoint, assembly_bound_model,
+    ExactFeaJoint, ExactFeaJointFace, ExactFeaJointKind, ExactFeaMateJoint, assembly_bound_model,
 };
 pub use fea_setup::{
     ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError, OccurrenceBoundFeaModel,
