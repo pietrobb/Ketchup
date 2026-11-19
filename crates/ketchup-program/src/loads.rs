@@ -127,8 +127,9 @@ pub struct Brace {
     pub edge: String,
     pub from_mm: f64,
     pub to_mm: f64,
-    /// How its path to the ground holds the member sideways, the weakest of
-    /// the stretch; none for a sheet of a diaphragm, not worked out.
+    /// How its path to the ground holds the member sideways, from the member
+    /// through the brace (a diaphragm's sheet through all its anchors), the
+    /// weakest of the stretch; none where no path reaches the ground.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchorage: Option<BraceAnchorage>,
 }
@@ -1453,14 +1454,14 @@ fn braced_stretches(
             braced[support.supporter].extend(
                 points
                     .into_iter()
-                    .filter_map(|point| held(point).map(|anchor| (frame.along(point), anchor)))
-                    .map(|(at, anchor)| Bracing {
+                    .filter_map(|point| held(point).map(|anchor| (point, anchor)))
+                    .map(|(point, anchor)| Bracing {
                         by: item,
                         anchor,
-                        anchorage: footing.anchorage(anchor, member_at, &[item]),
+                        anchorage: footing.through(item, anchor, member_at, point, &[item]),
                         top,
-                        from: at,
-                        to: at,
+                        from: frame.along(point),
+                        to: frame.along(point),
                     }),
             );
         }
@@ -2090,12 +2091,14 @@ fn declared_bracing<'a>(
             Bracing {
                 by,
                 anchor,
-                anchorage: (!sheet_anchor.contains_key(&by))
-                    .then(|| {
-                        let apart: &[usize] = if anchor == by { &[] } else { &[by] };
-                        footing.anchorage(anchor, held, apart)
-                    })
-                    .flatten(),
+                anchorage: match (sheet_anchor.get(&by), anchored.spots.get(&by)) {
+                    (Some(_), Some(spots)) => {
+                        let chain = anchored.chains.get(&by).into_iter().flatten().copied();
+                        let anchors = spots.iter().map(|(anchor, _)| *anchor);
+                        footing.diaphragm(by, anchors, held, *point, &chain.collect::<Vec<_>>())
+                    }
+                    _ => footing.through(by, anchor, held, *point, &[by]),
+                },
                 top,
                 from: along,
                 to: along,
