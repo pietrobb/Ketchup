@@ -251,6 +251,7 @@ fn remap_surface_body(
             target,
             u_index,
             v_index,
+            from_mm,
             offset_mm,
             weight,
             keep,
@@ -258,6 +259,7 @@ fn remap_surface_body(
             target: remapped(mapping, target)?,
             u_index: *u_index,
             v_index: *v_index,
+            from_mm: *from_mm,
             offset_mm: *offset_mm,
             weight: *weight,
             keep: keep

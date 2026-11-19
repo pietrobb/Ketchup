@@ -923,14 +923,18 @@ pub enum SurfaceBodySpec {
         second_continuity: LoftContinuity,
     },
     /// An earlier single-face surface with one control point of its B-spline
-    /// form (row `u_index`, column `v_index`, from 0) moved by `offset_mm`
-    /// and, with `weight`, given a new positive weight. Every seam in `keep`
-    /// must hold its continuity after the move or the move is refused. The
-    /// earlier surface stays as it is. Format 119.
+    /// form (row `u_index`, column `v_index`, from 0), which lies at `from_mm`,
+    /// moved by `offset_mm` and, with `weight`, given a new positive weight.
+    /// Every seam in `keep` must hold its continuity after the move or the
+    /// move is refused. When an earlier edit changes the control net so the
+    /// point of these indices no longer lies at `from_mm`, the move is refused
+    /// with both positions instead of moving another point (review 2026-11-19
+    /// og EXA-800). The earlier surface stays as it is. Format 119.
     ControlPoint {
         target: FeatureId,
         u_index: u32,
         v_index: u32,
+        from_mm: [f64; 3],
         offset_mm: [f64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<f64>,

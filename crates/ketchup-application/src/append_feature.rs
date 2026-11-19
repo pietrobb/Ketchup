@@ -88,6 +88,7 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
             target_feature_id,
             u_index,
             v_index,
+            from_mm,
             offset_mm,
             weight,
             keep,
@@ -95,6 +96,7 @@ fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec 
             target: resolved(target_feature_id),
             u_index: *u_index,
             v_index: *v_index,
+            from_mm: *from_mm,
             offset_mm: *offset_mm,
             weight: *weight,
             keep: keep

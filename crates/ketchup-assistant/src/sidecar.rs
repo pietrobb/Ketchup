@@ -941,15 +941,15 @@ pub enum AssistantCadSurfaceBodySource {
         #[serde(default)]
         second_continuity: AssistantCadLoftContinuity,
     },
-    /// An earlier single-face surface with one control point of its B-spline
-    /// form (row `u_index`, column `v_index`, from 0) moved by `offset_mm`
-    /// and, with `weight`, given a new positive weight. Every seam in `keep`
-    /// must hold its continuity after the move or the move is refused. The
-    /// earlier surface stays.
+    /// An earlier one-face surface; its B-spline control point (row `u_index`, column `v_index`,
+    /// from 0) at `from_mm` moves by `offset_mm`, `weight` sets a new positive weight. The move is
+    /// refused with both positions if the point lies elsewhere (also after an earlier edit changed
+    /// the net), or if a seam in `keep` loses its continuity. The earlier surface stays.
     ControlPoint {
         target_feature_id: AssistantCadFeatureReference,
         u_index: u32,
         v_index: u32,
+        from_mm: [f64; 3],
         #[serde(default)]
         offset_mm: [f64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
