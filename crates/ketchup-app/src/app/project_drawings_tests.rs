@@ -1989,3 +1989,63 @@ fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
     assert!(app.set_tag_visibility(underlay.tag, false));
     assert!(app.project_drawings().is_ok());
 }
+
+/// Review 2026-11-10 REL-404: Kečup 0.3.2 opened a document with a north,
+/// revisions or a table of storeys and dropped them at its next Save. Such a
+/// document is written as one every release refuses as newer, also when a
+/// Kečup before the mark kept the settings; one without them is not.
+#[test]
+fn sheet_settings_a_release_would_lose_make_the_file_newer_than_releases_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("north.ketchup");
+    let schema = |path: &std::path::Path| {
+        let bytes = std::fs::read(path).unwrap();
+        u16::from_le_bytes([bytes[10], bytes[11]])
+    };
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall", 0.0);
+    let mut settings = app.sheet_settings();
+    settings
+        .title_block
+        .insert(TitleField::Author, "Peter".to_owned());
+    app.store_sheet_settings(settings.clone());
+    assert!(app.save_document_to(&path), "{}", app.digest);
+    assert_eq!(schema(&path), 1, "every release keeps the title block");
+
+    settings.north_tenths_deg = Some(150);
+    app.store_sheet_settings(settings);
+    assert!(app.save_document_to(&path), "{}", app.digest);
+    assert_eq!(schema(&path), 3);
+
+    // Kečup 0.3.3 kept the same settings unmarked.
+    let bytes = app
+        .file
+        .container_data
+        .extensions()
+        .find(|entry| entry.path() == "sheet-v1.json")
+        .unwrap()
+        .bytes()
+        .to_vec();
+    let mut unmarked = ketchup_model::persistence::ContainerData::default();
+    unmarked.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.drawings",
+            "sheet-v1.json",
+            false,
+            bytes,
+        )
+        .unwrap(),
+    );
+    let older = directory.path().join("older.ketchup");
+    std::fs::write(
+        &older,
+        ketchup_model::persistence::save_container(&app.document.current(), &unmarked).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(schema(&older), 1);
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_from(&older), "{}", reopened.digest);
+    assert_eq!(reopened.sheet_settings().north_tenths_deg, Some(150));
+    assert!(reopened.save_document_to(&older), "{}", reopened.digest);
+    assert_eq!(schema(&older), 3);
+}

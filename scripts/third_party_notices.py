@@ -87,14 +87,14 @@ PACKAGES = {
     "ketchup": Package(
         "Kecup",
         # The installer and the portable archive carry the Viewer too.
-        ("ketchup-app", "ketchup-scheduler", "ketchup-viewer"),
+        ("ketchup-app", "ketchup-scheduler", "ketchup-program", "ketchup-viewer"),
         ("occt", "acadrust", "starlark", "core-math", "msvc-runtime"),
     ),
     "viewer": Package("Kecup Viewer", ("ketchup-viewer",), ()),
     # Ketchup.app carries the app and its workers; the Viewer is a .app of its own.
     "ketchup-macos": Package(
         "Kecup",
-        ("ketchup-app", "ketchup-scheduler"),
+        ("ketchup-app", "ketchup-scheduler", "ketchup-program"),
         ("occt", "acadrust", "starlark", "core-math"),
         MACOS,
     ),
@@ -102,7 +102,7 @@ PACKAGES = {
     # The Linux archive carries the app, its workers and the Viewer, as the Windows one.
     "ketchup-linux": Package(
         "Kecup",
-        ("ketchup-app", "ketchup-scheduler", "ketchup-viewer"),
+        ("ketchup-app", "ketchup-scheduler", "ketchup-program", "ketchup-viewer"),
         ("occt", "acadrust", "starlark", "core-math"),
         LINUX,
     ),

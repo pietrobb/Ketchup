@@ -122,6 +122,34 @@ pub struct SheetSettings {
 }
 
 impl SheetSettings {
+    /// Whether a released Kečup would read these settings with fields
+    /// missing and drop them at its next Save: Kečup 0.2.0 to 0.3.1 know only
+    /// the format, the title block, the plan cut and the coarsest scale, 0.3.2
+    /// no storeys, altitude, north or revisions either (review 2026-11-10
+    /// REL-404). A document keeping them is written so that every release
+    /// refuses it as newer. A new field must be added here.
+    #[must_use]
+    pub fn lost_by_released_readers(&self) -> bool {
+        let Self {
+            format: _,
+            title_block: _,
+            plan_cut_above_floor_mm: _,
+            coarsest_scale: _,
+            language,
+            zero_level_mm,
+            storeys,
+            zero_altitude_mm,
+            north_tenths_deg,
+            revisions,
+        } = self;
+        language.is_some()
+            || zero_level_mm.is_some()
+            || !storeys.is_empty()
+            || zero_altitude_mm.is_some()
+            || north_tenths_deg.is_some()
+            || !revisions.is_empty()
+    }
+
     /// [`Self::north_tenths_deg`] in degrees.
     #[must_use]
     pub fn north_deg(&self) -> Option<f64> {

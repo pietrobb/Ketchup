@@ -1495,8 +1495,34 @@ impl KetchupApp {
         ) else {
             return;
         };
-        self.file.container_data.set_extension(entry);
+        self.file
+            .container_data
+            .set_extension(if settings.lost_by_released_readers() {
+                entry.lost_by_released_readers()
+            } else {
+                entry
+            });
         self.drawings.unsaved = true;
+    }
+
+    /// Marks the kept sheet settings a released Kečup would lose part of, as
+    /// [`Self::store_sheet_settings`] does, in a file saved before the mark
+    /// (Kečup 0.3.3 kept them unmarked): its next Save writes it so that every
+    /// release refuses it as newer (review 2026-11-10 REL-404).
+    pub(crate) fn mark_kept_sheet_settings(&mut self) {
+        let Some(entry) = self.file.container_data.extensions().find(|entry| {
+            entry.namespace() == SHEET_NAMESPACE && entry.path() == SHEET_SETTINGS_PATH
+        }) else {
+            return;
+        };
+        if !entry.is_lost_by_released_readers()
+            && self
+                .stored_sheet_settings()
+                .is_ok_and(|settings| settings.lost_by_released_readers())
+        {
+            let marked = entry.clone().lost_by_released_readers();
+            self.file.container_data.set_extension(marked);
+        }
     }
 
     fn title_labels(catalog: &LocaleCatalog) -> BTreeMap<TitleField, String> {
