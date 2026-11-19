@@ -30,6 +30,13 @@ from happening:
    does not restore the history saves none; every release read must restore it for one
    file at least (review 2026-11-06 P3 and r23 P3).
 
+4. Extensions. A struct kept as JSON in a container extension (`EXTENSIONS`, such as the
+   sheet settings in `sheet-v1.json`) is read the same way, and a release that has it drops
+   a field it lacks at its next Save. Every field the function that marks such an entry
+   ignores must be known to each release that has the struct; any other one makes the
+   file container schema 3, which every release refuses as newer (review 2026-11-10
+   REL-404). This runs with the variants.
+
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
 --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2 tag v0.3.3` in a shallow clone). The old crates and their
 build go to `<target>/release-<version>`; `--variants-only` skips the build.
@@ -119,6 +126,15 @@ REVIEWED = {
     },
 }
 
+# Structs kept as JSON in container extensions and read without `deny_unknown_fields`: a
+# release that has the struct reads a field it lacks as absent and drops it at its next
+# Save (review 2026-11-10 REL-404). Each names its source and the function that marks the
+# entry so that every release refuses the file (container schema 3); a field that function
+# ignores (`name: _`) must be known to every release that has the struct.
+EXTENSIONS = {
+    "SheetSettings": ("crates/ketchup-manufacturing/src/title_block.rs", "lost_by_released_readers"),
+}
+
 ENUM = re.compile(
     r"#\[derive\(([^)]*)\)\]\s*(?:#\[[^\]]*\]\s*)*pub(?:\([^)]*\))?\s+enum\s+(\w+)[^{]*\{",
     re.S,
@@ -190,6 +206,46 @@ def variant_problems(
             problems.append(
                 f"{name}::{variant}: new since {release}; keep a document using it out of the "
                 f"formats {release} reads and add it to REVIEWED"
+            )
+    return problems
+
+
+def struct_fields(source: str, name: str) -> set[str] | None:
+    match = re.search(rf"pub struct {name}\s*\{{", source)
+    if not match:
+        return None
+    body = re.sub(r"//[^\n]*", "", enum_body(source, match.end()))
+    return set(re.findall(r"\bpub\s+(\w+)\s*:", body))
+
+
+def ignored_fields(source: str, function: str) -> set[str]:
+    match = re.search(rf"fn {function}\s*\([^)]*\)[^{{]*\{{", source)
+    if not match:
+        sys.exit(f"HEAD: no fn {function}")
+    return set(re.findall(r"\b(\w+)\s*:\s*_\s*,", enum_body(source, match.end())))
+
+
+def field_problems(name: str, function: str, head: str, old: str, release: str) -> list[str]:
+    """The fields of `name` that `function` in the source `head` leaves unmarked and the
+    release with the source `old` does not know; none when the release lacks the struct."""
+    known = struct_fields(old, name)
+    if known is None:
+        return []
+    return [
+        f"{name}::{field}: {release} drops it at its next Save; mark it in {function}"
+        for field in sorted(ignored_fields(head, function) - known)
+    ]
+
+
+def extension_problems(tag: str) -> list[str]:
+    problems = []
+    for name, (path, function) in EXTENSIONS.items():
+        listed = subprocess.run(
+            ["git", "cat-file", "-e", f"{tag}:{path}"], cwd=ROOT, capture_output=True, check=False
+        )
+        if listed.returncode == 0:
+            problems += field_problems(
+                name, function, git("show", f"HEAD:{path}"), git("show", f"{tag}:{path}"), version(tag)
             )
     return problems
 
@@ -309,7 +365,7 @@ def main(arguments: list[str]) -> int:
     for tag in tags:
         problems = variant_problems(
             serde_enums(tag), serde_enums("HEAD"), REVIEWED.get(tag, {}), version(tag)
-        )
+        ) + extension_problems(tag)
         for problem in problems:
             print(f"variant: {problem}")
         if problems:

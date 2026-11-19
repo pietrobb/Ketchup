@@ -50,7 +50,7 @@ fn read_base<'e, 'a>(
     let entry = |path: &str| {
         entries
             .iter()
-            .find(|entry| entry.path == path && entry.required)
+            .find(|entry| entry.path == path && entry.flag == EntryFlag::Required)
     };
     let document = entry("document.bin").ok_or(PersistenceError::MissingDocumentEntry)?;
     let history = entry("history.bin").ok_or(PersistenceError::InvalidRevisionHistory)?;
@@ -59,22 +59,24 @@ fn read_base<'e, 'a>(
 }
 
 /// The blobs and extensions of a file.
-fn side_of<'a>(entries: &[ContainerEntry<'a>]) -> BTreeMap<String, (bool, &'a [u8])> {
+fn side_of<'a>(entries: &[ContainerEntry<'a>]) -> BTreeMap<String, (EntryFlag, &'a [u8])> {
     entries
         .iter()
         .filter(|entry| !CORE_ENTRIES.contains(&entry.path.as_str()))
-        .map(|entry| (entry.path.clone(), (entry.required, entry.content)))
+        .map(|entry| (entry.path.clone(), (entry.flag, entry.content)))
         .collect()
 }
 
-/// Blobs and extensions (path → required, checksum) as a step compares them: a
+/// Blobs and extensions (path → flag, checksum) as a step compares them: a
 /// blob's path names the SHA-256 of its content, so only an extension is hashed.
-fn compared(side: BTreeMap<String, (bool, &[u8])>) -> BTreeMap<String, (bool, Option<[u8; 32]>)> {
+fn compared(
+    side: BTreeMap<String, (EntryFlag, &[u8])>,
+) -> BTreeMap<String, (EntryFlag, Option<[u8; 32]>)> {
     side.into_iter()
-        .map(|(path, (required, content))| {
+        .map(|(path, (flag, content))| {
             let checksum =
                 (!path.starts_with("blobs/")).then(|| crate::graph::sha256_bytes(content));
-            (path, (required, checksum))
+            (path, (flag, checksum))
         })
         .collect()
 }
@@ -91,7 +93,7 @@ fn read_steps(bytes: &[u8]) -> (Vec<Vec<u8>>, Option<PersistenceError>) {
             )?;
             let mut entries = container_entries(reader.take(length)?)?;
             match entries.remove(STEP_ENTRY) {
-                Some((true, content)) if entries.is_empty() => Ok(content),
+                Some((EntryFlag::Required, content)) if entries.is_empty() => Ok(content),
                 _ => Err(PersistenceError::InvalidRevisionHistory),
             }
         };
@@ -195,7 +197,7 @@ pub(super) struct CheckpointPlan {
     len: usize,
     payload_len: usize,
     held: Vec<Planned>,
-    side: BTreeMap<String, (bool, Option<[u8; 32]>)>,
+    side: BTreeMap<String, (EntryFlag, Option<[u8; 32]>)>,
 }
 
 /// The plan of the checkpoint `bytes`, `None` where only a whole one can follow.
@@ -277,7 +279,7 @@ pub(super) fn plan_step(
     let kept = &written[0].snapshot;
     let history = encode_history(&written, 0, next_revision_id, kept, HISTORY_BUDGET).ok()?;
     step.extend_from_slice(&history);
-    let step = encode_container(BTreeMap::from([(STEP_ENTRY.to_owned(), (true, step))])).ok()?;
+    let step = encode_container(BTreeMap::from([(STEP_ENTRY.to_owned(), (EntryFlag::Required, step))])).ok()?;
     // The steps stay lighter than the base.
     let len = plan.len + 8 + step.len();
     (len - plan.payload_len <= plan.payload_len).then(|| {
@@ -463,10 +465,10 @@ pub(super) fn assemble_checkpoint(
         );
         let history = history?;
         let mut file = side_of(&entries);
-        file.insert("document.bin".to_owned(), (true, &snapshot.bytes[..]));
-        file.insert("history.bin".to_owned(), (true, &history[..]));
+        file.insert("document.bin".to_owned(), (EntryFlag::Required, &snapshot.bytes[..]));
+        file.insert("history.bin".to_owned(), (EntryFlag::Required, &history[..]));
         if let Some(program) = &current.program {
-            file.insert(PROGRAM_ENTRY.to_owned(), (true, &program[..]));
+            file.insert(PROGRAM_ENTRY.to_owned(), (EntryFlag::Required, &program[..]));
         }
         encode_container(file)
     };
