@@ -1097,6 +1097,7 @@ digest-exported-stl = Exported current mesh model to { $path }
 digest-exported-3mf = Exported current 3MF print package to { $path }
 digest-exported-glb = Exported current Blender GLB scene to { $path }
 digest-exported-presentation = Saved the presentation image to { $path }
+digest-exported-presentation-plain = Saved the presentation image to { $path }. Some faces show their part's colour instead of their picture: { $pictures }
 digest-exported-dae = Exported current COLLADA scene for SketchUp to { $path }
 error-export-dxf = DXF profile export to { $path } was blocked: { $reason }
 error-export-step = STEP export to { $path } was blocked: { $reason }

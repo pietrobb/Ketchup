@@ -1095,6 +1095,7 @@ digest-exported-stl = Aktuálny sieťový model bol exportovaný do { $path }
 digest-exported-3mf = Aktuálny tlačový balík 3MF bol exportovaný do { $path }
 digest-exported-glb = Aktuálna scéna Blender GLB bola exportovaná do { $path }
 digest-exported-presentation = Prezentačný obrázok bol uložený do { $path }
+digest-exported-presentation-plain = Prezentačný obrázok bol uložený do { $path }. Niektoré plochy ukazujú farbu svojho dielu namiesto obrázka: { $pictures }
 digest-exported-dae = Aktuálna scéna COLLADA pre SketchUp bola exportovaná do { $path }
 error-export-dxf = Export profilov DXF do { $path } bol zablokovaný: { $reason }
 error-export-step = Export STEP do { $path } bol zablokovaný: { $reason }

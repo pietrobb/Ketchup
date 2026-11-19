@@ -64,7 +64,7 @@ They overrule every older finding they touch.
 | 18. og:R1110-MF-400, MF-401, MF-406, R1119og-MF-807: losses in the workshop package | Open |
 | 19. og:R1110-MF-402, MF-403: checking the package | Open |
 | 20. R1119og-SKP-800: a SketchUp component changed by Scale | Open |
-| 21. R1119og-IMG-800: the presentation image | Open |
+| 21. R1119og-IMG-800: the presentation image | Fixed in pull request `fix/og-img-texture`: a picture the renderer cannot read, such as one over 64 MP, shows as its part's colour, as in the viewport; the saved image names the part, the picture and why (`lost` for a client, the status line in the window) |
 | 22. R1119og-EXA-800: a control point of a freeform surface | Open |
 
 ## 7. DXF revisions from the architect
