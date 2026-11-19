@@ -511,9 +511,24 @@ mod tests {
         harness.get_by_label(&catalog.text("connect-ai-set-up"));
     }
 
+    /// Review 2026-11-19 CI-808: the click goes where the header was drawn
+    /// last frame. The rows were read from this machine and could come in
+    /// between, push the header down and take the click from it; the rows are
+    /// fixed and read before the click.
     #[test]
     fn the_section_shows_the_status_and_folds_away_three_set_ups_to_copy() {
-        let mut harness = open_section(KetchupApp::new());
+        fn one_row(_: &std::path::Path) -> Vec<HarnessRow> {
+            vec![HarnessRow {
+                harness: Harness::Codex,
+                file: None,
+                registration: Registration::NotSetUp,
+                setup_error: None,
+            }]
+        }
+        let mut app = KetchupApp::new();
+        app.live.harness_rows = one_row;
+        let mut harness = open_section(app);
+        settle(&mut harness);
         let waiting = harness.state().catalog.text("connect-ai-waiting");
         harness.get_by_label(&waiting);
         let copy = harness.state().catalog.text("connect-ai-copy");

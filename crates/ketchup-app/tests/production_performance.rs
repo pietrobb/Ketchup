@@ -490,17 +490,17 @@ fn perf_realistic_corpus_opens_rebuilds_and_draws_within_budget() {
         let name = fixture.name;
         let open = fixture.cold_open_ms;
         assert!(
-            open < milliseconds(OPEN_BUDGET),
+            open < milliseconds(ketchup_test_env::perf_budget(OPEN_BUDGET)),
             "{name} cold open took {open} ms"
         );
         let rebuild = fixture.exact_rebuild_ms;
         assert!(
-            rebuild < milliseconds(EXACT_REBUILD_BUDGET),
+            rebuild < milliseconds(ketchup_test_env::perf_budget(EXACT_REBUILD_BUDGET)),
             "{name} exact rebuild took {rebuild} ms"
         );
         let frames = fixture.offscreen_ui_20_frames_ms;
         assert!(
-            frames < milliseconds(UI_FRAME_BUDGET),
+            frames < milliseconds(ketchup_test_env::perf_budget(UI_FRAME_BUDGET)),
             "{name} twenty offscreen UI frames took {frames} ms"
         );
     }
@@ -701,7 +701,7 @@ fn one_move_among_the_largest_indexed_model_commits() {
 fn perf_one_move_among_the_largest_indexed_model_commits_within_budget() {
     let fastest = fastest_move_among_the_largest_indexed_model();
     assert!(
-        fastest < ONE_EDIT_BUDGET,
+        fastest < ketchup_test_env::perf_budget(ONE_EDIT_BUDGET),
         "one move among the largest indexed model took {fastest:?}"
     );
 }

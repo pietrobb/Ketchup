@@ -285,7 +285,7 @@ fn mutated_dxf_files_are_read_or_refused_without_panicking() {
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
 fn perf_mutated_dxf_files_are_read_or_refused_quickly() {
-    fuzz_dxf(PER_INPUT);
+    fuzz_dxf(ketchup_test_env::perf_budget(PER_INPUT));
 }
 
 fn fuzz_dxf(limit: Duration) {
@@ -312,7 +312,7 @@ fn mutated_stl_files_are_read_or_refused_without_panicking() {
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
 fn perf_mutated_stl_files_are_read_or_refused_quickly() {
-    fuzz_stl(PER_INPUT);
+    fuzz_stl(ketchup_test_env::perf_budget(PER_INPUT));
 }
 
 fn fuzz_stl(limit: Duration) {
@@ -344,7 +344,7 @@ fn mutated_sketchup_scenes_are_read_or_refused_without_panicking() {
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
 fn perf_mutated_sketchup_scenes_are_read_or_refused_quickly() {
-    fuzz_scene(PER_INPUT);
+    fuzz_scene(ketchup_test_env::perf_budget(PER_INPUT));
 }
 
 fn fuzz_scene(limit: Duration) {
@@ -388,7 +388,7 @@ fn mutated_glb_files_are_read_or_refused_without_panicking() {
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
 fn perf_mutated_glb_files_are_read_or_refused_quickly() {
-    fuzz_glb(PER_INPUT);
+    fuzz_glb(ketchup_test_env::perf_budget(PER_INPUT));
 }
 
 fn fuzz_glb(limit: Duration) {

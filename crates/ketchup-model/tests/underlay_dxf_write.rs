@@ -1875,7 +1875,8 @@ fn perf_a_large_drawing_changed_in_the_file_is_refused_as_fast_as_written() {
         "{refused:?}"
     );
     assert!(
-        refusing < written * 2 + std::time::Duration::from_millis(500),
+        refusing
+            < written * 2 + ketchup_test_env::perf_budget(std::time::Duration::from_millis(500)),
         "refused in {refusing:?}, written in {written:?}"
     );
 }

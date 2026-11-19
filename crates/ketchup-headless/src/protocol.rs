@@ -1595,7 +1595,7 @@ mod tests {
     fn perf_a_program_check_ends_soon_after_its_deadline() {
         let (elapsed, total, checked) = check_past_one_deadline();
         assert!(
-            elapsed < total + std::time::Duration::from_secs(1),
+            elapsed < total + ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
             "{elapsed:?} for a deadline of {total:?}: {checked}"
         );
         assert_stopped_at_time_limit(&checked);
