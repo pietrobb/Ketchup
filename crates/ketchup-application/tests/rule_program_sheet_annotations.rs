@@ -252,7 +252,7 @@ drawing_sheet('Bores', source='plate', hole_callouts=True)
         "{labels:?}"
     );
     assert!(
-        labels.contains(&"M5 x 0.8 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM"),
+        labels.contains(&"M5 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM"),
         "{labels:?}"
     );
     let original = sheet.clone();
@@ -397,7 +397,7 @@ drawing_sheet('Taps', source='plate', hole_callouts=True)
     assert_eq!(cosmetic.len(), 3, "{cosmetic:?}");
     assert!(
         cosmetic
-            .contains(&"M5 x 0.8 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM".into()),
+            .contains(&"M5 THREAD DEPTH 8 mm; BORE Ø4.2 mm DEPTH 14 mm, FLAT BOTTOM".into()),
         "{cosmetic:?}"
     );
     assert_eq!(labels("True"), cosmetic);

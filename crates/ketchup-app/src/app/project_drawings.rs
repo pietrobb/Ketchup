@@ -1417,6 +1417,17 @@ impl KetchupApp {
         settings
     }
 
+    /// The language the sheets are written in: the stored one, else the
+    /// window's.
+    pub(crate) fn sheet_language(&self) -> SheetLanguage {
+        self.sheet_settings()
+            .language
+            .unwrap_or(match self.ui_language() {
+                Some(crate::language::UiLanguage::Slovak) => SheetLanguage::Slovak,
+                Some(crate::language::UiLanguage::English) | None => SheetLanguage::English,
+            })
+    }
+
     /// The texts the sheets are titled with: those of `language`, the
     /// window's when none (Měchenice MECH-5).
     pub(crate) fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {

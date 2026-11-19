@@ -6,6 +6,7 @@
 //! no face beyond the bore, CYLINDRICAL DEPTH is its axial span and asserts
 //! neither end. Threads must suit the bore they are tapped into. Unsupported
 //! geometry is reported rather than silently converted into a simpler hole.
+//! Callouts are worded in the sheet's language with its decimal separator.
 use super::*;
 use crate::document::{BooleanOperation, FeatureId, FeatureKind};
 use ketchup_geometry::sketch::PadOperation;
@@ -70,11 +71,13 @@ pub struct HoleCalloutReport {
 /// survive unchanged; surviving generated sources retain their IDs and positions.
 /// Exact results must be current. No document is mutated. Persist `report.sheet`
 /// through the normal sheet edit command. Projection/export revalidates ownership
-/// and text, refusing stale callouts until this function is run again.
+/// and text, refusing stale callouts until this function is run again. The
+/// callouts are written in `language`.
 pub fn generate_hole_callouts(
     snapshot: &Snapshot,
     results: &ExactResultRegistry,
     sheet: &DrawingSheet,
+    language: SheetLanguage,
 ) -> Result<HoleCalloutReport, DrawingError> {
     validate_source(snapshot, sheet.id(), sheet.source())?;
     let instances = source_instances(snapshot, results, sheet.source())?;
@@ -83,7 +86,8 @@ pub fn generate_hole_callouts(
         .notes
         .retain(|note| note.hole_callout_sources().is_none());
     let drawing = project_orthographic_drawing(snapshot, results, &output)?;
-    let (groups, mut diagnostics) = source_groups(snapshot, &instances)?;
+    let (holes, mut diagnostics) = instance_holes(snapshot, &instances)?;
+    let groups = source_groups(snapshot, &holes, Wording::Sheet(language), &mut diagnostics);
     let mut generated: Vec<DrawingNote> = Vec::new();
     let mut next = sheet
         .notes
@@ -190,11 +194,15 @@ struct Hole {
     cuts: Vec<(HoleCalloutSource, f64)>,
 }
 
-fn source_groups(
+/// The holes of every instance, each with its instance token and first face,
+/// and the cuts that make no hole the body keeps.
+type InstanceHoles = Vec<(String, u32, Hole)>;
+
+fn instance_holes(
     snapshot: &Snapshot,
     instances: &[DrawingInstance],
-) -> Result<(BTreeMap<String, CalloutGroup>, Vec<HoleCalloutDiagnostic>), DrawingError> {
-    let mut groups: BTreeMap<String, CalloutGroup> = BTreeMap::new();
+) -> Result<(InstanceHoles, Vec<HoleCalloutDiagnostic>), DrawingError> {
+    let mut found = Vec::new();
     let mut diagnostics = Vec::new();
     for instance in instances {
         // By the first face of each hole on this instance's body, in the order
@@ -236,32 +244,46 @@ fn source_groups(
                 }
             }
         }
-        for (key, hole) in holes {
-            let label = match hole_label(snapshot, &hole) {
-                Ok(label) => label,
-                Err(reason) => {
-                    diagnostics.extend(hole.cuts.into_iter().map(|(source, _)| {
-                        let mut diagnostic = unsupported(source);
-                        read_but_refused(&mut diagnostic, &reason);
-                        diagnostic
-                    }));
-                    continue;
-                }
-            };
-            let group = groups.entry(label).or_default();
-            group.bores.insert((instance.token.clone(), key));
-            group.rims.extend(
-                hole.profile
-                    .rims
-                    .iter()
-                    .map(|edge| (instance.token.clone(), *edge)),
-            );
-            group
-                .sources
-                .extend(hole.cuts.into_iter().map(|(source, _)| source));
-        }
+        found.extend(
+            holes
+                .into_iter()
+                .map(|(key, hole)| (instance.token.clone(), key, hole)),
+        );
     }
-    Ok((groups, diagnostics))
+    Ok((found, diagnostics))
+}
+
+/// The holes grouped by their callout in `wording`; a hole that cannot be
+/// called out adds a diagnostic for each of its cuts.
+fn source_groups(
+    snapshot: &Snapshot,
+    holes: &InstanceHoles,
+    wording: Wording,
+    diagnostics: &mut Vec<HoleCalloutDiagnostic>,
+) -> BTreeMap<String, CalloutGroup> {
+    let mut groups: BTreeMap<String, CalloutGroup> = BTreeMap::new();
+    for (token, key, hole) in holes {
+        let label = match hole_label(snapshot, hole, wording) {
+            Ok(label) => label,
+            Err(reason) => {
+                diagnostics.extend(hole.cuts.iter().map(|(source, _)| {
+                    let mut diagnostic = unsupported(source.clone());
+                    read_but_refused(&mut diagnostic, &reason);
+                    diagnostic
+                }));
+                continue;
+            }
+        };
+        let group = groups.entry(label).or_default();
+        group.bores.insert((token.clone(), *key));
+        group
+            .rims
+            .extend(hole.profile.rims.iter().map(|edge| (token.clone(), *edge)));
+        group
+            .sources
+            .extend(hole.cuts.iter().map(|(source, _)| source.clone()));
+    }
+    groups
 }
 
 fn counted_label(label: &str, count: usize) -> String {
@@ -356,10 +378,107 @@ fn feature_hole(
     .map_err(Some)
 }
 
+/// How a callout is worded: in a sheet's language, or as callouts were
+/// worded before review 2026-11-19 (MF-805), in English with the pitch of the
+/// coarse thread and no depth of a tapped bore whose end the body leaves open.
+/// Callouts saved that way still read as current; they are never written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wording {
+    Sheet(SheetLanguage),
+    Before20261119,
+}
+
+impl Wording {
+    const ALL: [Self; 4] = [
+        Self::Sheet(SheetLanguage::English),
+        Self::Sheet(SheetLanguage::Czech),
+        Self::Sheet(SheetLanguage::Slovak),
+        Self::Before20261119,
+    ];
+
+    fn words(self) -> &'static Words {
+        match self {
+            Self::Sheet(SheetLanguage::English) | Self::Before20261119 => &ENGLISH,
+            Self::Sheet(SheetLanguage::Czech) => &CZECH,
+            Self::Sheet(SheetLanguage::Slovak) => &SLOVAK,
+        }
+    }
+
+    /// `value` without floating-point noise, with the sheet's decimal separator.
+    fn number(self, value: f64) -> String {
+        let written = number(value);
+        match self {
+            Self::Sheet(language) if language.decimal_comma() => written.replace('.', ","),
+            _ => written,
+        }
+    }
+}
+
+/// The words of a callout in one language.
+struct Words {
+    bore: &'static str,
+    through: &'static str,
+    depth: &'static str,
+    flat_bottom: &'static str,
+    point: &'static str,
+    cylindrical_depth: &'static str,
+    counterbore: &'static str,
+    step: &'static str,
+    countersink: &'static str,
+    /// The thread with its size `{}`.
+    thread: fn(&str) -> String,
+}
+
+const ENGLISH: Words = Words {
+    bore: "BORE",
+    through: "THRU",
+    depth: "DEPTH",
+    flat_bottom: "FLAT BOTTOM",
+    point: "POINT",
+    cylindrical_depth: "CYLINDRICAL DEPTH",
+    counterbore: "COUNTERBORE",
+    step: "STEP",
+    countersink: "COUNTERSINK",
+    thread: |size| format!("{size} THREAD"),
+};
+
+const CZECH: Words = Words {
+    bore: "OTVOR",
+    through: "PRŮCHOZÍ",
+    depth: "HLOUBKA",
+    flat_bottom: "ROVNÉ DNO",
+    point: "HROT",
+    cylindrical_depth: "VÁLCOVÁ HLOUBKA",
+    counterbore: "ZAHLOUBENÍ",
+    step: "PŘECHOD",
+    countersink: "KUŽELOVÉ ZAHLOUBENÍ",
+    thread: |size| format!("ZÁVIT {size}"),
+};
+
+const SLOVAK: Words = Words {
+    bore: "OTVOR",
+    through: "PRIECHODNÝ",
+    depth: "HĹBKA",
+    flat_bottom: "ROVNÉ DNO",
+    point: "HROT",
+    cylindrical_depth: "VALCOVÁ HĹBKA",
+    counterbore: "ZÁHLBENIE",
+    step: "PRECHOD",
+    countersink: "KUŽEĽOVÉ ZÁHLBENIE",
+    thread: |size| format!("ZÁVIT {size}"),
+};
+
 /// The callout of `hole`: its thread, its bore and how it ends, then its
-/// counterbores and countersink. Depths are from the hole's entry.
-fn hole_label(snapshot: &Snapshot, hole: &Hole) -> Result<String, HoleUnsupported> {
+/// counterbores and countersink. Depths are from the hole's entry; a tapped
+/// bore keeps its drilled depth.
+fn hole_label(
+    snapshot: &Snapshot,
+    hole: &Hole,
+    wording: Wording,
+) -> Result<String, HoleUnsupported> {
     let profile = &hole.profile;
+    let words = wording.words();
+    let number = |value: f64| wording.number(value);
     let from_entry = |depth: f64| depth - profile.entry;
     let Some(bore) = profile.bores.last() else {
         return Err(HoleUnsupported::NoBore);
@@ -375,40 +494,63 @@ fn hole_label(snapshot: &Snapshot, hole: &Hole) -> Result<String, HoleUnsupporte
         .collect::<Vec<_>>();
     let thread = match threaded.as_slice() {
         [] => None,
-        [(source, entry)] => Some(thread_label(snapshot, profile, source.feature_id, *entry)?),
+        [(source, entry)] => Some(thread_label(
+            snapshot,
+            profile,
+            source.feature_id,
+            *entry,
+            wording,
+        )?),
         _ => return Err(HoleUnsupported::TwoThreads),
     };
     let diameter = number(bore.diameter);
     let depth = number(from_entry(bore.to));
     let only_bore = profile.bores.len() == 1 && profile.countersink.is_none();
+    let Words {
+        bore: bore_word,
+        depth: depth_word,
+        ..
+    } = words;
     let mut parts = thread.into_iter().collect::<Vec<_>>();
     parts.push(match profile.end {
-        HoleEnd::Through => format!("BORE Ø{diameter} mm THRU"),
-        HoleEnd::FlatBottom => format!("BORE Ø{diameter} mm DEPTH {depth} mm, FLAT BOTTOM"),
-        HoleEnd::Point(angle) => format!(
-            "BORE Ø{diameter} mm DEPTH {depth} mm, {}° POINT",
-            number(angle)
+        HoleEnd::Through => format!("{bore_word} Ø{diameter} mm {}", words.through),
+        HoleEnd::FlatBottom => format!(
+            "{bore_word} Ø{diameter} mm {depth_word} {depth} mm, {}",
+            words.flat_bottom
         ),
-        HoleEnd::Unknown if !parts.is_empty() => format!("BORE Ø{diameter} mm"),
-        HoleEnd::Unknown if only_bore => {
-            format!("BORE Ø{diameter} mm; CYLINDRICAL DEPTH {depth} mm")
+        HoleEnd::Point(angle) => format!(
+            "{bore_word} Ø{diameter} mm {depth_word} {depth} mm, {}° {}",
+            number(angle),
+            words.point
+        ),
+        HoleEnd::Unknown if wording == Wording::Before20261119 && !parts.is_empty() => {
+            format!("{bore_word} Ø{diameter} mm")
         }
-        HoleEnd::Unknown => format!("BORE Ø{diameter} mm CYLINDRICAL DEPTH {depth} mm"),
+        HoleEnd::Unknown if only_bore && parts.is_empty() => format!(
+            "{bore_word} Ø{diameter} mm; {} {depth} mm",
+            words.cylindrical_depth
+        ),
+        HoleEnd::Unknown => format!(
+            "{bore_word} Ø{diameter} mm {} {depth} mm",
+            words.cylindrical_depth
+        ),
     });
     for counterbore in &profile.bores[..profile.bores.len() - 1] {
         let mut part = format!(
-            "COUNTERBORE Ø{} mm DEPTH {} mm",
+            "{} Ø{} mm {depth_word} {} mm",
+            words.counterbore,
             number(counterbore.diameter),
             number(from_entry(counterbore.to))
         );
         if let Some(angle) = counterbore.step_angle {
-            part.push_str(&format!(", {}° STEP", number(angle)));
+            part.push_str(&format!(", {}° {}", number(angle), words.step));
         }
         parts.push(part);
     }
     if let Some((diameter, angle)) = profile.countersink {
         parts.push(format!(
-            "COUNTERSINK Ø{} mm × {}°",
+            "{} Ø{} mm × {}°",
+            words.countersink,
             number(diameter),
             number(angle)
         ));
@@ -417,12 +559,14 @@ fn hole_label(snapshot: &Snapshot, hole: &Hole) -> Result<String, HoleUnsupporte
 }
 
 /// The thread tapped by the cut `id` into the bore of its diameter, which the
-/// thread must start at; `entry` is the hole's entry from the cut's start.
+/// thread must start at; `entry` is the hole's entry from the cut's start. The
+/// thread is an ISO metric coarse one, whose pitch its size names ("M8").
 fn thread_label(
     snapshot: &Snapshot,
     profile: &HoleProfile,
     id: FeatureId,
     entry: f64,
+    wording: Wording,
 ) -> Result<String, HoleUnsupported> {
     let tolerance = ketchup_tolerance::APPROXIMATION;
     let Some(thread) = snapshot.tapped_hole(id) else {
@@ -452,11 +596,17 @@ fn thread_label(
     }
     .check(ketchup_tolerance::APPROXIMATION)
     .map_err(HoleUnsupported::Thread)?;
+    let size = if wording == Wording::Before20261119 {
+        format!("{} x {}", thread.size, number(thread.pitch_mm))
+    } else {
+        thread.size.clone()
+    };
+    let words = wording.words();
     Ok(format!(
-        "{} x {} THREAD DEPTH {} mm",
-        thread.size,
-        number(thread.pitch_mm),
-        number(thread.length_mm)
+        "{} {} {} mm",
+        (words.thread)(&size),
+        words.depth,
+        wording.number(thread.length_mm)
     ))
 }
 
@@ -482,33 +632,49 @@ pub(super) fn validate_owned(
         .iter()
         .filter(|note| note.hole_callout_sources().is_some())
         .collect::<Vec<_>>();
-    let mut anchors = BTreeMap::new();
     if generated.is_empty() {
-        return Ok(anchors);
+        return Ok(BTreeMap::new());
     }
-    let (groups, _) = source_groups(snapshot, instances)?;
-    let shown = groups
+    let (holes, _) = instance_holes(snapshot, instances)?;
+    // A sheet's callouts are all generated in one wording, whichever it was.
+    for wording in Wording::ALL {
+        if let Some(anchors) = owned_in(snapshot, sheet, views, &holes, wording, &generated) {
+            return Ok(anchors);
+        }
+    }
+    Err(DrawingError::AnnotationSourceLost)
+}
+
+/// Which `generated` note points at which rims when every one of them is the
+/// current callout of a shown hole group in `wording`.
+fn owned_in(
+    snapshot: &Snapshot,
+    sheet: &DrawingSheet,
+    views: &[OrthographicView],
+    holes: &InstanceHoles,
+    wording: Wording,
+    generated: &[&DrawingNote],
+) -> Option<BTreeMap<DrawingNoteId, std::collections::BTreeSet<Rim>>> {
+    let shown = source_groups(snapshot, holes, wording, &mut Vec::new())
         .into_iter()
         .filter(|(_, group)| !rim_circles(sheet, views, &group.rims).is_empty())
         .collect::<Vec<_>>();
     if generated.len() != shown.len() {
-        return Err(DrawingError::AnnotationSourceLost);
+        return None;
     }
+    let mut anchors = BTreeMap::new();
     for (label, group) in shown {
         let text = counted_label(&label, group.bores.len());
-        let note = generated
-            .iter()
-            .find(|note| {
-                note.text_template() == text
-                    && note.hole_callout_sources().is_some_and(|sources| {
-                        sources.len() == group.sources.len()
-                            && group.sources.iter().all(|source| sources.contains(source))
-                    })
-            })
-            .ok_or(DrawingError::AnnotationSourceLost)?;
+        let note = generated.iter().find(|note| {
+            note.text_template() == text
+                && note.hole_callout_sources().is_some_and(|sources| {
+                    sources.len() == group.sources.len()
+                        && group.sources.iter().all(|source| sources.contains(source))
+                })
+        })?;
         anchors.insert(note.id(), group.rims);
     }
-    Ok(anchors)
+    Some(anchors)
 }
 
 /// The full projected circles of `rims`, as (view index, circle), in sheet

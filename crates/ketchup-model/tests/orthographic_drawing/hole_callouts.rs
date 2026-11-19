@@ -4,8 +4,8 @@ use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
 };
 use ketchup_model::document::{HoleThread, ProfileSegment, Snapshot};
-use ketchup_model::drawing::OrthographicDrawing;
 use ketchup_model::drawing::hole_callouts::{HoleCalloutDiagnosticKind, generate_hole_callouts};
+use ketchup_model::drawing::{OrthographicDrawing, SheetLanguage};
 use ketchup_model::exact_product::{ExactBRepGraphFaceEvidence, ExactConeFaceEvidence};
 
 const CUT: FeatureId = FeatureId(5);
@@ -443,7 +443,16 @@ fn counterbored_document(depth: &str) -> DocumentStore {
 
 /// The callout texts `generate_hole_callouts` writes, after no diagnostic.
 fn callouts(snapshot: &Snapshot, results: &ExactResultRegistry) -> Vec<(String, usize)> {
-    let report = generate_hole_callouts(snapshot, results, &annotated_sheet()).unwrap();
+    callouts_in(snapshot, results, SheetLanguage::English)
+}
+
+/// The callout texts written in `language`, which the sheet shows.
+fn callouts_in(
+    snapshot: &Snapshot,
+    results: &ExactResultRegistry,
+    language: SheetLanguage,
+) -> Vec<(String, usize)> {
+    let report = generate_hole_callouts(snapshot, results, &annotated_sheet(), language).unwrap();
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     let drawing = project_orthographic_drawing(snapshot, results, &report.sheet).unwrap();
     report
@@ -558,11 +567,73 @@ fn hole_callouts_read_counterbores_countersinks_steps_and_ends_from_exact_faces(
     let tapped = tapped.current();
     assert_eq!(
         callouts(&tapped, &exact_hole(&tapped, &through)),
+        [("M8 THREAD DEPTH 12 mm; BORE Ø6.8 mm THRU".to_owned(), 1)]
+    );
+}
+
+/// Review 2026-11-19 MF-805: a callout is written in the sheet's language
+/// with its decimal separator, names a coarse thread by its size alone and
+/// keeps the drilled depth of a tapped bore.
+#[test]
+fn hole_callouts_speak_the_sheet_language_and_keep_the_tapped_depth() {
+    let counterbored = counterbored_document("5").current();
+    let stepped = exact_hole(
+        &counterbored,
+        &[(0., 4.5), (5., 4.5), (6.1, 3.4), (30., 3.4)],
+    );
+    assert_eq!(
+        callouts_in(&counterbored, &stepped, SheetLanguage::Czech),
         [(
-            "M8 x 1.25 THREAD DEPTH 12 mm; BORE Ø6.8 mm THRU".to_owned(),
+            "OTVOR Ø6,8 mm PRŮCHOZÍ; ZAHLOUBENÍ Ø9 mm HLOUBKA 5 mm, 90° PŘECHOD".to_owned(),
+            2
+        )]
+    );
+    assert_eq!(
+        callouts_in(&counterbored, &stepped, SheetLanguage::Slovak),
+        [(
+            "OTVOR Ø6,8 mm PRIECHODNÝ; ZÁHLBENIE Ø9 mm HĹBKA 5 mm, 90° PRECHOD".to_owned(),
+            2
+        )]
+    );
+    let snapshot = document().current();
+    assert_eq!(
+        callouts_in(
+            &snapshot,
+            &exact_hole(&snapshot, &[(0., 4.4), (1., 3.4), (18., 3.4), (21.4, 0.)]),
+            SheetLanguage::Slovak
+        ),
+        [(
+            "OTVOR Ø6,8 mm HĹBKA 18 mm, 90° HROT; KUŽEĽOVÉ ZÁHLBENIE Ø8,8 mm × 90°".to_owned(),
             1
         )]
     );
+    let mut tapped = document();
+    tapped
+        .apply_batch(&CommandBatch::new(vec![thread(12.)]))
+        .unwrap();
+    let tapped = tapped.current();
+    assert_eq!(
+        callouts_in(
+            &tapped,
+            &exact_hole(&tapped, &[(0., 3.4), (20., 3.4), (20., 0.)]),
+            SheetLanguage::Czech
+        ),
+        [(
+            "ZÁVIT M8 HLOUBKA 12 mm; OTVOR Ø6,8 mm HLOUBKA 20 mm, ROVNÉ DNO".to_owned(),
+            1
+        )]
+    );
+    // The body leaves the tapped bore's end open: its drilled depth is still
+    // written, not only the thread's.
+    let open = exact(&tapped, 20., true);
+    let report =
+        generate_hole_callouts(&tapped, &open, &annotated_sheet(), SheetLanguage::Slovak).unwrap();
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_eq!(
+        report.sheet.notes()[1].text_template(),
+        "ZÁVIT M8 HĹBKA 12 mm; OTVOR Ø6,8 mm VALCOVÁ HĹBKA 20 mm"
+    );
+    project_orthographic_drawing(&tapped, &open, &report.sheet).unwrap();
 }
 
 /// A bore that widens again below its entry is reported, never described as
@@ -581,7 +652,13 @@ fn hole_callouts_report_bores_that_widen_below_their_entry() {
             (30., 3.4),
         ],
     );
-    let report = generate_hole_callouts(&snapshot, &undercut, &annotated_sheet()).unwrap();
+    let report = generate_hole_callouts(
+        &snapshot,
+        &undercut,
+        &annotated_sheet(),
+        SheetLanguage::English,
+    )
+    .unwrap();
     assert_eq!(report.sheet.notes(), annotated_sheet().notes());
     let [diagnostic] = report.diagnostics.as_slice() else {
         panic!("{:?}", report.diagnostics)
@@ -674,6 +751,7 @@ fn hole_callout_leaders_point_at_their_own_bores_and_follow_the_view() {
         &snapshot,
         &exact_bores(&snapshot, &bores, 20.),
         &annotated_sheet(),
+        SheetLanguage::English,
     )
     .unwrap();
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -722,8 +800,13 @@ fn hole_callouts_refuse_holes_no_view_shows_as_a_circle() {
     let document = document();
     let snapshot = document.current();
     let front_only = sheet_with(vec![OrthographicViewKind::Front], vec![]);
-    let report =
-        generate_hole_callouts(&snapshot, &exact(&snapshot, 20., true), &front_only).unwrap();
+    let report = generate_hole_callouts(
+        &snapshot,
+        &exact(&snapshot, 20., true),
+        &front_only,
+        SheetLanguage::English,
+    )
+    .unwrap();
     assert!(report.sheet.notes().is_empty());
     assert!(
         report
@@ -753,7 +836,13 @@ fn hole_callouts_count_the_finished_cylinder_not_the_cut_features() {
         .unwrap();
     let snapshot = document.current();
     let results = exact(&snapshot, 20., true);
-    let report = generate_hole_callouts(&snapshot, &results, &annotated_sheet()).unwrap();
+    let report = generate_hole_callouts(
+        &snapshot,
+        &results,
+        &annotated_sheet(),
+        SheetLanguage::English,
+    )
+    .unwrap();
     assert!(report.diagnostics.is_empty());
     assert_eq!(
         report.sheet.notes()[1].text_template(),
@@ -785,6 +874,7 @@ fn hole_callouts_plain_and_tapped_export_regenerate_and_persist() {
         &document.current(),
         &exact(&document.current(), 20., true),
         &annotated_sheet(),
+        SheetLanguage::English,
     )
     .unwrap();
     assert!(plain.diagnostics.is_empty());
@@ -797,6 +887,7 @@ fn hole_callouts_plain_and_tapped_export_regenerate_and_persist() {
         &document.current(),
         &exact(&document.current(), 20., true),
         &plain.sheet,
+        SheetLanguage::English,
     )
     .unwrap();
     assert_eq!(again.sheet, plain.sheet);
@@ -816,11 +907,12 @@ fn hole_callouts_plain_and_tapped_export_regenerate_and_persist() {
         &document.current(),
         &exact(&document.current(), 20., true),
         &plain.sheet,
+        SheetLanguage::English,
     )
     .unwrap();
     assert_eq!(
         tapped.sheet.notes()[1].text_template(),
-        "M8 x 1.25 THREAD DEPTH 12 mm; BORE Ø6.8 mm"
+        "M8 THREAD DEPTH 12 mm; BORE Ø6.8 mm CYLINDRICAL DEPTH 20 mm"
     );
     assert_eq!(tapped.sheet.notes()[1].id(), plain.sheet.notes()[1].id());
     document
@@ -829,24 +921,35 @@ fn hole_callouts_plain_and_tapped_export_regenerate_and_persist() {
         ]))
         .unwrap();
     let bytes = persistence::save(&document.current());
-    let golden = concat!(
+    // A file saved before review 2026-11-19 (MF-805) keeps its callout, worded
+    // with the coarse pitch and without the tapped bore's depth: it still
+    // projects until the callouts are regenerated.
+    let fixture = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/persistence/format113-hole-callouts.bin"
-    );
-    if ketchup_test_env::update_golden() {
-        std::fs::write(golden, &bytes).unwrap();
-    }
-    let fixture = std::fs::read(golden).unwrap();
+    ))
+    .unwrap();
     let fixture_document = persistence::load(&fixture)
         .unwrap()
         .into_editable()
         .ok()
         .unwrap();
+    let saved = fixture_document
+        .current()
+        .drawing_sheet(SHEET)
+        .unwrap()
+        .clone();
     assert_eq!(
-        fixture_document.current().drawing_sheet(SHEET),
-        Some(&tapped.sheet)
+        saved.notes()[1].text_template(),
+        "M8 x 1.25 THREAD DEPTH 12 mm; BORE Ø6.8 mm"
     );
     assert_eq!(persistence::save(&fixture_document.current()), fixture);
+    project_orthographic_drawing(
+        &fixture_document.current(),
+        &exact(&fixture_document.current(), 20., true),
+        &saved,
+    )
+    .unwrap();
     let reopened = persistence::load(&bytes)
         .unwrap()
         .into_editable()
@@ -863,7 +966,7 @@ fn hole_callouts_plain_and_tapped_export_regenerate_and_persist() {
     let bundle = export_drawing(&reopened.current(), &drawing).unwrap();
     assert!(
         String::from_utf8_lossy(bundle.svg())
-            .contains("M8 x 1.25 THREAD DEPTH 12 mm; BORE Ø6.8 mm")
+            .contains("M8 THREAD DEPTH 12 mm; BORE Ø6.8 mm CYLINDRICAL DEPTH 20 mm")
     );
     assert!(String::from_utf8_lossy(bundle.dxf()).contains("THREAD DEPTH 12"));
     assert!(bundle.pdf().is_ok());
@@ -876,9 +979,14 @@ fn hole_callouts_stale_incomplete_and_removed_threads_never_export_old_text() {
         .apply_batch(&CommandBatch::new(vec![thread(12.)]))
         .unwrap();
     let old_exact = exact(&document.current(), 20., true);
-    let old = generate_hole_callouts(&document.current(), &old_exact, &annotated_sheet())
-        .unwrap()
-        .sheet;
+    let old = generate_hole_callouts(
+        &document.current(),
+        &old_exact,
+        &annotated_sheet(),
+        SheetLanguage::English,
+    )
+    .unwrap()
+    .sheet;
     document
         .apply_batch(&CommandBatch::new(vec![thread(10.)]))
         .unwrap();
@@ -887,7 +995,9 @@ fn hole_callouts_stale_incomplete_and_removed_threads_never_export_old_text() {
         project_orthographic_drawing(&document.current(), &changed, &old).unwrap_err(),
         DrawingError::AnnotationSourceLost
     );
-    let regenerated = generate_hole_callouts(&document.current(), &changed, &old).unwrap();
+    let regenerated =
+        generate_hole_callouts(&document.current(), &changed, &old, SheetLanguage::English)
+            .unwrap();
     assert!(
         regenerated.sheet.notes()[1]
             .text_template()
@@ -898,7 +1008,13 @@ fn hole_callouts_stale_incomplete_and_removed_threads_never_export_old_text() {
         project_orthographic_drawing(&document.current(), &incomplete, &old).unwrap_err(),
         DrawingError::AnnotationSourceLost
     );
-    let removed = generate_hole_callouts(&document.current(), &incomplete, &old).unwrap();
+    let removed = generate_hole_callouts(
+        &document.current(),
+        &incomplete,
+        &old,
+        SheetLanguage::English,
+    )
+    .unwrap();
     assert_eq!(removed.sheet.notes(), annotated_sheet().notes());
     assert!(
         removed
@@ -916,6 +1032,7 @@ fn hole_callouts_stale_incomplete_and_removed_threads_never_export_old_text() {
         &document.current(),
         &exact(&document.current(), 20., true),
         &old,
+        SheetLanguage::English,
     )
     .unwrap();
     assert!(
@@ -928,6 +1045,7 @@ fn hole_callouts_stale_incomplete_and_removed_threads_never_export_old_text() {
         &document.current(),
         &exact(&document.current(), 16., true),
         &plain.sheet,
+        SheetLanguage::English,
     )
     .unwrap();
     assert!(
