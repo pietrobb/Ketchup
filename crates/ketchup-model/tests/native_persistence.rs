@@ -1087,6 +1087,51 @@ fn native_container_preserves_optional_extensions_and_content_addressed_blobs() 
     );
 }
 
+/// An extension a released Kečup reads with fields missing, and drops at its
+/// next Save, makes the file container schema 3, which every release refuses as
+/// newer (review 2026-11-10 REL-404); the mark survives Open and Save, and a
+/// file without such an extension stays schema 1.
+#[test]
+fn an_extension_released_readers_would_lose_makes_the_container_newer_than_they_read() {
+    let store = graph_document();
+    let schema = |bytes: &[u8]| u16::from_le_bytes([bytes[10], bytes[11]]);
+    let entry = |lost: bool| {
+        let entry = persistence::ExtensionEntry::new(
+            "org.example.sheet",
+            "sheet.json",
+            false,
+            b"{}".to_vec(),
+        )
+        .unwrap();
+        if lost {
+            entry.lost_by_released_readers()
+        } else {
+            entry
+        }
+    };
+    let mut plain = persistence::ContainerData::default();
+    plain.set_extension(entry(false));
+    let bytes = persistence::save_container(&store.current(), &plain).unwrap();
+    assert_eq!(schema(&bytes), 1);
+
+    let mut newer = persistence::ContainerData::default();
+    newer.set_extension(entry(true));
+    let bytes = persistence::save_container(&store.current(), &newer).unwrap();
+    assert_eq!(schema(&bytes), 3);
+    let loaded = persistence::load(&bytes).unwrap();
+    assert_eq!(loaded.disposition(), LoadDisposition::EditableLossless);
+    let extension = loaded.container_data().extensions().next().unwrap();
+    assert!(!extension.required());
+    assert!(extension.is_lost_by_released_readers());
+    let again = persistence::save_container(&loaded.snapshot(), loaded.container_data()).unwrap();
+    assert_eq!(again, bytes, "the mark is kept by Open and Save");
+
+    // The flag byte 2 means nothing in an older schema.
+    let mut forged = bytes;
+    forged[10..12].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(persistence::load(&forged).is_err());
+}
+
 #[test]
 fn unknown_required_extension_is_preserved_but_blocks_editing() {
     let store = graph_document();
