@@ -10,6 +10,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+mod speed;
+pub use speed::{perf_budget, perf_slowdown};
+
 /// The Python interpreter tests run scripts with.
 pub const PYTHON: &str = "KETCHUP_PYTHON";
 /// When set, tests rewrite their golden files from the actual output.

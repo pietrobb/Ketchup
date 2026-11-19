@@ -1,14 +1,16 @@
 //! The printable structural calculation in Slovak or Czech (review 2026-11-08
 //! §5.3): one HTML page set from a [`Report`], laid out for A4, as an annex to
-//! the documents of a building permit. For each member it gives its inputs,
+//! the documents of a building permit. It opens with the overall verdict and
+//! the exit code of the command line, and every error and warning of the
+//! report (og:R1110-PG-402). For each member it gives its inputs,
 //! each check with the clause and equation it follows, the governing
 //! combination and place, and the stretches of its edges that parts hold
 //! sideways; then the joints. It prints what the report computed and nothing
 //! more: a member left not verified says so with why, and the page leaves the
 //! lines for the engineer who signs it.
-use crate::Report;
-use crate::loads::{LOAD_KINDS, Loads, MemberLoad};
-use crate::member_check::{BracingDemand, Check, MemberCheck};
+use crate::loads::{Brace, LOAD_KINDS, Loads, MemberLoad};
+use crate::member_check::{Check, MemberCheck};
+use crate::{Report, Severity, Statics};
 
 /// The language of the calculation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,8 +250,10 @@ pub fn document(title: &str, report: &Report, language: Language) -> String {
             "Příloha k dokumentaci pro stavební povolení. Vypočtená kontrola, nikoli autorizovaný statický návrh: platí až po ověření a podpisu autorizovaným inženýrem."
         )
     ));
+    verdict(&mut out, report, l);
     signatures(&mut out, l);
     scope(&mut out, report, l);
+    warnings(&mut out, report, l);
     let design = &report.design;
     let summary = design.summary();
     out.push_str(&format!(
@@ -301,6 +305,122 @@ fn signatures(out: &mut String, l: Language) {
         l.says("Vypracoval", "Vypracoval"),
         l.says("Overil a podpísal", "Ověřil a podepsal")
     ));
+}
+
+/// The overall verdict with the exit code the command line gives for the same
+/// report (og:R1110-PG-402: a lost load exited 3 while the page read as passing).
+fn verdict(out: &mut String, report: &Report, l: Language) {
+    let code = report.exit_code();
+    let (word, why) = match code {
+        0 if report.statics() == Statics::None => (
+            l.says("BEZ STATICKÉHO POSUDKU", "BEZ STATICKÉHO POSUDKU"),
+            l.says(
+                "program nemá nosný prvok ani nosný spoj, ktorý by kontrola posúdila.",
+                "program nemá nosný prvek ani nosný spoj, který by kontrola posoudila.",
+            ),
+        ),
+        0 => (
+            l.says("VYHOVUJE", "VYHOVUJE"),
+            l.says(
+                "všetky posúdené prvky a spoje vyhovujú a každé zaťaženie dosiahlo nosný prvok.",
+                "všechny posouzené prvky a spoje vyhovují a každé zatížení dosáhlo nosný prvek.",
+            ),
+        ),
+        1 => (
+            l.says("NEVYHOVUJE", "NEVYHOVUJE"),
+            l.says(
+                "niektorý prvok alebo spoj nevyhovuje, alebo model má chybu; pozri Upozornenia.",
+                "některý prvek nebo spoj nevyhovuje, nebo model má chybu; viz Upozornění.",
+            ),
+        ),
+        2 => (
+            l.says("NEPLATNÉ", "NEPLATNÉ"),
+            l.says(
+                "zadaná hodnota (--set) nepatrí žiadnemu parametru programu, výpočet teda nie je pre zadané hodnoty.",
+                "zadaná hodnota (--set) nepatří žádnému parametru programu, výpočet tedy není pro zadané hodnoty.",
+            ),
+        ),
+        _ => (
+            l.says("NEOVERENÉ", "NEOVĚŘENO"),
+            l.says(
+                "nič nie je nevyhovujúce, ale niektorý prvok alebo spoj nie je overený, alebo zaťaženie nedosiahlo žiadny prvok; pozri Upozornenia.",
+                "nic není nevyhovující, ale některý prvek nebo spoj není ověřen, nebo zatížení nedosáhlo žádný prvek; viz Upozornění.",
+            ),
+        ),
+    };
+    out.push_str(&format!(
+        "<p class=\"verdict\">{}: <b>{word}</b> ({} {code}) — {why}</p>\n",
+        l.says("Celkový výsledok", "Celkový výsledek"),
+        l.says("návratový kód", "návratový kód"),
+    ));
+}
+
+/// Every error and warning of the report, the members and joints that do not
+/// pass, and the values given for no parameter (og:R1110-PG-402).
+fn warnings(out: &mut String, report: &Report, l: Language) {
+    out.push_str(&format!(
+        "<h2>{}</h2>\n",
+        l.says("Upozornenia", "Upozornění")
+    ));
+    let mut rows: Vec<[String; 4]> = Vec::new();
+    for issue in &report.issues {
+        rows.push([
+            match issue.severity {
+                Severity::Error => l.says("chyba", "chyba"),
+                Severity::Warning => l.says("varovanie", "varování"),
+            }
+            .to_owned(),
+            escape(issue.kind),
+            escape(&issue.parts.join(", ")),
+            escape(&issue.message),
+        ]);
+    }
+    for name in &report.unused_overrides {
+        rows.push([
+            l.says("chyba", "chyba").to_owned(),
+            "--set".to_owned(),
+            "—".to_owned(),
+            escape(&format!(
+                "{name}: the program has no parameter of that name"
+            )),
+        ]);
+    }
+    for member in report.design.members.iter().filter(|m| m.status != "pass") {
+        rows.push([
+            status(member.status, l).to_owned(),
+            l.says("prvok", "prvek").to_owned(),
+            escape(&member.part),
+            escape(&member.missing.join("; ")),
+        ]);
+    }
+    for joint in report.joints.iter().filter(|j| j.status != "pass") {
+        rows.push([
+            status(joint.status, l).to_owned(),
+            format!("{} ({})", l.says("spoj", "spoj"), escape(&joint.kind)),
+            escape(&joint.parts.join(", ")),
+            escape(&format!("{}: {}", joint.joint, joint.missing.join("; "))),
+        ]);
+    }
+    if rows.is_empty() {
+        out.push_str(&format!("<p>{}</p>\n", l.says("Žiadne.", "Žádná.")));
+        return;
+    }
+    out.push_str(&format!(
+        "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>\n",
+        l.says("Závažnosť", "Závažnost"),
+        l.says("Druh", "Druh"),
+        l.says("Časti", "Části"),
+        l.says(
+            "Znenie kontroly (v angličtine)",
+            "Znění kontroly (v angličtině)"
+        ),
+    ));
+    for [severity, kind, parts, message] in rows {
+        out.push_str(&format!(
+            "<tr><td class=\"fail\">{severity}</td><td>{kind}</td><td>{parts}</td><td>{message}</td></tr>\n"
+        ));
+    }
+    out.push_str("</table>\n");
 }
 
 fn scope(out: &mut String, report: &Report, l: Language) {
@@ -444,7 +564,7 @@ fn member_section(
         }
         out.push_str("</table>\n");
     }
-    held(out, load, &member.bracing, l);
+    held(out, load, member, l);
     if !member.missing.is_empty() {
         out.push_str(&format!(
             "<p><b>{}</b></p>\n<ul class=\"note\">\n",
@@ -461,9 +581,11 @@ fn member_section(
     out.push_str("</section>\n");
 }
 
-/// The stretches of the member's edges that parts hold sideways, and what
-/// the braces of each compressed edge must take.
-fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], l: Language) {
+/// The stretches of the member's edges that the braces the check counted hold
+/// sideways, the stiffness and buckling force of each one's path to the
+/// ground, the parts touching an edge that it did not count, and what the
+/// braces of each compressed edge must take (R1119og-PG-802).
+fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: Language) {
     let edge = |edge: &str| {
         if edge == "top" {
             l.says("horný", "horní")
@@ -471,7 +593,15 @@ fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], 
             l.says("dolný", "dolní")
         }
     };
-    let braces = load.map_or(&[][..], |load| load.braced_by.as_slice());
+    let at = |brace: &Brace| {
+        if brace.to_mm - brace.from_mm < 0.5 {
+            format!("{} mm", number(brace.from_mm, 0))
+        } else {
+            format!("{}–{} mm", number(brace.from_mm, 0), number(brace.to_mm, 0))
+        }
+    };
+    let braces = member.held_by.as_slice();
+    let demands = member.bracing.as_slice();
     out.push_str(&format!(
         "<p><b>{}</b> ",
         l.says(
@@ -491,26 +621,78 @@ fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], 
         let stretches: Vec<String> = braces
             .iter()
             .map(|brace| {
-                let at = if brace.to_mm - brace.from_mm < 0.5 {
-                    format!("{} mm", number(brace.from_mm, 0))
-                } else {
-                    format!("{}–{} mm", number(brace.from_mm, 0), number(brace.to_mm, 0))
-                };
                 format!(
-                    "{} {} {at} ({})",
+                    "{} {} {} ({})",
                     edge(&brace.edge),
                     l.says("okraj", "okraj"),
+                    at(brace),
                     escape(&brace.part)
                 )
             })
             .collect();
         out.push_str(&format!("{}</p>\n", stretches.join("; ")));
     }
+    let mut dropped: Vec<&str> = Vec::new();
+    for brace in load.map_or(&[][..], |load| load.braced_by.as_slice()) {
+        if !braces.contains(brace) && !dropped.contains(&brace.part.as_str()) {
+            dropped.push(&brace.part);
+        }
+    }
+    if !dropped.is_empty() {
+        out.push_str(&format!(
+            "<p class=\"note\">{} {}.</p>\n",
+            escape(&dropped.join(", ")),
+            l.says(
+                "sa okraja dotýkajú, ale kontrola ich nezapočítala (dôvod v časti Neoverené)",
+                "se okraje dotýkají, ale kontrola je nezapočítala (důvod v části Neověřeno)"
+            )
+        ));
+    }
+    if !braces.is_empty() {
+        out.push_str(&format!(
+            "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>C ({})</th><th>F_cap ({})</th><th>{}</th></tr>\n",
+            l.says("Výstuha", "Výztuha"),
+            l.says("Okraj", "Okraj"),
+            l.says("Miesto", "Místo"),
+            l.says("tuhosť cesty k zemi", "tuhost cesty k zemi"),
+            l.says("vzper cesty", "vzpěr cesty"),
+            l.says("Cesta vedie cez", "Cesta vede přes"),
+        ));
+        for brace in braces {
+            let (stiffness, capacity, through) = match &brace.anchorage {
+                Some(anchorage) => (
+                    format!("{} N/mm", number(anchorage.stiffness_n_mm, 1)),
+                    anchorage.capacity_n.map_or_else(
+                        || l.says("bez vzperu", "bez vzpěru").to_owned(),
+                        |n| format!("{} kN", kilonewtons(n)),
+                    ),
+                    escape(&anchorage.through),
+                ),
+                None => (
+                    "—".to_owned(),
+                    "—".to_owned(),
+                    l.says(
+                        "doska tuhej dosky (diafragmy), nevypočítaná",
+                        "deska tuhé desky (diafragmy), nevypočtena",
+                    )
+                    .to_owned(),
+                ),
+            };
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{stiffness}</td><td class=\"n\">{capacity}</td><td>{through}</td></tr>\n",
+                escape(&brace.part),
+                edge(&brace.edge),
+                at(brace),
+            ));
+        }
+        out.push_str("</table>\n");
+    }
     if !demands.is_empty() {
         out.push_str(&format!(
-            "<table>\n<tr><th>{}</th><th>{}</th><th>N_d (9.2.5.2(4))</th><th>F_d (9.35, 9.36)</th><th>C (9.34)</th></tr>\n",
+            "<table>\n<tr><th>{}</th><th>{}</th><th>N_d (9.2.5.2(4))</th><th>F_d (9.35, 9.36)</th><th>{} C (9.34)</th></tr>\n",
             l.says("Okraj", "Okraj"),
             l.says("Drží ho", "Drží ho"),
+            l.says("požadovaná", "požadovaná"),
         ));
         for demand in demands {
             out.push_str(&format!(
@@ -527,8 +709,8 @@ fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], 
         out.push_str(&format!(
             "</table>\n<p class=\"note\">{}</p>\n",
             l.says(
-                "Výstuhy, ich ukotvenie a spojovacie prostriedky na tieto sily posúdené nie sú.",
-                "Výztuhy, jejich ukotvení a spojovací prostředky na tyto síly posouzeny nejsou."
+                "Výstuha sa započíta, len keď jej cesta k zemi drží prvok aspoň s tuhosťou C a vybočí až pri sile väčšej ako F_d (EN 1995-1-1 9.2.5.3). Pevnosť výstuh a ich spojovacích prostriedkov na sily F_d posúdená nie je.",
+                "Výztuha se započítá, jen když její cesta k zemi drží prvek alespoň s tuhostí C a vybočí až při síle větší než F_d (EN 1995-1-1 9.2.5.3). Pevnost výztuh a jejich spojovacích prostředků na síly F_d posouzena není."
             )
         ));
     }

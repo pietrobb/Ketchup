@@ -145,11 +145,11 @@ fn sheet_annotations_gui_generates_exact_bore_text_and_undoes() {
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1800.0, 1600.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    harness.run();
+    settle(&mut harness);
     harness.get_by_label("Annotate sheet").click();
-    harness.run();
+    settle(&mut harness);
     harness.get_by_label("Generate hole callouts").click();
-    harness.run();
+    settle(&mut harness);
     let snapshot = harness.state().document.current();
     let sheet = snapshot.drawing_sheet(DrawingSheetId(id)).unwrap();
     assert_eq!(sheet.notes().len(), 1);
@@ -158,7 +158,7 @@ fn sheet_annotations_gui_generates_exact_bore_text_and_undoes() {
         "BORE Ø6 mm DEPTH 8 mm, FLAT BOTTOM"
     );
     harness.state_mut().dispatch_command(AppCommand::Undo);
-    harness.run();
+    settle(&mut harness);
     assert!(
         harness
             .state()
@@ -169,6 +169,20 @@ fn sheet_annotations_gui_generates_exact_bore_text_and_undoes() {
             .notes()
             .is_empty()
     );
+}
+
+/// Frames until the drawings window has found the floors on its worker, then
+/// four more for the clicked view to lay out. Exact evaluation and the
+/// drawings window keep asking for frames, which `Harness::run` takes for a
+/// window that never settles.
+fn settle(harness: &mut egui_kittest::Harness<'_, KetchupApp>) {
+    crate::tests::shell::step_until(
+        harness,
+        std::time::Duration::from_secs(120),
+        "the drawings window never found the floors",
+        |app| app.found_zero(&app.document.current()).is_some(),
+    );
+    harness.run_steps(4);
 }
 
 fn drilled_sheet() -> (KetchupApp, LiveBridge, u64) {
@@ -237,11 +251,11 @@ fn r8_refused_hole_callouts_name_the_cut_and_why_in_the_window_and_to_clients() 
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1800.0, 1600.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    harness.run();
+    settle(&mut harness);
     harness.get_by_label("Annotate sheet").click();
-    harness.run();
+    settle(&mut harness);
     harness.get_by_label("Generate hole callouts").click();
-    harness.run();
+    settle(&mut harness);
     let shown = harness
         .query_all_by_label_contains(": The finished body has no complete bore")
         .map(|label| {
