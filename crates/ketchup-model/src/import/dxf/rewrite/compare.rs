@@ -117,12 +117,19 @@ fn drawn_runs(lines: &UnderlayLines, id: usize, split: bool) -> Vec<Drawn<'_>> {
             styles: Vec::new(),
         };
         for part in &object.parts {
-            let Some(layer) = lines.layers().get(place(part.layer)) else {
+            let range = |range: &std::ops::Range<u32>| place(range.start)..place(range.end);
+            // A part the import made always lies within its layer.
+            let Some((layer, texts, fills)) =
+                lines.layers().get(place(part.layer)).and_then(|layer| {
+                    Some((
+                        layer,
+                        layer.texts().get(range(&part.texts))?,
+                        layer.fills().get(range(&part.fills))?,
+                    ))
+                })
+            else {
                 continue;
             };
-            let range = |range: &std::ops::Range<u32>| place(range.start)..place(range.end);
-            let texts = layer.texts().get(range(&part.texts)).unwrap_or_default();
-            let fills = layer.fills().get(range(&part.fills)).unwrap_or_default();
             own.styles.extend(
                 styles_in(layer, range(&part.points))
                     .chain(texts.iter().map(|text| text.style))
