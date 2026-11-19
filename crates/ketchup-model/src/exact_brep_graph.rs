@@ -537,6 +537,7 @@ pub enum ExactBRepOperation {
         target: ExactBRepNodeId,
         u_index: u32,
         v_index: u32,
+        from_bits: [u64; 3],
         offset_bits: [u64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight_bits: Option<u64>,

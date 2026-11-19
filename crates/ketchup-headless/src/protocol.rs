@@ -2548,6 +2548,7 @@ mod tests {
                 spindle_rpm: 10_000,
                 feed_mm_per_min: 600.0,
                 plunge_mm_per_min: 200.0,
+                point_angle_deg: None,
             },
             CamSetup {
                 work_offset: CamWorkOffset::G54,
@@ -2566,12 +2567,8 @@ mod tests {
             solid,
         )
         .unwrap();
-        let proposal = server
-            .session
-            .plan_commands(CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(
-                plan,
-            )]))
-            .unwrap();
+        let batch = CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(plan)]);
+        let proposal = server.session.plan_commands(batch).unwrap();
         server.session.apply_proposal(&proposal).unwrap();
         let state = server.state();
         let preview_params = || {

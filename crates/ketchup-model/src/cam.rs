@@ -73,6 +73,41 @@ pub struct CamTool {
     pub spindle_rpm: u32,
     pub feed_mm_per_min: f64,
     pub plunge_mm_per_min: f64,
+    /// Included angle of a drill's point; `None` is the standard
+    /// [`STANDARD_DRILL_POINT_ANGLE_DEG`], 180 a flat-bottom drill. Only a drill has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_angle_deg: Option<f64>,
+}
+
+/// The point angle of a standard twist drill (DIN 338).
+pub const STANDARD_DRILL_POINT_ANGLE_DEG: f64 = 118.0;
+/// Narrowest and widest point angle a drill may have.
+const DRILL_POINT_ANGLE_RANGE_DEG: std::ops::RangeInclusive<f64> = 60.0..=180.0;
+/// How far a drill's full diameter passes the exit of a through hole, so the hole
+/// breaks out clean instead of leaving a burr ring.
+pub const DRILL_BREAKTHROUGH_MM: f64 = 1.0;
+
+impl CamTool {
+    /// How far the cutting end reaches below the start of its full diameter: the
+    /// cone of a drill, the half sphere of a ball end mill, none for a flat end mill.
+    #[must_use]
+    pub fn tip_length_mm(&self) -> f64 {
+        let radius = self.diameter_mm * 0.5;
+        match self.kind {
+            CamToolKind::FlatEndMill => 0.0,
+            CamToolKind::BallEndMill => radius,
+            CamToolKind::Drill => {
+                let angle = self
+                    .point_angle_deg
+                    .unwrap_or(STANDARD_DRILL_POINT_ANGLE_DEG);
+                if angle >= 180.0 {
+                    0.0
+                } else {
+                    radius / (angle.to_radians() * 0.5).tan()
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -155,7 +190,11 @@ pub enum CamOperation {
         id: u64,
         points_mm: Vec<[f64; 2]>,
         top_z_mm: f64,
+        /// The floor of a blind hole, where the drill's point stops, or the exit
+        /// of a through hole, which its full diameter passes by
+        /// [`DRILL_BREAKTHROUGH_MM`].
         bottom_z_mm: f64,
+        through: bool,
     },
     /// Clears `region` down to `bottom_z_mm`, keeping the cutter one radius off
     /// its outer boundary and its islands.
@@ -722,6 +761,11 @@ impl CamPlan {
         digest.update(self.tool.spindle_rpm.to_le_bytes());
         digest_f64(&mut digest, self.tool.feed_mm_per_min);
         digest_f64(&mut digest, self.tool.plunge_mm_per_min);
+        // Absent from plans made before drills had a point angle, so their digest stays.
+        if let Some(angle) = self.tool.point_angle_deg {
+            digest.update(b"point_angle");
+            digest_f64(&mut digest, angle);
+        }
         digest.update([match self.setup.work_offset {
             CamWorkOffset::G54 => 0,
             CamWorkOffset::G55 => 1,
@@ -762,6 +806,33 @@ impl CamPlan {
                 CamPlanHealth::Invalid
             }
         }
+    }
+
+    /// The threads of the plan's part, tapped holes as "M8×1.25 depth 12" and
+    /// shaft threads as "M8×1.25 length 20": no CAM operation cuts a thread,
+    /// so a program of the plan leaves every one for the shop (review
+    /// 2026-11-19 MF-807).
+    #[must_use]
+    pub fn uncut_threads(&self, snapshot: &Snapshot) -> Vec<String> {
+        let of_part = |id: FeatureId| {
+            snapshot
+                .feature(id)
+                .is_some_and(|feature| feature.definition_id() == self.target.definition_id)
+        };
+        let tapped = snapshot
+            .hole_threads()
+            .filter(|(id, _)| of_part(*id))
+            .map(|(_, thread)| thread.label());
+        let shafts = snapshot
+            .shaft_threads()
+            .filter(|(id, _)| of_part(*id))
+            .map(|(_, thread)| {
+                format!(
+                    "{}×{} length {}",
+                    thread.size, thread.pitch_mm, thread.length_mm
+                )
+            });
+        tapped.chain(shafts).collect()
     }
 
     pub fn default_facing_operation(
@@ -1012,14 +1083,22 @@ impl CamToolpath {
                     points_mm,
                     top_z_mm,
                     bottom_z_mm,
+                    through,
                     ..
                 } => {
                     if points_mm.is_empty() || points_mm.len() > MAX_DRILL_POINTS {
                         return Err(CamPlannerError::InvalidOperations);
                     }
                     validate_z_range(*top_z_mm, *bottom_z_mm, target_bounds)?;
-                    let finished_z = *bottom_z_mm + plan.cut_parameters.axial_allowance_mm;
-                    validate_z(finished_z, target_bounds)?;
+                    // A hole is drilled to size in one go: no finishing pass takes an
+                    // axial allowance off later. A through hole is drilled until the
+                    // full diameter has passed its exit; under it the setup's fixtures
+                    // or spoilboard must leave room, which the simulation checks.
+                    let finished_z = if *through {
+                        *bottom_z_mm - plan.tool.tip_length_mm() - DRILL_BREAKTHROUGH_MM
+                    } else {
+                        *bottom_z_mm
+                    };
                     validate_cut_depth(*top_z_mm, finished_z, plan.tool.flute_length_mm)?;
                     let radius = plan.tool.diameter_mm * 0.5;
                     for point in points_mm {
@@ -2080,6 +2159,9 @@ fn validate_scalar_data(plan: &CamPlan) -> Result<(), CamError> {
         || !positive(plan.tool.plunge_mm_per_min)
         || plan.tool.feed_mm_per_min > MAX_FEED_MM_PER_MIN
         || plan.tool.plunge_mm_per_min > plan.tool.feed_mm_per_min
+        || plan.tool.point_angle_deg.is_some_and(|angle| {
+            plan.tool.kind != CamToolKind::Drill || !DRILL_POINT_ANGLE_RANGE_DEG.contains(&angle)
+        })
         || !positive(plan.setup.safe_height_mm)
         || !positive(plan.cut_parameters.maximum_stepdown_mm)
         || !plan.cut_parameters.stepover_ratio.is_finite()

@@ -2569,16 +2569,17 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
         minimum_mm: point(reader)?,
         maximum_mm: point(reader)?,
     };
+    let invalid = || {
+        PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
+            crate::cam::CamError::InvalidPlan,
+        ))
+    };
     let number = reader.u32()?;
     let kind = match reader.u8()? {
         1 => CamToolKind::FlatEndMill,
         2 => CamToolKind::BallEndMill,
         3 => CamToolKind::Drill,
-        _ => {
-            return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
-                crate::cam::CamError::InvalidPlan,
-            )));
-        }
+        _ => return Err(invalid()),
     };
     let tool = CamTool {
         number,
@@ -2591,6 +2592,7 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
         spindle_rpm: reader.u32()?,
         feed_mm_per_min: f64::from_bits(reader.u64()?),
         plunge_mm_per_min: f64::from_bits(reader.u64()?),
+        point_angle_deg: None,
     };
     let work_offset = match reader.u8()? {
         54 => CamWorkOffset::G54,
@@ -2599,11 +2601,7 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
         57 => CamWorkOffset::G57,
         58 => CamWorkOffset::G58,
         59 => CamWorkOffset::G59,
-        _ => {
-            return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
-                crate::cam::CamError::InvalidPlan,
-            )));
-        }
+        _ => return Err(invalid()),
     };
     let setup = CamSetup {
         work_offset,

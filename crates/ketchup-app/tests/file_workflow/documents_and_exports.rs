@@ -171,6 +171,7 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
             spindle_rpm: 10_000,
             feed_mm_per_min: 600.0,
             plunge_mm_per_min: 200.0,
+            drill_point_angle_deg: None,
             work_offset: AssistantCamWorkOffset::G54,
             origin_mm: [0.0, 0.0, 0.0],
             x_axis: [1.0, 0.0, 0.0],

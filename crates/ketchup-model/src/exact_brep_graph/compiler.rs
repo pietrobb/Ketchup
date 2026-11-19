@@ -639,6 +639,7 @@ impl<'a> GraphCompiler<'a> {
                 target,
                 u_index,
                 v_index,
+                from_mm,
                 offset_mm,
                 weight,
                 keep,
@@ -646,6 +647,7 @@ impl<'a> GraphCompiler<'a> {
                 target: self.body_id(*target)?,
                 u_index: *u_index,
                 v_index: *v_index,
+                from_bits: from_mm.map(f64::to_bits),
                 offset_bits: offset_mm.map(f64::to_bits),
                 weight_bits: weight.map(f64::to_bits),
                 keep: keep

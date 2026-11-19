@@ -122,6 +122,7 @@ fn plate_with_island_pocket_scaled(scale: f64) -> (DocumentStore, CamPlan) {
             spindle_rpm: 12_000,
             feed_mm_per_min: 600.0,
             plunge_mm_per_min: 150.0,
+            point_angle_deg: None,
         },
         CamSetup {
             work_offset: CamWorkOffset::G54,
@@ -496,13 +497,14 @@ fn plate_with_holes() -> (DocumentStore, CamPlan, FeatureId) {
             number: 3,
             kind: CamToolKind::Drill,
             diameter_mm: 2.0 * DRILL_RADIUS,
-            flute_length_mm: 12.0,
+            flute_length_mm: 14.0,
             overall_length_mm: 30.0,
             holder_diameter_mm: 10.0,
             holder_length_mm: 20.0,
             spindle_rpm: 3_000,
             feed_mm_per_min: 300.0,
             plunge_mm_per_min: 100.0,
+            point_angle_deg: None,
         },
         CamSetup {
             work_offset: CamWorkOffset::G54,
@@ -553,9 +555,11 @@ fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_c
     assert!((through.radius_mm - DRILL_RADIUS).abs() <= 1.0e-6);
     assert!((through.top_z_mm - 10.0).abs() <= 1.0e-6);
     assert!(through.bottom_z_mm.abs() <= 1.0e-6);
+    assert!(through.through);
     let blind = hole_at(BLIND_HOLE);
     assert!((blind.top_z_mm - 10.0).abs() <= 1.0e-6);
     assert!((blind.bottom_z_mm - 6.0).abs() <= 1.0e-6);
+    assert!(!blind.through);
     let wide = hole_at(WIDE_HOLE);
     assert!((wide.radius_mm - 4.0).abs() <= 1.0e-6);
 
@@ -570,11 +574,32 @@ fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_c
     let simulation = worker
         .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
         .unwrap();
-    let drilled_mm3 = std::f64::consts::PI * DRILL_RADIUS.powi(2) * (10.0 + 4.0);
+    // R1119og-MF-800: the standard 118° point is simulated as it is. It passes the
+    // through hole's exit with the full diameter, so that hole is made whole; in
+    // the flat-floored blind hole it leaves its cone, a third of whose cylinder it
+    // cuts, and the simulation counts that cone as stock left.
+    let point = plan.tool().tip_length_mm();
+    assert!((point - DRILL_RADIUS / 59.0_f64.to_radians().tan()).abs() <= 1.0e-12);
+    let deepest = toolpath
+        .motions
+        .iter()
+        .map(|motion| match &motion.path {
+            CamMotionPath::Line { end_mm, .. } | CamMotionPath::Arc { end_mm, .. } => end_mm[2],
+        })
+        .fold(f64::INFINITY, f64::min);
+    assert!((deepest - (-point - 1.0)).abs() <= 1.0e-9, "{deepest}");
+    let area = std::f64::consts::PI * DRILL_RADIUS.powi(2);
+    let cone_left_mm3 = area * point * 2.0 / 3.0;
+    let drilled_mm3 = area * (10.0 + 4.0) - cone_left_mm3;
+    let wide_mm3 = std::f64::consts::PI * 16.0 * 4.0;
     assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
     assert!(simulation.collisions.is_empty(), "{simulation:?}");
     assert!(
         (simulation.removed_stock_mm3 - drilled_mm3).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+    assert!(
+        (simulation.residual_stock_mm3 - (cone_left_mm3 + wide_mm3)).abs() <= 1.0e-3,
         "{simulation:?}"
     );
 
@@ -903,6 +928,7 @@ fn end_mill() -> CamTool {
         spindle_rpm: 12_000,
         feed_mm_per_min: 600.0,
         plunge_mm_per_min: 150.0,
+        point_angle_deg: None,
     }
 }
 

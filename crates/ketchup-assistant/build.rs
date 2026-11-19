@@ -2,7 +2,13 @@
 //! No second hand-maintained list of CAD variants is allowed here. Unsupported
 //! source syntax/serde attributes fail the build rather than publish a subset.
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, env, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    env,
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 use syn::{Fields, GenericArgument, Item, PathArguments, Type};
 
 #[derive(Default)]
@@ -223,23 +229,38 @@ impl Generator {
     }
 }
 
-fn main() {
-    let path = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src/sidecar.rs");
-    println!("cargo:rerun-if-changed={}", path.display());
-    let source = fs::read_to_string(path).expect("read authoritative CAD wire contract");
-    let ast = syn::parse_file(&source).expect("parse CAD wire contract");
-    let items = ast
-        .items
-        .into_iter()
-        .filter_map(|item| {
+/// The structs and enums of the wire contract: sidecar.rs and the modules beside it in
+/// src/sidecar. A type named twice is an error, so the schema never picks one silently.
+fn contract_items(source: &Path) -> Result<BTreeMap<String, Item>, Box<dyn Error>> {
+    let directory = source.join("sidecar");
+    println!("cargo:rerun-if-changed={}", directory.display());
+    let mut paths = vec![source.join("sidecar.rs")];
+    for entry in fs::read_dir(&directory)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            paths.push(path);
+        }
+    }
+    let mut items = BTreeMap::new();
+    for path in paths {
+        println!("cargo:rerun-if-changed={}", path.display());
+        for item in syn::parse_file(&fs::read_to_string(&path)?)?.items {
             let name = match &item {
                 Item::Struct(s) => s.ident.to_string(),
                 Item::Enum(e) => e.ident.to_string(),
-                _ => return None,
+                _ => continue,
             };
-            Some((name, item))
-        })
-        .collect();
+            if items.insert(name.clone(), item).is_some() {
+                return Err(format!("CAD schema type {name} is defined twice").into());
+            }
+        }
+    }
+    Ok(items)
+}
+
+fn main() {
+    let source = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("src");
+    let items = contract_items(&source).expect("read the authoritative CAD wire contract");
     let mut generator = Generator {
         items,
         definitions: Map::new(),
