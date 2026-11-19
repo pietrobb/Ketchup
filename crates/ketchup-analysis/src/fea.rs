@@ -4,7 +4,7 @@ use crate::fea_coupling::{
 };
 use crate::fea_frame::{
     ElementAxes, FRAME_DOFS, FrameError, consistent_load, local_stiffness, multiply,
-    peak_von_mises, valid_section,
+    peak_displacement, peak_von_mises, valid_section,
 };
 pub use crate::fea_modal::{
     FEA_MODAL_SOLVER_VERSION_V2, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
@@ -601,11 +601,11 @@ impl FeaModel {
                 })
             })
             .collect::<Vec<_>>();
+        let (element_results, frame_peak_mm) = self.element_results(&layout, &displacement)?;
         let maximum_displacement_mm = displacements_mm
             .iter()
             .map(|value| length(*value))
-            .fold(0.0, f64::max);
-        let element_results = self.element_results(&layout, &displacement)?;
+            .fold(frame_peak_mm, f64::max);
         let maximum_von_mises_stress_mpa = element_results
             .iter()
             .map(|result| result.von_mises_stress_mpa)
@@ -662,7 +662,9 @@ impl FeaModel {
                     "geometric nonlinearity",
                     "plasticity",
                     "contact",
-                    "buckling and dynamics",
+                    // Review 2026-11-19 og FEA-809: the answer may carry natural
+                    // frequencies, and the parts' own weight was silently left out.
+                    "buckling, forced and transient dynamics (natural frequencies come only from a modes study), and self-weight: only the given loads act",
                     "anisotropic materials (timber, wood panels; checked by timber_design): the material is isotropic and its von Mises stress is compared with one yield strength",
                 ],
             },
@@ -1271,13 +1273,16 @@ impl FeaModel {
         Ok(prescribed.into_keys().collect())
     }
 
+    /// Each element's result, and the largest move inside any frame element.
     fn element_results(
         &self,
         layout: &DofLayout,
         displacement: &[f64],
-    ) -> Result<Vec<FeaElementResult>, FeaError> {
+    ) -> Result<(Vec<FeaElementResult>, f64), FeaError> {
         let frame_loads = self.frame_loads();
-        self.elements
+        let mut frame_peak_mm: f64 = 0.0;
+        let results = self
+            .elements
             .iter()
             .map(|element| {
                 Ok(match element.kind {
@@ -1354,6 +1359,13 @@ impl FeaModel {
                             *value -= share;
                         }
                         let von_mises = peak_von_mises(&section, end_forces, load, frame.length_mm);
+                        frame_peak_mm = frame_peak_mm.max(peak_displacement(
+                            material.youngs_modulus_mpa,
+                            &section,
+                            local_displacement,
+                            load,
+                            frame.length_mm,
+                        ));
                         FeaElementResult {
                             element_id: element.id,
                             strain_energy_n_mm: 0.5
@@ -1370,7 +1382,8 @@ impl FeaModel {
                     }
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, FeaError>>()?;
+        Ok((results, frame_peak_mm))
     }
 
     fn characteristic_length(&self) -> f64 {
