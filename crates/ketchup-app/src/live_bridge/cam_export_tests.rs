@@ -19,13 +19,16 @@ fn cam_window(dialogs: &ScriptedFileDialogs) -> (KetchupApp, LiveBridge, tempfil
             minimum_mm: [0.0, 0.0, 0.0],
             maximum_mm: [20.0, 10.0, 7.0],
         },
+        None,
     )
 }
 
-/// The window of [`cam_window`] with its plan cutting `stock`, the block placed once.
+/// The window of [`cam_window`] with its plan cutting `stock`, the block placed once and,
+/// before the plan is made, tapped through its middle as `thread` (size, tap drill, thread depth) says.
 fn cam_window_over(
     dialogs: &ScriptedFileDialogs,
     stock: CamStock,
+    thread: Option<(&str, f64, f64)>,
 ) -> (KetchupApp, LiveBridge, tempfile::TempDir) {
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs.clone()));
     let worker = ketchup_application::evaluation::exact_worker_candidates()
@@ -65,6 +68,28 @@ fn cam_window_over(
             },
         ]))
         .unwrap();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    if let Some((size, tap_drill_mm, depth_mm)) = thread {
+        super::program_edit::evaluate_exact(&mut app);
+        let top = super::drill_holes::face(&mut app, &mut bridge, "plane", [0.0, 0.0, 1.0]);
+        let tapped = super::drill_holes::edit(AssistantCadEditOperation::DrillHoles {
+            definition_id: definition.0,
+            name: "tapped hole".to_owned(),
+            target_feature_id: top["producer_feature_id"].as_u64().unwrap(),
+            face_reference_id: top["reference_id"].as_str().unwrap().to_owned(),
+            points_local_mm: vec![super::drill_holes::centroid(&top)],
+            diameter_mm: tap_drill_mm,
+            depth_mm: None,
+            through: true,
+            thread: Some(ketchup_assistant::sidecar::AssistantHoleThread {
+                size: size.to_owned(),
+                depth_mm,
+                modeled_thread: None,
+            }),
+        });
+        let applied = bridge.execute(&mut app, tapped, false).unwrap();
+        assert_eq!(applied["published"], true, "{applied}");
+    }
     let plan = CamPlan::new(
         &app.document.current(),
         CamPlanId(95),
@@ -105,7 +130,6 @@ fn cam_window_over(
             plan,
         )]))
         .unwrap();
-    let bridge = transport::start(egui::Context::default()).unwrap();
     (app, bridge, tempfile::tempdir().unwrap())
 }
 
@@ -139,6 +163,45 @@ fn dialect_name(id: &str) -> String {
         CamPostprocessorDialect::GCode(dialect) => dialect.name().to_owned(),
         CamPostprocessorDialect::ControllerNeutralJson => unreachable!("{id} is G-code"),
     }
+}
+
+/// Review 2026-11-19 MF-807: no operation cuts a thread. A client's program names them in
+/// `lost`, without a prompt (R1); the window's release prompt names them to the user.
+#[test]
+fn the_cam_program_names_the_threads_of_its_part_it_does_not_cut() {
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval(7);
+    let (mut app, mut bridge, directory) = cam_window_over(
+        &dialogs,
+        CamStock {
+            minimum_mm: [0.0, 0.0, 0.0],
+            maximum_mm: [20.0, 10.0, 7.0],
+        },
+        Some(("M4", 3.3, 4.0)),
+    );
+    let target = directory.path().join("facing.ngc");
+    let exported = bridge
+        .execute(&mut app, cam_export(&target, "cam_nc", None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(
+        exported["lost"],
+        json!(["CAM target: thread M4×0.7 depth 4"]),
+        "{exported}"
+    );
+    assert!(dialogs.high_risk_prompts().is_empty());
+
+    let first = CamPostprocessorDialect::library_ids().unwrap()[0].clone();
+    let written = app
+        .export_current_cam_program_to(
+            &directory.path().join("window.ngc"),
+            CamPostprocessorDialect::library(&first).unwrap(),
+            Vec::new(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(written.lost, ["CAM target: thread M4×0.7 depth 4"]);
+    let prompts = dialogs.high_risk_prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("M4×0.7 depth 4"), "{}", prompts[0]);
 }
 
 /// Owner decisions R1 and R3 (review 2026-11-19 og): a new program is written without a
@@ -318,6 +381,7 @@ fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outlin
             minimum_mm: [-3.0, -3.0, 0.0],
             maximum_mm: [23.0, 13.0, 5.0],
         },
+        None,
     );
     let bottom = bottom_face(&mut app, &mut bridge);
     let before = app.canonical_digest();
