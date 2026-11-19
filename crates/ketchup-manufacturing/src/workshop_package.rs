@@ -11,6 +11,7 @@ use ketchup_model::graph::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::Utf8Error;
 use std::sync::Arc;
+use unicode_normalization::UnicodeNormalization;
 
 // not a tolerance: the length of a SHA-256 written in hex.
 const SHA256_HEX_LEN: usize = 64;
@@ -65,6 +66,14 @@ pub enum WorkshopPackageError {
     Changed(String),
     /// The package has a file the list does not name.
     Unlisted(String),
+    /// The local header of the entry says something else than the central
+    /// directory; an unpacker reading the local headers gets another file.
+    LocalHeaderDiffers(String),
+    /// The archive holds bytes no central directory entry accounts for.
+    HiddenData,
+    /// A name that is not ASCII without the ZIP UTF-8 flag (bit 11): an
+    /// unpacker reads it in its own code page and writes another name.
+    NameNotMarkedUtf8(String),
 }
 
 impl std::fmt::Display for WorkshopPackageError {
@@ -82,6 +91,17 @@ impl std::fmt::Display for WorkshopPackageError {
             Self::Missing(name) => write!(formatter, "`{name}` is missing from the package"),
             Self::Changed(name) => write!(formatter, "`{name}` is not the file that was sent"),
             Self::Unlisted(name) => write!(formatter, "`{name}` was not sent with the package"),
+            Self::LocalHeaderDiffers(name) => write!(
+                formatter,
+                "the stored header of `{name}` differs from the file list of the package"
+            ),
+            Self::HiddenData => {
+                formatter.write_str("the package holds data its file list does not name")
+            }
+            Self::NameNotMarkedUtf8(name) => write!(
+                formatter,
+                "`{name}` is not marked as UTF-8 and unpacks under another name"
+            ),
         }
     }
 }
@@ -95,12 +115,12 @@ impl WorkshopPackage {
         if self.files.is_empty() {
             return Err(WorkshopPackageError::Empty);
         }
-        let mut names = BTreeSet::new();
+        let mut names = BTreeSet::from([folded(WORKSHOP_SUMS), folded(WORKSHOP_REPORT)]);
         for (name, _) in &self.files {
             if !is_inside(name) || name == WORKSHOP_SUMS || name == WORKSHOP_REPORT {
                 return Err(WorkshopPackageError::BadName(name.clone()));
             }
-            if !names.insert(name.as_str()) {
+            if !names.insert(folded(name)) {
                 return Err(WorkshopPackageError::DuplicateName(name.clone()));
             }
         }
@@ -213,14 +233,41 @@ fn report_text(not_made: &[NotMade]) -> String {
 }
 
 /// A plain relative path that stays inside the folder the package is
-/// unpacked into, on every system.
+/// unpacked into and is written under this name on every system.
 fn is_inside(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains(['\\', ':'])
-        && !name.chars().any(char::is_control)
-        && name
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+    !name.is_empty() && !name.chars().any(char::is_control) && name.split('/').all(is_portable)
+}
+
+/// A file or folder name Windows writes as it is: not `.` or `..`, none of
+/// the characters it refuses, no trailing dot or space, not a device.
+fn is_portable(part: &str) -> bool {
+    !part.is_empty()
+        && !part.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+        && !part.ends_with(['.', ' '])
+        && !is_device_name(part)
+}
+
+/// A name Windows keeps for a device, with any extension (`CON.dxf`).
+fn is_device_name(part: &str) -> bool {
+    let stem = part
+        .split_once('.')
+        .map_or(part, |(stem, _extension)| stem)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|port| {
+        stem.strip_prefix(port).is_some_and(|number| {
+            matches!(number.as_bytes(), [digit] if digit.is_ascii_digit())
+                || matches!(number, "\u{b9}" | "\u{b2}" | "\u{b3}")
+        })
+    })
+}
+
+/// The name as Windows and macOS compare names: one Unicode form, any case.
+fn folded(name: &str) -> String {
+    name.nfc().flat_map(char::to_lowercase).collect()
 }
 
 /// Checks a received package: every file its SHA-256 list names is there and
@@ -266,7 +313,10 @@ pub fn check_workshop_package(zip: &[u8]) -> Result<WorkshopAcceptance, Workshop
 }
 
 /// The entries of a stored ZIP, each read from where the central directory
-/// points and checked against its CRC.
+/// points and checked against its CRC. The local header of each must say
+/// what the central directory says, and every byte of the archive must
+/// belong to a listed entry, the central directory or the end record, so an
+/// unpacker that reads the archive another way gets the same files.
 fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPackageError> {
     const LOCAL: [u8; 4] = 0x0403_4b50_u32.to_le_bytes();
     const CENTRAL: [u8; 4] = 0x0201_4b50_u32.to_le_bytes();
@@ -296,13 +346,25 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         .find(|&at| zip[at..].starts_with(&END))
         .ok_or_else(not_a_package)?;
     let count = u16_at(end + 10)?;
-    let mut at = usize_at(end + 16)?;
+    if u16_at(end + 4)? != 0 || u16_at(end + 6)? != 0 || u16_at(end + 8)? != count {
+        return Err(not_a_package());
+    }
+    let central_start = usize_at(end + 16)?;
+    if central_start.checked_add(usize_at(end + 12)?) != Some(end)
+        || end + END_RECORD + u16_at(end + 20)? != zip.len()
+    {
+        return Err(WorkshopPackageError::HiddenData);
+    }
+    let mut at = central_start;
     let mut entries = BTreeMap::new();
+    let mut folded_names = BTreeSet::new();
+    let mut spans = Vec::with_capacity(count);
     for _ in 0..count {
         if bytes(at, 4)? != CENTRAL {
             return Err(not_a_package());
         }
-        let encrypted = u16_at(at + 8)? & 1 != 0;
+        let flags = u16_at(at + 8)?;
+        let encrypted = flags & 1 != 0;
         let stored = u16_at(at + 10)? == 0;
         let crc = u32_at(at + 16)?;
         let size = usize_at(at + 24)?;
@@ -310,7 +372,8 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
             return Err(not_a_package());
         }
         let name_len = u16_at(at + 28)?;
-        let name = std::str::from_utf8(bytes(at + 46, name_len)?)
+        let raw_name = bytes(at + 46, name_len)?;
+        let name = std::str::from_utf8(raw_name)
             .map_err(WorkshopPackageError::NameNotText)?
             .to_owned();
         let local = usize_at(at + 42)?;
@@ -318,7 +381,17 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         if bytes(local, 4)? != LOCAL {
             return Err(not_a_package());
         }
-        let start = local + 30 + u16_at(local + 26)? + u16_at(local + 28)?;
+        let same_header = u16_at(local + 6)? == flags
+            && u16_at(local + 8)? == 0
+            && u32_at(local + 14)? == crc
+            && usize_at(local + 18)? == size
+            && usize_at(local + 22)? == size
+            && u16_at(local + 26)? == name_len
+            && bytes(local + 30, name_len)? == raw_name;
+        if !same_header {
+            return Err(WorkshopPackageError::LocalHeaderDiffers(name));
+        }
+        let start = local + 30 + name_len + u16_at(local + 28)?;
         let data = bytes(start, size)?;
         if crate::three_mf_export::crc32(data) != crc {
             return Err(not_a_package());
@@ -326,10 +399,30 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         if !is_inside(&name) {
             return Err(WorkshopPackageError::BadName(name));
         }
-        if entries.contains_key(&name) {
+        if !name.is_ascii() && flags & usize::from(crate::three_mf_export::UTF8_NAME) == 0 {
+            return Err(WorkshopPackageError::NameNotMarkedUtf8(name));
+        }
+        if !folded_names.insert(folded(&name)) {
             return Err(WorkshopPackageError::DuplicateName(name));
         }
+        spans.push((local, start + size));
         entries.insert(name, data.to_vec());
+    }
+    if at != end {
+        return Err(WorkshopPackageError::HiddenData);
+    }
+    // The entries follow one another from the start of the archive to the
+    // central directory, with no gap a hidden entry could sit in.
+    spans.sort_unstable();
+    let mut covered = 0;
+    for (start, entry_end) in spans {
+        if start != covered {
+            return Err(WorkshopPackageError::HiddenData);
+        }
+        covered = entry_end;
+    }
+    if covered != central_start {
+        return Err(WorkshopPackageError::HiddenData);
     }
     Ok(entries)
 }
