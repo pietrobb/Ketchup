@@ -1,5 +1,5 @@
-//! A client writes the CAM program of the document's plan for the controller it names, as a
-//! manufacturing release the user confirms in the window.
+//! A client writes the CAM program of the document's plan for the controller it names, told
+//! what its simulation found; only replacing a file asks the user.
 
 use super::*;
 use ketchup_model::cam::{
@@ -140,12 +140,12 @@ fn dialect_name(id: &str) -> String {
     }
 }
 
+/// Owner decisions R1 and R3 (review 2026-11-19 og): a new program is written without a
+/// prompt, and the reply names the controller, what the simulation found and what it does
+/// not check.
 #[test]
-fn a_client_writes_the_cam_program_for_the_controller_it_names_once_the_user_confirms() {
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_high_risk_approval(7)
-        .queue_high_risk_approval(7)
-        .queue_refused_high_risk();
+fn a_client_writes_the_cam_program_for_the_controller_it_names_without_a_prompt() {
+    let dialogs = ScriptedFileDialogs::new();
     let (mut app, mut bridge, directory) = cam_window(&dialogs);
     let before = app.canonical_digest();
 
@@ -164,23 +164,26 @@ fn a_client_writes_the_cam_program_for_the_controller_it_names_once_the_user_con
     assert_eq!(lines.first(), Some(&"%"), "{program}");
     assert!(program.contains("G43 H1"), "{program}");
     assert_eq!(lines[lines.len() - 2], "M2", "{program}");
-    // The user saw which controller the program is for before it was written.
-    let prompts = dialogs.high_risk_prompts();
-    assert_eq!(prompts.len(), 1);
-    assert!(
-        prompts[0].contains(&dialect_name("linuxcnc")),
-        "{}",
-        prompts[0]
+    // The client is told which controller the program is for and what the simulation found:
+    // facing the 7 mm stock to the 5 mm block removes 20 x 10 x 2 mm3 and gouges nothing.
+    let machining = &exported["machining"];
+    assert_eq!(machining["dialect"], dialect_name("linuxcnc"), "{exported}");
+    assert!((machining["removed_stock_mm3"].as_f64().unwrap() - 400.0).abs() < 0.5);
+    assert!(machining["gouge_mm3"].as_f64().unwrap() < 1.0e-5);
+    assert_eq!(
+        machining["not_checked"].as_array().unwrap().len(),
+        crate::app::Machining::NOT_CHECKED.len()
     );
+    assert!(dialogs.high_risk_prompts().is_empty());
     assert_eq!(app.canonical_digest(), before);
 
     // Without a dialect the program is the library's first one.
     let first = CamPostprocessorDialect::library_ids().unwrap()[0].clone();
     let default_target = directory.path().join("facing.nc");
-    bridge
+    let exported = bridge
         .execute(&mut app, cam_export(&default_target, "cam_nc", None), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
-    assert!(dialogs.high_risk_prompts()[1].contains(&dialect_name(&first)));
+    assert_eq!(exported["machining"]["dialect"], dialect_name(&first));
 
     // Without overwrite an existing file is kept.
     assert_eq!(
@@ -192,33 +195,19 @@ fn a_client_writes_the_cam_program_for_the_controller_it_names_once_the_user_con
         Err("export_failed")
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), program);
-
-    // A declined release writes nothing.
-    let declined = directory.path().join("declined.nc");
-    assert_eq!(
-        bridge.execute(
-            &mut app,
-            cam_export(&declined, "cam_nc", Some("fanuc")),
-            false
-        ),
-        Err("export_declined")
-    );
-    assert!(!declined.exists());
+    assert!(dialogs.high_risk_prompts().is_empty());
 }
 
 /// Owner decision R1 (review 2026-11-19 og-6): with overwrite the program replaces an
-/// existing file once the user confirms both the release and the replacement; a declined
+/// existing file once the user agrees to the replacement, the only prompt; a declined
 /// replacement, or a file changed while the user was asked, keeps the file.
 #[test]
 fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("facing.ngc");
     let dialogs = ScriptedFileDialogs::new()
-        .queue_high_risk_approval(7)
         .queue_refused_high_risk()
-        .queue_high_risk_approval(7)
         .queue_high_risk_approval_after_write(7, &target, b"saved meanwhile".to_vec())
-        .queue_high_risk_approval(7)
         .queue_high_risk_approval(7);
     let (mut app, mut bridge, _unused) = cam_window(&dialogs);
     let over = || {
@@ -232,13 +221,13 @@ fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
         request
     };
 
-    // Released, but the replacement declined: the user's file is kept.
+    // The replacement declined: the user's file is kept.
     std::fs::write(&target, b"user program").unwrap();
     assert_eq!(
         bridge.execute(&mut app, over(), false),
         Err("export_declined")
     );
-    assert_eq!(dialogs.high_risk_prompts().len(), 2);
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&target).unwrap(), b"user program");
 
     // Changed while the user was asked: not replaced.
@@ -246,14 +235,14 @@ fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
         bridge.execute(&mut app, over(), false),
         Err("export_failed")
     );
-    assert_eq!(dialogs.high_risk_prompts().len(), 4);
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
     assert_eq!(std::fs::read(&target).unwrap(), b"saved meanwhile");
 
-    // Both agreed: the program replaces it.
+    // Agreed: the program replaces it.
     bridge
         .execute(&mut app, over(), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
-    assert_eq!(dialogs.high_risk_prompts().len(), 6);
+    assert_eq!(dialogs.high_risk_prompts().len(), 3);
     let program = std::fs::read_to_string(&target).unwrap();
     assert!(program.contains("G43 H1"), "{program}");
 }
@@ -319,24 +308,9 @@ fn bottom_face(app: &mut KetchupApp, bridge: &mut LiveBridge) -> u64 {
         .unwrap()
 }
 
-/// The stock the confirmation says the program removes, in mmÂł.
-fn removed_mm3(prompt: &str) -> f64 {
-    let after = &prompt[prompt
-        .find("removes ")
-        .unwrap_or_else(|| panic!("{prompt}"))
-        + 8..];
-    after
-        .chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{prompt}"))
-}
-
 #[test]
 fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outline() {
-    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval(7);
+    let dialogs = ScriptedFileDialogs::new();
     let (mut app, mut bridge, directory) = cam_window_over(
         &dialogs,
         CamStock {
@@ -350,7 +324,7 @@ fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outlin
     // The client names the bottom face; Ketchup reads its outline from the exact part and
     // cuts one tool radius outside it, from the stock top down to the face.
     let target = directory.path().join("profile.gcode");
-    bridge
+    let exported = bridge
         .execute(
             &mut app,
             cam_export_of(
@@ -364,13 +338,9 @@ fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outlin
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let program = std::fs::read_to_string(&target).unwrap();
     assert!(program.contains("X-1"), "{program}");
-    let prompts = dialogs.high_risk_prompts();
     let band_mm2 = 60.0 * 2.0 + std::f64::consts::PI * 4.0;
-    assert!(
-        (removed_mm3(&prompts[0]) - band_mm2 * 5.0).abs() < 0.5,
-        "{}",
-        prompts[0]
-    );
+    let removed = exported["machining"]["removed_stock_mm3"].as_f64().unwrap();
+    assert!((removed - band_mm2 * 5.0).abs() < 0.5, "{exported}");
     assert_eq!(app.canonical_digest(), before);
 
     // A flat face is no hole and a face the part does not have is refused before any prompt;
@@ -418,5 +388,5 @@ fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outlin
         ),
         Err("invalid_params")
     );
-    assert_eq!(dialogs.high_risk_prompts().len(), 1);
+    assert!(dialogs.high_risk_prompts().is_empty());
 }

@@ -253,8 +253,7 @@ impl KetchupApp {
             // A client writes a new file without a prompt and reads the loss report
             // itself (owner decision R1). It replaces an existing file or report only
             // with overwrite: without a prompt the pair Kečup exported there and nobody
-            // changed since, anything else once the user agrees in the window. A release
-            // to manufacturing still waits for the user's confirmation.
+            // changed since, anything else once the user agrees in the window.
             let exists =
                 precondition.primary_sha256.is_some() || precondition.report_sha256.is_some();
             if !exists
@@ -344,7 +343,7 @@ impl KetchupApp {
 /// The files one export wrote: the chosen file and what was written beside it
 /// (review 2026-10-17 MCP-1, §5.8). A client is told these paths instead of
 /// guessing the names of the reports.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Written {
     pub(crate) primary: PathBuf,
     /// What the conversion lost (`x.step.loss.txt`).
@@ -359,6 +358,8 @@ pub(crate) struct Written {
     /// What a machine file leaves unmade, as `<part>: <element>`: the pin
     /// holes in a bought part joined to a made one (review 2026-11-09 MF-305).
     pub(crate) lost: Vec<String>,
+    /// What the exact simulation of a CAM program found.
+    pub(crate) machining: Option<crate::app::Machining>,
 }
 
 impl Written {

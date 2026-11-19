@@ -142,7 +142,9 @@ fn document_name_refusal(path: &Path) -> Option<&'static str> {
 pub(super) enum Place {
     /// A folder whose programs start when the user logs in.
     Startup,
-    /// The operating system's or the installed programs' folder.
+    /// The operating system's or the installed programs' folder: Windows and
+    /// Program Files (R2 names no other), so none off Windows.
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     System,
     /// The root of the system drive itself, not the folders on it.
     DriveRoot,

@@ -498,6 +498,13 @@ impl KetchupApp {
         path: &Path,
         payload: &[u8],
     ) -> Result<(), Rejection> {
+        // Owner decision R1 (review 2026-11-19 og): a connected AI writes every export, a
+        // release to manufacturing too, without a prompt; only replacing a file asks.
+        if self.live.client_export.is_some()
+            && class == HighRiskClass::ReleaseManufacturingExportWithWarnings
+        {
+            return Ok(());
+        }
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| failed("side_effect.scope", error))?;
         let proposal = self

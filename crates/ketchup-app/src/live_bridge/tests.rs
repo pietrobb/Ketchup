@@ -400,9 +400,9 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
     assert!(app.is_dirty());
 }
 
-/// Review 2026-10-17 P3: a release to manufacturing asked for over the bridge
-/// waits for the user in the window. A client that disconnected meanwhile
-/// still got its file written once the user confirmed.
+/// Review 2026-10-17 P3: a client that disconnected while the user was asked
+/// still got its file written once the user confirmed. A release to
+/// manufacturing asks only to replace a file (owner decision R1).
 #[test]
 fn disconnect_during_a_release_confirmation_writes_no_file() {
     use ketchup_model::document::{
@@ -410,6 +410,8 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("released.btlx");
+    let original_bytes = b"the user's machine file";
+    std::fs::write(&path, original_bytes).unwrap();
     let stream_slot = Arc::new(Mutex::new(None));
     let prompted = Arc::new(AtomicBool::new(false));
     let dialogs = DisconnectOnHighRisk {
@@ -469,7 +471,11 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    assert!(!path.exists(), "the departed client's release was written");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original_bytes,
+        "the departed client's release was written"
+    );
     assert!(!path.with_extension("btlx.support.txt").exists());
     assert!(
         app.action_digest().contains("disconnected"),

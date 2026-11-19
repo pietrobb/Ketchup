@@ -158,7 +158,7 @@ mod viewport_paint;
 mod workshop_export;
 pub(crate) mod written_drawings;
 
-pub(crate) use cam_export::CamExportDialog;
+pub(crate) use cam_export::{CamExportDialog, Machining};
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;
