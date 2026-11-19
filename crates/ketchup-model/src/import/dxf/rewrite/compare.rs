@@ -9,6 +9,7 @@ use super::place;
 use crate::tolerance::{DEFAULT_ANGULAR_TOLERANCE_RAD, ROUNDING, same_coordinate_mm};
 use crate::underlay::UnderlayLines;
 use crate::underlay::fill::UnderlayFill;
+use crate::underlay::style::LineStyle;
 use crate::underlay::text::UnderlayText;
 
 /// What an object draws in the file now unlike what it drew when imported.
@@ -22,16 +23,23 @@ pub enum Difference {
     Text,
     /// A fill of it covers another area.
     Fill,
+    /// It draws alike but in another color, linetype or lineweight, its own or its
+    /// layer's (review 2026-11-10 og:R1110-UL-400: a wall dashed as to be pulled down
+    /// was reported unchanged). Only revisions are compared by it; an edit is written into
+    /// the file's entity whatever style it has now.
+    Style,
 }
 
 /// What one object draws itself: its layer's name, its runs of points, its texts (their
-/// style, an index among the drawing's, left out) and its fills' rings.
+/// style, an index among the drawing's, left out) and its fills' rings; and the styles
+/// of its polylines, texts and fills, in that order.
 #[derive(PartialEq)]
 pub(super) struct Drawn<'a> {
     pub(super) layer: &'a str,
     pub(super) lines: Vec<&'a [[f64; 2]]>,
     pub(super) texts: Vec<UnderlayText>,
     pub(super) fills: Vec<Vec<&'a [[f64; 2]]>>,
+    pub(super) styles: Vec<&'a LineStyle>,
 }
 
 impl Drawn<'_> {
@@ -70,6 +78,20 @@ fn polylines_in(
     runs
 }
 
+/// The style indices of the polylines of `layer` that `points`, a range of its points,
+/// takes points of.
+fn styles_in(
+    layer: &crate::underlay::LayerLines,
+    points: std::ops::Range<usize>,
+) -> impl Iterator<Item = u32> + '_ {
+    let starts = std::iter::once(0).chain(layer.polyline_ends().iter().copied());
+    starts
+        .zip(layer.polyline_ends().iter().copied())
+        .zip(layer.styled_polylines())
+        .filter(move |((start, end), _)| *start.max(&points.start) < *end.min(&points.end))
+        .map(|(_, (style, _))| style)
+}
+
 fn drawn_runs(lines: &UnderlayLines, id: usize, split: bool) -> Vec<Drawn<'_>> {
     let objects = lines.objects();
     let mut placed = BTreeSet::from([id]);
@@ -87,34 +109,33 @@ fn drawn_runs(lines: &UnderlayLines, id: usize, split: bool) -> Vec<Drawn<'_>> {
             lines: Vec::new(),
             texts: Vec::new(),
             fills: Vec::new(),
+            styles: Vec::new(),
         };
         for part in &object.parts {
             let Some(layer) = lines.layers().get(place(part.layer)) else {
                 continue;
             };
             let range = |range: &std::ops::Range<u32>| place(range.start)..place(range.end);
+            let texts = layer.texts().get(range(&part.texts)).unwrap_or_default();
+            let fills = layer.fills().get(range(&part.fills)).unwrap_or_default();
+            own.styles.extend(
+                styles_in(layer, range(&part.points))
+                    .chain(texts.iter().map(|text| text.style))
+                    .chain(fills.iter().map(UnderlayFill::style))
+                    .map(|style| lines.style(style)),
+            );
             if split {
                 own.lines.extend(polylines_in(layer, range(&part.points)));
             } else {
                 own.lines.extend(layer.points_mm().get(range(&part.points)));
             }
-            own.texts.extend(
-                layer
-                    .texts()
-                    .get(range(&part.texts))
-                    .into_iter()
-                    .flatten()
-                    .map(|text| UnderlayText {
-                        style: 0,
-                        ..text.clone()
-                    }),
-            );
+            own.texts.extend(texts.iter().map(|text| UnderlayText {
+                style: 0,
+                ..text.clone()
+            }));
             own.fills.extend(
-                layer
-                    .fills()
-                    .get(range(&part.fills))
-                    .into_iter()
-                    .flatten()
+                fills
+                    .iter()
                     .map(|fill: &UnderlayFill| fill.rings().collect()),
             );
         }
@@ -167,6 +188,15 @@ pub(super) fn difference_between(
             None
         }
     })
+}
+
+/// Whether object `found` of `now` draws in other styles than object `id` of `then`,
+/// one it placed included, where [`difference_between`] finds them alike.
+pub(super) fn restyled(then: &UnderlayLines, id: usize, now: &UnderlayLines, found: usize) -> bool {
+    let (then, now) = (drawn(then, id), drawn(now, found));
+    then.iter()
+        .map(|drawn| &drawn.styles)
+        .ne(now.iter().map(|drawn| &drawn.styles))
 }
 
 /// Whether `a` and `b` pair up one by one, each pair `alike`.

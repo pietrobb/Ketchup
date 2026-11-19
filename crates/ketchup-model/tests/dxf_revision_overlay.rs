@@ -134,6 +134,87 @@ fn revision_b_is_compared_with_a_by_handle_and_drawn_over_it() {
     assert!(objects.iter().any(|object| object.handle == 0xB0));
 }
 
+/// A drawing of `entities` whose layer `doors` has color `doors_color` and whose
+/// linetype table has DASHED.
+fn styled_drawing(doors_color: u8, entities: &[String]) -> Vec<u8> {
+    let mut dxf = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n1\n\
+         0\nLTYPE\n2\nDASHED\n70\n0\n3\n__ __\n72\n65\n73\n2\n40\n15\n49\n10\n74\n0\n49\n-5\n74\n0\n\
+         0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n2\n\
+         0\nLAYER\n2\nwalls\n70\n0\n62\n7\n6\nCONTINUOUS\n\
+         0\nLAYER\n2\ndoors\n70\n0\n62\n{doors_color}\n6\nCONTINUOUS\n\
+         0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n"
+    );
+    for entity in entities {
+        dxf.push_str(entity);
+    }
+    dxf.push_str("0\nENDSEC\n0\nEOF\n");
+    dxf.into_bytes()
+}
+
+/// A line of `handle` on `layer` with the entity groups `style` (color, linetype,
+/// lineweight), at the height `y`.
+fn styled_line(handle: &str, layer: &str, style: &str, y: f64) -> String {
+    format!(
+        "0\nLINE\n5\n{handle}\n100\nAcDbEntity\n8\n{layer}\n{style}100\nAcDbLine\n\
+         10\n0\n20\n{y}\n30\n0\n11\n5000\n21\n{y}\n31\n0\n"
+    )
+}
+
+fn styled_text(handle: &str, style: &str) -> String {
+    format!(
+        "0\nTEXT\n5\n{handle}\n100\nAcDbEntity\n8\nwalls\n{style}100\nAcDbText\n\
+         10\n0\n20\n9000\n30\n0\n40\n250\n1\nKuchyňa\n100\nAcDbText\n"
+    )
+}
+
+/// Review 2026-11-10 og:R1110-UL-400: a revision that only redraws an entity otherwise —
+/// another color, linetype or lineweight, its layer's color, a text's color — was reported
+/// unchanged, so a wall the architect dashed as to be pulled down was not seen.
+#[test]
+fn a_revision_that_only_restyles_an_entity_reports_it_changed_in_style() {
+    let entities = |restyled: bool| {
+        let pick = |plain: &'static str, styled: &'static str| {
+            if restyled { styled } else { plain }
+        };
+        vec![
+            styled_line("A0", "walls", pick("", "62\n1\n"), 0.0),
+            styled_line("A1", "walls", pick("", "6\nDASHED\n"), 1000.0),
+            styled_line("A2", "walls", pick("", "370\n50\n"), 2000.0),
+            styled_text("A3", pick("", "62\n3\n")),
+            // ByLayer: only the layer's color changes.
+            styled_line("A4", "doors", "", 4000.0),
+            styled_line("A5", "walls", "", 5000.0),
+        ]
+    };
+    let a = read(&styled_drawing(7, &entities(false)));
+    let b = read(&styled_drawing(5, &entities(true)));
+    let comparison = compare_revisions(
+        Revision {
+            lines: &a.lines,
+            offset_mm: a.offset_mm,
+        },
+        Revision {
+            lines: &b.lines,
+            offset_mm: b.offset_mm,
+        },
+    );
+    assert_eq!(
+        handles(&comparison.changed),
+        ["A0", "A1", "A2", "A3", "A4"],
+        "{comparison:?}"
+    );
+    assert!(
+        comparison
+            .changed
+            .iter()
+            .all(|entity| entity.difference == Some(Difference::Style)),
+        "{comparison:?}"
+    );
+    assert_eq!(comparison.unchanged, 1, "A5 draws alike");
+}
+
 #[test]
 fn drawings_without_handles_compare_nothing_rather_than_guess() {
     let unhandled = |x: f64| {

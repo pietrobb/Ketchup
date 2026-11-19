@@ -103,14 +103,18 @@ pub fn compare_revisions(earlier: Revision<'_>, later: Revision<'_>) -> Revision
             comparison.removed.push(entity(earlier, id, None));
             continue;
         };
-        match compare::difference_between(
+        let difference = compare::difference_between(
             earlier.lines,
             id,
             earlier.offset_mm,
             later.lines,
             found,
             later.offset_mm,
-        ) {
+        )
+        .or_else(|| {
+            compare::restyled(earlier.lines, id, later.lines, found).then_some(Difference::Style)
+        });
+        match difference {
             Some(difference) => comparison
                 .changed
                 .push(entity(later, found, Some(difference))),
