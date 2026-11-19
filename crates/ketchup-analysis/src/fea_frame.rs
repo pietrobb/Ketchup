@@ -279,7 +279,7 @@ const MOVE_REFINEMENTS: u32 = 40;
 /// The largest move anywhere along the element (og:R1119og-FEA-804), from its ends'
 /// moves and turns `ends` (element axes) carried along by its own shape functions, and
 /// the bending of a span held at both ends under its uniform `load`, which no node
-/// shows: one element of a simply supported beam sags 5·q·L⁴/(384·E·I) in its middle
+/// shows: one simply supported element sags 5·q·L⁴/(384·E·I) in its middle
 /// with both nodes still.
 pub(crate) fn peak_displacement(
     youngs_modulus_mpa: f64,
