@@ -121,6 +121,29 @@ pub(super) fn part_give(
         + pull * pull * long / (modulus * area)
 }
 
+/// [`part_give`] of a brace or a diaphragm's sheet from the point of the
+/// member it holds, `entry`, to where it meets its anchor, `exit`, with its
+/// shear (5/6 of the section, Timoshenko) as well: a sheet carries the force
+/// across its plane, where shear gives as much as bending (R1119og-PG-801).
+pub(super) fn brace_give(
+    obb: &Obb,
+    modulus: f64,
+    entry: [f64; 3],
+    exit: [f64; 3],
+    sideways: [f64; 3],
+) -> f64 {
+    let run = sub(entry, exit);
+    let long = length(run);
+    if long <= f64::EPSILON {
+        return 0.0;
+    }
+    let (_, [(_, wide_i), (_, wide_j)]) = section(obb, run);
+    let along = dot(sideways, scale(run, 1.0 / long));
+    let across = 1.0 - along * along;
+    part_give(obb, modulus, entry, exit, entry, sideways)
+        + across.max(0.0) * long / (5.0 / 6.0 * modulus * SHEAR_PER_E * wide_i * wide_j)
+}
+
 /// The largest force `sideways` the part of box `obb` takes before buckling
 /// where it carries it along its axis between `entry` and `exit`, N, by
 /// Euler's load at the fifth-percentile modulus `modulus_05` over the length

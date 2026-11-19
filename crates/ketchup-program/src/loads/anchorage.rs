@@ -18,7 +18,7 @@ use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use stiffness::{Tie, joint_give, part_capacity, part_give};
+use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, joint_give, part_capacity, part_give};
 
 /// The modulus of elasticity, mean and fifth percentile, N/mm², of a part of no
 /// timber strength class: softwood C24 (EN 338).
@@ -157,6 +157,22 @@ pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
         capacity_n: strong.capacity_n,
         buckling: strong.buckling,
         ..stiff
+    }
+}
+
+/// Two paths holding one point side by side, as a diaphragm's anchors: their
+/// stiffnesses and their forces before buckling add up, named by the one
+/// giving more (R1119og-PG-801).
+pub(super) fn together(a: Anchorage, b: Anchorage) -> Anchorage {
+    let named = if b.stiffness_n_mm < a.stiffness_n_mm {
+        b
+    } else {
+        a
+    };
+    Anchorage {
+        stiffness_n_mm: a.stiffness_n_mm + b.stiffness_n_mm,
+        capacity_n: a.capacity_n + b.capacity_n,
+        ..named
     }
 }
 
@@ -321,6 +337,99 @@ impl<'a> Footing<'a> {
         }
         self.known.borrow_mut().insert(key, found);
         found
+    }
+
+    /// How `by`, a brace or a diaphragm's sheet holding `member` at `point`,
+    /// holds it from the ground through `anchor`: the path starts at the
+    /// member (R1119og-PG-800: three 3 × 3 mm strips screwed to a grounded
+    /// wall held a 400 mm beam). Its own give from `point` to where it meets
+    /// the anchor, its joints with the member and the anchor, and Euler's load
+    /// of its length come before [`Self::anchorage`] of the anchor, which the
+    /// parts `apart` (the sheets of its diaphragm) are kept out of. A grounded
+    /// brace is its own anchor and its path starts at the member already.
+    pub(super) fn through(
+        &self,
+        by: usize,
+        anchor: usize,
+        member: usize,
+        point: [f64; 3],
+        apart: &[usize],
+    ) -> Option<Anchorage> {
+        if anchor == by {
+            return self.anchorage(anchor, member, apart);
+        }
+        let from_anchor = self.anchorage(anchor, member, apart)?;
+        let obb = self.parts[by].obb();
+        let anchor_obb = self.parts[anchor].obb();
+        let at = std::iter::once(by)
+            .chain(apart.iter().copied())
+            .find_map(|part| meeting(&anchor_obb, &self.parts[part].obb()))
+            .unwrap_or(anchor_obb.centre);
+        let (modulus, modulus_05) = self.moduli[by];
+        let directions = match sideways_of(&self.frames[member], &self.parts[member]) {
+            Some((sideways, _)) => vec![sideways],
+            None => vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        };
+        let mut found: Option<Anchorage> = None;
+        for sideways in directions {
+            // A joint the parts would turn about still pushes along the brace.
+            let joint = |other: usize, at: [f64; 3]| {
+                let thin = least_side(&obb).min(least_side(&self.parts[other].obb()));
+                self.tie(by, other)
+                    .and_then(|tie| joint_give(tie, at, point, sideways, thin))
+                    .unwrap_or(1.0 / SLIP_PER_FASTENER)
+            };
+            let own = brace_give(&obb, modulus, point, at, sideways)
+                + joint(member, point)
+                + joint(anchor, at);
+            let give = own + 1.0 / from_anchor.stiffness_n_mm;
+            let capacity = part_capacity(
+                &obb,
+                modulus_05,
+                point,
+                at,
+                sideways,
+                length(sub(point, at)),
+            );
+            let this = Anchorage {
+                stiffness_n_mm: 1.0 / give,
+                capacity_n: capacity.min(from_anchor.capacity_n),
+                weakest: if own * from_anchor.stiffness_n_mm > 1.0 {
+                    by
+                } else {
+                    from_anchor.weakest
+                },
+                buckling: if capacity < from_anchor.capacity_n {
+                    by
+                } else {
+                    from_anchor.buckling
+                },
+            };
+            found = Some(match found {
+                Some(known) => weaker(known, this),
+                None => this,
+            });
+        }
+        found
+    }
+
+    /// How a diaphragm's sheet `by` holds `member` at `point`: through each of
+    /// `anchors` ([`Self::through`], the diaphragm's parts `chain` kept apart),
+    /// side by side (R1119og-PG-801: boards on four free posts held a beam
+    /// unchecked, though each post gives 0.8 N/mm against 58 asked).
+    pub(super) fn diaphragm(
+        &self,
+        by: usize,
+        anchors: impl Iterator<Item = usize>,
+        member: usize,
+        point: [f64; 3],
+        chain: &[usize],
+    ) -> Option<Anchorage> {
+        anchors
+            .collect::<BTreeSet<usize>>()
+            .into_iter()
+            .filter_map(|anchor| self.through(by, anchor, member, point, chain))
+            .reduce(together)
     }
 
     /// Whether `item` ends a path: grounded, standing on the floor.
