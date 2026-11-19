@@ -368,6 +368,7 @@ impl KetchupApp {
                 }
                 self.document = document;
                 self.file.container_data = container_data;
+                self.mark_kept_sheet_settings();
                 self.file.review_candidate = None;
                 self.file.migration_review_plan = None;
                 self.file.path = recovery_open.is_none().then(|| path.to_owned());
