@@ -58,6 +58,9 @@ impl From<crate::length_input::DecimalSeparator> for CsvDecimal {
 struct Targets {
     cut_list: PathBuf,
     takeoff: PathBuf,
+    /// The SHA-256 of each file there the user agreed to replace.
+    cut_list_replacing: Option<String>,
+    takeoff_replacing: Option<String>,
     xlsx: bool,
     decimal: DecimalSeparator,
 }
@@ -87,6 +90,16 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .persist_noclobber(path)
         .map_err(|error| error.error)?;
     Ok(())
+}
+
+/// A table at `path`: a new file, or in place of the one of SHA-256 `replacing`
+/// the user agreed to replace, while it is still that file.
+fn write_table(path: &Path, bytes: &[u8], replacing: Option<&str>) -> std::io::Result<()> {
+    match replacing {
+        None => write_new(path, bytes),
+        Some(_) => crate::export_bundle::write_export_artifact_if_unchanged(path, bytes, replacing)
+            .map_err(std::io::Error::other),
+    }
 }
 
 fn summary(variant: &VariantExport) -> Value {
@@ -132,8 +145,17 @@ fn export(
     if cancel.is_cancelled() {
         return Err(Failed::Cancelled);
     }
-    write_new(&targets.cut_list, &targets.bytes(&cut_list)).map_err(Failed::Write)?;
-    if let Err(error) = write_new(&targets.takeoff, &targets.bytes(&takeoff)) {
+    write_table(
+        &targets.cut_list,
+        &targets.bytes(&cut_list),
+        targets.cut_list_replacing.as_deref(),
+    )
+    .map_err(Failed::Write)?;
+    if let Err(error) = write_table(
+        &targets.takeoff,
+        &targets.bytes(&takeoff),
+        targets.takeoff_replacing.as_deref(),
+    ) {
         // Both tables or neither: a lone cut list would look like a whole export.
         if let Err(removal) = std::fs::remove_file(&targets.cut_list) {
             ketchup_rejection::log!(
@@ -174,13 +196,14 @@ fn answer(result: Result<Value, Failed>) -> Result<Value, &'static str> {
 impl LiveBridge {
     /// The program, its targets and that it has variants to export.
     fn variant_export(
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         request: Request,
     ) -> Result<(RuleProgramSource, Targets), &'static str> {
         let Request::ExportProgramVariants {
             expected,
             path,
             decimal,
+            replace,
         } = request
         else {
             return Err("invalid_request");
@@ -217,20 +240,41 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        // No one confirms an overwrite on this path, so an existing file is never replaced.
-        if let Some(existing) = [target, takeoff.as_path()]
-            .into_iter()
-            .find(|path| std::fs::symlink_metadata(path).is_ok())
-        {
-            return Err(failure(
-                "export_target_exists",
-                "A file already exists at this path; export the variants to a new file name.",
-                json!({"path": existing}),
-            ));
+        // A file there is replaced once the user agrees in the window, as every export
+        // asks (owner decision R1.2, review 2026-11-19 og); `replacing` holds its SHA-256.
+        let mut replacing = [None, None];
+        for (existing, sha256) in [target, takeoff.as_path()].into_iter().zip(&mut replacing) {
+            if std::fs::symlink_metadata(existing).is_err() {
+                continue;
+            }
+            if !replace {
+                return Err(failure(
+                    "export_target_exists",
+                    "A file already exists at this path. Export to another path, or export again with replace: true and the window asks the user whether to replace it.",
+                    json!({"path": existing}),
+                ));
+            }
+            *sha256 = crate::export_bundle::export_target_sha256(existing)
+                .map_err(|error| failed_because("export_write_failed", error))?;
+            app.authorize_overwrite(existing, existing.to_string_lossy().as_bytes())
+                .map_err(|rejection| {
+                    failure(
+                        "export_replace_declined",
+                        format!(
+                            "{} {} was not replaced and nothing was written; export to another path, or ask the user again.",
+                            rejection.reason_text(),
+                            existing.display()
+                        ),
+                        json!({"path": existing}),
+                    )
+                })?;
         }
+        let [cut_list_replacing, takeoff_replacing] = replacing;
         let targets = Targets {
             cut_list: target.to_path_buf(),
             takeoff,
+            cut_list_replacing,
+            takeoff_replacing,
             xlsx: extension == "xlsx",
             decimal: match decimal {
                 CsvDecimal::Point => DecimalSeparator::Point,
@@ -242,7 +286,7 @@ impl LiveBridge {
 
     /// The synchronous export used by the in-process harness.
     pub(super) fn export_variants_now(
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         request: Request,
     ) -> Result<Value, &'static str> {
         let (program, targets) = Self::variant_export(app, request)?;
@@ -251,7 +295,7 @@ impl LiveBridge {
 
     pub(super) fn start_queued_variant_export(
         &mut self,
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         context: &egui::Context,
         queued: QueuedReply,
         request: Request,

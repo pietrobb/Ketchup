@@ -1110,7 +1110,7 @@ fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
     let app = harness.state();
     let id = app.selected_underlay().expect("the drawing picked");
     let started = app
-        .start_client_underlay_export(id, None, &fresh, &harness.ctx)
+        .start_client_underlay_export(id, None, &fresh, None, &harness.ctx)
         .unwrap_or_else(|error| panic!("{error}"));
     let outcome = started
         .receiver

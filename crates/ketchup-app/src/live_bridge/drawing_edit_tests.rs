@@ -907,6 +907,68 @@ fn a_client_exporting_a_drawing_replaces_neither_its_source_nor_another_file() {
     }
     assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
     assert_eq!(std::fs::read_to_string(&other).unwrap(), "not a drawing");
+    // The client is told how to ask the user (owner decision R1.2).
+    let kept = ask(
+        "drawing_export",
+        json!({"path": other.display().to_string()}),
+    );
+    assert_eq!(
+        bridge.execute(&mut app, kept, false).unwrap_err(),
+        "drawings_target_exists"
+    );
+    let details = take_error_details().unwrap().to_string();
+    assert!(details.contains("replace: true"), "{details}");
+}
+
+/// Owner decision R1.2 (review 2026-11-19 og): with replace a client's drawing export
+/// replaces another file once the user agrees in the window, as every export asks; a
+/// refusal keeps it, and the drawing's source is never asked about nor replaced.
+#[test]
+fn a_client_replaces_another_file_with_the_drawing_once_the_user_agrees() {
+    let (_directory, source, other, app, mut bridge) = edited_beside_another_file();
+    let replace = |path: &std::path::Path| {
+        ask(
+            "drawing_export",
+            json!({"path": path.display().to_string(), "replace": true}),
+        )
+    };
+    let declining = crate::dialogs::ScriptedFileDialogs::new();
+    let asked = declining.clone();
+    let mut app = app.with_dialogs(Box::new(declining));
+    assert_eq!(
+        bridge
+            .execute(&mut app, replace(&other), false)
+            .unwrap_err(),
+        "drawings_replace_declined"
+    );
+    assert_eq!(asked.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "not a drawing");
+
+    let agreeing = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = agreeing.clone();
+    let mut app = app.with_dialogs(Box::new(agreeing));
+    assert_eq!(
+        bridge
+            .execute(&mut app, replace(&source), false)
+            .unwrap_err(),
+        "drawings_target_exists"
+    );
+    assert!(
+        probe.high_risk_prompts().is_empty(),
+        "the source is not asked about"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
+
+    bridge
+        .execute(&mut app, replace(&other), false)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    let written = std::fs::read_to_string(&other).unwrap();
+    assert!(
+        written.contains("EOF"),
+        "the drawing took its place: {written}"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
 }
 
 /// Review 2026-10-29 SEC-60: the window's drawing export never replaces the drawing's

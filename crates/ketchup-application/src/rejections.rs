@@ -196,7 +196,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Request,
         "path",
         "A file already exists at the drawing path that this request may not replace (a file named like a sheet that this project's earlier export did not write, or the drawing being edited); the reason names it.",
-        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet, export again with replace: true and the window asks the user whether to replace it.",
+        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF, a drawing sheet or an edited drawing, export again with replace: true and the window asks the user whether to replace it.",
     ),
     entry(
         "drawings_target_in_use",
@@ -288,6 +288,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "export_format",
         "The model holds something this format cannot carry, or nothing it writes; caused_by names the part and what it lacks (for example a blank that is not a rectangle, a piece without a production code, or nothing to machine). Nothing was written.",
         "Change the model as caused_by says (a part whose exact result is still being made exports once it is ready), or export another format; another path does not help.",
+    ),
+    entry(
+        "export_replace_declined",
+        Validation,
+        "path",
+        "The variants were exported with replace, and the user, asked in the window, did not agree to replace the file there; the reason names it. Nothing was written.",
+        "Export to another path, or ask the user again before sending it again.",
     ),
     entry(
         "hidden_viewport",
@@ -808,6 +815,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Connect again only if the user wants this client back, then read inspect action=status before changing anything.",
     ),
     entry(
+        "system_folder",
+        Validation,
+        "path",
+        "The file would be written into a place of the system's that no user keeps files in: a folder that starts programs at login, the Windows or Program Files folder, or the root of the system drive. Nothing was written; details.place names which.",
+        "Write the file into a folder of the user's, such as the document's or Documents; any other folder is written unasked.",
+    ),
+    entry(
         "title_value_does_not_fit",
         Validation,
         "title_block",
@@ -911,13 +925,6 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "workset_handle",
         "No workset has that handle.",
         "Use the handle returned by workset_create on this connection.",
-    ),
-    entry(
-        "write_target_declined",
-        Validation,
-        "path",
-        "The folder of the file is not one this project writes into (the document's or one under it, one in Open Recent, the temporary folder, or one the user let the AI write into for this document), and the user, asked in the window, did not agree to it. Nothing was written.",
-        "Write beside the document or into a folder listed in write_targets, or ask the user to let the AI write there.",
     ),
 ];
 

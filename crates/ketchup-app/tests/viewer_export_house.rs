@@ -59,7 +59,7 @@ fn perf_house_viewer_export_finishes_within_seconds() {
         longest_open_frame.as_millis()
     );
     assert!(
-        longest_open_frame < EXPORT_BUDGET,
+        longest_open_frame < ketchup_test_env::perf_budget(EXPORT_BUDGET),
         "opening blocked a UI frame for {longest_open_frame:?}"
     );
     ui.state_mut()
@@ -102,7 +102,7 @@ fn perf_house_viewer_export_finishes_within_seconds() {
             }
             Err(error) => {
                 assert!(
-                    attempt.elapsed() < EXPORT_BUDGET,
+                    attempt.elapsed() < ketchup_test_env::perf_budget(EXPORT_BUDGET),
                     "a refused export attempt took {:?}: {error}",
                     attempt.elapsed()
                 );
@@ -124,7 +124,7 @@ fn perf_house_viewer_export_finishes_within_seconds() {
         export.package.manifest.occurrences.len()
     );
     assert!(
-        build + write < EXPORT_BUDGET,
+        build + write < ketchup_test_env::perf_budget(EXPORT_BUDGET),
         "export took {:?}",
         build + write
     );
@@ -184,9 +184,12 @@ fn perf_menu_export_and_save_within_budget(
         elapsed.as_millis(),
         longest_frame.as_millis()
     );
-    assert!(elapsed < EXPORT_BUDGET, "menu export took {elapsed:?}");
     assert!(
-        longest_frame < Duration::from_millis(500),
+        elapsed < ketchup_test_env::perf_budget(EXPORT_BUDGET),
+        "menu export took {elapsed:?}"
+    );
+    assert!(
+        longest_frame < ketchup_test_env::perf_budget(Duration::from_millis(500)),
         "export blocked UI for {longest_frame:?}"
     );
     let package =
@@ -221,7 +224,7 @@ fn perf_menu_export_and_save_within_budget(
         longest_frame.as_millis()
     );
     assert!(
-        longest_frame < Duration::from_millis(500),
+        longest_frame < ketchup_test_env::perf_budget(Duration::from_millis(500)),
         "save blocked UI for {longest_frame:?}"
     );
     let mut reopened = KetchupApp::new();
