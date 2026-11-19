@@ -290,11 +290,17 @@ fn take_over(clients: &mut TwoClients) {
     let taken = second.answer(shell, connect, "connect");
     let (failed, taken) = tool_result(&taken);
     assert!(!failed, "the window is taken over, not refused: {taken}");
-    // Only after the user let it (review 2026-11-08 MCP-240).
-    let prompts = dialogs.high_risk_prompts();
-    assert_eq!(prompts.len(), 1, "{prompts:?}");
-    assert!(prompts[0].contains("Claude Code"), "{prompts:?}");
-    assert!(shell.has_visible_label(&connected_label(shell, "Codex")));
+    // Unasked (owner decision R2); the status line names the new AI and the
+    // one it took the window from.
+    assert!(dialogs.high_risk_prompts().is_empty());
+    let after = shell.catalog().format(
+        "ai-connected-after",
+        &BTreeMap::from([
+            ("connected", connected_label(shell, "Codex")),
+            ("previous", "Claude Code".to_owned()),
+        ]),
+    );
+    assert!(shell.has_visible_label(&after), "{after}");
     assert!(!shell.has_visible_label(&connected_label(shell, "Claude Code")));
 }
 

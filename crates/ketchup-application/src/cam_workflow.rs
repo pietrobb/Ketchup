@@ -60,6 +60,7 @@ pub enum CamReviewError {
     ConfirmationRequired,
     InvalidPath,
     FileExists,
+    ReplacedFileChanged,
     Write(String),
 }
 
@@ -90,6 +91,9 @@ impl std::fmt::Display for CamReviewError {
             Self::FileExists => {
                 formatter.write_str("CAM export refuses to replace an existing file")
             }
+            Self::ReplacedFileChanged => formatter.write_str(
+                "the file the user agreed to replace changed or disappeared before the CAM export",
+            ),
             Self::Write(reason) => write!(formatter, "CAM export failed: {reason}"),
         }
     }
@@ -213,6 +217,12 @@ impl CamReviewWorkflow {
         Ok(summary)
     }
 
+    /// Writes the reviewed program to the new file `path`, or with `replacing` over the file
+    /// there the user agreed to replace, while `replacing` still finds it unchanged.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the review, its document state, the target and the consent are all distinct inputs"
+    )]
     pub fn export(
         &mut self,
         snapshot: &Snapshot,
@@ -220,6 +230,7 @@ impl CamReviewWorkflow {
         token: &str,
         path: &Path,
         confirmed: bool,
+        replacing: Option<&dyn Fn(&Path) -> bool>,
         cancelled: &AtomicBool,
     ) -> Result<CamReviewSummary, CamReviewError> {
         if !confirmed {
@@ -271,8 +282,13 @@ impl CamReviewWorkflow {
             .parent()
             .filter(|parent| parent.is_dir())
             .ok_or(CamReviewError::InvalidPath)?;
-        if path.exists() {
-            return Err(CamReviewError::FileExists);
+        let unchanged = |still_same: &dyn Fn(&Path) -> bool| path.is_file() && still_same(path);
+        match replacing {
+            None if path.exists() => return Err(CamReviewError::FileExists),
+            Some(still_same) if !unchanged(still_same) => {
+                return Err(CamReviewError::ReplacedFileChanged);
+            }
+            _ => {}
         }
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .map_err(|error| CamReviewError::Write(error.to_string()))?;
@@ -280,13 +296,25 @@ impl CamReviewWorkflow {
             .write_all(&output.content)
             .and_then(|()| temporary.as_file().sync_all())
             .map_err(|error| CamReviewError::Write(error.to_string()))?;
-        temporary.persist_noclobber(path).map_err(|error| {
-            if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-                CamReviewError::FileExists
-            } else {
-                CamReviewError::Write(error.error.to_string())
+        match replacing {
+            None => temporary.persist_noclobber(path).map_err(|error| {
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    CamReviewError::FileExists
+                } else {
+                    CamReviewError::Write(error.error.to_string())
+                }
+            })?,
+            Some(still_same) => {
+                // Checked again just before the rename: the program replaces only the
+                // file the user agreed to replace.
+                if !unchanged(still_same) {
+                    return Err(CamReviewError::ReplacedFileChanged);
+                }
+                temporary
+                    .persist(path)
+                    .map_err(|error| CamReviewError::Write(error.error.to_string()))?
             }
-        })?;
+        };
         self.pending.remove(index);
         Ok(review.summary)
     }
