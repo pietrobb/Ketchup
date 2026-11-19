@@ -60,22 +60,32 @@ pub(super) fn drawn_parts(lines: &UnderlayLines, id: usize) -> Vec<Drawn<'_>> {
     drawn_runs(lines, id, true)
 }
 
+/// The polylines of `layer` that `points`, a range of its points, takes points of: the
+/// index of each and the part of its points in the range. Found by halving, not by
+/// walking every polyline of the layer (review 2026-11-10 og:R1110-UL-402: an overlay of
+/// 100 000 lines on one layer took 22.7 s, each entity walking all of them).
+fn polylines_over(
+    layer: &crate::underlay::LayerLines,
+    points: std::ops::Range<usize>,
+) -> impl Iterator<Item = (usize, std::ops::Range<usize>)> + '_ {
+    let ends = layer.polyline_ends();
+    let (from, to) = (points.start, points.end);
+    let first = ends.partition_point(|&end| end <= from);
+    let start_of = move |at: usize| if at == 0 { 0 } else { ends[at - 1] };
+    (first..ends.len())
+        .take_while(move |&at| start_of(at) < to)
+        .map(move |at| (at, start_of(at).max(from)..ends[at].min(to)))
+        .filter(|(_, part)| part.start < part.end)
+}
+
 /// The polylines of `points`, a range of the points of `layer`, each cut to the range.
 fn polylines_in(
     layer: &crate::underlay::LayerLines,
     points: std::ops::Range<usize>,
 ) -> Vec<&[[f64; 2]]> {
-    let mut start = 0;
-    let mut runs = Vec::new();
-    for polyline in layer.polylines() {
-        let end = start + polyline.len();
-        let (from, to) = (start.max(points.start), end.min(points.end));
-        if from < to {
-            runs.push(&layer.points_mm()[from..to]);
-        }
-        start = end;
-    }
-    runs
+    polylines_over(layer, points)
+        .map(|(_, part)| &layer.points_mm()[part])
+        .collect()
 }
 
 /// The style indices of the polylines of `layer` that `points`, a range of its points,
@@ -84,12 +94,7 @@ fn styles_in(
     layer: &crate::underlay::LayerLines,
     points: std::ops::Range<usize>,
 ) -> impl Iterator<Item = u32> + '_ {
-    let starts = std::iter::once(0).chain(layer.polyline_ends().iter().copied());
-    starts
-        .zip(layer.polyline_ends().iter().copied())
-        .zip(layer.styled_polylines())
-        .filter(move |((start, end), _)| *start.max(&points.start) < *end.min(&points.end))
-        .map(|(_, (style, _))| style)
+    polylines_over(layer, points).map(|(at, _)| layer.polyline_styles()[at])
 }
 
 fn drawn_runs(lines: &UnderlayLines, id: usize, split: bool) -> Vec<Drawn<'_>> {
