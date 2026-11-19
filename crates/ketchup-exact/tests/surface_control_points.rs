@@ -78,12 +78,11 @@ fn lift(
 #[test]
 fn a_move_of_a_point_the_net_no_longer_has_there_is_refused_with_both_positions() {
     let backend = ExactBackend::new();
-    let (low, high, blend) = s_blend(&backend);
-    // The same blend made with curvature continuity has another net.
-    let curvature = LoftSurfaceContinuity::Curvature;
+    let (low, _, blend) = s_blend(&backend);
+    // An earlier edit lifted the same point, so the net changed under the move.
     let changed = backend
-        .blend_surfaces(&low, curvature, &high, curvature)
-        .expect("curvature blend")
+        .move_surface_control_point(&blend, lift(&backend, &blend, 2, 10, 3.0), &[])
+        .expect("earlier edit")
         .body;
     let asked = lift(&backend, &blend, 2, 10, 5.0);
     let now = pole(&backend, &changed, 2, 10);
