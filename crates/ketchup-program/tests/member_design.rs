@@ -2700,3 +2700,37 @@ fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
     let c24 = report(&beam("C24", 100.0, 200.0), &[]);
     assert_eq!(member(&c24, "beam").status, "pass");
 }
+
+/// R1119og-PG-800: the path of a brace's anchorage started at the anchor, the
+/// brace itself and its joints left out. Three timber strips 3 x 3 mm across the
+/// slender beam, screwed to it and to a grounded wall, passed it at 0.834,
+/// though each buckles at about 0.6 N against the 263 N it must hold (F_d =
+/// N_d / k_f, EN 1995-1-1 9.2.5.3); so did strips 10 x 10 mm (72 N). The path
+/// starts at the beam: the strip stretches and buckles over its own length.
+#[test]
+fn thin_strips_screwed_to_a_wall_buckle_and_do_not_brace_the_beam() {
+    for side in [3.0, 10.0] {
+        let mut source = slender_beam(&[]);
+        source.push_str(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+        );
+        for x in [1200.0, 2400.0, 4600.0] {
+            source.push_str(&format!(
+                "box(\"strip {x}\", ({side}, 1100, {side}), at = ({x}, 0, 2400), material = \"GL24h\")
+joint(\"strip {x}\", \"beam\", kind = \"screw\")
+joint(\"strip {x}\", \"wall\", kind = \"screw\")
+"
+            ));
+        }
+        let strips = report(&source, &[]);
+        let beam = member(&strips, "beam");
+        assert_ne!(beam.status, "pass", "{side} mm: {beam:?}");
+        assert!(
+            beam.missing.iter().any(|reason| reason.contains("strip")
+                && reason.contains("buckles at")
+                && reason.contains("too flexible or too slender")),
+            "{side} mm: {:?}",
+            beam.missing
+        );
+    }
+}
