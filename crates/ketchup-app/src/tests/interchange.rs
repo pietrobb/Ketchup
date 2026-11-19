@@ -1083,7 +1083,13 @@ fn the_workshop_package_file_command_writes_a_zip_the_workshop_accepts() {
     );
     let zip = std::fs::read(&path).unwrap_or_else(|_| panic!("{}", harness.state().digest));
     let accepted = check_workshop_package(&zip).unwrap();
-    for file in ["parts.csv", "drawings.svg", "btlx/model.btlx"] {
+    for file in [
+        "parts.csv",
+        "drawings.svg",
+        "btlx/model.btlx",
+        "btlx/model.btlx.support.txt",
+        "losses.csv",
+    ] {
         assert!(
             accepted.files.iter().any(|name| name == file),
             "{accepted:?}"
