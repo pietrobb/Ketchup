@@ -193,6 +193,12 @@ pub struct MemberCheck {
     /// What the parts bracing each of its edges must take, top first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bracing: Vec<BracingDemand>,
+    /// The braces the check counted as holding an edge: of the parts that
+    /// brace it, those of a timber strength class whose path to the ground
+    /// holds as stiffly and up to the force [`Self::bracing`] asks (review
+    /// 2026-11-19 og PG-802: the calculation listed braces the check dropped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_by: Vec<crate::loads::Brace>,
 }
 
 /// What each brace of a beam's compressed edge must give (EN 1995-1-1
@@ -2700,6 +2706,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             status: "not_verified",
             missing: Vec::new(),
             bracing: Vec::new(),
+            held_by: Vec::new(),
         };
         let (Some(class), Ok(shape)) = (class, shape.as_ref()) else {
             if class.is_none() {
@@ -2776,6 +2783,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 // 9.2.5.3 asks of it holds nothing, and the beam is checked
                 // without it.
                 let weak = weak_braces(&load.braced_by, &bracing);
+                check.held_by.clone_from(&load.braced_by);
                 if !weak.is_empty() {
                     let firm = MemberLoad {
                         braced_by: load
@@ -2788,6 +2796,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                     };
                     (checks, spans_checked, unchecked, bracing) =
                         beam_checks(&firm, shape, &design, &uls, &sls);
+                    check.held_by = firm.braced_by;
                     if let Some(reason) = unchecked
                         .iter_mut()
                         .find(|reason| reason.starts_with("lateral torsional buckling"))
@@ -2925,6 +2934,7 @@ mod tests {
             status: "not_verified",
             missing: Vec::new(),
             bracing: Vec::new(),
+            held_by: Vec::new(),
         };
         settle(&mut member);
         member
