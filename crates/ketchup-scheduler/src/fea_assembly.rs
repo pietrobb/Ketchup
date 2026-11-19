@@ -1,13 +1,20 @@
 //! Binds the exact volume meshes of several occurrences into one FEA model:
 //! each part placed where the assembly puts it, and faces of different parts
-//! joined rigidly or by springs.
+//! bonded where they touch, or joined by a rigid or a spring connector.
 //!
-//! A joint ties every node of each joined face rigidly to a reference node at
-//! the first face's area centroid, so a joined face stays plane and moves as
-//! one, the way a bolted or bonded joint is often modelled. A rigid joint
-//! shares one reference node; a spring joint gives each face its own and puts
-//! the springs between them. A node a constraint holds stays held and is left
-//! out of the joint.
+//! A bonded joint ties the two faces only where they lie on each other: each
+//! node of one face that lies on the other moves with the point of the other
+//! face's mesh it lies at, so two parts glued over a face bend as one piece,
+//! and the parts of the faces off each other stay free (R1119og-FEA-800).
+//! Faces that do not touch anywhere are refused.
+//!
+//! A connector, the way a bolt is often modelled, ties every node of each
+//! joined face rigidly to a reference node at the first face's area centroid,
+//! so the face stays plane and moves as one: a rigid connector shares one
+//! reference node; a spring connector gives each face its own and puts the
+//! springs between them. It stiffens both faces, so it is only for a joint the
+//! user names as one. A node a constraint holds stays held and is left out of
+//! the joint.
 
 use crate::{ExactBRepVolumeMeshPackage, ExactFeaFaceTraction, ExactFeaSetupError};
 use ketchup_analysis::fea::{
@@ -19,7 +26,7 @@ use ketchup_model::assembly::{
     AssemblyMateEndpoint, AssemblyMateId, AssemblyMateKind, AssemblyReferenceHealth,
 };
 use ketchup_model::document::{InstancePath, Snapshot};
-use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, NEGLIGIBLE};
+use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, APPROXIMATION, NEGLIGIBLE};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -39,10 +46,23 @@ pub struct ExactFeaJointFace {
     pub face_ordinal: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ExactFeaJointKind {
+    /// Glued where the faces lie on each other, nowhere else.
+    Bonded,
+    /// Both faces held plane and moving as one rigid body, as a bolt.
+    RigidConnector,
+    /// Both faces held plane, with springs between them, as a bolt.
+    SpringConnector {
+        translation_n_per_mm: [f64; 3],
+        rotation_n_mm_per_rad: [f64; 3],
+    },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactFeaJoint {
     pub faces: [ExactFeaJointFace; 2],
-    pub kind: FeaCouplingKind,
+    pub kind: ExactFeaJointKind,
 }
 
 /// A face-to-face (coincident planar) mate of the document, joined at the two
@@ -50,7 +70,7 @@ pub struct ExactFeaJoint {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExactFeaMateJoint {
     pub mate_id: AssemblyMateId,
-    pub kind: FeaCouplingKind,
+    pub kind: ExactFeaJointKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,8 +97,9 @@ pub struct AssemblyBoundFeaModel {
     pub source_revision: u64,
     pub source_digest: String,
     pub parts: Vec<AssemblyBoundFeaPart>,
-    /// The reference node of each joint's first face, after every part's nodes.
-    pub joint_nodes: Vec<usize>,
+    /// The reference node of each connector's first face, after every part's
+    /// nodes; none for a bonded joint.
+    pub joint_nodes: Vec<Option<usize>>,
     pub model: FeaModel,
 }
 
@@ -308,64 +329,163 @@ fn centroid(nodes: &[FeaNode], triangles: &[[usize; 3]]) -> Option<[f64; 3]> {
     (area > NEGLIGIBLE).then(|| scale(moment, 1.0 / area))
 }
 
-/// Adds each joint's reference nodes and returns the couplings with the
-/// reference node of each joint's first face.
+/// Where a node lies on a face's triangles: the triangle and the node's
+/// barycentric weights in it, if the node lies on the face.
+fn lies_on(
+    nodes: &[FeaNode],
+    triangles: &[[usize; 3]],
+    point: [f64; 3],
+) -> Option<([usize; 3], [f64; 3])> {
+    let mut best: Option<(f64, [usize; 3], [f64; 3])> = None;
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(|node| nodes[node].position_mm);
+        let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(point, a));
+        let normal = cross(ab, ac);
+        let area2 = dot(normal, normal);
+        let size = length(ab).max(length(ac)).max(1.0);
+        if area2 <= NEGLIGIBLE * size.powi(4) {
+            continue;
+        }
+        let gap = dot(ap, normal).abs() / area2.sqrt();
+        if gap > APPROXIMATION * size {
+            continue;
+        }
+        let v = dot(cross(ap, ac), normal) / area2;
+        let w = dot(cross(ab, ap), normal) / area2;
+        let weights = [1.0 - v - w, v, w];
+        if weights.iter().any(|weight| *weight < -ACCUMULATED_ROUNDING) {
+            continue;
+        }
+        if best.is_none_or(|(closest, ..)| gap < closest) {
+            // Rounding outside an edge is put back on it.
+            let clamped = weights.map(|weight| weight.max(0.0));
+            let sum: f64 = clamped.iter().sum();
+            best = Some((gap, *triangle, clamped.map(|weight| weight / sum)));
+        }
+    }
+    best.map(|(_, triangle, weights)| (triangle, weights))
+}
+
+/// The nodes of `follower` that lie on `leader`, each with the triangle and
+/// the weights it is tied by; none when no node does.
+fn bond(
+    nodes: &[FeaNode],
+    leader: &[[usize; 3]],
+    follower: &BTreeSet<usize>,
+) -> Vec<(usize, [usize; 3], [f64; 3])> {
+    follower
+        .iter()
+        .filter_map(|node| {
+            let (triangle, weights) = lies_on(nodes, leader, nodes[*node].position_mm)?;
+            Some((*node, triangle, weights))
+        })
+        .collect()
+}
+
+/// Adds each connector's reference nodes and returns the couplings with the
+/// reference node of each connector's first face.
 fn joints(
     nodes: &mut Vec<FeaNode>,
     placed: &[PlacedPart],
     held: &BTreeSet<usize>,
     joints: &[ExactFeaJoint],
-) -> Result<(Vec<FeaCoupling>, Vec<usize>), ExactFeaSetupError> {
+) -> Result<(Vec<FeaCoupling>, Vec<Option<usize>>), ExactFeaSetupError> {
     let mut couplings = Vec::new();
     let mut references = Vec::with_capacity(joints.len());
+    // Nodes that follow a joint, and nodes a tie follows: a node follows one
+    // joint only, and a tie leads from nodes that follow nothing.
     let mut joined = BTreeSet::new();
+    let mut tie_leaders = BTreeSet::new();
     for (index, joint) in joints.iter().enumerate() {
         let refused = ExactFeaSetupError::InvalidJoint { joint: index };
         let [first, second] = joint.faces;
         if first.part == second.part {
             return Err(refused);
         }
-        let mut sides = Vec::with_capacity(2);
-        for face in joint.faces {
-            let part = placed.get(face.part).ok_or(refused.clone())?;
-            if part.face(face.face_ordinal).is_none() {
-                return Err(refused);
-            }
-            let side = part
+        // A face's triangles and its nodes no constraint holds.
+        let side = |face: ExactFeaJointFace| {
+            let part = placed.get(face.part)?;
+            let free = part
                 .face_nodes(face.face_ordinal)
                 .into_iter()
                 .filter(|node| !held.contains(node))
-                .collect::<Vec<_>>();
-            // A node can follow one joint only.
-            if side.is_empty() || side.iter().any(|node| !joined.insert(*node)) {
-                return Err(refused);
+                .collect::<BTreeSet<_>>();
+            Some((part.face(face.face_ordinal)?, free))
+        };
+        let (first_face, first_free) = side(first).ok_or(refused.clone())?;
+        let (second_face, second_free) = side(second).ok_or(refused.clone())?;
+        let (leaders, followers): (BTreeSet<usize>, Vec<usize>) = match joint.kind {
+            ExactFeaJointKind::Bonded => {
+                // The finer face, with more nodes on the other, follows it.
+                let onto_first = bond(nodes, first_face, &second_free);
+                let onto_second = bond(nodes, second_face, &first_free);
+                let ties = if onto_second.len() > onto_first.len() {
+                    onto_second
+                } else {
+                    onto_first
+                };
+                if ties.is_empty() {
+                    return Err(refused);
+                }
+                let leaders = ties.iter().flat_map(|(_, triangle, _)| *triangle).collect();
+                let followers = ties.iter().map(|(node, ..)| *node).collect();
+                couplings.extend(ties.into_iter().map(
+                    |(node, [first, second, third], weights)| FeaCoupling {
+                        nodes: [first, node],
+                        kind: FeaCouplingKind::Tie {
+                            others: [second, third],
+                            weights,
+                        },
+                    },
+                ));
+                references.push(None);
+                (leaders, followers)
             }
-            sides.push(side);
-        }
-        let first_face = placed[first.part]
-            .face(first.face_ordinal)
-            .ok_or(refused.clone())?;
-        let place = centroid(nodes, first_face).ok_or(refused.clone())?;
-        let reference = nodes.len();
-        nodes.push(FeaNode { position_mm: place });
-        references.push(reference);
-        let second_reference = match joint.kind {
-            FeaCouplingKind::Rigid => reference,
-            FeaCouplingKind::Spring { .. } => {
+            ExactFeaJointKind::RigidConnector | ExactFeaJointKind::SpringConnector { .. } => {
+                if first_free.is_empty() || second_free.is_empty() {
+                    return Err(refused);
+                }
+                let place = centroid(nodes, first_face).ok_or(refused.clone())?;
+                let reference = nodes.len();
                 nodes.push(FeaNode { position_mm: place });
-                couplings.push(FeaCoupling {
-                    nodes: [reference, reference + 1],
-                    kind: joint.kind,
-                });
-                reference + 1
+                references.push(Some(reference));
+                let second_reference = match joint.kind {
+                    ExactFeaJointKind::SpringConnector {
+                        translation_n_per_mm,
+                        rotation_n_mm_per_rad,
+                    } => {
+                        nodes.push(FeaNode { position_mm: place });
+                        couplings.push(FeaCoupling {
+                            nodes: [reference, reference + 1],
+                            kind: FeaCouplingKind::Spring {
+                                translation_n_per_mm,
+                                rotation_n_mm_per_rad,
+                            },
+                        });
+                        reference + 1
+                    }
+                    _ => reference,
+                };
+                for (leader, side) in [(reference, &first_free), (second_reference, &second_free)] {
+                    couplings.extend(side.iter().map(|node| FeaCoupling {
+                        nodes: [leader, *node],
+                        kind: FeaCouplingKind::Rigid,
+                    }));
+                }
+                (
+                    BTreeSet::new(),
+                    first_free.into_iter().chain(second_free).collect(),
+                )
             }
         };
-        for (leader, side) in [reference, second_reference].into_iter().zip(sides) {
-            couplings.extend(side.into_iter().map(|node| FeaCoupling {
-                nodes: [leader, node],
-                kind: FeaCouplingKind::Rigid,
-            }));
+        if followers
+            .iter()
+            .any(|node| tie_leaders.contains(node) || !joined.insert(*node))
+            || leaders.iter().any(|node| joined.contains(node))
+        {
+            return Err(refused);
         }
+        tie_leaders.extend(leaders);
     }
     Ok((couplings, references))
 }

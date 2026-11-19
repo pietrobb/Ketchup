@@ -127,6 +127,17 @@ pub enum FeaCouplingKind {
         translation_n_per_mm: [f64; 3],
         rotation_n_mm_per_rad: [f64; 3],
     },
+    /// The second node moves with the point of the triangle of the first node
+    /// and `others` that `weights` interpolate (the first node's weight first):
+    /// its move is the weighted sum of theirs. It ties a node of one face to the
+    /// face it lies on, so two meshes that do not share nodes deform together
+    /// where they touch and nowhere else. The weights are the point's
+    /// barycentric coordinates, each in 0..=1 and adding up to one; the three
+    /// nodes neither follow nor are tied themselves.
+    Tie {
+        others: [usize; 2],
+        weights: [f64; 3],
+    },
 }
 
 /// Why a coupling cannot be built.
@@ -146,6 +157,12 @@ pub enum FeaCouplingProblem {
     Cycle,
     /// A constraint holds the node that follows; hold the node it follows.
     ConstrainedFollower,
+    /// A tie's weights are not barycentric coordinates of a point of its
+    /// triangle, or its triangle repeats a node.
+    InvalidTie,
+    /// A node a tie follows follows another coupling itself, or a tied node
+    /// leads one.
+    TieChain,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1626,6 +1643,13 @@ impl FeaModel {
                         hasher.update([2]);
                         hash_f64s(&mut hasher, &translation_n_per_mm);
                         hash_f64s(&mut hasher, &rotation_n_mm_per_rad);
+                    }
+                    FeaCouplingKind::Tie { others, weights } => {
+                        hasher.update([3]);
+                        for node in others {
+                            hash_index(&mut hasher, node);
+                        }
+                        hash_f64s(&mut hasher, &weights);
                     }
                 }
             }
