@@ -10,7 +10,45 @@ fn package() -> WorkshopPackage {
             output: "woodWOP".to_owned(),
             reason: Arc::new(GeneralFabricationError::NoPieceToProgram),
         }],
+        losses: vec![Lost {
+            output: "BTLx".to_owned(),
+            part: "Post, \"A\"".to_owned(),
+            element: "a tapped hole (M8)".to_owned(),
+            reason: "no tapping".to_owned(),
+        }],
     }
+}
+
+/// Review 2026-11-10 MF-400, MF-401: what the made files lose is a list a
+/// program reads, with the part and the element, not lost in the package.
+#[test]
+fn the_package_lists_what_its_files_lose_as_csv() {
+    let entries = stored_entries(&package().zip().unwrap()).unwrap();
+    assert_eq!(
+        String::from_utf8(entries[WORKSHOP_LOSSES].clone()).unwrap(),
+        "output,part,element,reason\n\"BTLx\",\"Post, \"\"A\"\"\",\"a tapped hole (M8)\",\"no tapping\"\n"
+    );
+    let mut lossless = package();
+    lossless.losses.clear();
+    let entries = stored_entries(&lossless.zip().unwrap()).unwrap();
+    assert_eq!(entries[WORKSHOP_LOSSES], b"output,part,element,reason\n");
+}
+
+/// Review 2026-11-10 MF-406: when nothing can be made, the refusal names
+/// every output with its reason instead of "no shop file".
+#[test]
+fn a_package_of_nothing_made_is_refused_with_every_reason() {
+    let mut nothing = package();
+    nothing.files.clear();
+    let reason = GeneralFabricationError::NoPieceToProgram.to_string();
+    assert_eq!(
+        nothing.zip(),
+        Err(WorkshopPackageError::NothingMade(vec![format!(
+            "woodWOP: {reason}"
+        )]))
+    );
+    nothing.not_made.clear();
+    assert_eq!(nothing.zip(), Err(WorkshopPackageError::Empty));
 }
 
 #[test]
@@ -26,7 +64,12 @@ fn the_workshop_accepts_the_package_and_reads_what_was_not_made() {
     let accepted = check_workshop_package(&zip).unwrap();
     assert_eq!(
         accepted.files,
-        ["btlx/model.btlx", "bom.txt", WORKSHOP_REPORT]
+        [
+            "btlx/model.btlx",
+            "bom.txt",
+            WORKSHOP_REPORT,
+            WORKSHOP_LOSSES
+        ]
     );
     let reason = GeneralFabricationError::NoPieceToProgram.to_string();
     assert!(
@@ -113,6 +156,7 @@ fn a_name_that_leaves_the_package_folder_is_refused() {
         "btlx/",
         WORKSHOP_SUMS,
         WORKSHOP_REPORT,
+        WORKSHOP_LOSSES,
     ] {
         let mut bad = package();
         bad.files[0].0 = name.to_owned();

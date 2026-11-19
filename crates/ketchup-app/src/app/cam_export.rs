@@ -139,6 +139,15 @@ impl KetchupApp {
                 subject: "CAM plan",
             })?;
         let plan_id = plan.id();
+        // No operation cuts a thread: the program names the ones it leaves (review 2026-11-19 MF-807).
+        let part = snapshot
+            .definition(plan.target().definition_id)
+            .map_or_else(String::new, |part| part.name().to_owned());
+        let lost: Vec<String> = plan
+            .uncut_threads(&snapshot)
+            .into_iter()
+            .map(|thread| format!("{part}: thread {thread}"))
+            .collect();
         if operations.is_empty() {
             operations.push(
                 plan.default_facing_operation(&snapshot, 1)
@@ -163,7 +172,7 @@ impl KetchupApp {
             )
             .map_err(ExportError::failed)?;
         let title = self.catalog.text("dialog-export-cam-title");
-        let risk = self.catalog.format(
+        let mut risk = self.catalog.format(
             "dialog-export-cam-risk",
             &BTreeMap::from([
                 ("dialect", cam_dialect_name(&dialect)),
@@ -171,6 +180,12 @@ impl KetchupApp {
                 ("gouge", format!("{:.3}", review.gouge_mm3)),
             ]),
         );
+        if !lost.is_empty() {
+            risk.push_str(&self.catalog.format(
+                "dialog-export-cam-threads",
+                &BTreeMap::from([("threads", lost.join("; "))]),
+            ));
+        }
         self.authorize_path_side_effect(
             HighRiskClass::ReleaseManufacturingExportWithWarnings,
             "release-cam-nc-program",
@@ -193,7 +208,10 @@ impl KetchupApp {
                 CamReviewError::FileExists | CamReviewError::InvalidPath => new_file(),
                 other => ExportError::failed(other),
             })?;
-        Ok(Written::alone(path))
+        Ok(Written {
+            lost,
+            ..Written::alone(path)
+        })
     }
 
     /// The one selected face of the part the plan `plan_id` machines, numbered as a client's
