@@ -20,6 +20,7 @@ use crate::document::{
 mod excess;
 mod json;
 mod orient;
+mod stretch;
 mod tags;
 mod textures;
 
@@ -340,7 +341,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     let mut images = textures::parse_images(root, binary, &buffer_views)?;
     let material_looks = parse_materials(root, materials, &images, &mut diagnostic_counts)?;
     textures::record_unshown(root, &material_looks, &mut diagnostic_counts)?;
-    let (primitives, mesh_primitives, total_triangles) = parse_meshes(
+    let (mut primitives, mesh_primitives, total_triangles) = parse_meshes(
         root,
         binary,
         &buffer_views,
@@ -360,6 +361,23 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         return Err(GlbImportError::EmptyScene);
     }
     let shift = place_nodes(&mut nodes, &traversal, &primitives)?;
+    let stretched_parts = stretch::bake_stretches(&mut nodes, &traversal, &mut primitives)?;
+    let total_triangles = if stretched_parts == 0 {
+        total_triangles
+    } else {
+        stretch::check_stored(&primitives)?
+    };
+    if stretched_parts > 0 {
+        bump(
+            &mut diagnostic_counts,
+            "glb_scaled_parts_baked_into_own_definitions",
+            u32::try_from(stretched_parts).map_err(
+                |_out_of_range: std::num::TryFromIntError| {
+                    too_large(GlbMeasure::MeshParts, stretched_parts, MAX_PRIMITIVES)
+                },
+            )?,
+        )?;
+    }
     let placed_triangles = traversal.iter().fold(0_usize, |count, node_index| {
         nodes[*node_index]
             .primitives
@@ -2623,3 +2641,6 @@ mod cavity_tests;
 
 #[cfg(test)]
 mod shared_picture_tests;
+
+#[cfg(test)]
+mod stretch_tests;
