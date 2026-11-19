@@ -75,6 +75,7 @@ fn plan(snapshot: &ketchup_model::document::Snapshot) -> Result<CamPlan, CamErro
             spindle_rpm: 12_000,
             feed_mm_per_min: 900.0,
             plunge_mm_per_min: 250.0,
+            point_angle_deg: None,
         },
         CamSetup {
             work_offset: CamWorkOffset::G54,
@@ -301,6 +302,7 @@ fn practical_operations() -> Vec<CamOperation> {
             points_mm: vec![[10.0, 10.0], [40.0, 20.0]],
             top_z_mm: -2.0,
             bottom_z_mm: -9.0,
+            through: false,
         },
     ]
 }
@@ -384,12 +386,14 @@ fn planner_refuses_stale_or_malformed_geometry_without_document_mutation() {
             points_mm: vec![[10.0, 10.0]],
             top_z_mm: -2.0,
             bottom_z_mm: -4.0,
+            through: false,
         },
         CamOperation::Drill {
             id: 7,
             points_mm: vec![[20.0, 10.0]],
             top_z_mm: -2.0,
             bottom_z_mm: -4.0,
+            through: false,
         },
     ];
     assert_eq!(
@@ -521,6 +525,146 @@ fn planner_refuses_unsafe_clearance_stock_sweep_flute_and_tool_kind() {
     assert_eq!(
         CamToolpath::plan(&snapshot, &drill_plan, &face),
         Err(CamPlannerError::UnsupportedTool)
+    );
+}
+
+fn drill_plan(
+    snapshot: &ketchup_model::document::Snapshot,
+    point_angle_deg: Option<f64>,
+) -> Result<CamPlan, CamError> {
+    let canonical = plan(snapshot).unwrap();
+    let mut tool = canonical.tool().clone();
+    tool.kind = CamToolKind::Drill;
+    tool.point_angle_deg = point_angle_deg;
+    CamPlan::new(
+        snapshot,
+        CamPlanId(5),
+        "Drilling",
+        canonical.stock().clone(),
+        tool,
+        canonical.setup().clone(),
+        canonical.cut_parameters().clone(),
+        DEFINITION,
+        SOLID,
+    )
+}
+
+/// The setup Z the drill's point reaches in `toolpath`.
+fn deepest_point(toolpath: &CamToolpath) -> f64 {
+    toolpath
+        .motions
+        .iter()
+        .map(|motion| match &motion.path {
+            CamMotionPath::Line { end_mm, .. } | CamMotionPath::Arc { end_mm, .. } => end_mm[2],
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// R1119og-MF-800: a drill stopped with its point on the exit of a through hole,
+/// short of it by the axial allowance, leaves a cone and a burr ring; a hole is
+/// drilled to size in one go, and through until the full diameter is out.
+#[test]
+fn a_drill_breaks_through_a_through_hole_and_stops_on_a_blind_floor() {
+    let document = solid_document();
+    let snapshot = document.current();
+    // The target runs from setup Z -2 down to -12; the plan leaves an axial
+    // allowance of 0.1 mm, which drilling must not take.
+    let standard = drill_plan(&snapshot, None).unwrap();
+    let drill = |bottom_z_mm: f64, through: bool| {
+        [CamOperation::Drill {
+            id: 1,
+            points_mm: vec![[10.0, 10.0]],
+            top_z_mm: -2.0,
+            bottom_z_mm,
+            through,
+        }]
+    };
+    let blind = CamToolpath::plan(&snapshot, &standard, &drill(-9.0, false)).unwrap();
+    assert!((deepest_point(&blind) - -9.0).abs() <= 1.0e-9);
+
+    // A 118° point on a 6 mm drill is 3 / tan 59° = 1.80 mm long; its full
+    // diameter passes the exit by 1 mm.
+    let point_mm = 3.0 / 59.0_f64.to_radians().tan();
+    assert!((standard.tool().tip_length_mm() - point_mm).abs() <= 1.0e-12);
+    let through = CamToolpath::plan(&snapshot, &standard, &drill(-12.0, true)).unwrap();
+    assert!((deepest_point(&through) - (-12.0 - point_mm - 1.0)).abs() <= 1.0e-9);
+
+    // A flat-bottom drill has no point to clear.
+    let flat = drill_plan(&snapshot, Some(180.0)).unwrap();
+    assert_eq!(flat.tool().tip_length_mm(), 0.0);
+    let flat_through = CamToolpath::plan(&snapshot, &flat, &drill(-12.0, true)).unwrap();
+    assert!((deepest_point(&flat_through) - -13.0).abs() <= 1.0e-9);
+
+    // The flutes must reach the deepest point.
+    let mut short = standard.tool().clone();
+    short.flute_length_mm = 11.0;
+    let short_plan = CamPlan::new(
+        &snapshot,
+        CamPlanId(6),
+        "Short drill",
+        standard.stock().clone(),
+        short,
+        standard.setup().clone(),
+        standard.cut_parameters().clone(),
+        DEFINITION,
+        SOLID,
+    )
+    .unwrap();
+    assert!(CamToolpath::plan(&snapshot, &short_plan, &drill(-12.0, false)).is_ok());
+    assert_eq!(
+        CamToolpath::plan(&snapshot, &short_plan, &drill(-12.0, true)),
+        Err(CamPlannerError::CuttingDepthExceedsFlute)
+    );
+
+    // Only a drill has a point angle, and only a real one.
+    for angle in [50.0, 181.0, f64::NAN] {
+        assert_eq!(
+            drill_plan(&snapshot, Some(angle)),
+            Err(CamError::InvalidPlan)
+        );
+    }
+    let mut mill = plan(&snapshot).unwrap().tool().clone();
+    mill.point_angle_deg = Some(118.0);
+    assert_eq!(
+        CamPlan::new(
+            &snapshot,
+            CamPlanId(7),
+            "Pointed end mill",
+            standard.stock().clone(),
+            mill,
+            standard.setup().clone(),
+            standard.cut_parameters().clone(),
+            DEFINITION,
+            SOLID,
+        ),
+        Err(CamError::InvalidPlan)
+    );
+    assert_eq!(plan(&snapshot).unwrap().tool().tip_length_mm(), 0.0);
+}
+
+/// A drill's point angle is saved in format 120, which a Kečup that writes 119 would drop.
+#[test]
+fn a_drill_point_angle_is_saved_as_format_120() {
+    let mut document = solid_document();
+    let pointed = drill_plan(&document.current(), Some(135.0)).unwrap();
+    assert_ne!(
+        pointed.stable_digest(),
+        drill_plan(&document.current(), None)
+            .unwrap()
+            .stable_digest()
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(
+            pointed.clone(),
+        )]))
+        .unwrap();
+    let bytes = persistence::save(&document.current());
+    assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 120);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.cam_plan(CamPlanId(5)), Some(&pointed));
+    assert_eq!(
+        reopened.canonical_digest(),
+        document.current().canonical_digest()
     );
 }
 

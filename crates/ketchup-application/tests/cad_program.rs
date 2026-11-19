@@ -112,6 +112,7 @@ fn cam_setup_operation(definition_id: u64, feature_id: u64) -> AssistantCadEditO
         spindle_rpm: 12_000,
         feed_mm_per_min: 900.0,
         plunge_mm_per_min: 250.0,
+        drill_point_angle_deg: None,
         work_offset: AssistantCamWorkOffset::G54,
         origin_mm: [0.0, 0.0, 31.0],
         x_axis: [1.0, 0.0, 0.0],
