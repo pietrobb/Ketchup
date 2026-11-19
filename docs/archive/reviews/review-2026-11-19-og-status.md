@@ -19,9 +19,9 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Open |
-| 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Open |
-| 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Open |
+| 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Fixed in #127: every dialect writes the safe header (G40 G49 G80 G94) and G43 H with the tool's length offset before the first cut |
+| 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Fixed in #128: a bonded joint ties only the part where the faces overlap (node to node or node to face), a rigid spider only for an explicit bolt, faces that do not touch are refused; two 1000×50×50 layers bonded by a face bend 0.342 mm at the end |
+| 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Fixed in #129: the anchorage path starts at the member (EA/L of the brace, buckling over its length, the stiffness of both connections) and a diaphragm is checked for every anchor |
 | 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Open |
 | 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Open |
 
