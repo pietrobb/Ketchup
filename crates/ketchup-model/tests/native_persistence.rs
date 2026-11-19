@@ -1096,9 +1096,13 @@ fn an_extension_released_readers_would_lose_makes_the_container_newer_than_they_
     let store = graph_document();
     let schema = |bytes: &[u8]| u16::from_le_bytes([bytes[10], bytes[11]]);
     let entry = |lost: bool| {
-        let entry =
-            persistence::ExtensionEntry::new("org.example.sheet", "sheet.json", false, b"{}".to_vec())
-                .unwrap();
+        let entry = persistence::ExtensionEntry::new(
+            "org.example.sheet",
+            "sheet.json",
+            false,
+            b"{}".to_vec(),
+        )
+        .unwrap();
         if lost {
             entry.lost_by_released_readers()
         } else {

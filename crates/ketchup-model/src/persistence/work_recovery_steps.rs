@@ -279,7 +279,11 @@ pub(super) fn plan_step(
     let kept = &written[0].snapshot;
     let history = encode_history(&written, 0, next_revision_id, kept, HISTORY_BUDGET).ok()?;
     step.extend_from_slice(&history);
-    let step = encode_container(BTreeMap::from([(STEP_ENTRY.to_owned(), (EntryFlag::Required, step))])).ok()?;
+    let step = encode_container(BTreeMap::from([(
+        STEP_ENTRY.to_owned(),
+        (EntryFlag::Required, step),
+    )]))
+    .ok()?;
     // The steps stay lighter than the base.
     let len = plan.len + 8 + step.len();
     (len - plan.payload_len <= plan.payload_len).then(|| {
@@ -465,10 +469,19 @@ pub(super) fn assemble_checkpoint(
         );
         let history = history?;
         let mut file = side_of(&entries);
-        file.insert("document.bin".to_owned(), (EntryFlag::Required, &snapshot.bytes[..]));
-        file.insert("history.bin".to_owned(), (EntryFlag::Required, &history[..]));
+        file.insert(
+            "document.bin".to_owned(),
+            (EntryFlag::Required, &snapshot.bytes[..]),
+        );
+        file.insert(
+            "history.bin".to_owned(),
+            (EntryFlag::Required, &history[..]),
+        );
         if let Some(program) = &current.program {
-            file.insert(PROGRAM_ENTRY.to_owned(), (EntryFlag::Required, &program[..]));
+            file.insert(
+                PROGRAM_ENTRY.to_owned(),
+                (EntryFlag::Required, &program[..]),
+            );
         }
         encode_container(file)
     };

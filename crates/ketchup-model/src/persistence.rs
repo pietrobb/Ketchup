@@ -1133,7 +1133,10 @@ fn save_container_entries(
     // The program that owns the current revision belongs to the document, not
     // to its Undo steps: a history that no longer opens must not take it along.
     if let Some(program) = &program {
-        entries.insert(PROGRAM_ENTRY.to_owned(), (EntryFlag::Required, &program[..]));
+        entries.insert(
+            PROGRAM_ENTRY.to_owned(),
+            (EntryFlag::Required, &program[..]),
+        );
     }
     encode_container(entries)
 }
@@ -1901,7 +1904,10 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
     let mut container_data = ContainerData::default();
     for (path, (flag, content)) in entries {
         if let Some(hash) = path.strip_prefix("blobs/") {
-            if flag != EntryFlag::Optional || hash.len() != 64 || crate::graph::sha256_hex(&content) != hash {
+            if flag != EntryFlag::Optional
+                || hash.len() != 64
+                || crate::graph::sha256_hex(&content) != hash
+            {
                 return Err(PersistenceError::InvalidBlobHash);
             }
             if Arc::make_mut(&mut container_data.blobs)
@@ -1914,8 +1920,12 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
             let (namespace, relative_path) = extension_path
                 .split_once('/')
                 .ok_or_else(|| PersistenceError::InvalidContainerPath(path.clone()))?;
-            let entry =
-                ExtensionEntry::new(namespace, relative_path, flag == EntryFlag::Required, content)?;
+            let entry = ExtensionEntry::new(
+                namespace,
+                relative_path,
+                flag == EntryFlag::Required,
+                content,
+            )?;
             container_data.insert_extension(if flag == EntryFlag::LostByReleasedReaders {
                 entry.lost_by_released_readers()
             } else {
