@@ -17,11 +17,13 @@ use std::fmt;
 
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
+mod cam_kinds;
 mod loft;
 mod program_references;
 mod spatial_path;
 mod structure_change;
 
+pub use cam_kinds::{AssistantCamToolKind, AssistantCamWorkOffset};
 pub use spatial_path::validated_spatial_path_segments;
 
 /// Most operations in one CAD edit program.
@@ -941,15 +943,15 @@ pub enum AssistantCadSurfaceBodySource {
         #[serde(default)]
         second_continuity: AssistantCadLoftContinuity,
     },
-    /// An earlier single-face surface with one control point of its B-spline
-    /// form (row `u_index`, column `v_index`, from 0) moved by `offset_mm`
-    /// and, with `weight`, given a new positive weight. Every seam in `keep`
-    /// must hold its continuity after the move or the move is refused. The
-    /// earlier surface stays.
+    /// An earlier one-face surface; its B-spline control point (row `u_index`, column `v_index`,
+    /// from 0) at `from_mm` moves by `offset_mm`, `weight` sets a new positive weight. The move is
+    /// refused with both positions if the point lies elsewhere (also after an earlier edit changed
+    /// the net), or if a seam in `keep` loses its continuity. The earlier surface stays.
     ControlPoint {
         target_feature_id: AssistantCadFeatureReference,
         u_index: u32,
         v_index: u32,
+        from_mm: [f64; 3],
         #[serde(default)]
         offset_mm: [f64; 3],
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1687,25 +1689,6 @@ pub struct AssistantCadClassificationCategory {
     pub name: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantCamToolKind {
-    FlatEndMill,
-    BallEndMill,
-    Drill,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantCamWorkOffset {
-    G54,
-    G55,
-    G56,
-    G57,
-    G58,
-    G59,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AssistantCadEditOperation {
@@ -1902,6 +1885,9 @@ pub enum AssistantCadEditOperation {
         spindle_rpm: u32,
         feed_mm_per_min: f64,
         plunge_mm_per_min: f64,
+        /// Included point angle of a drill; none is the standard 118°, 180 a flat-bottom drill.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        drill_point_angle_deg: Option<f64>,
         work_offset: AssistantCamWorkOffset,
         origin_mm: [f64; 3],
         x_axis: [f64; 3],
@@ -3616,6 +3602,7 @@ impl AssistantCadEditProgram {
                 spindle_rpm,
                 feed_mm_per_min,
                 plunge_mm_per_min,
+                drill_point_angle_deg,
                 origin_mm,
                 x_axis,
                 y_axis,
@@ -3661,6 +3648,7 @@ impl AssistantCadEditProgram {
                         .iter()
                         .any(|value| !value.is_finite() || *value <= 0.0)
                     || signed.iter().any(|value| !value.is_finite())
+                    || drill_point_angle_deg.is_some_and(|angle| !angle.is_finite())
                 {
                     return Err(AssistantRequestInvalid::invalid("CAM plan"));
                 }

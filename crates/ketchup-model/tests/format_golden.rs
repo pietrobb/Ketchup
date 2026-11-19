@@ -981,6 +981,7 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// with 108; a drawn fill is a new shape, not a field, and came with 109; an underlay's
 /// `code_page` with 110.
 const OPTIONAL_FIELDS: &[&str] = &[
+    "cam.rs: point_angle_deg", // Format 120.
     "document.rs: annotations",
     "document.rs: contact_joints",
     "document.rs: floor_z_mm",

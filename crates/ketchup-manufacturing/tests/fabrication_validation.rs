@@ -2622,9 +2622,8 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     );
 }
 
-#[test]
-fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_and_woodwop_refuses_it()
- {
+/// The drilled timbers, coded for woodWOP, with an M12 thread in the hole.
+fn tapped_drill_fabrication_projection() -> (Snapshot, GeneralFabricationProjection) {
     let mut document = tap_drill_document();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -2647,11 +2646,17 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
             },
         ]))
         .unwrap();
-    let (snapshot, projection) = exact_graph_document_fabrication_projection(
+    exact_graph_document_fabrication_projection(
         document,
         "m17-circular-drill-result",
         GRAPH_BOOLEAN,
-    );
+    )
+}
+
+#[test]
+fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_and_woodwop_refuses_it()
+ {
+    let (snapshot, projection) = tapped_drill_fabrication_projection();
     let drill = &projection.manufacturing.operations[1];
     assert_eq!(drill.kind, GeneralManufacturingKind::CircularDrill);
     assert_eq!(
@@ -4612,8 +4617,8 @@ fn a_cut_beside_its_part_is_not_machined() {
 fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
     use ketchup_manufacturing::fabrication::WoodwopMprOptions;
     use ketchup_manufacturing::workshop_package::{
-        WORKSHOP_REPORT, WORKSHOP_SUMS, WorkshopPackageError, WorkshopPackageOptions,
-        check_workshop_package,
+        WORKSHOP_LOSSES, WORKSHOP_REPORT, WORKSHOP_SUMS, WorkshopPackageError,
+        WorkshopPackageOptions, check_workshop_package,
     };
     let (snapshot, projection) = circular_drill_fabrication_projection();
     let package = projection.workshop_package(&snapshot, WorkshopPackageOptions::default());
@@ -4629,6 +4634,7 @@ fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
             "parts.csv",
             "drawings.svg",
             "btlx/model.btlx",
+            "btlx/model.btlx.support.txt",
             "woodwop/000000000046.mpr",
             "woodwop/000000000046.svg",
             "woodwop/000000000047.mpr",
@@ -4647,7 +4653,9 @@ fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
             .unwrap()
     );
     let accepted = check_workshop_package(&package.zip().unwrap()).unwrap();
-    assert_eq!(accepted.files.len(), names.len() + 1);
+    // The files, the report of what was not made and the list of what was lost.
+    assert_eq!(accepted.files.len(), names.len() + 2);
+    assert!(accepted.files.iter().any(|file| file == WORKSHOP_LOSSES));
     assert!(!accepted.files.iter().any(|file| file == WORKSHOP_SUMS));
     assert_eq!(accepted.not_made, "Every output was made.\n");
 
@@ -4661,7 +4669,7 @@ fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
             ..WorkshopPackageOptions::default()
         },
     );
-    assert_eq!(package.files.len(), 3);
+    assert_eq!(package.files.len(), 4);
     assert_eq!(package.not_made.len(), 1);
     assert_eq!(package.not_made[0].output, "woodWOP");
     let accepted = check_workshop_package(&package.zip().unwrap()).unwrap();
@@ -4676,7 +4684,7 @@ fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
     );
 
     // Nothing is made from another state of the document, so there is
-    // nothing to send.
+    // nothing to send, and the refusal says why (review 2026-11-10 MF-406).
     let (other, _) = rectangular_through_cut_fabrication_projection();
     let package = projection.workshop_package(&other, WorkshopPackageOptions::default());
     assert_eq!(package.files, []);
@@ -4689,5 +4697,80 @@ fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
         "{:?}",
         package.not_made
     );
-    assert_eq!(package.zip(), Err(WorkshopPackageError::Empty));
+    let Err(WorkshopPackageError::NothingMade(reasons)) = package.zip() else {
+        panic!("a package of nothing was made");
+    };
+    assert_eq!(reasons.len(), 4, "{reasons:?}");
+    assert!(
+        reasons
+            .iter()
+            .all(|reason| reason.contains("another state of the document")),
+        "{reasons:?}"
+    );
+}
+
+/// Review 2026-11-10 MF-400, MF-401: the package held BTLx without the
+/// support report its own export writes, so a machine drilled the core hole
+/// of a thread with no word of it. The package now has the report and lists
+/// each loss with its part in `losses.csv`, a milled round hole too.
+#[test]
+fn the_workshop_package_carries_the_btlx_support_report_and_lists_its_losses() {
+    use ketchup_manufacturing::workshop_package::{
+        WORKSHOP_LOSSES, WorkshopPackageOptions, check_workshop_package,
+    };
+    let (snapshot, projection) = tapped_drill_fabrication_projection();
+    let package = projection.workshop_package(&snapshot, WorkshopPackageOptions::default());
+    let support = package
+        .files
+        .iter()
+        .find(|(name, _)| name == "btlx/model.btlx.support.txt")
+        .map(|(_, bytes)| String::from_utf8(bytes.clone()).unwrap())
+        .expect("the package holds the BTLx support report");
+    assert_eq!(
+        support,
+        projection
+            .btlx_support_report(&snapshot, BtlxExportOptions::default())
+            .unwrap()
+    );
+    assert!(
+        support.contains("\ntapped_drillings=1\nthread_loss="),
+        "{support}"
+    );
+    let threads = package
+        .losses
+        .iter()
+        .filter(|lost| lost.element == "a tapped hole (M12×1.75 depth 40)")
+        .collect::<Vec<_>>();
+    assert_eq!(threads.len(), 1, "{:?}", package.losses);
+    assert_eq!(threads[0].output, "BTLx");
+    assert_eq!(threads[0].part, "Timber with circular drilling");
+    assert!(
+        threads[0]
+            .reason
+            .starts_with("BTLx 2.3.1 has no tapping processing")
+    );
+    let accepted = check_workshop_package(&package.zip().unwrap()).unwrap();
+    assert!(accepted.files.iter().any(|file| file == WORKSHOP_LOSSES));
+
+    let (snapshot, projection) = circular_drill_fabrication_projection();
+    let options = WorkshopPackageOptions {
+        btlx: BtlxExportOptions {
+            largest_drill_mm: Some(8.0),
+            ..BtlxExportOptions::default()
+        },
+        ..WorkshopPackageOptions::default()
+    };
+    let package = projection.workshop_package(&snapshot, options);
+    let milled = package
+        .losses
+        .iter()
+        .map(|lost| (lost.part.as_str(), lost.element.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        milled,
+        [("Timber with circular drilling", "a round hole Ø10")],
+        "{:?}",
+        package.losses
+    );
+    assert!(package.losses[0].reason.contains("Ø8"));
 }

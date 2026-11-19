@@ -111,7 +111,30 @@ impl GeneralFabricationProjection {
     #[must_use]
     pub fn btlx_drill_report(&self, snapshot: &Snapshot, largest_drill_mm: Option<f64>) -> String {
         let milled = self
-            .manufacturing
+            .btlx_milled_round_holes(snapshot, largest_drill_mm)
+            .into_iter()
+            .map(|(part, diameter_mm)| format!("{part} Ø{}", format_number(diameter_mm)))
+            .collect::<Vec<_>>();
+        let largest = largest_drill_mm.map_or_else(|| "not set".to_owned(), format_number);
+        let mut report = format!(
+            "largest_drill_mm={largest}\nround_holes_milled={}\n",
+            milled.len()
+        );
+        if !milled.is_empty() {
+            report.push_str(&format!("milled_round_holes={}\n", milled.join("; ")));
+        }
+        report
+    }
+
+    /// The round holes a BTLx file set up with drills up to
+    /// `largest_drill_mm` mills rather than drills, as (part, diameter mm).
+    #[must_use]
+    pub fn btlx_milled_round_holes(
+        &self,
+        snapshot: &Snapshot,
+        largest_drill_mm: Option<f64>,
+    ) -> Vec<(String, f64)> {
+        self.manufacturing
             .operations
             .iter()
             .filter_map(|operation| {
@@ -128,19 +151,10 @@ impl GeneralFabricationProjection {
                     let part = snapshot
                         .definition(operation.definition_id)
                         .map_or("", |definition| definition.name());
-                    format!("{part} Ø{}", format_number(diameter_mm))
+                    (part.to_owned(), diameter_mm)
                 })
             })
-            .collect::<Vec<_>>();
-        let largest = largest_drill_mm.map_or_else(|| "not set".to_owned(), format_number);
-        let mut report = format!(
-            "largest_drill_mm={largest}\nround_holes_milled={}\n",
-            milled.len()
-        );
-        if !milled.is_empty() {
-            report.push_str(&format!("milled_round_holes={}\n", milled.join("; ")));
-        }
-        report
+            .collect()
     }
 }
 

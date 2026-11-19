@@ -3,7 +3,6 @@ crates/ketchup-app/src/app.rs:house 4
 crates/ketchup-app/src/app/commands.rs:panel 21
 crates/ketchup-app/src/app/document.rs:panel 10
 crates/ketchup-app/src/app/drawing.rs:panel 4
-crates/ketchup-app/src/app/export.rs:timber 1
 crates/ketchup-app/src/app/export.rs:weldment 14
 crates/ketchup-app/src/app/outliner.rs:panel 2
 crates/ketchup-app/src/app/selection.rs:panel 3
@@ -42,6 +41,7 @@ crates/ketchup-manufacturing/src/fabrication.rs:timber 14
 crates/ketchup-manufacturing/src/fabrication.rs:weldment 79
 crates/ketchup-manufacturing/src/fabrication/error.rs:timber 6
 crates/ketchup-manufacturing/src/fabrication/error.rs:weldment 1
+crates/ketchup-manufacturing/src/fabrication/taps.rs:timber 1
 crates/ketchup-manufacturing/src/project_drawings.rs:roof 1
 crates/ketchup-model/src/document/entities.rs:weldment 16
 crates/ketchup-model/src/document/error.rs:weldment 4

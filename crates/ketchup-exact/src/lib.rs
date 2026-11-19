@@ -470,6 +470,13 @@ mod ffi {
             radius: f64,
             axial_length: f64,
         ) -> UniquePtr<NativeOperationResult>;
+        fn sweep_tipped_axial_tool_native(
+            motion: &NativeSegment,
+            radius: f64,
+            axial_length: f64,
+            tip_kind: u8,
+            tip_length: f64,
+        ) -> UniquePtr<NativeOperationResult>;
         fn extrude_mixed_profile_native(
             segments: &[NativeSegment],
             height: f64,
@@ -579,6 +586,8 @@ mod ffi {
             motions: &[NativeSegment],
             radius: f64,
             axial_length: f64,
+            tip_kind: u8,
+            tip_length: f64,
             matrix: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
         fn named_prism_native(

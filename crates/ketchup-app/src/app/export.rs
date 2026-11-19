@@ -597,36 +597,15 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let options = self.btlx_export_options();
-        let (selected_profile_request, intermediate_saw_cuts, selected_profile_contours) =
-            match options.profile_processing_request {
-                BtlxProfileProcessingRequest::PortableFreeContour => (
-                    "portable FreeContour",
-                    "not applicable".to_owned(),
-                    "closed simple line/arc contours",
-                ),
-                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
-                    intermediate_saw_cuts,
-                } => (
-                    "edge SawContour cuts, then MillContour",
-                    intermediate_saw_cuts.to_string(),
-                    "rectangles sawn on their edges then milled; contours with an arc milled whole",
-                ),
-            };
         let result = (|| -> Result<Written, ExportError> {
             let projection = self.current_general_fabrication_projection()?;
             let btlx = projection
                 .btlx_2_3_1_export_with_options(&snapshot, options)
                 .map_err(ExportError::failed)?;
-            let losses = projection
-                .btlx_loss_report(&snapshot)
+            let support_report = projection
+                .btlx_support_report(&snapshot, options)
                 .map_err(ExportError::failed)?;
             let lost = lost(projection.admit(&snapshot, ShopFormat::Btlx))?;
-            let support_report = format!(
-                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_removals=pocket, through-cut, extruded boolean-cut\nportable_profile_contours=closed simple line/arc contours\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=straight-edged non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n{}{}",
-                snapshot.canonical_digest(),
-                losses,
-                projection.btlx_drill_report(&snapshot, options.largest_drill_mm)
-            );
             let report_path = path.with_extension("btlx.support.txt");
             let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
             let mut evidence = btlx.clone();
