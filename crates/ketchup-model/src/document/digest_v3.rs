@@ -530,6 +530,11 @@ impl DigestV3 {
             self.u64(value.to_bits());
         }
         self.u64(u64::from(plan.tool().spindle_rpm));
+        // Absent from plans saved before drills had a point angle, so their digest stays.
+        if let Some(angle) = plan.tool().point_angle_deg {
+            self.byte(0xA1);
+            self.u64(angle.to_bits());
+        }
         self.byte(match plan.setup().work_offset {
             crate::cam::CamWorkOffset::G54 => 54,
             crate::cam::CamWorkOffset::G55 => 55,

@@ -612,9 +612,17 @@ class Document:
                   feed_mm_per_min, plunge_mm_per_min, work_offset="g54",
                   origin_mm=(0, 0, 0), x_axis=(1, 0, 0), y_axis=(0, 1, 0),
                   safe_height_mm, maximum_stepdown_mm, stepover_ratio,
-                  radial_allowance_mm=0, axial_allowance_mm=0):
-        """Commit one canonical, exact-target-bound CAM setup as one Undo step."""
+                  radial_allowance_mm=0, axial_allowance_mm=0,
+                  drill_point_angle_deg=None):
+        """Commit one canonical, exact-target-bound CAM setup as one Undo step.
+
+        drill_point_angle_deg is a drill's included point angle (default 118, 180
+        flat-bottom); only a drill has one.
+        """
+        point = ({} if drill_point_angle_deg is None
+                 else {"drill_point_angle_deg": drill_point_angle_deg})
         return self.apply([{
+            **point,
             "operation": "upsert_cam_plan", "plan_id": plan_id, "name": name,
             "target_definition_id": target_definition_id,
             "target_feature_id": target_feature_id,

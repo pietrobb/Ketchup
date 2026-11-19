@@ -19,11 +19,11 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Open |
+| 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Fixed (#127): every dialect opens with G40 G49 G80 G94 (or its equivalent), calls the tool length offset `G43 H{tool}` at the safe height before the first cut, moves Z first, then XY, and writes comments in parentheses; a test checks each dialect |
 | 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Open |
 | 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Open |
 | 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Open |
-| 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Open |
+| 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Fixed: a drill has a point angle (saved in format 120); a through hole is drilled past its exit until the full diameter is out, limited by the stock and the workholding, without the axial allowance; the exact CAM simulation sweeps a drill's cone and a ball end mill's ball instead of a flat cylinder, so the stock left in a blind hole's cone is counted; tests compare residual and gouge volumes with the analytic values |
 
 ## 2. Policy for an AI
 

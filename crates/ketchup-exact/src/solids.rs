@@ -10,36 +10,40 @@ impl ExactBackend {
         validate_length(spec.radius_mm, "radius_mm", operation, &input)?;
         validate_length(spec.axial_length_mm, "axial_length_mm", operation, &input)?;
         let motion = axial_tool_segment(spec.motion, operation, &input)?;
-        collect_output(
-            ffi::sweep_axial_tool_native(
-                &native_spatial_segment(&motion),
+        let segment = native_spatial_segment(&motion);
+        let native = match spec.tip.native(spec.radius_mm) {
+            (0, _) => ffi::sweep_axial_tool_native(&segment, spec.radius_mm, spec.axial_length_mm),
+            (kind, length) => ffi::sweep_tipped_axial_tool_native(
+                &segment,
                 spec.radius_mm,
                 spec.axial_length_mm,
+                kind,
+                length,
             ),
-            operation,
-            &input,
-            HistoryConfidence::Complete,
-        )
+        };
+        collect_output(native, operation, &input, HistoryConfidence::Complete)
     }
 
-    /// Cuts `target` by the axial tool of `radius_mm` and `axial_length_mm` swept along
-    /// each of `motions` in turn, each sweep placed by the rigid row-major `matrix`.
-    /// Only the final body is checked and measured.
+    /// Cuts `target` by the axial tool of `radius_mm`, `axial_length_mm` and `tip`
+    /// swept along each of `motions` in turn, each sweep placed by the rigid row-major
+    /// `matrix`. Only the final body is checked and measured.
     pub fn cut_axial_sweeps(
         &self,
         target: &ExactBody,
         motions: &[AxialToolMotion],
         radius_mm: f64,
         axial_length_mm: f64,
+        tip: AxialToolTip,
         matrix: &[f64; 16],
     ) -> Result<ExactOpOutput, GeometryError> {
         let operation = "cut_axial_sweeps";
         let input = format!(
-            "{operation}:{}:{motions:?}:{:016x}:{:016x}:{matrix:?}",
+            "{operation}:{}:{motions:?}:{:016x}:{:016x}:{tip:?}:{matrix:?}",
             target.result_fingerprint,
             radius_mm.to_bits(),
             axial_length_mm.to_bits()
         );
+        let (tip_kind, tip_length) = tip.native(radius_mm);
         validate_length(radius_mm, "radius_mm", operation, &input)?;
         validate_length(axial_length_mm, "axial_length_mm", operation, &input)?;
         if motions.is_empty()
@@ -62,7 +66,15 @@ impl ExactBackend {
             .collect::<Result<Vec<_>, _>>()?;
         let native = target.owned_native("Target exact body", operation, &input)?;
         collect_output(
-            ffi::cut_axial_sweeps_native(native, &segments, radius_mm, axial_length_mm, matrix),
+            ffi::cut_axial_sweeps_native(
+                native,
+                &segments,
+                radius_mm,
+                axial_length_mm,
+                tip_kind,
+                tip_length,
+                matrix,
+            ),
             operation,
             &input,
             HistoryConfidence::None,

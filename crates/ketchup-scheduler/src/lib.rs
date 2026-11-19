@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 
 pub mod background;
+mod cam_simulation_wire;
+pub use cam_simulation_wire::{
+    CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireFixture,
+    CamSimulationWireMotion, CamSimulationWireRequest,
+};
 mod child_process;
 pub mod exact_worker;
 mod fea_assembly;
@@ -168,72 +173,6 @@ impl ExactBRepVolumeMeshPackage {
             && self.mesh.graph_digest == self.source.graph.graph_digest
             && self.mesh.source_result_fingerprint == self.source.identity.result_fingerprint
     }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireRequest {
-    pub schema: String,
-    pub plan_digest: String,
-    pub toolpath_digest: String,
-    pub target_exact_graph_digest: String,
-    pub stock_bounds_mm: [[f64; 3]; 2],
-    pub setup_to_world: [f64; 16],
-    pub cutter_radius_mm: f64,
-    pub cutter_length_mm: f64,
-    pub tool_length_mm: f64,
-    pub holder_radius_mm: f64,
-    pub holder_offset_mm: f64,
-    pub holder_length_mm: f64,
-    pub motions: Vec<CamSimulationWireMotion>,
-    pub fixtures: Vec<CamSimulationWireFixture>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireMotion {
-    pub kind: u8,
-    pub path_kind: u8,
-    pub start_mm: [f64; 3],
-    pub end_mm: [f64; 3],
-    pub center_mm: [f64; 3],
-    pub clockwise: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireFixture {
-    pub id: u64,
-    pub bounds_mm: [[f64; 3]; 2],
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireEvidence {
-    pub schema: String,
-    pub plan_digest: String,
-    pub toolpath_digest: String,
-    pub target_exact_graph_digest: String,
-    pub motion_count: usize,
-    pub cutting_motion_count: usize,
-    pub fixture_count: usize,
-    pub stock_before_mm3: f64,
-    pub stock_after_mm3: f64,
-    pub removed_stock_mm3: f64,
-    pub residual_stock_mm3: f64,
-    pub gouge_mm3: f64,
-    pub collisions: Vec<CamSimulationWireCollision>,
-    pub backend: String,
-    pub tolerance: String,
-    pub result_fingerprint: String,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireCollision {
-    pub motion_index: usize,
-    pub motion_kind: u8,
-    pub participant: u8,
-    pub target: u8,
-    pub fixture_id: Option<u64>,
-    pub common_volume_mm3: f64,
-    pub contact_area_mm2: f64,
-    pub distance_mm: f64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1422,6 +1361,14 @@ impl ExactWorkerSupervisor {
             ],
             cutter_radius_mm: plan.tool().diameter_mm * 0.5,
             cutter_length_mm: plan.tool().flute_length_mm,
+            cutter_tip: match plan.tool().kind {
+                // A flat-bottom drill cuts as a flat end mill.
+                _ if plan.tool().tip_length_mm() == 0.0 => 0,
+                ketchup_model::cam::CamToolKind::Drill => 1,
+                ketchup_model::cam::CamToolKind::BallEndMill => 2,
+                ketchup_model::cam::CamToolKind::FlatEndMill => 0,
+            },
+            cutter_tip_length_mm: plan.tool().tip_length_mm(),
             tool_length_mm: plan.tool().overall_length_mm,
             holder_radius_mm: plan.tool().holder_diameter_mm * 0.5,
             holder_offset_mm: plan.tool().overall_length_mm,
@@ -3055,6 +3002,8 @@ mod tests {
             ],
             cutter_radius_mm: 0.5,
             cutter_length_mm: 1.0,
+            cutter_tip: 0,
+            cutter_tip_length_mm: 0.0,
             tool_length_mm: 2.0,
             holder_radius_mm: 1.0,
             holder_offset_mm: 2.0,
