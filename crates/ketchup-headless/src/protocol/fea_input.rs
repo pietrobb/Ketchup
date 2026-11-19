@@ -1,11 +1,12 @@
 //! The `fea_review` and `fea_assembly_review` requests and their answer.
 
 use super::{Error, Result};
-use ketchup_analysis::fea::{FeaCouplingKind, FeaMaterial, FeaSolveSettings};
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::fea_workflow::{
     ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaFaceTraction, ExactFeaJoint,
-    ExactFeaJointFace, ExactFeaMateJoint, ExactFeaSetup, ExactVolumeMeshWireOptions,
-    FeaAssemblyStudyRequest, FeaReviewError, FeaReviewSummary, FeaStudyRequest,
+    ExactFeaJointFace, ExactFeaJointKind, ExactFeaMateJoint, ExactFeaSetup,
+    ExactVolumeMeshWireOptions, FeaAssemblyStudyRequest, FeaReviewError, FeaReviewSummary,
+    FeaStudyRequest,
 };
 use ketchup_model::assembly::AssemblyMateId;
 use ketchup_model::document::{DefinitionId, FeatureId, InstancePath, OccurrenceId};
@@ -140,21 +141,26 @@ struct FeaJointFaceInput {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FeaJointKindInput {
+    /// Glued where the faces lie on each other.
     Rigid,
+    /// A bolt-like connector holding both faces plane as one rigid body.
+    RigidConnector,
+    /// A bolt-like connector with springs between the two faces.
     Spring {
         translation_n_per_mm: [f64; 3],
         rotation_n_mm_per_rad: [f64; 3],
     },
 }
 
-impl From<FeaJointKindInput> for FeaCouplingKind {
+impl From<FeaJointKindInput> for ExactFeaJointKind {
     fn from(input: FeaJointKindInput) -> Self {
         match input {
-            FeaJointKindInput::Rigid => Self::Rigid,
+            FeaJointKindInput::Rigid => Self::Bonded,
+            FeaJointKindInput::RigidConnector => Self::RigidConnector,
             FeaJointKindInput::Spring {
                 translation_n_per_mm,
                 rotation_n_mm_per_rad,
-            } => Self::Spring {
+            } => Self::SpringConnector {
                 translation_n_per_mm,
                 rotation_n_mm_per_rad,
             },
