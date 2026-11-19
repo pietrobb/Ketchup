@@ -61,7 +61,7 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 18. og:R1110-MF-400, MF-401, MF-406, R1119og-MF-807: losses in the workshop package | Open |
+| 18. og:R1110-MF-400, MF-401, MF-406, R1119og-MF-807: losses in the workshop package | Fixed in pull request `fix/og-workshop-losses`: the package carries `losses.csv` (each thread, hole in a bought part and round hole milled instead of drilled, by part) and the BTLx `support.txt`; a package that makes nothing names the reason of each output; a CAM program lists the threads no operation cuts in its release prompt and in the AI result |
 | 19. og:R1110-MF-402, MF-403: checking the package | Fixed in pull request `fix/og-zip-check`: the check compares each stored header with the central directory, refuses data no entry accounts for, names Windows cannot write and names equal by case or NFC; the package marks a non-ASCII name as UTF-8 (bit 11) and refuses such names when it is made |
 | 20. R1119og-SKP-800: a SketchUp component changed by Scale | Fixed in #142: a component stretched with the Scale tool has the stretch baked into its own part definitions, and group placements stay rigid |
 | 21. R1119og-IMG-800: the presentation image | Fixed in pull request `fix/og-img-texture`: a picture the renderer cannot read, such as one over 64 MP, shows as its part's colour, as in the viewport; the saved image names the part, the picture and why (`lost` for a client, the status line in the window) |

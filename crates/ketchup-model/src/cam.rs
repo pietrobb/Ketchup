@@ -808,6 +808,33 @@ impl CamPlan {
         }
     }
 
+    /// The threads of the plan's part, tapped holes as "M8×1.25 depth 12" and
+    /// shaft threads as "M8×1.25 length 20": no CAM operation cuts a thread,
+    /// so a program of the plan leaves every one for the shop (review
+    /// 2026-11-19 MF-807).
+    #[must_use]
+    pub fn uncut_threads(&self, snapshot: &Snapshot) -> Vec<String> {
+        let of_part = |id: FeatureId| {
+            snapshot
+                .feature(id)
+                .is_some_and(|feature| feature.definition_id() == self.target.definition_id)
+        };
+        let tapped = snapshot
+            .hole_threads()
+            .filter(|(id, _)| of_part(*id))
+            .map(|(_, thread)| thread.label());
+        let shafts = snapshot
+            .shaft_threads()
+            .filter(|(id, _)| of_part(*id))
+            .map(|(_, thread)| {
+                format!(
+                    "{}×{} length {}",
+                    thread.size, thread.pitch_mm, thread.length_mm
+                )
+            });
+        tapped.chain(shafts).collect()
+    }
+
     pub fn default_facing_operation(
         &self,
         snapshot: &Snapshot,
