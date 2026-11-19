@@ -266,11 +266,13 @@ class ClientTests(unittest.TestCase):
                 },
             }),
             (lambda: doc.move_surface_control_point(2, "Moved", 23, 2, 16, (0, 0, -5),
+                                                    from_mm=(60, 25, 1),
                                                     keep=[(21, "tangent")]), {
                 "type": "surface_body",
                 "source": {
                     "type": "control_point", "target_feature_id": 23,
-                    "u_index": 2, "v_index": 16, "offset_mm": [0, 0, -5],
+                    "u_index": 2, "v_index": 16, "from_mm": [60, 25, 1],
+                    "offset_mm": [0, 0, -5],
                     "keep": [{"surface_feature_id": 21, "continuity": "tangent"}],
                 },
             }),

@@ -765,11 +765,18 @@ pub(super) fn valid_operation(
         } => target != cutter && is_surface_node(*target) && is_surface_node(*cutter),
         ExactBRepOperation::SurfaceControlPoint {
             target,
+            from_bits,
             offset_bits,
             weight_bits,
             keep,
             ..
-        } => valid_control_point(*target, offset_bits, *weight_bits, keep, is_surface_node),
+        } => {
+            from_bits
+                .map(f64::from_bits)
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
+                && valid_control_point(*target, offset_bits, *weight_bits, keep, is_surface_node)
+        }
         ExactBRepOperation::SurfaceExtend {
             target,
             distance_bits,

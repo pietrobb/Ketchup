@@ -206,6 +206,10 @@ používateľa. Pri statike, FEA a CAM naopak vždy povedať, čo kontrola **nep
 22. **R1119og-EXA-800 — riadiaci bod voľnej plochy** (`document/entities.rs:925-940`,
     `native_control_points.cc:183-195`): ukladať polohu v mm alebo (u, v), nie index pólu; pri
     zmene siete odmietnuť s oboma polohami.
+    - **Stav:** opravené vo vetve `fix/og-control-point` — `SurfaceBodySpec::ControlPoint` nesie aj
+      `from_mm` (poloha bodu v mm) popri indexe; `control_points.rs` porovná pól siete s `from_mm`
+      a pri inej polohe alebo bode mimo siete odmietne s oboma polohami a rozmermi siete. Testy
+      `ketchup-exact/tests/surface_control_points.rs`, `ketchup-scheduler/tests/surface_control_point.rs`.
 
 ## 7. Revízie DXF od architekta
 

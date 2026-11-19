@@ -2337,6 +2337,7 @@ impl DigestV3 {
                 target,
                 u_index,
                 v_index,
+                from_mm,
                 offset_mm,
                 weight,
                 keep,
@@ -2345,7 +2346,7 @@ impl DigestV3 {
                 self.u64(target.0);
                 self.u64(u64::from(*u_index));
                 self.u64(u64::from(*v_index));
-                for value in offset_mm {
+                for value in from_mm.iter().chain(offset_mm) {
                     self.u64(value.to_bits());
                 }
                 // No weight hashes as 0, which no valid weight has.

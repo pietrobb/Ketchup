@@ -523,16 +523,19 @@ class Document:
         }})
 
     def move_surface_control_point(self, definition_id, name, target_feature_id, u_index, v_index,
-                                   offset_mm=(0.0, 0.0, 0.0), *, weight=None, keep=()):
+                                   offset_mm=(0.0, 0.0, 0.0), *, from_mm, weight=None, keep=()):
         """Move one control point of a single-face surface's B-spline form.
 
+        `from_mm` is where the point lies now; a point of these indices elsewhere,
+        also after an earlier edit changes the net, is refused with where it lies.
         `keep` lists (surface_feature_id, continuity) seams that must still hold
         "position", "tangent" or "curvature" continuity, or the move is refused.
         The earlier surface stays.
         """
         source = {
             "type": "control_point", "target_feature_id": target_feature_id,
-            "u_index": u_index, "v_index": v_index, "offset_mm": list(offset_mm),
+            "u_index": u_index, "v_index": v_index, "from_mm": list(from_mm),
+            "offset_mm": list(offset_mm),
         }
         if weight is not None:
             source["weight"] = weight
