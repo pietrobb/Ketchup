@@ -474,7 +474,18 @@ jobs:
           RUST_TEST_THREADS: 2
         run: >-
           cargo test --locked --release -p ketchup-application --no-fail-fast --
-          --ignored house_panel_validation:: house_project_collision::
+          --ignored house_project_collision::
+      # The panel's check has the window's 30 s limit, so it runs alone: beside
+      # the collision tests above it took 35 s on the 4-core runner (review
+      # 2026-11-19 og, EXA-801/CI-807); the last green nightly's code is as slow
+      # beside them (111 s against 117 s for the four on 4 test threads).
+      - name: whole-house panel check within the window's limit
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
+        env:
+          RUST_TEST_THREADS: 1
+        run: >-
+          cargo test --locked --release -p ketchup-application --no-fail-fast --
+          --ignored house_panel_validation::
       # One at a time, so no test times the others. The two skipped need a
       # hardware GPU and run on a developer machine; every other ignored test
       # runs in some step (scripts/check_ignored_tests.py).
@@ -838,3 +849,26 @@ jobs:
               exit 1
             fi
           done
+
+  # A red nightly opens an issue of its own, so it is not lost among green
+  # pushes: 11-17 to 11-19 were red with nobody told (review 2026-11-19 og,
+  # CI-807).
+  nightly-issue:
+    name: an issue for a red nightly
+    needs: [rust-required]
+    if: ${{ always() && github.event_name == 'schedule' && needs.rust-required.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: open the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh issue create \
+            --title "Nightly CI red on $(date -u +%Y-%m-%d) at ${SHA:0:8}" \
+            --body "The nightly run $RUN failed on $SHA. Its failed jobs are listed in the run."

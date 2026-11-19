@@ -3472,7 +3472,7 @@ fn perf_large_drawings_are_refused_in_seconds() {
         check();
         let elapsed = started.elapsed();
         assert!(
-            elapsed < std::time::Duration::from_secs(budget),
+            elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(budget)),
             "{elapsed:?}"
         );
     }

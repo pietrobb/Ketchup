@@ -37,8 +37,8 @@ fn perf_scheduler_cancellation() {
     for run in 0..PERFORMANCE_RUNS {
         let p95 = percentile(&cancel_running_jobs(CANCELLATION_SAMPLES), 95);
         assert!(
-            p95 <= 250.0,
-            "cancellation series {run}: p95 {p95:.3} ms exceeds 250 ms"
+            p95 <= 250.0 * ketchup_test_env::perf_slowdown(),
+            "cancellation series {run}: p95 {p95:.3} ms exceeds 250 ms times the machine's slowdown"
         );
     }
 }

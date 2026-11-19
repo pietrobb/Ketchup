@@ -169,6 +169,21 @@ impl Report {
         verdict
     }
 
+    /// The exit code of the command line for this report: 2 when a `--set`
+    /// named no parameter of the program (review 2026-11-09 PG-245: it was
+    /// evaluated otherwise than asked, so its verdict is not one), 1 when an
+    /// error stands or a member or joint fails, 3 when something is not
+    /// verified or a load reaches no member, else 0.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match (self.ok, self.statics()) {
+            _ if !self.unused_overrides.is_empty() => 2,
+            (false, _) | (_, Statics::Failed) => 1,
+            (true, Statics::NotVerified) => 3,
+            _ => 0,
+        }
+    }
+
     /// Replaces the issues (e.g. after an exact check) and recounts them. A
     /// report whose checks did not finish is not `ok`: nothing says it is.
     pub fn set_issues(&mut self, mut issues: Vec<Issue>) {

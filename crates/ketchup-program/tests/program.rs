@@ -1183,7 +1183,10 @@ fn perf_a_board_with_thousands_of_holes_checks_in_seconds() {
     let started = std::time::Instant::now();
     a_board_with_thousands_of_holes_checks_in_linear_time();
     let elapsed = started.elapsed();
-    assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+    assert!(
+        elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(30)),
+        "{elapsed:?}"
+    );
 }
 
 #[test]
