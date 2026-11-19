@@ -5,18 +5,20 @@
 use crate::fea::{DofLayout, FeaElementKind, FeaError, FeaModel, FeaSolveSettings};
 use crate::fea_coupling::Joints;
 use crate::fea_frame::local_mass;
-use crate::sparse::{FactorError, SymmetricMatrix};
-use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
+use crate::sparse::{CholeskyFactor, FactorError, SymmetricMatrix};
+use ketchup_model::tolerance::{MODE_VECTOR_DEPENDENT, NEGLIGIBLE, ROUNDING, STURM_SHIFT_GAPS};
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
 
 pub const FEA_MODES_SCHEMA_V1: &str = "ketchup.fea-modes.v1";
-pub const FEA_MODAL_SOLVER_VERSION_V1: &str = "ketchup.subspace-iteration-modes.v1";
+pub const FEA_MODAL_SOLVER_VERSION_V2: &str = "ketchup.subspace-iteration-modes.v2";
 pub const MAX_FEA_MODES: usize = 64;
 /// Rounds of subspace iteration before the lowest modes count as unsettled.
 const MAX_ITERATIONS: usize = 1_000;
 /// Sweeps of the small eigenproblem's Jacobi rotations.
 const MAX_SWEEPS: usize = 100;
+/// Scattered vectors tried in place of a dependent one.
+const REPLACEMENTS: usize = 8;
 // not a tolerance: kilograms per cubic metre in tonnes per cubic millimetre.
 const T_PER_MM3_PER_KG_PER_M3: f64 = 1.0e-12;
 const KG_PER_T: f64 = 1_000.0;
@@ -122,63 +124,22 @@ impl FeaModel {
             (stiffness_diagonal[*left] / mass_diagonal[*left])
                 .total_cmp(&(stiffness_diagonal[*right] / mass_diagonal[*right]))
         });
-        let width = (2 * count).max(count + 8).min(massive.len());
-        let mut start = vec![0.0; size];
-        for dof in &massive {
-            start[*dof] = mass_diagonal[*dof];
-        }
-        let mut vectors = vec![start];
-        vectors.extend(massive.iter().take(width - 1).map(|dof| {
-            let mut unit = vec![0.0; size];
-            unit[*dof] = 1.0;
-            unit
-        }));
-
-        let mut previous: Option<Vec<f64>> = None;
-        for iteration in 1..=MAX_ITERATIONS {
-            let loads = vectors
-                .iter()
-                .map(|vector| mass.multiply(vector))
-                .collect::<Vec<_>>();
-            let solved = loads
-                .iter()
-                .map(|load| {
-                    let mut solved = factor.solve(load);
-                    for &dof in &fixed {
-                        solved[dof] = 0.0;
-                    }
-                    solved
-                })
-                .collect::<Vec<_>>();
-            let reduced_stiffness = symmetric_gram(&solved, &loads);
-            let moved_mass = solved
-                .iter()
-                .map(|vector| mass.multiply(vector))
-                .collect::<Vec<_>>();
-            let reduced_mass = symmetric_gram(&solved, &moved_mass);
-            let (values, weights) = generalized_eigen(reduced_stiffness, reduced_mass)
-                .ok_or(FeaError::ModesNotConverged)?;
-            vectors = weights
-                .iter()
-                .map(|weight| combine(&solved, weight))
-                .collect();
-            if values[..count]
-                .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0)
-            {
-                return Err(FeaError::ModesNotConverged);
-            }
-            let settled = previous.as_ref().is_some_and(|previous| {
-                values[..count]
-                    .iter()
-                    .zip(previous)
-                    .all(|(value, before)| (value - before).abs() <= ROUNDING * value)
-            });
-            if settled {
+        let subspace = Subspace {
+            factor: &factor,
+            stiffness: &stiffness,
+            mass: &mass,
+            mass_diagonal: &mass_diagonal,
+            fixed: &fixed,
+            massive: &massive,
+        };
+        let mut width = (2 * count).max(count + 8).min(massive.len());
+        let mut iterations = 0;
+        loop {
+            let settled = subspace.iterate(count, width, |values, vectors| {
                 // A shape settles more slowly than its frequency.
                 let modes = values[..count]
                     .iter()
-                    .zip(&vectors)
+                    .zip(vectors)
                     .map(|(value, vector)| {
                         self.mode(
                             &layout,
@@ -190,21 +151,32 @@ impl FeaModel {
                         )
                     })
                     .collect::<Vec<_>>();
-                if modes.iter().all(|mode| mode.relative_residual <= ROUNDING) {
-                    return Ok(FeaModes {
-                        schema: FEA_MODES_SCHEMA_V1,
-                        solver_version: FEA_MODAL_SOLVER_VERSION_V1,
-                        case_id: self.case_id.clone(),
-                        model_digest: self.digest(),
-                        total_mass_kg: total_mass_t * KG_PER_T,
-                        iterations: iteration,
-                        modes,
-                    });
-                }
+                modes
+                    .iter()
+                    .all(|mode| mode.relative_residual <= ROUNDING)
+                    .then_some(modes)
+            })?;
+            iterations += settled.iterations;
+            // Sturm check: as many eigenvalues lie below a shift just above the
+            // highest one returned as the subspace found there. A mode the
+            // starting vectors missed shows up as one more, and a wider
+            // subspace looks again (og:R1119og-FEA-801).
+            if !subspace.misses_a_mode(&settled.values, count, settings)? {
+                return Ok(FeaModes {
+                    schema: FEA_MODES_SCHEMA_V1,
+                    solver_version: FEA_MODAL_SOLVER_VERSION_V2,
+                    case_id: self.case_id.clone(),
+                    model_digest: self.digest(),
+                    total_mass_kg: total_mass_t * KG_PER_T,
+                    iterations,
+                    modes: settled.accepted,
+                });
             }
-            previous = Some(values);
+            if width == massive.len() {
+                return Err(FeaError::ModesNotConverged);
+            }
+            width = (2 * width).min(massive.len());
         }
-        Err(FeaError::ModesNotConverged)
     }
 
     fn mode(
@@ -378,6 +350,200 @@ impl FeaModel {
 struct Magnitudes {
     stiffness: SymmetricMatrix,
     mass: SymmetricMatrix,
+}
+
+/// What a subspace iteration works with: the held stiffness and its factor,
+/// the free mass and its diagonal, the held unknowns, and the unknowns that
+/// move a mass, the most flexible first.
+struct Subspace<'a> {
+    factor: &'a CholeskyFactor,
+    stiffness: &'a SymmetricMatrix,
+    mass: &'a SymmetricMatrix,
+    mass_diagonal: &'a [f64],
+    fixed: &'a BTreeSet<usize>,
+    massive: &'a [usize],
+}
+
+/// A settled iteration: every Ritz value from the lowest up, what `accept`
+/// made of the lowest pairs, and the rounds it took.
+struct Settled<T> {
+    values: Vec<f64>,
+    accepted: T,
+    iterations: usize,
+}
+
+impl Subspace<'_> {
+    /// Iterates `width` vectors until the lowest `count` Ritz values settle
+    /// and `accept` takes them with their vectors.
+    fn iterate<T>(
+        &self,
+        count: usize,
+        width: usize,
+        accept: impl Fn(&[f64], &[Vec<f64>]) -> Option<T>,
+    ) -> Result<Settled<T>, FeaError> {
+        let size = self.mass_diagonal.len();
+        let mut seed = 0;
+        let mut start = vec![0.0; size];
+        for dof in self.massive {
+            start[*dof] = self.mass_diagonal[*dof];
+        }
+        // Half the vectors push the most flexible unknowns; the rest are
+        // scattered, so that every mode has a part in the subspace.
+        let mut vectors = vec![start];
+        vectors.extend(
+            self.massive
+                .iter()
+                .take((width / 2).saturating_sub(1))
+                .map(|dof| {
+                    let mut unit = vec![0.0; size];
+                    unit[*dof] = 1.0;
+                    unit
+                }),
+        );
+        while vectors.len() < width {
+            vectors.push(self.scattered(&mut seed));
+        }
+
+        let mut previous: Option<Vec<f64>> = None;
+        for iteration in 1..=MAX_ITERATIONS {
+            let solved = vectors
+                .iter()
+                .map(|vector| {
+                    let mut solved = self.factor.solve(&self.mass.multiply(vector));
+                    for &dof in self.fixed {
+                        solved[dof] = 0.0;
+                    }
+                    solved
+                })
+                .collect::<Vec<_>>();
+            // Vectors that all turned towards the same lowest shape leave the
+            // projected mass singular; made mass-orthonormal they do not
+            // (og:R1119og-FEA-802).
+            let (solved, moved_mass) = self.mass_orthonormal(solved, &mut seed);
+            if solved.len() < count {
+                return Err(FeaError::ModesNotConverged);
+            }
+            let pushed = solved
+                .iter()
+                .map(|vector| self.stiffness.multiply(vector))
+                .collect::<Vec<_>>();
+            let reduced_stiffness = symmetric_gram(&solved, &pushed);
+            let reduced_mass = symmetric_gram(&solved, &moved_mass);
+            let (values, weights) = generalized_eigen(reduced_stiffness, reduced_mass)
+                .ok_or(FeaError::ModesNotConverged)?;
+            vectors = weights
+                .iter()
+                .map(|weight| combine(&solved, weight))
+                .collect();
+            if values[..count]
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+            {
+                return Err(FeaError::ModesNotConverged);
+            }
+            let settled = previous.as_ref().is_some_and(|previous| {
+                values[..count]
+                    .iter()
+                    .zip(previous)
+                    .all(|(value, before)| (value - before).abs() <= ROUNDING * value)
+            });
+            if settled && let Some(accepted) = accept(&values, &vectors[..count]) {
+                return Ok(Settled {
+                    values,
+                    accepted,
+                    iterations: iteration,
+                });
+            }
+            previous = Some(values);
+        }
+        Err(FeaError::ModesNotConverged)
+    }
+
+    /// The vectors made mass-orthonormal by two passes of Gram–Schmidt each,
+    /// with their mass products; one lying in the span of those before it
+    /// gives way to a scattered one.
+    fn mass_orthonormal(
+        &self,
+        vectors: Vec<Vec<f64>>,
+        seed: &mut u64,
+    ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let mut kept: Vec<Vec<f64>> = Vec::with_capacity(vectors.len());
+        let mut kept_mass: Vec<Vec<f64>> = Vec::with_capacity(vectors.len());
+        for vector in vectors {
+            let mut candidate = vector;
+            for _ in 0..=REPLACEMENTS {
+                let length = inner(&self.mass.multiply(&candidate), &candidate)
+                    .max(0.0)
+                    .sqrt();
+                for _ in 0..2 {
+                    for (other, other_mass) in kept.iter().zip(&kept_mass) {
+                        let along = inner(other_mass, &candidate);
+                        for (value, part) in candidate.iter_mut().zip(other) {
+                            *value -= along * part;
+                        }
+                    }
+                }
+                let moved = self.mass.multiply(&candidate);
+                let left = inner(&moved, &candidate).max(0.0).sqrt();
+                if left > 0.0 && left > MODE_VECTOR_DEPENDENT * length {
+                    kept.push(candidate.iter().map(|value| value / left).collect());
+                    kept_mass.push(moved.iter().map(|value| value / left).collect());
+                    break;
+                }
+                candidate = self.scattered(seed);
+            }
+        }
+        (kept, kept_mass)
+    }
+
+    /// Scattered values in [−1, 1] on the unknowns that move a mass, the same
+    /// for the same `seed` (SplitMix64), which moves on.
+    fn scattered(&self, seed: &mut u64) -> Vec<f64> {
+        let mut vector = vec![0.0; self.mass_diagonal.len()];
+        for dof in self.massive {
+            *seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut mixed = *seed;
+            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            mixed ^= mixed >> 31;
+            let high = u32::try_from(mixed >> 32).unwrap_or(u32::MAX);
+            vector[*dof] = 2.0 * f64::from(high) / f64::from(u32::MAX) - 1.0;
+        }
+        vector
+    }
+
+    /// Whether `K − σ·M`, for `σ` just above the `count`-th of the Ritz
+    /// `values`, has more negative eigenvalues (Sturm count) than there are
+    /// Ritz values below `σ`: then the subspace missed a mode down there.
+    fn misses_a_mode(
+        &self,
+        values: &[f64],
+        count: usize,
+        settings: FeaSolveSettings,
+    ) -> Result<bool, FeaError> {
+        for gap in STURM_SHIFT_GAPS {
+            let shift = values[count - 1] * (1.0 + gap);
+            let shifted = self.stiffness.shifted(self.mass, shift);
+            let threshold =
+                shifted.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
+            match shifted.negative_eigenvalues(threshold, settings.maximum_factor_bytes) {
+                Ok(Some(below)) => {
+                    let found = values.iter().filter(|value| **value < shift).count();
+                    return Ok(below > found);
+                }
+                // The shift is too near an eigenvalue to tell: further away.
+                Ok(None) => {}
+                Err(FactorError::TooLarge { needed_bytes }) => {
+                    return Err(FeaError::FactorTooLarge {
+                        needed_bytes,
+                        budget_bytes: settings.maximum_factor_bytes,
+                    });
+                }
+                Err(FactorError::Singular) => return Err(FeaError::SingularSystem),
+            }
+        }
+        Err(FeaError::ModesNotConverged)
+    }
 }
 
 fn diagonal(size: usize, entries: &[(usize, usize, f64)]) -> Vec<f64> {

@@ -7,7 +7,7 @@ use crate::fea_frame::{
     peak_von_mises, valid_section,
 };
 pub use crate::fea_modal::{
-    FEA_MODAL_SOLVER_VERSION_V1, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
+    FEA_MODAL_SOLVER_VERSION_V2, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
 };
 use crate::sparse::{FactorError, SymmetricMatrix};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};

@@ -24,6 +24,16 @@ pub(crate) enum FactorError {
     Singular,
 }
 
+/// The lower triangle of `P A Pᵀ`, row `i` stored from its first non-zero
+/// column to the diagonal.
+struct Skyline {
+    /// `order[new] = old`.
+    order: Vec<usize>,
+    first_column: Vec<usize>,
+    row_offset: Vec<usize>,
+    values: Vec<f64>,
+}
+
 /// The lower Cholesky factor `L` of `P A Pᵀ`, row `i` stored from its first
 /// non-zero column to the diagonal.
 pub(crate) struct CholeskyFactor {
@@ -187,14 +197,77 @@ impl SymmetricMatrix {
         last
     }
 
-    /// Factors the matrix as `L Lᵀ`. A pivot not above `pivot_threshold`
-    /// means the matrix is singular; a factor needing more than
-    /// `budget_bytes` is not attempted.
-    pub(crate) fn factor(
+    /// `self − shift · other`, on the union of both patterns.
+    pub(crate) fn shifted(&self, other: &Self, shift: f64) -> Self {
+        let entries = (0..self.size)
+            .flat_map(|row| {
+                self.row(row)
+                    .map(move |(column, value)| (row, column, value))
+                    .chain(
+                        other
+                            .row(row)
+                            .map(move |(column, value)| (row, column, -shift * value)),
+                    )
+            })
+            .collect();
+        Self::from_entries(self.size, entries)
+    }
+
+    /// How many eigenvalues of the matrix are negative: by Sylvester's law of
+    /// inertia, the negative pivots `D` of its `L D Lᵀ`. `None` when a pivot
+    /// is not above `pivot_threshold` in size (an eigenvalue at zero, or too
+    /// near it to tell its sign).
+    pub(crate) fn negative_eigenvalues(
         &self,
         pivot_threshold: f64,
         budget_bytes: usize,
-    ) -> Result<CholeskyFactor, FactorError> {
+    ) -> Result<Option<usize>, FactorError> {
+        let Skyline {
+            first_column,
+            row_offset,
+            mut values,
+            ..
+        } = self.skyline(budget_bytes)?;
+        let mut negative = 0;
+        for row in 0..self.size {
+            let row_first = first_column[row];
+            let (earlier, this_row) = values.split_at_mut(row_offset[row]);
+            let this_row = &mut this_row[..row - row_first + 1];
+            // First the products `L·D` of this row, column by column.
+            for column in row_first..row {
+                let start = row_first.max(first_column[column]);
+                let other = &earlier[row_offset[column]..row_offset[column + 1]];
+                let other_first = first_column[column];
+                let known = this_row[start - row_first..column - row_first]
+                    .iter()
+                    .zip(&other[start - other_first..column - other_first])
+                    .map(|(left, right)| left * right)
+                    .sum::<f64>();
+                this_row[column - row_first] -= known;
+            }
+            // Then `L` from them, and the pivot.
+            let mut pivot = this_row[row - row_first];
+            for column in row_first..row {
+                let diagonal = earlier[row_offset[column + 1] - 1];
+                let product = this_row[column - row_first];
+                let lower = product / diagonal;
+                pivot -= product * lower;
+                this_row[column - row_first] = lower;
+            }
+            if pivot.is_nan() || pivot.abs() <= pivot_threshold {
+                return Ok(None);
+            }
+            if pivot < 0.0 {
+                negative += 1;
+            }
+            this_row[row - row_first] = pivot;
+        }
+        Ok(Some(negative))
+    }
+
+    /// The renumbered matrix's lower triangle within its envelope, unless it
+    /// would need more than `budget_bytes`.
+    fn skyline(&self, budget_bytes: usize) -> Result<Skyline, FactorError> {
         let order = self.bandwidth_order();
         let mut position = vec![0; self.size];
         for (new, &old) in order.iter().enumerate() {
@@ -230,6 +303,28 @@ impl SymmetricMatrix {
                 }
             }
         }
+        Ok(Skyline {
+            order,
+            first_column,
+            row_offset,
+            values,
+        })
+    }
+
+    /// Factors the matrix as `L Lᵀ`. A pivot not above `pivot_threshold`
+    /// means the matrix is singular; a factor needing more than
+    /// `budget_bytes` is not attempted.
+    pub(crate) fn factor(
+        &self,
+        pivot_threshold: f64,
+        budget_bytes: usize,
+    ) -> Result<CholeskyFactor, FactorError> {
+        let Skyline {
+            order,
+            first_column,
+            row_offset,
+            mut values,
+        } = self.skyline(budget_bytes)?;
         for row in 0..self.size {
             let row_first = first_column[row];
             for column in row_first..=row {
@@ -300,5 +395,38 @@ impl CholeskyFactor {
             solution[old] = work[new];
         }
         solution
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SymmetricMatrix;
+
+    #[test]
+    fn negative_pivots_count_the_eigenvalues_below_a_shift() {
+        // The second difference of five unknowns: eigenvalues 2 − 2·cos(kπ/6),
+        // about 0.27, 1, 2, 3 and 3.73.
+        let mut entries = Vec::new();
+        for row in 0..5 {
+            entries.push((row, row, 2.0));
+            if row > 0 {
+                entries.extend([(row, row - 1, -1.0), (row - 1, row, -1.0)]);
+            }
+        }
+        let matrix = SymmetricMatrix::from_entries(5, entries);
+        let identity =
+            SymmetricMatrix::from_entries(5, (0..5).map(|row| (row, row, 1.0)).collect());
+        let below = |shift: f64| {
+            matrix
+                .shifted(&identity, shift)
+                .negative_eigenvalues(1.0e-12, usize::MAX)
+                .unwrap()
+        };
+        assert_eq!(below(0.1), Some(0));
+        assert_eq!(below(1.5), Some(2));
+        assert_eq!(below(3.5), Some(4));
+        assert_eq!(below(4.0), Some(5));
+        // A shift on an eigenvalue leaves a zero pivot: its sign is unknown.
+        assert_eq!(below(2.0), None);
     }
 }
