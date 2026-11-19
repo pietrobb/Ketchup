@@ -182,7 +182,7 @@ fn a_client_writes_the_cam_program_for_the_controller_it_names_once_the_user_con
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert!(dialogs.high_risk_prompts()[1].contains(&dialect_name(&first)));
 
-    // An existing file is never replaced.
+    // Without overwrite an existing file is kept.
     assert_eq!(
         bridge.execute(
             &mut app,
@@ -204,6 +204,58 @@ fn a_client_writes_the_cam_program_for_the_controller_it_names_once_the_user_con
         Err("export_declined")
     );
     assert!(!declined.exists());
+}
+
+/// Owner decision R1 (review 2026-11-19 og-6): with overwrite the program replaces an
+/// existing file once the user confirms both the release and the replacement; a declined
+/// replacement, or a file changed while the user was asked, keeps the file.
+#[test]
+fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("facing.ngc");
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_high_risk_approval(7)
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(7)
+        .queue_high_risk_approval_after_write(7, &target, b"saved meanwhile".to_vec())
+        .queue_high_risk_approval(7)
+        .queue_high_risk_approval(7);
+    let (mut app, mut bridge, _unused) = cam_window(&dialogs);
+    let over = || {
+        let mut request = cam_export(&target, "cam_nc", Some("linuxcnc"));
+        if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+            overwrite, ..
+        }) = &mut request
+        {
+            *overwrite = true;
+        }
+        request
+    };
+
+    // Released, but the replacement declined: the user's file is kept.
+    std::fs::write(&target, b"user program").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, over(), false),
+        Err("export_declined")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
+    assert_eq!(std::fs::read(&target).unwrap(), b"user program");
+
+    // Changed while the user was asked: not replaced.
+    assert_eq!(
+        bridge.execute(&mut app, over(), false),
+        Err("export_failed")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 4);
+    assert_eq!(std::fs::read(&target).unwrap(), b"saved meanwhile");
+
+    // Both agreed: the program replaces it.
+    bridge
+        .execute(&mut app, over(), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 6);
+    let program = std::fs::read_to_string(&target).unwrap();
+    assert!(program.contains("G43 H1"), "{program}");
 }
 
 #[test]

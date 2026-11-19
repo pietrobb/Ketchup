@@ -126,10 +126,18 @@ impl KetchupApp {
         let new_file = || ExportError::Destination {
             requirement: "a new file in an existing folder",
         };
-        // Refused before the simulation and the prompt: a program never replaces a file.
-        if path.exists() {
-            return Err(new_file());
-        }
+        // Refused before the simulation and the prompt: a program replaces a file only for a
+        // client that asked to with overwrite, and only once the user agrees in the window.
+        let replaced = if path.exists() {
+            if self.live.client_export.is_none() || !self.live.client_overwrite {
+                return Err(ExportError::Destination {
+                    requirement: "a new file in an existing folder; a client's program replaces an existing file only with overwrite and once the user agrees",
+                });
+            }
+            Some(export_target_sha256(path)?.ok_or_else(new_file)?)
+        } else {
+            None
+        };
         let snapshot = self.document.current();
         let mutation_epoch = self.document.mutation_epoch();
         let plan = snapshot
@@ -179,6 +187,21 @@ impl KetchupApp {
             path,
             review.content_digest.as_bytes(),
         )?;
+        if replaced.is_some() {
+            let title = self.catalog.text("dialog-export-overwrite-title");
+            let risk = self.catalog.text("dialog-export-overwrite-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::Overwrite,
+                "overwrite-cam-nc-program",
+                &title,
+                &risk,
+                path,
+                review.content_digest.as_bytes(),
+            )?;
+        }
+        let still_same = |target: &Path| {
+            export_target_sha256(target).ok().flatten().as_deref() == replaced.as_deref()
+        };
         self.reviews
             .cam_reviews
             .export(
@@ -187,10 +210,14 @@ impl KetchupApp {
                 &review.token,
                 path,
                 true,
+                replaced
+                    .is_some()
+                    .then_some(&still_same as &dyn Fn(&Path) -> bool),
                 cancelled,
             )
             .map_err(|error| match error {
                 CamReviewError::FileExists | CamReviewError::InvalidPath => new_file(),
+                CamReviewError::ReplacedFileChanged => ExportError::ChangedDuringConsent,
                 other => ExportError::failed(other),
             })?;
         Ok(Written::alone(path))
@@ -404,6 +431,7 @@ impl KetchupApp {
                 &review.token,
                 &path,
                 true,
+                None,
                 &AtomicBool::new(false),
             );
             match result {

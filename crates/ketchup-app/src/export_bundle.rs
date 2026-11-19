@@ -247,36 +247,38 @@ impl KetchupApp {
         precondition: &ExportBundlePrecondition,
         evidence: &[u8],
     ) -> Result<(), ExportError> {
-        if self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion {
-            // Nobody in the window asked for this file, so nobody confirms
-            // replacing one; the client reads the loss report itself. A release
+        let client_lossy =
+            self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion;
+        if client_lossy {
+            // A client writes a new file without a prompt and reads the loss report
+            // itself (owner decision R1). It replaces an existing file or report only
+            // with overwrite: without a prompt the pair Kečup exported there and nobody
+            // changed since, anything else once the user agrees in the window. A release
             // to manufacturing still waits for the user's confirmation.
             let exists =
                 precondition.primary_sha256.is_some() || precondition.report_sha256.is_some();
-            return if !exists {
-                Ok(())
-            } else if !self.live.client_overwrite {
-                Err(ExportError::Destination {
-                    requirement: "a new file name; a client export replaces an existing file or loss report only with overwrite, and only one Kečup wrote",
-                })
-            } else if precondition.written_by_ketchup(report_path) {
-                Ok(())
-            } else {
-                Err(ExportError::Destination {
-                    requirement: "a new file name; overwrite replaces only a file Kečup exported there, unchanged since, whose loss report beside it names it",
-                })
-            };
+            if !exists
+                || (self.live.client_overwrite && precondition.written_by_ketchup(report_path))
+            {
+                return Ok(());
+            }
+            if !self.live.client_overwrite {
+                return Err(ExportError::Destination {
+                    requirement: "a new file name, or overwrite: true to ask the user in the window to replace the existing file or loss report",
+                });
+            }
+        } else {
+            let title = self.catalog.text(consent.title_key);
+            let risk = self.catalog.text(consent.risk_key);
+            self.authorize_path_side_effect(
+                consent.class,
+                consent.operation,
+                &title,
+                &risk,
+                primary_path,
+                evidence,
+            )?;
         }
-        let title = self.catalog.text(consent.title_key);
-        let risk = self.catalog.text(consent.risk_key);
-        self.authorize_path_side_effect(
-            consent.class,
-            consent.operation,
-            &title,
-            &risk,
-            primary_path,
-            evidence,
-        )?;
         let replaced = [
             (primary_path, &precondition.primary_sha256),
             (report_path, &precondition.report_sha256),

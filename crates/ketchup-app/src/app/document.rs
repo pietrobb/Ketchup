@@ -151,6 +151,8 @@ impl KetchupApp {
         let live_consent_attached = self.live.consent_attached;
         let live_launch_attached = self.live.launch_attached;
         let live_client_name = self.live.client_name.take();
+        let live_previous_client = self.live.previous_client.take();
+        let live_write_log = std::mem::take(&mut self.live.write_log);
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let catalog = self.catalog.clone();
         let exact_worker_path = self.exact.worker_path.clone();
@@ -171,6 +173,8 @@ impl KetchupApp {
         self.live.consent_attached = live_consent_attached;
         self.live.launch_attached = live_launch_attached;
         self.live.client_name = live_client_name;
+        self.live.previous_client = live_previous_client;
+        self.live.write_log = live_write_log;
         self.render.wgpu_target_format = wgpu_target_format;
         self.render.wgpu_device = wgpu_device;
         self.render.wgpu_queue = wgpu_queue;

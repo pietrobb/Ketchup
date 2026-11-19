@@ -59,7 +59,7 @@ pub(crate) mod joints_ui;
 #[path = "app/joints_ui_tests.rs"]
 mod joints_ui_tests;
 mod local_outliner;
-mod local_time;
+pub(crate) mod local_time;
 pub(crate) mod measure_axis;
 pub(crate) mod mesh_export_activity;
 mod mirror;

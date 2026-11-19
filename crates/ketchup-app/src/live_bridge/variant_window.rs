@@ -99,6 +99,7 @@ impl KetchupApp {
                             expected,
                             path,
                             decimal: app.window.decimal.into(),
+                            replace: false,
                         };
                         runner.start_queued_variant_export(app, context, queued, request);
                     }

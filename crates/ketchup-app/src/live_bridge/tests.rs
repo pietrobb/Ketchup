@@ -84,8 +84,8 @@ mod underlay_program;
 mod underlay_revision;
 #[path = "underlay_views_tests.rs"]
 mod underlay_views;
-#[path = "write_targets_tests.rs"]
-mod write_targets;
+#[path = "write_policy_tests.rs"]
+mod write_policy;
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();
@@ -635,8 +635,6 @@ fn save_as_writes_a_ketchup_document_into_any_folder() {
     let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
-    // The test's folder is under the temporary folder, which is the project's.
-    app.window.temporary_folder = None;
     app.selection.clear();
     assert!(app.create_box());
     let mut bridge = transport::start(egui::Context::default()).unwrap();

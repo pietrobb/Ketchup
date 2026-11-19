@@ -11,8 +11,8 @@ They overrule every older finding they touch.
 
 | Decision | Status |
 |---|---|
-| R1: a connected AI creates a new file anywhere the system allows without asking; only overwriting asks; only autostart and system folders are refused; a write log in the Connect tab replaces the questions; allowed folders are removed | Open (point 6) |
-| R2: the last AI to connect wins without asking; the status line and the Connect tab say who connected | Open (point 7) |
+| R1: a connected AI creates a new file anywhere the system allows without asking; only overwriting asks; only autostart and system folders are refused; a write log in the Connect tab replaces the questions; allowed folders are removed | Fixed (point 6) |
+| R2: the last AI to connect wins without asking; the status line and the Connect tab say who connected | Fixed (point 7) |
 | R3: rules for an AI on one computer are not tightened unless the user's work is at risk; statics, FEA and CAM always say what a check does not cover | Applies to every point below |
 
 ## 1. Numbers and programs people trust
@@ -29,8 +29,8 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 6. File writes by R1 (closes og:R1110-SEC-400, R1119og-SEC-800) | Open |
-| 7. Connection by R2 (closes R1108-MCP-240, R1109-MCP-305, R1119og-SEC-804) | Open |
+| 6. File writes by R1 (closes og:R1110-SEC-400, R1119og-SEC-800) | Fixed: allowed folders are gone; a connected AI writes a new file anywhere the user may write, unasked; only the system drive's root, system folders and autostart folders are refused, with the reason; replacing a file the AI did not write, or one changed since, asks in the window on every write path (export, drawings, program variants, CAM), returns a decline code when refused and is not written if the file changes while asking; the Connect tab lists every AI-written file with its path, time and size |
+| 7. Connection by R2 (closes R1108-MCP-240, R1109-MCP-305, R1119og-SEC-804) | Fixed: the AI that connects last takes the window over without a question; the status line and the Connect tab name the new AI and the one it replaced |
 
 ## 3. Release and data
 

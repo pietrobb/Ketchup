@@ -56,6 +56,7 @@ impl KetchupApp {
         ] {
             self.show_step(ui, key, done);
         }
+        self.show_written_files(ui);
         self.show_harnesses(ui, Path::new(&server));
         ui.add_space(6.0);
         // Copying is the fallback for a client Connect does not know.
@@ -241,14 +242,76 @@ impl KetchupApp {
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &spoken));
     }
 
-    /// "Connected AI: <name>" while an AI holds the window.
+    /// "Connected AI: <name>" while an AI holds the window, "(before: <name>)"
+    /// after it when it took the window over from another (owner decision R2).
     fn connected_ai_text(&self) -> Option<String> {
-        self.ai_attached().then(|| match &self.live.client_name {
+        if !self.ai_attached() {
+            return None;
+        }
+        let connected = match &self.live.client_name {
             Some(name) => self
                 .catalog
                 .format("ai-connected", &BTreeMap::from([("client", name.clone())])),
             None => self.catalog.text("ai-connected-unnamed"),
+        };
+        Some(match &self.live.previous_client {
+            Some(previous) => self.catalog.format(
+                "ai-connected-after",
+                &BTreeMap::from([("connected", connected), ("previous", previous.clone())]),
+            ),
+            None => connected,
         })
+    }
+
+    /// What the AI wrote, the newest first: when, how big, where, and Open
+    /// folder (owner decision R1: a list instead of a question before each).
+    fn show_written_files(&mut self, ui: &mut egui::Ui) {
+        let files = self.live.write_log.files();
+        let mut shown = None;
+        egui::CollapsingHeader::new(self.catalog.format(
+            "connect-ai-written",
+            &BTreeMap::from([("count", files.len().to_string())]),
+        ))
+        .id_salt("connect-ai-written")
+        .default_open(true)
+        .show(ui, |ui| {
+            if files.is_empty() {
+                ui.weak(self.catalog.text("connect-ai-written-none"));
+            }
+            for file in &files {
+                ui.horizontal(|ui| {
+                    let size = file.bytes.map_or_else(
+                        || self.catalog.text("connect-ai-written-folder"),
+                        crate::live_bridge::write_log::shown_size,
+                    );
+                    ui.label(egui::RichText::new(format!("{}  {size}", file.at)).small());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(file.path.display().to_string())
+                                .monospace()
+                                .small(),
+                        )
+                        .wrap(),
+                    );
+                    if ui
+                        .small_button(self.catalog.text("connect-ai-open-folder"))
+                        .clicked()
+                    {
+                        shown = Some(file.path.clone());
+                    }
+                });
+            }
+        });
+        if let Some(path) = shown {
+            let folder = if path.is_dir() {
+                path
+            } else {
+                path.parent().map_or(path.clone(), Path::to_path_buf)
+            };
+            if let Err(error) = self.dialogs.show_folder(&folder) {
+                self.digest = self.catalog.text_because("connect-ai-open-folder", error);
+            }
+        }
     }
 
     /// The status line's always visible part of the connection: which AI holds
@@ -527,6 +590,68 @@ mod tests {
         assert!(!harness.state().ai_attached());
         assert!(harness.query_by_label(&named).is_none());
         harness.get_by_label(&catalog.text("connect-ai-waiting"));
+    }
+
+    /// Owner decision R2 of review 2026-11-19 og: an AI that took the window
+    /// over unasked is named with the one it took it from, in the status line
+    /// and the AI tab.
+    #[test]
+    fn an_ai_that_took_the_window_over_is_named_with_the_one_before() {
+        let mut app = KetchupApp::new();
+        app.live.consent_attached = true;
+        app.live.client_name = Some("Claude Code".to_owned());
+        app.live.previous_client = Some("Codex".to_owned());
+        app.live.harnesses = Some(Vec::new());
+        let harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        let connected = catalog.format(
+            "ai-connected",
+            &std::collections::BTreeMap::from([("client", "Claude Code".to_owned())]),
+        );
+        let named = catalog.format(
+            "ai-connected-after",
+            &std::collections::BTreeMap::from([
+                ("connected", connected),
+                ("previous", "Codex".to_owned()),
+            ]),
+        );
+        assert_eq!(named, "Connected AI: Claude Code (before: Codex)");
+        assert_eq!(
+            harness.get_all_by_label(&named).count(),
+            2,
+            "status line and AI tab"
+        );
+    }
+
+    /// Owner decision R1 of review 2026-11-19 og: instead of a question before
+    /// each write, the AI tab lists what the AI wrote, when and how big, and
+    /// Open folder shows the folder it is in.
+    #[test]
+    fn the_ai_tab_lists_the_files_the_ai_wrote_with_open_folder() {
+        let folder = tempfile::tempdir().unwrap();
+        let written = folder.path().join("house.dxf");
+        std::fs::write(&written, vec![b'x'; 2_048]).unwrap();
+        let dialogs = crate::dialogs::ScriptedFileDialogs::new();
+        let probe = dialogs.clone();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        app.live.harnesses = Some(Vec::new());
+        let mut harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        harness.get_by_label(&catalog.text("connect-ai-written-none"));
+
+        harness.state().live.write_log.record(&written);
+        harness.run();
+        harness.get_by_label(&catalog.format(
+            "connect-ai-written",
+            &std::collections::BTreeMap::from([("count", "1".to_owned())]),
+        ));
+        harness.get_by_label(&written.display().to_string());
+        harness.get_by_label_contains("2.0 kB");
+        harness
+            .get_by_label(&catalog.text("connect-ai-open-folder"))
+            .click();
+        harness.run();
+        assert_eq!(probe.shown_folders(), [folder.path().to_path_buf()]);
     }
 
     /// #2687 P1 (point 3): before anything is set up the AI tab lists steps
