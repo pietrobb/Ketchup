@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 /// The fastest of five runs of [`reference_work`] on the machine the budgets
 /// are measured on (24 cores, 2026-11-19), in the build the test is in.
-const REFERENCE: Duration = Duration::from_millis(if cfg!(debug_assertions) { 144 } else { 21 });
+const REFERENCE: Duration = Duration::from_millis(if cfg!(debug_assertions) { 127 } else { 18 });
 
 /// A slower machine gets this many times its budgets at most, so a stalled
 /// runner still fails a regression of several times.
@@ -37,16 +37,16 @@ pub fn perf_budget(budget: Duration) -> Duration {
 pub fn reference_work() -> Duration {
     const SLOTS: usize = 1 << 19;
     let start = Instant::now();
-    let mut table: Vec<u64> = (0..SLOTS as u64).collect();
-    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut table = vec![0.0_f64; SLOTS];
+    let mut state = usize::MAX / 7;
     let mut sum = 0.0_f64;
     for _ in 0..8_000_000 {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
-        let slot = (state as usize) & (SLOTS - 1);
-        table[slot] = table[slot].wrapping_add(state);
-        sum += (table[slot] as f64).sqrt();
+        let slot = state & (SLOTS - 1);
+        table[slot] = (table[slot] + 1.0).sqrt();
+        sum += table[slot];
     }
     std::hint::black_box((table, sum));
     start.elapsed()
