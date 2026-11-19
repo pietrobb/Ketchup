@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds Ketchup-<version>-Linux-x86_64.tar.gz: the desktop app, its exact and program
-# workers, the Viewer and the pinned OCCT libraries in lib/ beside them, with the
+# workers, `ketchup-program` for rule programs and their static calculation, the Viewer and the pinned OCCT libraries in lib/ beside them, with the
 # third-party notices. Needs OCCT from scripts/linux/build-occt.sh, patchelf, and
 # cargo-about 0.9.2 for the notices. scripts/linux/check-package.sh then checks the
 # archive; CI runs it in a clean container (.github/workflows/linux-package.yml).
@@ -25,13 +25,13 @@ occt_lib="$occt/lib"
 command -v patchelf >/dev/null || { echo "missing patchelf" >&2; exit 1; }
 
 cd "$repo"
-cargo build --locked --release -p ketchup-app --bin ketchup-app -p ketchup-viewer --bin ketchup-viewer -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
+cargo build --locked --release -p ketchup-app --bin ketchup-app -p ketchup-viewer --bin ketchup-viewer -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker -p ketchup-program --bin ketchup-program
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 package="$work/$name"
 mkdir -p "$package/lib"
-programs=(ketchup-app ketchup-viewer ketchup-exact-worker ketchup-program-worker)
+programs=(ketchup-app ketchup-viewer ketchup-exact-worker ketchup-program-worker ketchup-program)
 for program in "${programs[@]}"; do
     cp "target/release/$program" "$package/"
 done
