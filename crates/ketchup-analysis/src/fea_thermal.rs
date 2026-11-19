@@ -9,6 +9,7 @@ use ketchup_geometry::linalg::{Mat3, Singular, cross, dot, length, sub};
 use ketchup_model::tolerance::NEGLIGIBLE;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
 
 pub const THERMAL_MODEL_SCHEMA_V1: &str = "ketchup.thermal-model.v1";
 pub const THERMAL_SOLUTION_SCHEMA_V1: &str = "ketchup.thermal-solution.v1";
@@ -134,6 +135,8 @@ pub enum ThermalError {
         budget_bytes: usize,
     },
     NonFiniteSolution,
+    /// The caller's cancellation flag was set while solving.
+    Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -177,6 +180,19 @@ pub struct ThermalSolution {
 pub fn solve_steady_conduction(
     model: &ThermalModel,
     settings: ThermalSolveSettings,
+) -> Result<ThermalSolution, ThermalError> {
+    solve_steady_conduction_with_cancellation(model, settings, &AtomicBool::new(false))
+}
+
+/// [`solve_steady_conduction`], stopping with [`ThermalError::Cancelled`]
+/// soon after `cancelled` is set.
+///
+/// # Errors
+/// As [`solve_steady_conduction`], or cancelled.
+pub fn solve_steady_conduction_with_cancellation(
+    model: &ThermalModel,
+    settings: ThermalSolveSettings,
+    cancelled: &AtomicBool,
 ) -> Result<ThermalSolution, ThermalError> {
     validate_settings(settings)?;
     let geometry = model.validate(settings)?;
@@ -248,9 +264,10 @@ pub fn solve_steady_conduction(
     }
     let threshold = scale * settings.relative_pivot_tolerance;
     let temperatures = matrix
-        .factor(threshold, settings.maximum_factor_bytes)
+        .factor(threshold, settings.maximum_factor_bytes, cancelled)
         .map_err(|error| match error {
             FactorError::Singular => ThermalError::SingularSystem,
+            FactorError::Cancelled => ThermalError::Cancelled,
             FactorError::TooLarge { needed_bytes } => ThermalError::FactorTooLarge {
                 needed_bytes,
                 budget_bytes: settings.maximum_factor_bytes,

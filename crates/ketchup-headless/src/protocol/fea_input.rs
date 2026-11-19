@@ -1,7 +1,7 @@
 //! The `fea_review` and `fea_assembly_review` requests and their answer.
 
 use super::{Error, Result};
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_analysis::fea::{FeaError, FeaMaterial, FeaSolveSettings, MIN_FEA_REFINEMENT_RATIO};
 use ketchup_application::fea_workflow::{
     ExactFeaAssemblyPart, ExactFeaAssemblySetup, ExactFeaFaceTraction, ExactFeaJoint,
     ExactFeaJointFace, ExactFeaJointKind, ExactFeaMateJoint, ExactFeaSetup,
@@ -207,6 +207,7 @@ impl From<FeaReviewError> for Error {
             FeaReviewError::InvalidTarget(..) => "fea_target_rejected",
             FeaReviewError::Meshing(..) => "fea_meshing_rejected",
             FeaReviewError::Setup(..) => "fea_setup_rejected",
+            FeaReviewError::Solve(FeaError::Cancelled) => "cancelled",
             FeaReviewError::MeshNotRefined | FeaReviewError::Solve(..) => "fea_solve_rejected",
         };
         Self::caused_by(code, &error)
@@ -350,10 +351,13 @@ pub(super) fn review_value(review: &FeaReviewSummary) -> Value {
             "within_declared_limits":level.within_declared_limits,
         })).collect::<Vec<_>>(),
         "convergence":{
-            "final_displacement_relative_change":review.final_displacement_relative_change,
-            "final_energy_relative_change":review.final_energy_relative_change,
+            "final_displacement_relative_change":review.judgement.final_displacement_relative_change,
+            "final_energy_relative_change":review.judgement.final_energy_relative_change,
+            "final_stress_relative_change":review.judgement.final_stress_relative_change,
+            "final_refinement_ratio":review.judgement.final_refinement_ratio,
+            "minimum_refinement_ratio":MIN_FEA_REFINEMENT_RATIO,
             "required_relative_tolerance":review.required_relative_tolerance,
-            "converged":review.converged,
+            "converged":review.judgement.converged,
         },
         "all_levels_within_declared_limits":review.all_levels_within_declared_limits,
         "excluded_physics":review.excluded_physics,

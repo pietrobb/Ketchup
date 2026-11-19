@@ -14,6 +14,7 @@ use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
 
 pub const FEA_MODEL_SCHEMA_V1: &str = "ketchup.fea-model.v1";
 pub const FEA_SOLUTION_SCHEMA_V1: &str = "ketchup.fea-solution.v1";
@@ -291,6 +292,22 @@ pub enum FeaError {
     InvalidModeCount,
     /// The subspace iteration did not settle on the lowest modes.
     ModesNotConverged,
+    /// The caller's cancellation flag was set while solving.
+    Cancelled,
+}
+
+impl FeaError {
+    /// What a failed factorization under `settings` means for the model.
+    pub(crate) const fn from_factor(error: FactorError, settings: FeaSolveSettings) -> Self {
+        match error {
+            FactorError::Singular => Self::SingularSystem,
+            FactorError::Cancelled => Self::Cancelled,
+            FactorError::TooLarge { needed_bytes } => Self::FactorTooLarge {
+                needed_bytes,
+                budget_bytes: settings.maximum_factor_bytes,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -352,14 +369,69 @@ pub struct FeaConvergenceLevel {
     pub total_strain_energy_n_mm: f64,
 }
 
+/// The least ratio of element counts between the last two levels of a convergence study
+/// for it to count as converged: from one level to one hardly finer the results change
+/// little whatever their error (og:R1119og-FEA-803: 20 to 21 elements changed the
+/// deflection by 1.9 % while it was 69 % of the true one).
+pub const MIN_FEA_REFINEMENT_RATIO: f64 = 2.0;
+
+/// How the finest level of a convergence study compares with the level before it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeaConvergenceJudgement {
+    pub final_displacement_relative_change: f64,
+    pub final_energy_relative_change: f64,
+    /// Of the largest von Mises stress: a stress that keeps rising as the mesh is refined,
+    /// as at a sharp inner corner, has not converged however still the deflection is.
+    pub final_stress_relative_change: f64,
+    /// The finest level's elements over those of the level before.
+    pub final_refinement_ratio: f64,
+    /// Every change within the tolerance and the finest level at least
+    /// [`MIN_FEA_REFINEMENT_RATIO`] times finer.
+    pub converged: bool,
+}
+
+impl FeaConvergenceJudgement {
+    /// Compares the solution `last` on `last_elements` elements with `previous` on
+    /// `previous_elements`, against the relative `tolerance`.
+    #[must_use]
+    pub fn between(
+        (previous, previous_elements): (&FeaSolution, usize),
+        (last, last_elements): (&FeaSolution, usize),
+        tolerance: f64,
+    ) -> Self {
+        let displacement = relative_change(
+            previous.maximum_displacement_mm,
+            last.maximum_displacement_mm,
+        );
+        let energy = relative_change(
+            previous.total_strain_energy_n_mm,
+            last.total_strain_energy_n_mm,
+        );
+        let stress = relative_change(
+            previous.maximum_von_mises_stress_mpa,
+            last.maximum_von_mises_stress_mpa,
+        );
+        let elements = |count: usize| f64::from(u32::try_from(count).unwrap_or(u32::MAX));
+        let ratio = elements(last_elements) / elements(previous_elements).max(1.0);
+        Self {
+            final_displacement_relative_change: displacement,
+            final_energy_relative_change: energy,
+            final_stress_relative_change: stress,
+            final_refinement_ratio: ratio,
+            converged: displacement <= tolerance
+                && energy <= tolerance
+                && stress <= tolerance
+                && ratio >= MIN_FEA_REFINEMENT_RATIO,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeaConvergenceEvidence {
     pub case_id: String,
     pub levels: Vec<FeaConvergenceLevel>,
-    pub final_displacement_relative_change: f64,
-    pub final_energy_relative_change: f64,
+    pub judgement: FeaConvergenceJudgement,
     pub required_relative_tolerance: f64,
-    pub converged: bool,
     pub solutions: Vec<FeaSolution>,
 }
 
@@ -450,6 +522,16 @@ impl DofLayout {
 
 impl FeaModel {
     pub fn solve(&self, settings: FeaSolveSettings) -> Result<FeaSolution, FeaError> {
+        self.solve_with_cancellation(settings, &AtomicBool::new(false))
+    }
+
+    /// [`Self::solve`], stopping with [`FeaError::Cancelled`] soon after
+    /// `cancelled` is set (og:R1119og-FEA-806).
+    pub fn solve_with_cancellation(
+        &self,
+        settings: FeaSolveSettings,
+        cancelled: &AtomicBool,
+    ) -> Result<FeaSolution, FeaError> {
         self.validate(settings)?;
         let layout = self.dof_layout();
         let dof_count = layout.count();
@@ -471,14 +553,8 @@ impl FeaModel {
         let constrained = self.apply_constraints(&layout, &mut stiffness, &mut forces)?;
         let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
         let mut displacement = stiffness
-            .factor(threshold, settings.maximum_factor_bytes)
-            .map_err(|error| match error {
-                FactorError::Singular => FeaError::SingularSystem,
-                FactorError::TooLarge { needed_bytes } => FeaError::FactorTooLarge {
-                    needed_bytes,
-                    budget_bytes: settings.maximum_factor_bytes,
-                },
-            })?
+            .factor(threshold, settings.maximum_factor_bytes, cancelled)
+            .map_err(|error| FeaError::from_factor(error, settings))?
             .solve(&forces);
         if displacement.iter().any(|value| !value.is_finite()) {
             return Err(FeaError::NonFiniteSolution);
@@ -1733,15 +1809,11 @@ pub fn solve_convergence_study(
         .iter()
         .map(|level| level.solve(settings).map_err(FeaConvergenceError::Solve))
         .collect::<Result<Vec<_>, _>>()?;
-    let previous = &solutions[solutions.len() - 2];
-    let final_solution = solutions.last().expect("at least two solutions");
-    let final_displacement_relative_change = relative_change(
-        previous.maximum_displacement_mm,
-        final_solution.maximum_displacement_mm,
-    );
-    let final_energy_relative_change = relative_change(
-        previous.total_strain_energy_n_mm,
-        final_solution.total_strain_energy_n_mm,
+    let last = levels.len() - 1;
+    let judgement = FeaConvergenceJudgement::between(
+        (&solutions[last - 1], levels[last - 1].elements.len()),
+        (&solutions[last], levels[last].elements.len()),
+        settings.convergence_relative_tolerance,
     );
     Ok(FeaConvergenceEvidence {
         case_id,
@@ -1755,11 +1827,8 @@ pub fn solve_convergence_study(
                 total_strain_energy_n_mm: solution.total_strain_energy_n_mm,
             })
             .collect(),
-        final_displacement_relative_change,
-        final_energy_relative_change,
+        judgement,
         required_relative_tolerance: settings.convergence_relative_tolerance,
-        converged: final_displacement_relative_change <= settings.convergence_relative_tolerance
-            && final_energy_relative_change <= settings.convergence_relative_tolerance,
         solutions,
     })
 }

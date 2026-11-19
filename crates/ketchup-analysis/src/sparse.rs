@@ -4,6 +4,7 @@
 //! bandwidth rather than the square of its unknowns.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A symmetric matrix assembled entry by entry. Both triangles are kept so
 /// a row can be read whole.
@@ -22,6 +23,8 @@ pub(crate) enum FactorError {
     /// A pivot at or below the threshold: the matrix is singular or not
     /// positive definite.
     Singular,
+    /// The caller's cancellation flag was set during the factorization.
+    Cancelled,
 }
 
 /// The lower triangle of `P A Pᵀ`, row `i` stored from its first non-zero
@@ -216,11 +219,12 @@ impl SymmetricMatrix {
     /// How many eigenvalues of the matrix are negative: by Sylvester's law of
     /// inertia, the negative pivots `D` of its `L D Lᵀ`. `None` when a pivot
     /// is not above `pivot_threshold` in size (an eigenvalue at zero, or too
-    /// near it to tell its sign).
+    /// near it to tell its sign). Stops between rows once `cancelled` is set.
     pub(crate) fn negative_eigenvalues(
         &self,
         pivot_threshold: f64,
         budget_bytes: usize,
+        cancelled: &AtomicBool,
     ) -> Result<Option<usize>, FactorError> {
         let Skyline {
             first_column,
@@ -230,6 +234,9 @@ impl SymmetricMatrix {
         } = self.skyline(budget_bytes)?;
         let mut negative = 0;
         for row in 0..self.size {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(FactorError::Cancelled);
+            }
             let row_first = first_column[row];
             let (earlier, this_row) = values.split_at_mut(row_offset[row]);
             let this_row = &mut this_row[..row - row_first + 1];
@@ -313,11 +320,13 @@ impl SymmetricMatrix {
 
     /// Factors the matrix as `L Lᵀ`. A pivot not above `pivot_threshold`
     /// means the matrix is singular; a factor needing more than
-    /// `budget_bytes` is not attempted.
+    /// `budget_bytes` is not attempted. Stops between rows once `cancelled`
+    /// is set (og:R1119og-FEA-806: a large model factors for half a minute).
     pub(crate) fn factor(
         &self,
         pivot_threshold: f64,
         budget_bytes: usize,
+        cancelled: &AtomicBool,
     ) -> Result<CholeskyFactor, FactorError> {
         let Skyline {
             order,
@@ -326,6 +335,9 @@ impl SymmetricMatrix {
             mut values,
         } = self.skyline(budget_bytes)?;
         for row in 0..self.size {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(FactorError::Cancelled);
+            }
             let row_first = first_column[row];
             for column in row_first..=row {
                 let start = row_first.max(first_column[column]);
@@ -400,7 +412,8 @@ impl CholeskyFactor {
 
 #[cfg(test)]
 mod tests {
-    use super::SymmetricMatrix;
+    use super::{FactorError, SymmetricMatrix};
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn negative_pivots_count_the_eigenvalues_below_a_shift() {
@@ -419,7 +432,7 @@ mod tests {
         let below = |shift: f64| {
             matrix
                 .shifted(&identity, shift)
-                .negative_eigenvalues(1.0e-12, usize::MAX)
+                .negative_eigenvalues(1.0e-12, usize::MAX, &AtomicBool::new(false))
                 .unwrap()
         };
         assert_eq!(below(0.1), Some(0));
@@ -428,5 +441,16 @@ mod tests {
         assert_eq!(below(4.0), Some(5));
         // A shift on an eigenvalue leaves a zero pivot: its sign is unknown.
         assert_eq!(below(2.0), None);
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            matrix
+                .negative_eigenvalues(1.0e-12, usize::MAX, &cancelled)
+                .err(),
+            Some(FactorError::Cancelled)
+        );
+        assert_eq!(
+            matrix.factor(1.0e-12, usize::MAX, &cancelled).err(),
+            Some(FactorError::Cancelled)
+        );
     }
 }

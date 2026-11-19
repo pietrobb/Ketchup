@@ -5,10 +5,11 @@
 use crate::fea::{DofLayout, FeaElementKind, FeaError, FeaModel, FeaSolveSettings};
 use crate::fea_coupling::Joints;
 use crate::fea_frame::local_mass;
-use crate::sparse::{CholeskyFactor, FactorError, SymmetricMatrix};
+use crate::sparse::{CholeskyFactor, SymmetricMatrix};
 use ketchup_model::tolerance::{MODE_VECTOR_DEPENDENT, NEGLIGIBLE, ROUNDING, STURM_SHIFT_GAPS};
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const FEA_MODES_SCHEMA_V1: &str = "ketchup.fea-modes.v1";
 pub const FEA_MODAL_SOLVER_VERSION_V2: &str = "ketchup.subspace-iteration-modes.v2";
@@ -57,6 +58,17 @@ impl FeaModel {
     /// The `count` lowest natural frequencies with their shapes. Every
     /// material needs a density; loads are not needed and play no part.
     pub fn modes(&self, settings: FeaSolveSettings, count: usize) -> Result<FeaModes, FeaError> {
+        self.modes_with_cancellation(settings, count, &AtomicBool::new(false))
+    }
+
+    /// [`Self::modes`], stopping with [`FeaError::Cancelled`] soon after
+    /// `cancelled` is set (og:R1119og-FEA-806).
+    pub fn modes_with_cancellation(
+        &self,
+        settings: FeaSolveSettings,
+        count: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<FeaModes, FeaError> {
         self.validate_model(settings, false)?;
         if count == 0 || count > MAX_FEA_MODES {
             return Err(FeaError::InvalidModeCount);
@@ -104,14 +116,8 @@ impl FeaModel {
         }
         let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
         let factor = stiffness
-            .factor(threshold, settings.maximum_factor_bytes)
-            .map_err(|error| match error {
-                FactorError::Singular => FeaError::SingularSystem,
-                FactorError::TooLarge { needed_bytes } => FeaError::FactorTooLarge {
-                    needed_bytes,
-                    budget_bytes: settings.maximum_factor_bytes,
-                },
-            })?;
+            .factor(threshold, settings.maximum_factor_bytes, cancelled)
+            .map_err(|error| FeaError::from_factor(error, settings))?;
 
         // Unknowns that move a mass, the most flexible first.
         let mut massive = (0..size)
@@ -131,6 +137,7 @@ impl FeaModel {
             mass_diagonal: &mass_diagonal,
             fixed: &fixed,
             massive: &massive,
+            cancelled,
         };
         let mut width = (2 * count).max(count + 8).min(massive.len());
         let mut iterations = 0;
@@ -362,6 +369,7 @@ struct Subspace<'a> {
     mass_diagonal: &'a [f64],
     fixed: &'a BTreeSet<usize>,
     massive: &'a [usize],
+    cancelled: &'a AtomicBool,
 }
 
 /// A settled iteration: every Ritz value from the lowest up, what `accept`
@@ -409,13 +417,16 @@ impl Subspace<'_> {
             let solved = vectors
                 .iter()
                 .map(|vector| {
+                    if self.cancelled.load(Ordering::Relaxed) {
+                        return Err(FeaError::Cancelled);
+                    }
                     let mut solved = self.factor.solve(&self.mass.multiply(vector));
                     for &dof in self.fixed {
                         solved[dof] = 0.0;
                     }
-                    solved
+                    Ok(solved)
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             // Vectors that all turned towards the same lowest shape leave the
             // projected mass singular; made mass-orthonormal they do not
             // (og:R1119og-FEA-802).
@@ -526,20 +537,13 @@ impl Subspace<'_> {
             let shifted = self.stiffness.shifted(self.mass, shift);
             let threshold =
                 shifted.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
-            match shifted.negative_eigenvalues(threshold, settings.maximum_factor_bytes) {
-                Ok(Some(below)) => {
-                    let found = values.iter().filter(|value| **value < shift).count();
-                    return Ok(below > found);
-                }
-                // The shift is too near an eigenvalue to tell: further away.
-                Ok(None) => {}
-                Err(FactorError::TooLarge { needed_bytes }) => {
-                    return Err(FeaError::FactorTooLarge {
-                        needed_bytes,
-                        budget_bytes: settings.maximum_factor_bytes,
-                    });
-                }
-                Err(FactorError::Singular) => return Err(FeaError::SingularSystem),
+            let below = shifted
+                .negative_eigenvalues(threshold, settings.maximum_factor_bytes, self.cancelled)
+                .map_err(|error| FeaError::from_factor(error, settings))?;
+            // `None`: the shift is too near an eigenvalue to tell; further away.
+            if let Some(below) = below {
+                let found = values.iter().filter(|value| **value < shift).count();
+                return Ok(below > found);
             }
         }
         Err(FeaError::ModesNotConverged)
