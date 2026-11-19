@@ -71,7 +71,7 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 23. og:R1110-UL-400 to UL-403 | Open |
+| 23. og:R1110-UL-400 to UL-403 | Fixed in pull request `fix/og-dxf-revisions`: a revision that only changes an entity's color, linetype or lineweight, a text's color or its layer's color reports it changed (`Style`) (UL-400); entities the later revision draws alike in the same place under a new handle, as ArchiCAD, Revit and Allplan export them, count as renumbered, not removed and added, and drawings of which one has no handles are refused with the reason (UL-401); the comparison runs on the reading thread, not the window's (UL-402); the MCP answer carries the counts and the first 100 entities of each list, the rest is paged through `inspect underlay_objects` of the overlay by layer (UL-403) |
 
 ## 8. FEA, the rest
 
