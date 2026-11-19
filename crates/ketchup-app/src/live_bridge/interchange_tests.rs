@@ -968,13 +968,17 @@ fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert!(directory.path().join("air.pdf").exists());
     let issues = written["storey_table_issues"].as_array().unwrap();
-    assert_eq!(issues.len(), 1, "{written}");
+    assert_eq!(issues.len(), 2, "{written}");
     assert_eq!(issues[0]["storey"], 2, "{written}");
     assert_eq!(issues[0]["problem"], "no_floor_in_model", "{written}");
     assert!(
         issues[0]["message"].as_str().unwrap().contains("3500 mm"),
         "{written}"
     );
+    // R1110r2-MF-501: the model's upper floor at 2954, which no row has, is
+    // named too.
+    assert_eq!(issues[1]["problem"], "not_in_table", "{written}");
+    assert_eq!(issues[1]["structural_mm"], 2954, "{written}");
 
     let written = bridge
         .execute(

@@ -193,7 +193,8 @@ pub struct DrawingSet {
     /// options set, else the ground floor found (review 2026-11-06 P3).
     pub zero_level_mm: f64,
     /// The rows of the table of storeys the model does not bear out, which
-    /// do not refuse the drawings (review 2026-11-10 R1110-MF-400).
+    /// do not refuse the drawings (review 2026-11-10 R1110-MF-400), then the
+    /// storeys of the model no row covers (review 2026-11-10 r2 MF-501).
     pub storey_table_issues: Vec<StoreyTableError>,
 }
 
@@ -400,7 +401,13 @@ pub fn drawing_set_until(
         (Some(bounds), None) | (None, Some(bounds)) => bounds,
         (None, None) => return Err(ProjectDrawingError::Empty),
     };
-    let storey_table_issues = super::storey_table::check(&options.storeys, solids, stop)?;
+    // The plans' cut over their floors, to find the storeys the table leaves out.
+    let above_floor_mm = options
+        .plans
+        .iter()
+        .find_map(|plan| plan.storey.floor_mm.map(|floor| plan.storey.cut_mm - floor));
+    let storey_table_issues =
+        super::storey_table::check(&options.storeys, solids, above_floor_mm, stop)?;
     stopped()?;
     let first_cut = options
         .plans

@@ -42,6 +42,10 @@ pub enum StoreyTableProblem {
     /// its finished floor (a finish lies on its face, not under it). Only
     /// reported: the plans and levels are the table's.
     NoFloorInModel,
+    /// A storey found in the model, on the floor its levels name, that no row
+    /// covers, so it has no plan (review 2026-11-10 r2 MF-501). Only reported;
+    /// its number is that of the storey found, counted from the lowest.
+    NotInTable,
 }
 
 impl StoreyTableProblem {
@@ -49,7 +53,10 @@ impl StoreyTableProblem {
     /// empty. The others are reported with the drawings written.
     #[must_use]
     pub const fn refuses(self) -> bool {
-        !matches!(self, Self::NoFloorInModel | Self::ThickBuildUp)
+        !matches!(
+            self,
+            Self::NoFloorInModel | Self::ThickBuildUp | Self::NotInTable
+        )
     }
 }
 
@@ -73,6 +80,12 @@ impl std::fmt::Display for StoreyTableError {
             problem,
         } = self;
         let floor = levels.finished_floor_mm;
+        if *problem == StoreyTableProblem::NotInTable {
+            return write!(
+                formatter,
+                "storey {storey} of the model, its floor at {floor} mm, is in no row of the table of storeys, so it has no plan"
+            );
+        }
         write!(
             formatter,
             "storey {storey} of the table of storeys, its finished floor at {floor} mm, "
@@ -99,6 +112,7 @@ impl std::fmt::Display for StoreyTableError {
                 "has no face of the model to stand on from {NEAR_FLOOR_MM} mm under its structure at {} mm up to it",
                 levels.structural_mm
             ),
+            StoreyTableProblem::NotInTable => Ok(()),
         }
     }
 }
@@ -112,8 +126,9 @@ impl From<StoreyTableError> for super::ProjectDrawingError {
 }
 
 /// The rows of `table` the model does not bear out, to report with the
-/// drawings; passes any table with no solid to check against (annotations
-/// alone).
+/// drawings, then each storey of the model, its plan cut `above_floor_mm`
+/// over its floor, that no row covers; passes no table, and any table with no
+/// solid to check against (annotations alone).
 ///
 /// # Errors
 /// [`ProjectDrawingError::StoreyTable`] of the lowest row whose problem
@@ -126,10 +141,14 @@ impl From<StoreyTableError> for super::ProjectDrawingError {
 pub(super) fn check(
     table: &[StoreyLevels],
     solids: &[DrawingSolid],
+    above_floor_mm: Option<f64>,
     stop: &AtomicBool,
 ) -> Result<Vec<StoreyTableError>, super::ProjectDrawingError> {
     let mut reported = Vec::new();
-    for error in contradicted(table, solids, stop)? {
+    if table.is_empty() {
+        return Ok(reported);
+    }
+    for error in contradicted(table, solids, above_floor_mm, stop)? {
         if error.problem.refuses() {
             return Err(error.into());
         }
@@ -152,20 +171,22 @@ pub fn sheet_numbers(table: &[StoreyLevels]) -> Vec<usize> {
     numbers
 }
 
-/// Every row of `table` that `solids` contradict, lowest sheet first;
-/// [`super::ProjectDrawingError::Cancelled`] once `stop` is set.
+/// Every row of `table` that `solids` contradict, lowest sheet first, then
+/// the storeys found with plans cut `above_floor_mm` over their floors that
+/// no row covers; [`super::ProjectDrawingError::Cancelled`] once `stop` is set.
 fn contradicted(
     table: &[StoreyLevels],
     solids: &[DrawingSolid],
+    above_floor_mm: Option<f64>,
     stop: &AtomicBool,
 ) -> Result<Vec<StoreyTableError>, super::ProjectDrawingError> {
     let Some((low, high)) = bounds(solids) else {
         return Ok(Vec::new());
     };
-    let faces = standing_levels(solids, stop)
-        .ok_or(super::ProjectDrawingError::Cancelled)?
-        .into_iter()
-        .filter(|level| level.free_area > level.area * ROUNDING)
+    let standing = standing_levels(solids, stop).ok_or(super::ProjectDrawingError::Cancelled)?;
+    let faces = standing
+        .iter()
+        .filter(|level| level.stands_on())
         .map(|level| level.height_mm)
         .collect::<Vec<_>>();
     let numbers = sheet_numbers(table);
@@ -201,7 +222,50 @@ fn contradicted(
             problem,
         }));
     }
+    // A storey of the model no row covers has no plan, and ±0,000 may move to
+    // the floor above it (review 2026-11-10 r2 MF-501).
+    let model_storeys = above_floor_mm.map_or_else(Vec::new, |above| {
+        storeys_on(&storey_floors(&standing), high[2], above)
+    });
+    for (index, storey) in model_storeys.iter().enumerate() {
+        let Some(floor) = storey.floor_mm else {
+            continue;
+        };
+        let covered = table.iter().any(|row| {
+            (f64::from(row.structural_mm) - NEAR_FLOOR_MM..=f64::from(row.finished_floor_mm))
+                .contains(&floor)
+        });
+        if let Some(whole) = whole_mm(floor).filter(|_| !covered) {
+            found.push(StoreyTableError {
+                storey: index + 1,
+                levels: StoreyLevels {
+                    finished_floor_mm: whole,
+                    structural_mm: whole,
+                },
+                problem: StoreyTableProblem::NotInTable,
+            });
+        }
+    }
     Ok(found)
+}
+
+/// The floors a storey stands on among `standing`, lowest first: those with
+/// as much free of solids as [`FLOOR_SHARE_OF_LARGEST_LEVEL`] of the freest.
+fn storey_floors(standing: &[StandingLevel]) -> Vec<f64> {
+    let largest = standing
+        .iter()
+        .map(|level| level.free_area)
+        .fold(0.0, f64::max);
+    standing
+        .iter()
+        .filter(|level| level.free_area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
+        .map(|level| level.height_mm)
+        .collect()
+}
+
+/// A floor in whole millimetres, as the faces are found; none past i32.
+fn whole_mm(mm: f64) -> Option<i32> {
+    format!("{mm:.0}").parse::<i32>().ok()
 }
 
 /// The floors of a model as found from its faces, kept to find its ground
@@ -227,19 +291,32 @@ impl ModelFloors {
         let (_, high) = bounds(solids)?;
         // Nothing stops it: it is found once, on a worker, for the window.
         let standing = standing_levels(solids, &AtomicBool::new(false))?;
-        let largest = standing
-            .iter()
-            .map(|level| level.free_area)
-            .fold(0.0, f64::max);
-        Some(Self {
+        Some(Self::on(solids, high[2], &standing))
+    }
+
+    /// [`Self::of`], on the worker of an export.
+    ///
+    /// # Errors
+    /// [`super::ProjectDrawingError::Cancelled`] once `stop` is set.
+    pub fn of_until(
+        solids: &[DrawingSolid],
+        stop: &AtomicBool,
+    ) -> Result<Option<Self>, super::ProjectDrawingError> {
+        let Some((_, high)) = bounds(solids) else {
+            return Ok(None);
+        };
+        let standing =
+            standing_levels(solids, stop).ok_or(super::ProjectDrawingError::Cancelled)?;
+        Ok(Some(Self::on(solids, high[2], &standing)))
+    }
+
+    /// The floors of `solids`, up to `top_mm`, with the levels found standing.
+    fn on(solids: &[DrawingSolid], top_mm: f64, standing: &[StandingLevel]) -> Self {
+        Self {
             floors_mm: floor_levels(solids),
-            storey_floors_mm: standing
-                .into_iter()
-                .filter(|level| level.free_area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
-                .map(|level| level.height_mm)
-                .collect(),
-            top_mm: high[2],
-        })
+            storey_floors_mm: storey_floors(standing),
+            top_mm,
+        }
     }
 
     /// Where ±0,000 is by default (see [`super::ground_floor`]).
@@ -256,8 +333,7 @@ impl ModelFloors {
         storeys_on(&self.storey_floors_mm, self.top_mm, above_floor_mm)
             .iter()
             .filter_map(|Storey { floor_mm, .. }| {
-                // Whole millimetres, as the faces are found; none past i32.
-                let floor = floor_mm.and_then(|mm| format!("{mm:.0}").parse::<i32>().ok())?;
+                let floor = floor_mm.and_then(whole_mm)?;
                 Some(StoreyLevels {
                     finished_floor_mm: floor,
                     structural_mm: floor,
@@ -268,16 +344,27 @@ impl ModelFloors {
 }
 
 /// An upward level of the model and how much of it no solid lies on.
-struct StandingLevel {
-    height_mm: f64,
+pub(super) struct StandingLevel {
+    pub(super) height_mm: f64,
     area: f64,
     free_area: f64,
+}
+
+impl StandingLevel {
+    /// Whether anything of it is free to stand on: the top of a layer
+    /// another covers all of is not.
+    pub(super) fn stands_on(&self) -> bool {
+        self.free_area > self.area * ROUNDING
+    }
 }
 
 /// The upward levels of `solids`, lowest first, each less what lies under the
 /// underside of a solid at its height: the top of a layer another lies on,
 /// or of a slab under a wall, is no place to stand. `None` once `stop` is set.
-fn standing_levels(solids: &[DrawingSolid], stop: &AtomicBool) -> Option<Vec<StandingLevel>> {
+pub(super) fn standing_levels(
+    solids: &[DrawingSolid],
+    stop: &AtomicBool,
+) -> Option<Vec<StandingLevel>> {
     // Each underside facing down, its mean height and its triangle in plan
     // counter-clockwise, as `upward_levels` keeps the faces looking up.
     let mut undersides = Vec::new();
