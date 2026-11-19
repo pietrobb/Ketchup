@@ -2295,6 +2295,7 @@ drawings-storey-same-floor = { $storey }. podlažie tabuľky má čistú podlahu
 drawings-storey-outside-model = { $storey }. podlažie tabuľky s čistou podlahou na { $floor } mm leží pod modelom alebo nad jeho vrchom, jeho pôdorys by nič nerezal. Oprav alebo odstráň riadok; výkresy sa nezapísali.
 drawings-storey-thick-build-up = { $storey }. podlažie tabuľky má čistú podlahu na { $floor } mm, viac ako { $most } mm nad konštrukciou na { $structural } mm, čo je výška podlažia, nie skladba podlahy. Ak je model správny, oprav riadok.
 drawings-storey-no-floor-in-model = { $storey }. podlažie tabuľky má čistú podlahu na { $floor } mm na konštrukcii na { $structural } mm, ale model nemá plochu, na ktorej sa dá stáť (hľadiacu nahor, bez telesa na nej), od { $near } mm pod konštrukciou po podlahu, takže výkresy kótujú výšky tabuľky, nie modelu. Ak je model správny, oprav riadok.
+drawings-storey-not-in-table = Model má podlažie s podlahou na { $floor } mm, ktoré nepokrýva žiadny riadok tabuľky, takže nemá pôdorys a ±0,000 môže byť na nesprávnom podlaží. Ak je model správny, pridaj preň riadok.
 drawings-zero-altitude = ±0,000 nad morom
 drawings-zero-altitude-none = Neuvádzať
 drawings-north = Sever, ° proti smeru hodinových ručičiek od +Y

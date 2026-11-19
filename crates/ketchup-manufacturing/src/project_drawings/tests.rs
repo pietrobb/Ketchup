@@ -318,9 +318,11 @@ fn layered_house() -> Vec<DrawingSolid> {
 
 /// Review 2026-11-08 MF-241: the layered ceiling of the tiny house (a lining
 /// 2500 – 2512, joists with insulation to 2732, OSB to 2754) made levels of
-/// +2,512 and +2,732 and an upper storey on 2512 cut at 3712. Found from the
-/// faces, that stays; given in the table of storeys, ±0,000, the plans and
-/// the level marks are the designer's.
+/// +2,512 and +2,732 and an upper storey on 2512 cut at 3712. Given in the
+/// table of storeys, ±0,000, the plans and the level marks are the
+/// designer's. Review 2026-11-10 r2 MF-500: found from the faces, they still
+/// were, though the window filled the table with the OSB: a face a solid
+/// covers all of is no floor there either.
 #[test]
 fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
     let house = layered_house();
@@ -331,16 +333,29 @@ fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
             .levels
             .clone()
     };
-    // Without a table the faces decide, as before.
+    // Without a table the faces decide: the upper storey stands on the OSB,
+    // the lining and the joists under it are covered.
     let found = DrawingSetOptions {
         decimal_separator: comma,
         ..options(&house, None)
     };
+    assert_eq!(levels(&found), ["-0,200", "±0,000", "+2,754", "+5,254"]);
     assert_eq!(
-        levels(&found),
-        ["-0,200", "±0,000", "+2,512", "+2,732", "+2,754", "+5,254"]
+        found
+            .plans
+            .iter()
+            .map(|plan| (plan.storey.floor_mm, plan.storey.cut_mm))
+            .collect::<Vec<_>>(),
+        [(Some(200.0), 1400.0), (Some(2954.0), 4154.0)]
     );
-    assert_eq!(found.plans[1].storey.cut_mm, 3912.0);
+    assert_eq!(
+        storeys(&house, 1200.0),
+        table_storeys(&ModelFloors::of(&house).unwrap().table(1200.0), 1200.0)
+    );
+    assert!(matches!(
+        super::storeys_until(&house, 1200.0, &AtomicBool::new(true)),
+        Err(ProjectDrawingError::Cancelled)
+    ));
     // The table: the ground floor on its slab at 200, the upper one on the OSB over
     // the joists; ±0,000 at 245,300 m above sea level.
     let table = [
@@ -469,7 +484,7 @@ fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
     }
     // A finished floor laid on its structure, not modelled, is within
     // NEAR_FLOOR_MM of it.
-    assert_eq!(refused(&[row(250, 200)]), None);
+    assert_eq!(refused(&[row(250, 200), row(2954, 2932)]), None);
     let error = StoreyTableError {
         storey: 2,
         levels: row(3500, 3500),
@@ -514,19 +529,69 @@ fn a_floor_build_up_the_model_leaves_out_is_taken_and_one_it_contradicts_reporte
     for screed in [row(300, 200), row(260, 200)] {
         assert_eq!(issues(&[screed, row(3054, 2954)]), [], "{screed:?}");
     }
-    // A finished floor at 2932 under the OSB laid to 2954, and one in the air.
+    // A finished floor at 2932 under the OSB laid to 2954, and one in the air:
+    // neither covers the upper storey on the OSB, which is left out.
     assert_eq!(
         issues(&[row(200, 200), row(2932, 2932), row(3500, 3500)]),
         [
             (2, StoreyTableProblem::NoFloorInModel),
-            (3, StoreyTableProblem::NoFloorInModel)
+            (3, StoreyTableProblem::NoFloorInModel),
+            (2, StoreyTableProblem::NotInTable)
         ]
     );
-    // The structure named more than 50 mm over the face it lies on.
+    // The structure named more than 50 mm over the face it lies on, which no
+    // row then covers.
     assert_eq!(
-        issues(&[row(300, 260)]),
-        [(1, StoreyTableProblem::NoFloorInModel)]
+        issues(&[row(300, 260), row(2954, 2932)]),
+        [
+            (1, StoreyTableProblem::NoFloorInModel),
+            (1, StoreyTableProblem::NotInTable)
+        ]
     );
+}
+
+/// Review 2026-11-10 r2 MF-501: a table of the upper storey alone was taken
+/// as it was: the ground floor's plan was left out and ±0,000 moved up to
+/// 2954 unsaid. A storey of the model no row covers is reported.
+#[test]
+fn a_storey_of_the_model_the_table_leaves_out_is_reported() {
+    let house = layered_house();
+    let row = |finished_floor_mm, structural_mm| StoreyLevels {
+        finished_floor_mm,
+        structural_mm,
+    };
+    let issues = |table: &[StoreyLevels]| {
+        let options = DrawingSetOptions {
+            plans: plans(table_storeys(table, 1200.0)),
+            storeys: table.to_vec(),
+            ..options(&house, None)
+        };
+        drawing_set(&house, &options).unwrap().storey_table_issues
+    };
+    let upper = issues(&[row(2954, 2932)]);
+    assert_eq!(
+        upper,
+        [StoreyTableError {
+            storey: 1,
+            levels: row(200, 200),
+            problem: StoreyTableProblem::NotInTable,
+        }]
+    );
+    assert_eq!(
+        upper[0].to_string(),
+        "storey 1 of the model, its floor at 200 mm, is in no row of the table of storeys, so it has no plan"
+    );
+    assert!(!StoreyTableProblem::NotInTable.refuses());
+    // The ground storey alone leaves out the upper one.
+    assert_eq!(
+        issues(&[row(200, 200)])
+            .iter()
+            .map(|issue| (issue.storey, issue.levels.finished_floor_mm, issue.problem))
+            .collect::<Vec<_>>(),
+        [(2, 2954, StoreyTableProblem::NotInTable)]
+    );
+    // A row covers the floor from 50 mm under its structure up to it.
+    assert_eq!(issues(&[row(250, 200), row(3054, 2954)]), []);
 }
 
 /// Review 2026-11-12 P3: since R1110-MF-400 rows of 2 900 over 200 and 3 054
@@ -557,15 +622,21 @@ fn a_storey_height_as_build_up_is_reported_a_roof_terrace_taken_and_the_check_st
             .collect::<Vec<_>>()
     };
     let house = layered_house();
-    for absurd in [row(2900, 200), row(3054, 200)] {
-        assert_eq!(
-            issues(&house, &[absurd]),
-            [(1, StoreyTableProblem::ThickBuildUp)],
-            "{absurd:?}"
-        );
-    }
+    // 2 900 stops short of the upper floor at 2954, so that storey is left out
+    // too; 3 054 over 200 covers it.
+    assert_eq!(
+        issues(&house, &[row(2900, 200)]),
+        [
+            (1, StoreyTableProblem::ThickBuildUp),
+            (2, StoreyTableProblem::NotInTable)
+        ]
+    );
+    assert_eq!(
+        issues(&house, &[row(3054, 200)]),
+        [(1, StoreyTableProblem::ThickBuildUp)]
+    );
     // A raised floor of a metre is a build-up still.
-    assert_eq!(issues(&house, &[row(1200, 200)]), []);
+    assert_eq!(issues(&house, &[row(1200, 200), row(2954, 2932)]), []);
     let error = StoreyTableError {
         storey: 1,
         levels: row(2900, 200),
@@ -598,10 +669,10 @@ fn a_storey_height_as_build_up_is_reported_a_roof_terrace_taken_and_the_check_st
     // The check itself stops, not only the drawing after it.
     let stopped = AtomicBool::new(true);
     assert!(matches!(
-        super::storey_table::check(&[row(200, 200)], &house, &stopped),
+        super::storey_table::check(&[row(200, 200)], &house, None, &stopped),
         Err(ProjectDrawingError::Cancelled)
     ));
-    assert!(super::storey_table::check(&[row(200, 200)], &house, &never).is_ok());
+    assert!(super::storey_table::check(&[row(200, 200)], &house, None, &never).is_ok());
 }
 
 /// Review 2026-11-09 MF-300: "Add a storey" in an empty table made one row
