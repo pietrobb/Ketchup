@@ -238,7 +238,10 @@ fn perf_scattered_hidden_parts_of_a_hundred_thousand_check_in_seconds() {
     let started = std::time::Instant::now();
     scattered_hidden_parts_of_a_hundred_thousand_check_and_restore_at_once();
     let elapsed = started.elapsed();
-    assert!(elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(10)), "{elapsed:?}");
+    assert!(
+        elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(10)),
+        "{elapsed:?}"
+    );
 }
 
 #[test]
