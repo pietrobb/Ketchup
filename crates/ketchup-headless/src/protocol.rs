@@ -178,7 +178,7 @@ impl From<CamReviewError> for Error {
             CamReviewError::Postprocessing(_) => "cam_postprocessing_rejected",
             CamReviewError::ReviewLimit => "cam_review_limit",
             CamReviewError::InvalidToken => "cam_review_token_invalid",
-            CamReviewError::StaleReview => "stale_state",
+            CamReviewError::StaleReview | CamReviewError::ReplacedFileChanged => "stale_state",
             CamReviewError::SubstitutedEvidence => "cam_review_substituted",
             CamReviewError::ConfirmationRequired => "confirmation_required",
             CamReviewError::InvalidPath => "invalid_path",
@@ -946,14 +946,14 @@ impl Server {
                 let mutation_epoch = self.session.mutation_epoch();
                 let token = string(p, "review_token")?;
                 let path = Path::new(string(p, "path")?);
-                let confirmed = boolean(p, "confirmed", false)?;
                 let cancelled = AtomicBool::new(false);
                 let review = self.cam_reviews.export(
                     &snapshot,
                     mutation_epoch,
                     token,
                     path,
-                    confirmed,
+                    boolean(p, "confirmed", false)?,
+                    None,
                     &cancelled,
                 )?;
                 Ok(json!({"exported":true,"path":path,"review":cam_review_value(&review)}))
@@ -1595,7 +1595,7 @@ mod tests {
     fn perf_a_program_check_ends_soon_after_its_deadline() {
         let (elapsed, total, checked) = check_past_one_deadline();
         assert!(
-            elapsed < total + std::time::Duration::from_secs(1),
+            elapsed < total + ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
             "{elapsed:?} for a deadline of {total:?}: {checked}"
         );
         assert_stopped_at_time_limit(&checked);

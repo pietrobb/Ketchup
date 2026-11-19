@@ -30,14 +30,14 @@ fn tool(harness: &mut Harness<'_, KetchupApp>, command: AppCommand) {
 fn perf_frames_within_budget(what: &str, frames: &[Duration]) {
     let slowest = frames.iter().max().copied().unwrap_or_default();
     assert!(
-        slowest < FRAME_BUDGET,
+        slowest < ketchup_test_env::perf_budget(FRAME_BUDGET),
         "slowest {what} frame {slowest:?}: {frames:?}"
     );
 }
 
 fn perf_release_within_budget(what: &str, release: Duration) {
     assert!(
-        release < RELEASE_BUDGET,
+        release < ketchup_test_env::perf_budget(RELEASE_BUDGET),
         "the {what} release froze the window for {release:?}"
     );
 }
@@ -46,7 +46,7 @@ fn perf_release_within_budget(what: &str, release: Duration) {
 fn perf_wait_for_commit(harness: &mut Harness<'_, KetchupApp>, revision: u64, what: &str) {
     step_until(
         harness,
-        COMMIT_BUDGET,
+        ketchup_test_env::perf_budget(COMMIT_BUDGET),
         &format!("{what} never committed"),
         |app| app.document_revision() != revision,
     );

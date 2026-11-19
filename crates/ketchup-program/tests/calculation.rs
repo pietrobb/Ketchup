@@ -174,7 +174,10 @@ fn a_slovak_calculation_lists_the_stretches_held_and_what_their_braces_take() {
         )),
         "{text}"
     );
-    assert!(text.contains("posúdené nie sú"), "{text}");
+    assert!(
+        text.contains("spojovacích prostriedkov na sily F_d posúdená nie je"),
+        "{text}"
+    );
     assert!(text.contains("<td>Ohyb (rozhoduje)</td>"), "{text}");
 }
 
@@ -199,6 +202,151 @@ fn a_member_left_not_verified_says_so_with_why() {
         ),
         "{html}"
     );
+}
+
+/// og:R1110-PG-402: a deck piece far from the beam takes its share of the
+/// imposed load, which reaches no member (`load_unassigned`, the command line
+/// exits 3), while the beam itself passes. The calculation printed "Prvkov 1,
+/// Vyhovuje 1, Nevyhovuje 0" and nothing of the lost load.
+#[test]
+fn a_lost_load_is_warned_of_and_the_verdict_with_its_exit_code_heads_the_calculation() {
+    let report = report(&format!(
+        "{CZECH_BEAM}box(\"deck far\", (1000, 600, 20), at = (8000, -250, 2200), material = \"OSB\", tags = [\"deck\"])\n"
+    ));
+    assert_eq!(report.statics(), ketchup_program::Statics::NotVerified);
+    assert_eq!(report.exit_code(), 3);
+    let beam = report
+        .design
+        .members
+        .iter()
+        .find(|m| m.part == "beam")
+        .expect("the beam is checked");
+    assert_eq!(beam.status, "pass", "{beam:?}");
+    let lost = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "load_unassigned")
+        .unwrap_or_else(|| panic!("no load_unassigned: {:?}", report.issues));
+
+    let html = document("calculation.star", &report, Language::Slovak);
+    let verdict = html.find("Celkový výsledok").expect("a verdict");
+    let first_member = html.find(". beam (").expect("the beam's section");
+    assert!(verdict < first_member, "{html}");
+    assert!(
+        html.contains("Celkový výsledok: <b>NEOVERENÉ</b> (návratový kód 3)"),
+        "{html}"
+    );
+    let warnings = html
+        .find("<h2>Upozornenia</h2>")
+        .expect("a warnings section");
+    assert!(warnings < first_member, "{html}");
+    assert!(html.contains("load_unassigned"), "{html}");
+    assert!(html.contains(&escape(&lost.message)), "{html}");
+
+    let czech = document("calculation.star", &report, Language::Czech);
+    assert!(
+        czech.contains("Celkový výsledek: <b>NEOVĚŘENO</b> (návratový kód 3)"),
+        "{czech}"
+    );
+    assert!(czech.contains("<h2>Upozornění</h2>"), "{czech}");
+}
+
+/// A calculation without any warning says so and that it passes with code 0.
+#[test]
+fn a_clean_calculation_passes_with_code_zero_and_no_warnings() {
+    let report = report(CZECH_BEAM);
+    assert_eq!(report.exit_code(), 0, "{:?}", report.issues);
+    let html = document("calculation.star", &report, Language::Slovak);
+    assert!(
+        html.contains("Celkový výsledok: <b>VYHOVUJE</b> (návratový kód 0)"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<h2>Upozornenia</h2>\n<p>Žiadne.</p>"),
+        "{html}"
+    );
+}
+
+/// R1119og-PG-802: battens screwed to the beam and to free posts 40 x 40 x
+/// 2 400 touch its top, but the posts are too slender to hold it, so the check
+/// counts no brace and the beam is not verified. The calculation listed the
+/// battens as holding the top edge beside "nothing holds its compressed top".
+#[test]
+fn braces_the_check_dropped_are_not_listed_as_holding_and_held_ones_give_c_and_f_cap() {
+    let mut source = slender_beam(false);
+    for (index, x) in [300, 1200, 2100, 3600, 4500, 5400].iter().enumerate() {
+        source.push_str(&format!(
+            "box(\"post {index}\", (40, 40, 2400), at = ({x}, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"batten {index}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")
+joint(\"batten {index}\", \"beam\", kind = \"screw\")
+joint(\"batten {index}\", \"post {index}\", kind = \"screw\")
+"
+        ));
+    }
+    let report = report(&source);
+    let load = report
+        .loads
+        .members
+        .iter()
+        .find(|m| m.part == "beam")
+        .unwrap();
+    assert!(!load.braced_by.is_empty(), "the battens touch its top");
+    let beam = report
+        .design
+        .members
+        .iter()
+        .find(|m| m.part == "beam")
+        .unwrap();
+    assert_ne!(beam.status, "pass", "{beam:?}");
+    assert!(beam.held_by.is_empty(), "{:?}", beam.held_by);
+    let html = document("calculation.star", &report, Language::Slovak);
+    let text = section(&html, "beam");
+    assert!(!text.contains("horný okraj 325 mm (batten 0)"), "{text}");
+    assert!(
+        text.contains("žiadna časť nedrží okraj prvku do strany"),
+        "{text}"
+    );
+    assert!(
+        text.contains("batten 0") && text.contains("kontrola ich nezapočítala"),
+        "{text}"
+    );
+
+    // The battens on a grounded wall hold it: each with the stiffness C and
+    // the force F_cap of its path to the ground.
+    let report = self::report(&slender_beam(true));
+    let beam = report
+        .design
+        .members
+        .iter()
+        .find(|m| m.part == "beam")
+        .unwrap();
+    assert_eq!(beam.held_by.len(), 6, "{:?}", beam.held_by);
+    let html = document("calculation.star", &report, Language::Slovak);
+    let text = section(&html, "beam");
+    let anchorage = beam.held_by[0]
+        .anchorage
+        .as_ref()
+        .expect("a batten on the wall has a path to the ground");
+    assert!(
+        text.contains(&format!(
+            "<td>batten 0</td><td>horný</td><td class=\"n\">325 mm</td><td class=\"n\">{} N/mm</td>",
+            format!("{:.1}", anchorage.stiffness_n_mm).replace('.', ",")
+        )),
+        "{text}"
+    );
+    assert!(text.contains("F_cap"), "{text}");
+    assert!(
+        !text.contains("Výstuhy, ich ukotvenie a spojovacie"),
+        "{text}"
+    );
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[test]

@@ -247,36 +247,37 @@ impl KetchupApp {
         precondition: &ExportBundlePrecondition,
         evidence: &[u8],
     ) -> Result<(), ExportError> {
-        if self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion {
-            // Nobody in the window asked for this file, so nobody confirms
-            // replacing one; the client reads the loss report itself. A release
-            // to manufacturing still waits for the user's confirmation.
+        let client_lossy =
+            self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion;
+        if client_lossy {
+            // A client writes a new file without a prompt and reads the loss report
+            // itself (owner decision R1). It replaces an existing file or report only
+            // with overwrite: without a prompt the pair Kečup exported there and nobody
+            // changed since, anything else once the user agrees in the window.
             let exists =
                 precondition.primary_sha256.is_some() || precondition.report_sha256.is_some();
-            return if !exists {
-                Ok(())
-            } else if !self.live.client_overwrite {
-                Err(ExportError::Destination {
-                    requirement: "a new file name; a client export replaces an existing file or loss report only with overwrite, and only one Kečup wrote",
-                })
-            } else if precondition.written_by_ketchup(report_path) {
-                Ok(())
-            } else {
-                Err(ExportError::Destination {
-                    requirement: "a new file name; overwrite replaces only a file Kečup exported there, unchanged since, whose loss report beside it names it",
-                })
-            };
+            if !exists
+                || (self.live.client_overwrite && precondition.written_by_ketchup(report_path))
+            {
+                return Ok(());
+            }
+            if !self.live.client_overwrite {
+                return Err(ExportError::Destination {
+                    requirement: "a new file name, or overwrite: true to ask the user in the window to replace the existing file or loss report",
+                });
+            }
+        } else {
+            let title = self.catalog.text(consent.title_key);
+            let risk = self.catalog.text(consent.risk_key);
+            self.authorize_path_side_effect(
+                consent.class,
+                consent.operation,
+                &title,
+                &risk,
+                primary_path,
+                evidence,
+            )?;
         }
-        let title = self.catalog.text(consent.title_key);
-        let risk = self.catalog.text(consent.risk_key);
-        self.authorize_path_side_effect(
-            consent.class,
-            consent.operation,
-            &title,
-            &risk,
-            primary_path,
-            evidence,
-        )?;
         let replaced = [
             (primary_path, &precondition.primary_sha256),
             (report_path, &precondition.report_sha256),
@@ -342,7 +343,7 @@ impl KetchupApp {
 /// The files one export wrote: the chosen file and what was written beside it
 /// (review 2026-10-17 MCP-1, §5.8). A client is told these paths instead of
 /// guessing the names of the reports.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Written {
     pub(crate) primary: PathBuf,
     /// What the conversion lost (`x.step.loss.txt`).
@@ -357,6 +358,8 @@ pub(crate) struct Written {
     /// What a machine file leaves unmade, as `<part>: <element>`: the pin
     /// holes in a bought part joined to a made one (review 2026-11-09 MF-305).
     pub(crate) lost: Vec<String>,
+    /// What the exact simulation of a CAM program found.
+    pub(crate) machining: Option<crate::app::Machining>,
 }
 
 impl Written {

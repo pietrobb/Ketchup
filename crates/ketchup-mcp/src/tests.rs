@@ -738,7 +738,7 @@ fn an_attach_names_the_ai_and_asks_an_older_window_again_without_the_name() {
             // An older window refuses a field it does not know by hanging up.
             if request.get("client").is_none() {
                 let reply = json!({"version": 1, "nonce": request["nonce"],
-                                   "instance_id": INSTANCE, "status": "declined",
+                                   "instance_id": INSTANCE, "status": "busy",
                                    "proof": ""});
                 stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
             }
