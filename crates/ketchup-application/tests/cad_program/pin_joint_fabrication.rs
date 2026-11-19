@@ -270,6 +270,15 @@ fn every_shop_format_names_the_dowel_holes_of_a_bought_part_as_lost() {
         let mpr = projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap();
         let mpr = String::from_utf8(mpr).unwrap();
         assert_eq!(mpr.matches("\\BohrHoriz\\").count(), PINS, "{mpr}");
+        // Review 2026-11-10 MF-401: the workshop package lists the same loss.
+        let package = projection.workshop_package(&snapshot, Default::default());
+        let woodwop_losses = package
+            .losses
+            .iter()
+            .filter(|lost| lost.output == "woodWOP")
+            .map(|lost| format!("{}: {}", lost.part, lost.element))
+            .collect::<Vec<_>>();
+        assert_eq!(woodwop_losses, expected, "{:?}", package.losses);
         let job = projection
             .production_job(&snapshot, &[])
             .expect("the job lays the made part and names the bought part's holes");

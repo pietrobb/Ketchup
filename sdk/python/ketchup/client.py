@@ -523,16 +523,19 @@ class Document:
         }})
 
     def move_surface_control_point(self, definition_id, name, target_feature_id, u_index, v_index,
-                                   offset_mm=(0.0, 0.0, 0.0), *, weight=None, keep=()):
+                                   offset_mm=(0.0, 0.0, 0.0), *, from_mm, weight=None, keep=()):
         """Move one control point of a single-face surface's B-spline form.
 
+        `from_mm` is where the point lies now; a point of these indices elsewhere,
+        also after an earlier edit changes the net, is refused with where it lies.
         `keep` lists (surface_feature_id, continuity) seams that must still hold
         "position", "tangent" or "curvature" continuity, or the move is refused.
         The earlier surface stays.
         """
         source = {
             "type": "control_point", "target_feature_id": target_feature_id,
-            "u_index": u_index, "v_index": v_index, "offset_mm": list(offset_mm),
+            "u_index": u_index, "v_index": v_index, "from_mm": list(from_mm),
+            "offset_mm": list(offset_mm),
         }
         if weight is not None:
             source["weight"] = weight
@@ -612,9 +615,17 @@ class Document:
                   feed_mm_per_min, plunge_mm_per_min, work_offset="g54",
                   origin_mm=(0, 0, 0), x_axis=(1, 0, 0), y_axis=(0, 1, 0),
                   safe_height_mm, maximum_stepdown_mm, stepover_ratio,
-                  radial_allowance_mm=0, axial_allowance_mm=0):
-        """Commit one canonical, exact-target-bound CAM setup as one Undo step."""
+                  radial_allowance_mm=0, axial_allowance_mm=0,
+                  drill_point_angle_deg=None):
+        """Commit one canonical, exact-target-bound CAM setup as one Undo step.
+
+        drill_point_angle_deg is a drill's included point angle (default 118, 180
+        flat-bottom); only a drill has one.
+        """
+        point = ({} if drill_point_angle_deg is None
+                 else {"drill_point_angle_deg": drill_point_angle_deg})
         return self.apply([{
+            **point,
             "operation": "upsert_cam_plan", "plan_id": plan_id, "name": name,
             "target_definition_id": target_definition_id,
             "target_feature_id": target_feature_id,

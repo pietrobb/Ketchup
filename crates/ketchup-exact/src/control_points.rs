@@ -1,11 +1,14 @@
 use super::*;
 
-/// One control point of a surface's B-spline form to move by `offset_mm`
-/// and, with `weight`, to give a new (positive) weight. Indices count from 0.
+/// One control point of a surface's B-spline form, which lies at `from_mm`,
+/// to move by `offset_mm` and, with `weight`, to give a new (positive) weight.
+/// Indices count from 0. A point of these indices elsewhere is not moved: the
+/// control net changed since the move was asked for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfaceControlPoint {
     pub u_index: u32,
     pub v_index: u32,
+    pub from_mm: [f64; 3],
     pub offset_mm: [f64; 3],
     pub weight: Option<f64>,
 }
@@ -105,12 +108,13 @@ impl ExactBackend {
         let SurfaceControlPoint {
             u_index,
             v_index,
+            from_mm,
             offset_mm,
             weight,
         } = point;
         let mut input = format!(
-            "{operation}:{}:{u_index}:{v_index}:{:?}:{:?}",
-            surface.result_fingerprint, offset_mm, weight
+            "{operation}:{}:{u_index}:{v_index}:{:?}:{:?}:{:?}",
+            surface.result_fingerprint, from_mm, offset_mm, weight
         );
         for (neighbour, continuity) in keep {
             input.push_str(&format!(
@@ -144,6 +148,53 @@ impl ExactBackend {
             return Err(refuse(
                 "Moving a control point needs an offset or a weight".to_owned(),
             ));
+        }
+        if from_mm
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
+        {
+            return Err(refuse(
+                "A control point lies at a finite position within the model".to_owned(),
+            ));
+        }
+        // An earlier edit that changes the net, such as an approximation with more
+        // points, would otherwise move another point unsaid (review 2026-11-19 og
+        // EXA-800).
+        let net = self.surface_control_net(surface)?;
+        let at = (u_index < net.u_count && v_index < net.v_count)
+            .then(|| u64::from(u_index) * u64::from(net.v_count) + u64::from(v_index))
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| net.points_mm.get(index).copied());
+        let shown = |point: [f64; 3]| format!("({}, {}, {}) mm", point[0], point[1], point[2]);
+        match at {
+            None => {
+                return Err(refuse(format!(
+                    "Control point ({u_index}, {v_index}), expected at {}, is outside the \
+                     surface's {} x {} control net. If an earlier edit changed the net, move \
+                     the point of the net again",
+                    shown(from_mm),
+                    net.u_count,
+                    net.v_count
+                )));
+            }
+            Some(at)
+                if (0..3)
+                    .map(|axis| (at[axis] - from_mm[axis]).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+                    > DEFAULT_LINEAR_TOLERANCE_MM =>
+            {
+                return Err(refuse(format!(
+                    "Control point ({u_index}, {v_index}) lies at {}, not at {} where the move \
+                     expects it, in the surface's {} x {} control net. If an earlier edit \
+                     changed the net, move the point of the net again",
+                    shown(at),
+                    shown(from_mm),
+                    net.u_count,
+                    net.v_count
+                )));
+            }
+            Some(_) => {}
         }
         let native = surface.owned_native("Control point surface", operation, &input)?;
         for (index, (neighbour, continuity)) in keep.iter().enumerate() {

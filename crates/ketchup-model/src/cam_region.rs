@@ -130,6 +130,9 @@ pub struct CamHole {
     pub top_z_mm: f64,
     /// Setup Z of the far rim: the floor of a blind hole, the exit of a through one.
     pub bottom_z_mm: f64,
+    /// Whether the far rim is a hole in a flat face the drill comes out through,
+    /// rather than the edge of the hole's own floor.
+    pub through: bool,
 }
 
 impl CamHole {
@@ -199,35 +202,54 @@ impl CamHole {
         }
         // Material lies outside a hole's wall, so its upper rim is a hole in
         // the flat face around it; a boss's upper rim bounds its own cap.
-        let around = upper
-            .2
-            .adjacent_face_ordinals
-            .iter()
-            .find(|ordinal| **ordinal != face_ordinal)
-            .ok_or_else(refused)?;
         // A rim on anything but a machinable flat face is not a drillable hole.
-        let region = match CamRegion2d::from_planar_face(package, *around, setup) {
-            Ok(region) => region,
-            Err(CamPlannerError::UnsupportedRegion) => return Err(refused()),
-            Err(other) => return Err(other),
-        };
-        let rim_is_island = region.islands.iter().any(|island| {
-            (distance(island.start_mm, center) - upper.1).abs() <= LOOP_TOLERANCE_MM
-                && island.segments.iter().all(|segment| {
-                    matches!(segment, CamPathSegment2d::Arc { center_mm, .. }
-                        if distance(*center_mm, center) <= LOOP_TOLERANCE_MM)
-                })
-        });
-        if !rim_is_island {
+        if !rim_is_island_of_flat_face(package, face_ordinal, upper.2, center, upper.1, setup)? {
             return Err(refused());
         }
+        // Likewise a far rim that is a hole in the flat face below is the exit of a
+        // through hole; the edge of a flat or pointed floor is not.
+        let through =
+            rim_is_island_of_flat_face(package, face_ordinal, lower.2, center, lower.1, setup)?;
         Ok(Self {
             center_mm: center,
             radius_mm: upper.1,
             top_z_mm: upper.0[2],
             bottom_z_mm: lower.0[2],
+            through,
         })
     }
+}
+
+/// Whether `rim`, a circle of `radius` about `center` bounding the hole wall
+/// `wall_ordinal`, is an island of the flat face on its other side. A rim on a face
+/// that is not flat and square to the setup is no island.
+fn rim_is_island_of_flat_face(
+    package: &ExactBRepGraphPackage,
+    wall_ordinal: u32,
+    rim: &ExactBRepGraphEdgeEvidence,
+    center: Point,
+    radius: f64,
+    setup: &CamSetup,
+) -> Result<bool, CamPlannerError> {
+    let Some(around) = rim
+        .adjacent_face_ordinals
+        .iter()
+        .find(|ordinal| **ordinal != wall_ordinal)
+    else {
+        return Ok(false);
+    };
+    let region = match CamRegion2d::from_planar_face(package, *around, setup) {
+        Ok(region) => region,
+        Err(CamPlannerError::UnsupportedRegion) => return Ok(false),
+        Err(other) => return Err(other),
+    };
+    Ok(region.islands.iter().any(|island| {
+        (distance(island.start_mm, center) - radius).abs() <= LOOP_TOLERANCE_MM
+            && island.segments.iter().all(|segment| {
+                matches!(segment, CamPathSegment2d::Arc { center_mm, .. }
+                    if distance(*center_mm, center) <= LOOP_TOLERANCE_MM)
+            })
+    }))
 }
 
 impl CamOperation {
@@ -295,7 +317,7 @@ impl CamOperation {
     }
 
     /// Drills `hole` from its rim to its far rim with `tool`, which must be a
-    /// drill of the hole's diameter.
+    /// drill of the hole's diameter; through the far rim if the hole is through.
     pub fn drill_hole(id: u64, hole: &CamHole, tool: &CamTool) -> Result<Self, CamPlannerError> {
         if tool.kind != CamToolKind::Drill
             || (tool.diameter_mm * 0.5 - hole.radius_mm).abs() > LOOP_TOLERANCE_MM
@@ -307,6 +329,7 @@ impl CamOperation {
             points_mm: vec![hole.center_mm],
             top_z_mm: hole.top_z_mm,
             bottom_z_mm: hole.bottom_z_mm,
+            through: hole.through,
         })
     }
 }

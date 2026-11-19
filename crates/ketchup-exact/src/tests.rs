@@ -1,6 +1,8 @@
 use super::*;
 use crate::naming::NamedSegment;
 
+mod tool_tips;
+
 fn assert_close(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() <= 1.0e-6,
@@ -19,6 +21,7 @@ fn axial_tool_sweeps_are_continuous_exact_solids_for_line_arc_and_plunge() {
             },
             radius_mm: 2.0,
             axial_length_mm: 5.0,
+            tip: AxialToolTip::Flat,
         })
         .unwrap();
     assert_eq!(line.body.topology.solid_count, 1);
@@ -37,6 +40,7 @@ fn axial_tool_sweeps_are_continuous_exact_solids_for_line_arc_and_plunge() {
             },
             radius_mm: 2.0,
             axial_length_mm: 10.0,
+            tip: AxialToolTip::Flat,
         })
         .unwrap();
     assert_close(
@@ -56,6 +60,7 @@ fn axial_tool_sweeps_are_continuous_exact_solids_for_line_arc_and_plunge() {
             },
             radius_mm: 2.0,
             axial_length_mm: 5.0,
+            tip: AxialToolTip::Flat,
         })
         .unwrap();
     assert_eq!(arc.body.topology.solid_count, 1);
@@ -72,6 +77,7 @@ fn axial_tool_sweeps_are_continuous_exact_solids_for_line_arc_and_plunge() {
                 },
                 radius_mm: 1.0,
                 axial_length_mm: 5.0,
+                tip: AxialToolTip::Flat,
             })
             .unwrap_err()
             .code,

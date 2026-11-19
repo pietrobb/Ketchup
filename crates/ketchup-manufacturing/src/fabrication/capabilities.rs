@@ -239,6 +239,7 @@ impl GeneralFabricationProjection {
         {
             losses.extend(self.admit_row(snapshot, format, row, &pin_holes)?);
         }
+        losses.extend(self.unmade_pin_holes(snapshot, format));
         Ok(losses)
     }
 
@@ -331,14 +332,15 @@ impl GeneralFabricationProjection {
                 }
             }
         }
-        losses.extend(self.unmade_pin_holes(snapshot, format));
         Ok(losses)
     }
 
     /// The pin joints that join a part `format` writes to one the shop does
     /// not make and `format` does not write: the made side is drilled, the
-    /// other part's holes are lost (review 2026-11-09 MF-305).
-    fn unmade_pin_holes(&self, snapshot: &Snapshot, format: ShopFormat) -> Vec<ShopLoss> {
+    /// other part's holes are lost (review 2026-11-09 MF-305). Of the whole
+    /// model, so once per export, not once per part.
+    #[must_use]
+    pub fn unmade_pin_holes(&self, snapshot: &Snapshot, format: ShopFormat) -> Vec<ShopLoss> {
         let in_row = |path: &InstancePath, kind: &dyn Fn(GeneralBomItemKind) -> bool| {
             self.bom
                 .rows

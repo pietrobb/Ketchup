@@ -28,7 +28,8 @@
 //! (`FeatureKind::Loft::rail`); 117 a boundary surface through a network of inner
 //! curves (`SurfaceBodySpec::Boundary::inner`); 118 a blend between two surfaces
 //! (`SurfaceBodySpec::Blend`); 119 a moved control point of a surface
-//! (`SurfaceBodySpec::ControlPoint`). Older files have no generated ownership and need no
+//! (`SurfaceBodySpec::ControlPoint`); 120 the point angle of a CAM plan's drill
+//! (`CamTool::point_angle_deg`). Older files have no generated ownership and need no
 //! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
@@ -46,7 +47,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 119;
+pub(super) const SNAPSHOT_FORMAT: u16 = 120;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -55,7 +56,8 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 119;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 119 with a moved control point of a surface, which a Kečup that writes 118
+/// 120 with a drill point angle in a CAM plan, which a Kečup that writes 119
+/// would drop, else 119 with a moved control point of a surface, which a Kečup that writes 118
 /// does not know, else 118 with a blend between two surfaces, which a Kečup
 /// that writes 117 does not know, else 117 with a boundary surface through inner curves, which a
 /// Kečup that writes 116 does not know, else 116 with a Loft stretched to a rail, which a Kečup
@@ -105,8 +107,16 @@ fn format_of(product: &ProductModel) -> u16 {
             matches!(feature.kind(), crate::document::FeatureKind::SurfaceBody(spec) if is(spec))
         })
     };
-    if surface_body(|spec| matches!(spec, crate::document::SurfaceBodySpec::ControlPoint { .. })) {
+    if product
+        .cam_plans
+        .values()
+        .any(|plan| plan.tool().point_angle_deg.is_some())
+    {
         SNAPSHOT_FORMAT
+    } else if surface_body(|spec| {
+        matches!(spec, crate::document::SurfaceBodySpec::ControlPoint { .. })
+    }) {
+        119
     } else if surface_body(|spec| matches!(spec, crate::document::SurfaceBodySpec::Blend { .. })) {
         118
     } else if product.features.values().any(|feature| {

@@ -1228,14 +1228,16 @@ fn validate_unlofted_surface_body(
         }
         SurfaceBodySpec::ControlPoint {
             target,
+            from_mm,
             offset_mm,
             weight,
             keep,
             ..
         } => {
             let mut kept = BTreeSet::new();
-            (offset_mm
+            (from_mm
                 .iter()
+                .chain(offset_mm)
                 .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
                 && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
                 && (weight.is_some() || offset_mm.iter().any(|value| *value != 0.0))

@@ -29,6 +29,9 @@ enum CamOperationInput {
         points_mm: Vec<[f64; 2]>,
         top_z_mm: f64,
         bottom_z_mm: f64,
+        /// Drill on past `bottom_z_mm`, the hole's exit, until the full diameter is through.
+        #[serde(default)]
+        through: bool,
     },
     FacePocket {
         id: u64,
@@ -143,11 +146,13 @@ impl From<CamOperationInput> for CamOperation {
                 points_mm,
                 top_z_mm,
                 bottom_z_mm,
+                through,
             } => Self::Drill {
                 id,
                 points_mm,
                 top_z_mm,
                 bottom_z_mm,
+                through,
             },
             CamOperationInput::FacePocket { id, face_ordinal } => {
                 Self::FacePocket { id, face_ordinal }
