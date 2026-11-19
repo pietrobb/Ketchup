@@ -621,8 +621,9 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
         "G1 ",
         "G2 ",
         "G3 ",
-        ";PLUNGE",
-        ";RETRACT",
+        "G0 G43 H1 Z",
+        "(PLUNGE)",
+        "(RETRACT)",
         "M5",
         "M30",
     ] {

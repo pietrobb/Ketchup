@@ -5,7 +5,8 @@
     "name": "ISO 6983 metric G-code, Ketchup layout",
     "sources": [
       "ISO 6983-1:2009 word-address format: G0/G1/G2/G3 with X Y Z, incremental I J arc centres, F feed, S speed, T tool with M6, M3/M5 spindle, M30 end, G21 millimetres, G90 absolute, G17 XY plane, G54-G59 work offsets.",
-      "The Ketchup records (plan, toolpath and simulation digests, feeds, safe height) are ';' comments, which the controller must accept; use a controller dialect when it does not."
+      "The program first cancels cutter radius and tool length compensation and canned cycles and sets feed per minute (G40 G49 G80 G94), then applies the length of the tool it changes to with G43 H on the rapid to the safe Z (R1119og-MF-801), so a controller measuring Z from the spindle nose keeps the tip at the programmed Z. The first move across starts only at the safe Z (MF-804).",
+      "The Ketchup records (plan, toolpath and simulation digests, feeds, safe height) are comments in parentheses, which ISO 6983 controllers skip; a ';' comment ends the block on some controllers."
     ],
     "decimals": 6,
     "decimal_point": "when_fractional",
@@ -15,30 +16,30 @@
       "%"
     ],
     "header": [
-      ";KETCHUP_CAM_POSTPROCESSOR_V1",
-      ";PLAN_DIGEST={plan_digest}",
-      ";TOOLPATH_DIGEST={toolpath_digest}",
-      ";SIMULATION_FINGERPRINT={simulation_fingerprint}",
-      "G21",
-      "G90",
-      "G17",
+      "(KETCHUP CAM POSTPROCESSOR V1)",
+      "(PLAN {plan_digest})",
+      "(TOOLPATH {toolpath_digest})",
+      "(SIMULATION {simulation_fingerprint})",
+      "(CUTTING FEED {cutting_feed} MM/MIN)",
+      "(PLUNGE FEED {plunge_feed} MM/MIN)",
+      "(SAFE Z {safe_z})",
+      "G21 G17 G40 G49 G80 G90 G94",
       "{work_offset}",
       "T{tool} M6",
       "S{spindle_rpm} M3",
-      ";CUTTING_FEED_MM_PER_MIN={cutting_feed}",
-      ";PLUNGE_FEED_MM_PER_MIN={plunge_feed}",
-      ";SAFE_RETRACT_Z_MM={safe_z}"
+      "G0 G43 H{tool} Z{safe_z}"
     ],
     "motions": {
-      "rapid": "G0 X{x} Y{y} Z{z} ;RAPID",
-      "retract": "G0 X{x} Y{y} Z{z} ;RETRACT",
-      "plunge": "G1 X{x} Y{y} Z{z} F{feed} ;PLUNGE",
-      "cut": "G1 X{x} Y{y} Z{z} F{feed} ;CUT",
-      "arc_clockwise": "G2 X{x} Y{y} Z{z} I{i} J{j} F{feed} ;CUT_ARC",
-      "arc_counterclockwise": "G3 X{x} Y{y} Z{z} I{i} J{j} F{feed} ;CUT_ARC"
+      "rapid": "G0 X{x} Y{y} Z{z} (RAPID)",
+      "retract": "G0 X{x} Y{y} Z{z} (RETRACT)",
+      "plunge": "G1 X{x} Y{y} Z{z} F{feed} (PLUNGE)",
+      "cut": "G1 X{x} Y{y} Z{z} F{feed} (CUT)",
+      "arc_clockwise": "G2 X{x} Y{y} Z{z} I{i} J{j} F{feed} (CUT ARC)",
+      "arc_counterclockwise": "G3 X{x} Y{y} Z{z} I{i} J{j} F{feed} (CUT ARC)"
     },
     "footer": [
       "M5",
+      "G49",
       "M30"
     ],
     "end": [
@@ -73,11 +74,11 @@
       "(SIMULATION {simulation_fingerprint})",
       "(CUTTING FEED {cutting_feed} MM/MIN)",
       "(PLUNGE FEED {plunge_feed} MM/MIN)",
-      "G21 G17 G40 G49 G80 G90",
+      "G21 G17 G40 G49 G80 G90 G94",
       "{work_offset}",
       "T{tool} M06",
       "S{spindle_rpm} M03",
-      "G43 H{tool} Z{safe_z}"
+      "G00 G43 H{tool} Z{safe_z}"
     ],
     "motions": {
       "rapid": "G00 X{x} Y{y} Z{z} (RAPID)",
@@ -122,7 +123,8 @@
       "G21 G17 G40 G49 G80 G90 G94",
       "{work_offset}",
       "S{spindle_rpm} M3",
-      "G4 P3"
+      "G4 P3",
+      "G0 Z{safe_z}"
     ],
     "motions": {
       "rapid": "G0 X{x} Y{y} Z{z} (RAPID)",
@@ -164,8 +166,8 @@
       "G21 G17 G40 G49 G80 G90 G94",
       "{work_offset}",
       "T{tool} M6",
-      "G43 H{tool}",
-      "S{spindle_rpm} M3"
+      "S{spindle_rpm} M3",
+      "G0 G43 H{tool} Z{safe_z}"
     ],
     "motions": {
       "rapid": "G0 X{x} Y{y} Z{z} (RAPID)",
