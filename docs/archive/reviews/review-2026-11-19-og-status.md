@@ -11,17 +11,17 @@ They overrule every older finding they touch.
 
 | Decision | Status |
 |---|---|
-| R1: a connected AI creates a new file anywhere the system allows without asking; only overwriting asks; only autostart and system folders are refused; a write log in the Connect tab replaces the questions; allowed folders are removed | Open (point 6) |
-| R2: the last AI to connect wins without asking; the status line and the Connect tab say who connected | Open (point 7) |
+| R1: a connected AI creates a new file anywhere the system allows without asking; only overwriting asks; only autostart and system folders are refused; a write log in the Connect tab replaces the questions; allowed folders are removed | Fixed (point 6) |
+| R2: the last AI to connect wins without asking; the status line and the Connect tab say who connected | Fixed (point 7) |
 | R3: rules for an AI on one computer are not tightened unless the user's work is at risk; statics, FEA and CAM always say what a check does not cover | Applies to every point below |
 
 ## 1. Numbers and programs people trust
 
 | Point | Status |
 |---|---|
-| 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Open |
-| 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Open |
-| 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Open |
+| 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Fixed in #127: every dialect writes the safe header (G40 G49 G80 G94) and G43 H with the tool's length offset before the first cut |
+| 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Fixed in #128: a bonded joint ties only the part where the faces overlap (node to node or node to face), a rigid spider only for an explicit bolt, faces that do not touch are refused; two 1000×50×50 layers bonded by a face bend 0.342 mm at the end |
+| 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Fixed in #129: the anchorage path starts at the member (EA/L of the brace, buckling over its length, the stiffness of both connections) and a diaphragm is checked for every anchor |
 | 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Open |
 | 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Open |
 
@@ -29,16 +29,16 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 6. File writes by R1 (closes og:R1110-SEC-400, R1119og-SEC-800) | Open |
-| 7. Connection by R2 (closes R1108-MCP-240, R1109-MCP-305, R1119og-SEC-804) | Open |
+| 6. File writes by R1 (closes og:R1110-SEC-400, R1119og-SEC-800) | Fixed: allowed folders are gone; a connected AI writes a new file anywhere the user may write, unasked; only the system drive's root, system folders and autostart folders are refused, with the reason; replacing a file the AI did not write, or one changed since, asks in the window on every write path (export, drawings, program variants, CAM), returns a decline code when refused and is not written if the file changes while asking; the Connect tab lists every AI-written file with its path, time and size |
+| 7. Connection by R2 (closes R1108-MCP-240, R1109-MCP-305, R1119og-SEC-804) | Fixed: the AI that connects last takes the window over without a question; the status line and the Connect tab name the new AI and the one it replaced |
 
 ## 3. Release and data
 
 | Point | Status |
 |---|---|
-| 8. og:R1110-REL-404, R1119og-DOC-801: an older version drops the north arrow, revisions and storeys | Fixed in pull request `fix/og-release-data`: sheet language, ±0,000 level and altitude, storeys, north and revisions save as container schema 3, which every released reader refuses as newer; `release_reads.py` also checks persisted struct fields |
-| 9. R1119og-REL-800: the structural calculation command is not in the packages | Fixed in pull request `fix/og-release-data`: the Windows, Linux and macOS packages carry `ketchup-program`, and each package build checks it writes a calculation |
-| 10. R1119og-DOC-802: CHANGELOG 0.3.3 lists three entries not in the tag | Fixed in pull request `fix/og-release-data`: the three entries moved to Unreleased |
+| 8. og:R1110-REL-404, R1119og-DOC-801: an older version drops the north arrow, revisions and storeys | Fixed in #133: a document with sheet language, ±0,000 level or altitude, storey table, north or revisions saves as container schema 3, which released versions refuse as newer instead of dropping the settings; `scripts/release_reads.py` also checks persisted struct fields |
+| 9. R1119og-REL-800: the structural calculation command is not in the packages | Fixed in #133: the Windows installer and portable archive, `Ketchup.app` and the Linux archive carry `ketchup-program`, and each package build checks it writes a calculation |
+| 10. R1119og-DOC-802: CHANGELOG 0.3.3 lists three entries not in the tag | Fixed in #133: the three entries moved to Unreleased |
 
 ## 4. CI
 

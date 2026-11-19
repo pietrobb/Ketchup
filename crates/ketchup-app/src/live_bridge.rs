@@ -117,7 +117,8 @@ mod validator_catalog;
 pub(crate) mod variant_window;
 pub(crate) mod window_edit;
 pub(crate) mod window_request;
-mod write_targets;
+pub(crate) mod write_log;
+mod write_policy;
 /// Incoming frames: large enough for whole programs, bounded so a bogus
 /// length header cannot make the window allocate gigabytes.
 pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -317,13 +318,15 @@ pub enum Request {
         expected: Stamp,
         name: String,
     },
-    /// Writes the cut list and the takeoff of every variant to new files,
-    /// evaluated apart from the document.
+    /// Writes the cut list and the takeoff of every variant, evaluated apart
+    /// from the document; `replace` asks the user to replace a file there.
     ExportProgramVariants {
         expected: Stamp,
         path: String,
         #[serde(default)]
         decimal: CsvDecimal,
+        #[serde(default)]
+        replace: bool,
     },
     ProgramReport {
         expected: Stamp,
@@ -516,7 +519,7 @@ pub enum Request {
         distance_mm: Option<f64>,
     },
     /// Writes the drawing with its changes to the DXF file `path`, read again from
-    /// `source` or the file it was imported from in this window.
+    /// `source` or the file it was imported from; `replace` asks to replace a file.
     DrawingExport {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -525,6 +528,8 @@ pub enum Request {
         path: String,
         #[serde(default)]
         source: Option<String>,
+        #[serde(default)]
+        replace: bool,
     },
     /// Pulls the closed area of the drawing around `at_mm`, or its closed object
     /// `object_id`, up `height_mm` into a solid, as the window's Pull area tool does.
@@ -1077,7 +1082,7 @@ fn program_edit_result(
             "bom": {"total_parts": report.bom.total_parts, "cut_list_groups": report.bom.cut_list.len(),
                 "hardware_items": report.bom.hardware.len(),
                 "machining_operations": report.bom.machining.iter().map(|part| part.operations.len()).sum::<usize>()},
-            "statics": statics_summary(report),
+            "statics": program_validation_summary::statics_summary(report),
             "details": "program action=report with expected=after, section=cut_list/hardware/bar_schedule/cutting/quote/cnc_dxf/machining/relations/issues/material_takeoff/joints/loads/members; follow next_offset until null",
             "params": params,
             "params_total": report.params.len(),
@@ -1086,26 +1091,6 @@ fn program_edit_result(
         },
         "geometry_evaluated": exact.as_ref().is_some_and(|exact| exact["state"] == "verified"),
         "validation": program_validation_summary::summary(report, model, exact.as_ref()), "exact_collisions": exact,
-    })
-}
-
-/// Member check counts and bearing joints by status; null for a program without them.
-fn statics_summary(report: &ketchup_program::Report) -> Value {
-    if report.design.is_empty() && report.joints.is_empty() {
-        return Value::Null;
-    }
-    let joints_not_verified = report
-        .joints
-        .iter()
-        .filter(|joint| joint.status == "not_verified")
-        .count();
-    json!({
-        "members": (!report.design.is_empty()).then(|| report.design.summary()),
-        "bearing_joints": report.joints.len(),
-        "bearing_joints_not_verified": joints_not_verified,
-        "unassigned_loads": &report.loads.unassigned,
-        "loads_considered": "gravity_only",
-        "not_checked": ketchup_program::member_check::NOT_CHECKED,
     })
 }
 
@@ -1569,10 +1554,9 @@ impl KetchupApp {
                 bridge.request_image(self, context, image, queued);
                 continue;
             }
-            if let Some(refused) = write_targets::refusal(self, &queued.request) {
-                LiveBridge::reply(self, queued.id, &queued.reply, Err(refused));
+            let Some(queued) = write_policy::admitted(self, queued, context) else {
                 continue;
-            }
+            };
             let Queued {
                 session,
                 id,
@@ -3075,7 +3059,7 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         take_error_details();
         Self::require_request_authority(cancelled)?;
-        if let Some(refused) = write_targets::refusal(app, &request) {
+        if let Some(refused) = write_policy::refusal(&request) {
             return Err(refused);
         }
         match &request {

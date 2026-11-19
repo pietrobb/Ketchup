@@ -83,6 +83,28 @@ impl CamWindowOperation {
     }
 }
 
+/// What the exact simulation of a written program found, told to the client that asked for
+/// it in place of the window's release prompt, with what the simulation does not check
+/// (owner decisions R1 and R3).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Machining {
+    pub(crate) dialect: String,
+    pub(crate) removed_stock_mm3: f64,
+    pub(crate) residual_stock_mm3: f64,
+    pub(crate) gouge_mm3: f64,
+}
+
+impl Machining {
+    /// What the simulation of the stock, the plan's fixtures, the cutter and its holder
+    /// leaves to the user.
+    pub(crate) const NOT_CHECKED: [&'static str; 4] = [
+        "the machine itself: travel limits, spindle head, table and clamps not declared as fixtures of the plan",
+        "cutting forces, tool deflection or breakage, and whether the feeds and speeds suit the tool and material",
+        "the tool length and work offset values set on the controller; the program only calls them",
+        "how the controller runs the program beyond the dialect's codes; run it in the controller's simulator or dry first",
+    ];
+}
+
 /// The library's controller dialects as (id, name), in library order.
 pub(crate) fn cam_dialect_choices() -> Result<Vec<(String, String)>, CamGCodeDialectError> {
     Ok(CamGCodeDialect::library()?
@@ -102,8 +124,8 @@ pub(crate) fn cam_dialect_name(dialect: &CamPostprocessorDialect) -> String {
 impl KetchupApp {
     /// Writes the program of the document's first CAM plan running `operations`, or facing
     /// its stock when there are none, for `dialect` to the new file `path`. The program is
-    /// simulated exactly first, stopped when `cancelled` is set; the user confirms its release
-    /// knowing the controller and the result.
+    /// simulated exactly first, stopped when `cancelled` is set. The user confirms its release
+    /// knowing the controller and the result; a client is told them in the reply instead.
     pub(crate) fn export_current_cam_program_to(
         &mut self,
         path: &Path,
@@ -126,10 +148,18 @@ impl KetchupApp {
         let new_file = || ExportError::Destination {
             requirement: "a new file in an existing folder",
         };
-        // Refused before the simulation and the prompt: a program never replaces a file.
-        if path.exists() {
-            return Err(new_file());
-        }
+        // Refused before the simulation and the prompt: a program replaces a file only for a
+        // client that asked to with overwrite, and only once the user agrees in the window.
+        let replaced = if path.exists() {
+            if self.live.client_export.is_none() || !self.live.client_overwrite {
+                return Err(ExportError::Destination {
+                    requirement: "a new file in an existing folder; a client's program replaces an existing file only with overwrite and once the user agrees",
+                });
+            }
+            Some(export_target_sha256(path)?.ok_or_else(new_file)?)
+        } else {
+            None
+        };
         let snapshot = self.document.current();
         let mutation_epoch = self.document.mutation_epoch();
         let plan = snapshot
@@ -194,6 +224,21 @@ impl KetchupApp {
             path,
             review.content_digest.as_bytes(),
         )?;
+        if replaced.is_some() {
+            let title = self.catalog.text("dialog-export-overwrite-title");
+            let risk = self.catalog.text("dialog-export-overwrite-risk");
+            self.authorize_path_side_effect(
+                HighRiskClass::Overwrite,
+                "overwrite-cam-nc-program",
+                &title,
+                &risk,
+                path,
+                review.content_digest.as_bytes(),
+            )?;
+        }
+        let still_same = |target: &Path| {
+            export_target_sha256(target).ok().flatten().as_deref() == replaced.as_deref()
+        };
         self.reviews
             .cam_reviews
             .export(
@@ -202,14 +247,24 @@ impl KetchupApp {
                 &review.token,
                 path,
                 true,
+                replaced
+                    .is_some()
+                    .then_some(&still_same as &dyn Fn(&Path) -> bool),
                 cancelled,
             )
             .map_err(|error| match error {
                 CamReviewError::FileExists | CamReviewError::InvalidPath => new_file(),
+                CamReviewError::ReplacedFileChanged => ExportError::ChangedDuringConsent,
                 other => ExportError::failed(other),
             })?;
         Ok(Written {
             lost,
+            machining: Some(Machining {
+                dialect: cam_dialect_name(&dialect),
+                removed_stock_mm3: review.removed_stock_mm3,
+                residual_stock_mm3: review.residual_stock_mm3,
+                gouge_mm3: review.gouge_mm3,
+            }),
             ..Written::alone(path)
         })
     }
@@ -422,6 +477,7 @@ impl KetchupApp {
                 &review.token,
                 &path,
                 true,
+                None,
                 &AtomicBool::new(false),
             );
             match result {

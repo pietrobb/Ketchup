@@ -59,7 +59,7 @@ pub(crate) mod joints_ui;
 #[path = "app/joints_ui_tests.rs"]
 mod joints_ui_tests;
 mod local_outliner;
-mod local_time;
+pub(crate) mod local_time;
 pub(crate) mod measure_axis;
 pub(crate) mod mesh_export_activity;
 mod mirror;
@@ -158,7 +158,7 @@ mod viewport_paint;
 mod workshop_export;
 pub(crate) mod written_drawings;
 
-pub(crate) use cam_export::CamExportDialog;
+pub(crate) use cam_export::{CamExportDialog, Machining};
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;
