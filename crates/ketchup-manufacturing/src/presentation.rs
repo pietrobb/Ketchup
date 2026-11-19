@@ -14,6 +14,7 @@ use ketchup_model::persistence::Blobs;
 use ketchup_model::tolerance::limits;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 mod raster;
@@ -114,6 +115,37 @@ pub struct PresentationScene {
     pub triangles: Vec<PresentationTriangle>,
     pub labels: Vec<PresentationLabel>,
     pub textures: Vec<PresentationTexture>,
+    /// The pictures that could not be read; their faces show their part's colour.
+    pub plain_pictures: Vec<PlainPicture>,
+}
+
+/// A picture of a textured face shown as its part's colour, as the viewport shows it, and
+/// why (review 2026-11-19 og IMG-800: one aerial photo over 64 MP failed the whole image).
+#[derive(Clone, Debug)]
+pub struct PlainPicture {
+    /// The first part, by name, whose faces show the picture.
+    pub part: String,
+    pub blob: String,
+    pub reason: Arc<TextureError>,
+}
+
+/// Two plain pictures are the same when they name the same part, picture and reason.
+impl PartialEq for PlainPicture {
+    fn eq(&self, other: &Self) -> bool {
+        self.part == other.part
+            && self.blob == other.blob
+            && self.reason.to_string() == other.reason.to_string()
+    }
+}
+
+impl fmt::Display for PlainPicture {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: the picture {} shows as plain colour: {}",
+            self.part, self.blob, self.reason
+        )
+    }
 }
 
 /// Straight (not premultiplied) sRGB RGBA pixels, rows from the top.
@@ -179,11 +211,6 @@ pub enum PresentationError {
     },
     /// The built-in typeface of labels and dimensions cannot be read.
     Font,
-    /// The picture `blob` of the document a textured face shows cannot be read.
-    Texture {
-        blob: String,
-        source: TextureError,
-    },
     /// Triangle `triangle` names a picture the scene does not have or a texture coordinate
     /// that is not finite.
     TextureReference {
@@ -248,10 +275,6 @@ impl fmt::Display for PresentationError {
                 "the image has {labels} labels, more than the limit of {limit}"
             ),
             Self::Font => write!(formatter, "the built-in label typeface cannot be read"),
-            Self::Texture { blob, source } => write!(
-                formatter,
-                "the picture {blob} on a textured face cannot be read: {source}"
-            ),
             Self::TextureReference { triangle } => write!(
                 formatter,
                 "triangle {triangle} of the model names a picture it does not have or a texture coordinate that is not a finite number"
@@ -267,7 +290,6 @@ impl std::error::Error for PresentationError {
         match self {
             Self::Source(error) => Some(error),
             Self::Png(error) => Some(error),
-            Self::Texture { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -301,6 +323,7 @@ pub fn presentation_scene(
     let mut triangles = Vec::with_capacity(total);
     let mut textures = Vec::new();
     let mut texture_of_blob = BTreeMap::new();
+    let mut plain_pictures = Vec::new();
     for instance in visible {
         let [r, g, b] = instance.occurrence.color.unwrap_or(DEFAULT_PART_RGB);
         let rgba = [r, g, b, opacity(instance.occurrence)];
@@ -314,17 +337,34 @@ pub fn presentation_scene(
             let at = match texture_of_blob.get(&image.blob) {
                 Some(at) => *at,
                 None => {
-                    let texture = blobs
+                    // A picture that cannot be read, such as one too large, shows as its
+                    // part's colour, as in the viewport, and is named.
+                    let at = match blobs
                         .get(&image.blob)
                         .ok_or(TextureError::Missing)
                         .and_then(|bytes| PresentationTexture::decode(bytes, &image.mime_type))
-                        .map_err(|source| PresentationError::Texture {
-                            blob: image.blob.clone(),
-                            source,
-                        })?;
-                    textures.push(texture);
-                    texture_of_blob.insert(image.blob.clone(), textures.len() - 1);
-                    textures.len() - 1
+                    {
+                        Ok(texture) => {
+                            textures.push(texture);
+                            Some(textures.len() - 1)
+                        }
+                        Err(error) => {
+                            let occurrence = instance.occurrence;
+                            let part = [&occurrence.definition_name, &occurrence.occurrence_name]
+                                .into_iter()
+                                .map(|name| name.trim())
+                                .find(|name| !name.is_empty())
+                                .unwrap_or("a part without a name");
+                            plain_pictures.push(PlainPicture {
+                                part: part.to_owned(),
+                                blob: image.blob.clone(),
+                                reason: Arc::new(error),
+                            });
+                            None
+                        }
+                    };
+                    texture_of_blob.insert(image.blob.clone(), at);
+                    at
                 }
             };
             scene_texture.push(at);
@@ -347,20 +387,18 @@ pub fn presentation_scene(
                     ))?;
                 *corner = transform.transform_point(point);
             }
-            let texture = look
-                .and_then(|look| *look.triangles.get(index)?)
-                .map(|textured| {
-                    Some(TriangleTexture {
-                        texture: *scene_texture.get(textured.image_index())?,
-                        uv: textured.uv.map(|[u, v]| [f64::from(u), f64::from(v)]),
-                    })
-                })
-                .map(|texture| {
-                    texture.ok_or(PresentationError::Source(
+            let texture = match look.and_then(|look| *look.triangles.get(index)?) {
+                None => None,
+                Some(textured) => scene_texture
+                    .get(textured.image_index())
+                    .ok_or(PresentationError::Source(
                         ExactProductError::InvalidMeshExport,
-                    ))
-                })
-                .transpose()?;
+                    ))?
+                    .map(|texture| TriangleTexture {
+                        texture,
+                        uv: textured.uv.map(|[u, v]| [f64::from(u), f64::from(v)]),
+                    }),
+            };
             triangles.push(PresentationTriangle {
                 corners_mm,
                 rgba,
@@ -372,6 +410,7 @@ pub fn presentation_scene(
         triangles,
         labels: Vec::new(),
         textures,
+        plain_pictures,
     })
 }
 

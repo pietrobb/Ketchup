@@ -909,6 +909,7 @@ mod tests {
                 at_mm: [0.0, 0.0, 140.0],
             }],
             textures: Vec::new(),
+            plain_pictures: Vec::new(),
         };
         let options = PresentationOptions {
             width: 160,

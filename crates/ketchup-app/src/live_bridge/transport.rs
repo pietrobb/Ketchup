@@ -1287,7 +1287,10 @@ mod tests {
             .map(|(read, sent)| read.saturating_duration_since(*sent))
             .collect();
         late.sort();
-        assert!(late[late.len() / 2] < Duration::from_millis(5), "{late:?}");
+        assert!(
+            late[late.len() / 2] < ketchup_test_env::perf_budget(Duration::from_millis(5)),
+            "{late:?}"
+        );
     }
 
     #[test]

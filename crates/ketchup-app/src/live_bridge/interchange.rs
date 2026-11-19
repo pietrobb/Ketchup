@@ -1,9 +1,10 @@
 //! `file action=import` and `file action=export`: the exchange formats of the
 //! File menu for a client. Imports run the window's review plan and commit it as
-//! one Undo step; exports run the window's exporters. A lossy conversion writes
-//! only new files and returns its loss report instead of asking; a release to
-//! manufacturing waits for the user's confirmation in the window as after the menu,
-//! and writes nothing if the client disconnected before the user confirmed.
+//! one Undo step; exports run the window's exporters. Every new file is written
+//! without asking (owner decision R1): a lossy conversion returns its loss report,
+//! a CAM program what its simulation found and does not check. Only replacing a
+//! file waits for the user in the window, and writes nothing if the client
+//! disconnected before the user confirmed.
 
 use super::{LiveBridge, Request, Stamp, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
@@ -755,6 +756,15 @@ impl LiveBridge {
             // A machine file names what it leaves unmade, such as the pin
             // holes in a bought part.
             "lost": written.lost,
+            // A CAM program is written without a prompt: its simulation and what that
+            // does not check are told here (owner decisions R1 and R3).
+            "machining": written.machining.map(|machining| json!({
+                "dialect": machining.dialect,
+                "removed_stock_mm3": machining.removed_stock_mm3,
+                "residual_stock_mm3": machining.residual_stock_mm3,
+                "gouge_mm3": machining.gouge_mm3,
+                "not_checked": crate::app::Machining::NOT_CHECKED,
+            })),
             "basis": "visible_parts",
         }))
     }

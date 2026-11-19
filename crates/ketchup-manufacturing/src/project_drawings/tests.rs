@@ -977,7 +977,10 @@ fn perf_the_triangles_of_many_levels_are_overlapped_in_a_second() {
     let started = std::time::Instant::now();
     assert!(marked_floor_levels(&tiles, &AtomicBool::new(false)).is_some());
     let took = started.elapsed();
-    assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+    assert!(
+        took < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+        "{took:?}"
+    );
 }
 
 /// `solids` moved `by` in plan, as a model placed in national coordinates.

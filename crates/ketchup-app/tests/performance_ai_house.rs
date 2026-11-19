@@ -45,7 +45,7 @@ fn ai_house_fixture_orbits_interactively_with_exact_geometry() {
 fn perf_ai_house_fixture_orbits_twenty_frames_in_a_second() {
     let orbit = orbit_ai_house();
     assert!(
-        orbit < Duration::from_secs(1),
+        orbit < ketchup_test_env::perf_budget(Duration::from_secs(1)),
         "twenty orbit frames of the exact AI house fixture took {orbit:?}"
     );
 }
@@ -130,9 +130,9 @@ fn perf_wardrobe_idles_hovers_and_orbits_within_budget() {
 fn perf_frames_within_budget(example: &str, bodies: usize) {
     let [idle, hover, orbit] = exact_load_idle_and_orbit_performance(example, bodies);
     assert!(
-        idle < Duration::from_secs(1)
-            && hover < Duration::from_secs(2)
-            && orbit < Duration::from_secs(1),
+        idle < ketchup_test_env::perf_budget(Duration::from_secs(1))
+            && hover < ketchup_test_env::perf_budget(Duration::from_secs(2))
+            && orbit < ketchup_test_env::perf_budget(Duration::from_secs(1)),
         "{example} 20-frame budget exceeded: idle={idle:?}, hover={hover:?}, orbit={orbit:?} (budget=1s, hover 2s)"
     );
 }

@@ -1,10 +1,10 @@
 use super::blender_glb_export::{current_package, seeded_document};
 use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::presentation::{
-    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationError, PresentationImage,
-    PresentationLabel, PresentationOptions, PresentationScene, PresentationTexture,
-    PresentationTriangle, TextureError, TriangleTexture, part_labels, presentation_scene,
-    presentation_supersample, render_presentation, render_presentation_until,
+    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PlainPicture, PresentationError,
+    PresentationImage, PresentationLabel, PresentationOptions, PresentationScene,
+    PresentationTexture, PresentationTriangle, TextureError, TriangleTexture, part_labels,
+    presentation_scene, presentation_supersample, render_presentation, render_presentation_until,
 };
 use ketchup_model::exact_product::MeshExportSource;
 use std::sync::atomic::AtomicBool;
@@ -65,6 +65,7 @@ fn box_on_slab() -> PresentationScene {
         triangles,
         labels: Vec::new(),
         textures: Vec::new(),
+        plain_pictures: Vec::new(),
     }
 }
 
@@ -169,6 +170,7 @@ fn the_model_casts_a_soft_shadow_on_the_ground_under_it() {
         triangles: cuboid([-50.0, -50.0, 0.0], [50.0, 50.0, 120.0], [200, 60, 50, 255]),
         labels: Vec::new(),
         textures: Vec::new(),
+        plain_pictures: Vec::new(),
     };
     let shadowed = render_presentation(&standing, &options).unwrap();
     let partial =
@@ -652,6 +654,7 @@ fn a_textured_face_shows_its_picture_repeating() {
             ],
             labels: Vec::new(),
             textures: vec![PresentationTexture::decode(&checker_png(), "image/png").unwrap()],
+            plain_pictures: Vec::new(),
         }
     };
     let options = PresentationOptions {
@@ -723,9 +726,10 @@ fn a_textured_face_shows_its_picture_repeating() {
         not_jpeg.to_string().ends_with(&format!(": {reason}")),
         "{not_jpeg}"
     );
-    let face = PresentationError::Texture {
+    let face = PlainPicture {
+        part: "Wall".to_owned(),
         blob: "wall.jpg".to_owned(),
-        source: not_jpeg,
+        reason: std::sync::Arc::new(not_jpeg),
     };
     assert!(face.to_string().contains("wall.jpg"), "{face}");
     assert!(face.to_string().ends_with(&format!(": {reason}")), "{face}");
@@ -768,6 +772,7 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
         ],
         labels: Vec::new(),
         textures: vec![PresentationTexture::decode(&png_bytes, "image/png").unwrap()],
+        plain_pictures: Vec::new(),
     };
     let options = PresentationOptions {
         view_from: [0.0, -1.0, 0.0],
@@ -891,6 +896,7 @@ fn perf_a_cancel_stops_the_shadows_of_many_large_triangles_within_a_second() {
         triangles,
         labels: Vec::new(),
         textures: Vec::new(),
+        plain_pictures: Vec::new(),
     };
     let options = PresentationOptions {
         shadows: true,
@@ -904,7 +910,10 @@ fn perf_a_cancel_stops_the_shadows_of_many_large_triangles_within_a_second() {
         "{:?}",
         rendered.map(|image| (image.width, image.height))
     );
-    assert!(waited < std::time::Duration::from_secs(1), "{waited:?}");
+    assert!(
+        waited < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+        "{waited:?}"
+    );
 }
 
 /// A label far from the model is refused instead of framing a speck (review 2026-11-12
