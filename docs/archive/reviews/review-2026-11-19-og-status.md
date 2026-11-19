@@ -51,11 +51,11 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 13. og:R1110r2-MF-500, MF-501: storeys | Open |
-| 14. og:R1110-CD-404, UO-406: rooms in DXF | Open |
-| 15. og:R1110-MF-404: DXF 2013 sheets | Open |
+| 13. og:R1110r2-MF-500, MF-501: storeys | Fixed in #135: without a storey table the plans and level marks use the same floors as `ModelFloors::table`, found on the export's thread; a lining under a floor structure is no longer a storey, so the test house with its ceiling 2700–2954 gets its upper plan on 2954 cut at 4154 and no +2,512 level; a storey of the model no table row covers is reported (`not_in_table`, a warning in the window) |
+| 14. og:R1110-CD-404, UO-406: rooms in DXF | Fixed in #139: room fills are a light grey of their own (ACI 254), written first so the architect's lines and the room names lie over them, and from DXF 2010 on 60 % transparent (group 440); names and areas keep the colour of the rooms' layer; a room point on a line of its region (within 1 mm) is refused |
+| 15. og:R1110-MF-404: DXF 2013 sheets | Fixed in #138: a section's cutting line uses the `CENTER` linetype; black fills and pens of the marks are ByLayer instead of RGB 0, so they show on a dark screen; the `Standard` text style is Arial (TrueType); dimensions and level marks as DIMENSION entities stay for later, as the fix list says |
 | 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Open |
-| 17. R1119og-MF-805: hole callouts | Open |
+| 17. R1119og-MF-805: hole callouts | Fixed in #137: a tapped hole whose bottom the part does not show keeps its drilled depth (`M8 THREAD DEPTH 12 mm; BORE Ø6.8 mm CYLINDRICAL DEPTH 20 mm`), a coarse thread is named by its size alone, and callouts are written in the sheets' language (English, Czech, Slovak) with its decimal sign |
 
 ## 6. Workshop, import, modelling
 
@@ -77,7 +77,7 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 24. R1119og-FEA-801 to FEA-809 | Open |
+| 24. R1119og-FEA-801 to FEA-809 | Fixed in #146, #148 and #149: a frequency study checks the count of its modes by a Sturm sequence, so no mode is skipped (FEA-801), and starts from M-orthonormal vectors, so a slender solid converges (FEA-802); a mesh study is converged only when its finest mesh has at least twice the elements of the one before and the peak stress has settled too (FEA-803); a frame's largest move includes the sag inside each element, so one simply supported element under a uniform load reports its mid-span sag instead of 0 mm (FEA-804); cancelling stops the factorization, every iteration of the frequency search and the heat solve, and the AI answer is `cancelled` (FEA-806); the excluded physics says natural frequencies come only from a modes study and that the parts' own weight is not added (FEA-809) |
 
 ## 9. Process
 
