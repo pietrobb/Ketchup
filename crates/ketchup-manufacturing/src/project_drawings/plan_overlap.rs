@@ -515,10 +515,13 @@ mod tests {
         let took = started.elapsed();
         println!("{} triangles: {took:?}, {looked} looks", mesh.len());
         assert!((area - 2000.0 * 2000.0).abs() < 1.0, "{area}");
-        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        assert!(
+            took < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+            "{took:?}"
+        );
         let longest = took.mul_f64((LOOKS_BETWEEN_STOPS as f64 / looked as f64).min(1.0));
         assert!(
-            longest < std::time::Duration::from_millis(100),
+            longest < ketchup_test_env::perf_budget(std::time::Duration::from_millis(100)),
             "{longest:?}"
         );
     }
@@ -617,7 +620,7 @@ mod tests {
         let between = LOOKS_BETWEEN_STOPS + slab.len();
         let longest = through_grid.mul_f64(between as f64 / looked as f64);
         assert!(
-            longest < std::time::Duration::from_millis(100),
+            longest < ketchup_test_env::perf_budget(std::time::Duration::from_millis(100)),
             "{longest:?}"
         );
     }

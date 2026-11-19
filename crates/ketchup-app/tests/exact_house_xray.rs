@@ -258,7 +258,7 @@ fn perf_exact_house_shaded_and_xray_idle_orbit_cpu_regression() {
     // excludes GPU callbacks and harness-only shape cloning/inspection.
     let violations: Vec<_> = budgets
         .iter()
-        .filter(|(_, _, _, p95)| *p95 >= FRAME_BUDGET)
+        .filter(|(_, _, _, p95)| *p95 >= ketchup_test_env::perf_budget(FRAME_BUDGET))
         .collect();
     assert!(
         violations.is_empty(),
