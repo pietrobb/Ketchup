@@ -2,7 +2,8 @@
 
 Review (`docs/archive/reviews/review-2026-11-20-ac.md`, PR #151) bol robený na `6169322c`
 (0.3.4-dev). Opravy išli v poradí podľa §7: P1, potom P2, potom P3 po skupinách, každá v
-samostatnom PR s testom, ktorý bez opravy padne.
+samostatnom PR s testom, ktorý bez opravy padne. Záznamy v `CHANGELOG.md` (Unreleased) sú v tomto PR,
+nie v PR s opravami, aby sa PR s kódom nehádali o jeho horné riadky.
 
 Stavy: **opravené** (zlúčené na `main`), **odložené** (s dôvodom), **na rozhodnutie vlastníka**,
 **už riešené** (oprava bola na `main` pred review).
@@ -42,10 +43,10 @@ Stavy: **opravené** (zlúčené na `main`), **odložené** (s dôvodom), **na r
 |---|---|---|---|
 | Statika | opravené | #165 | Vzperná sila podľa osi dielu (prút len ohýbaný nevybočí), `--summary` počíta spoje, horná hranica `r` vrstvy vzduchu (0,23 m²K/W), chyby čísiel bez „mm“ pri λ, μ, r, základ výpočtu (R3: spoločné ukotvenie). |
 | CAM a výkresy | opravené | #166 | `NOT_CHECKED` o chladení a zápichu bez rampy, zdroje dialektu ISO o `when_fractional`, hlboké vrty z 1 mm nad polotovarom, ISO 1101 znaky (Ø, (M), (L), bez RFS), `losses.csv` bez vzorcov. Príznaky hlavičky ZIP (len bit 11) v #156. |
-| FEA | čaká na zlúčenie | #167 | Chyby FEA ako rada namiesto Debug textu, výsledok mimo rozsahu čísel (1e300 N) sa odmietne, lepenie len cez plochu (nie hranu), text limitov (vlastná tiaž, votknutá hrana). Zle podmienené modely: text menuje aj zlú podmienenosť. Pamäť módov v rozpočte: #161. |
-| Modelovanie a balík | čaká na zlúčenie | #168, #171 | `ketchup-program check` odmietne dokončenia, ktoré OCCT odmietne; rada rozpočtu pri jedinom procese; limit cgroup; `build-package.sh` a `CARGO_TARGET_DIR`; `check-package.sh` pod `pipefail`; balík pre Linux pri každom push na `main`. #171: váhy NURBS 1e-6 až 1e6, odmietnuté zaoblenie či skosenie menuje najväčší rozmer, ktorý sa zmestí. |
-| Bezpečnosť a R1 | čaká na zlúčenie | #170 | Denník zápisov AI zaznamená sady DXF/DWG, správy o stratách a podpore, `companions`, `takeoff`, `Request::Save {}` aj prepis s rovnakou veľkosťou; priečinky Po spustení cez `SHGetKnownFolderPath`; odstránenie záznamu MCP ako vlastník; `HomeError::ChangedWhileRead`; komentár R1. |
-| CI a ratchety | čaká na zlúčenie | #169, #172 | `test_ci_root_tests.py` číta YAML po jobe, `check_test_timing.py` uvoľní len chyba samotného čakania, `check_user_folder_writes.py` vidí ďalšie formy zápisu, `release_reads.py` celý vzor. #172: `LINT_ALLOW` počíta aj `#[expect(`, `check_no_named_products.py` už nevynecháva `anchorage.rs` a `stiffness.rs`, komentár `persistence.rs` o 0.3.3. |
+| FEA | opravené | #167 | Chyby FEA ako rada namiesto Debug textu, výsledok mimo rozsahu čísel (1e300 N) sa odmietne, lepenie len cez plochu (nie hranu), text limitov (vlastná tiaž, votknutá hrana). Zle podmienené modely: text menuje aj zlú podmienenosť. Pamäť módov v rozpočte: #161. |
+| Modelovanie a balík | opravené | #168, #171 | `ketchup-program check` odmietne dokončenia, ktoré OCCT odmietne; rada rozpočtu pri jedinom procese; limit cgroup; `build-package.sh` a `CARGO_TARGET_DIR`; `check-package.sh` pod `pipefail`; balík pre Linux pri každom push na `main`. #171: váhy NURBS 1e-6 až 1e6, odmietnuté zaoblenie či skosenie menuje najväčší rozmer, ktorý sa zmestí. |
+| Bezpečnosť a R1 | čaká na zlúčenie | #170 | Denník zápisov AI zaznamená sady DXF/DWG, správy o stratách a podpore, `companions`, `takeoff`, `Request::Save {}`, úpravu `apply_and_verify` uloženú na mieste (`save: current`) aj prepis s rovnakou veľkosťou; priečinky Po spustení cez `SHGetKnownFolderPath`; odstránenie záznamu MCP ako vlastník; `HomeError::ChangedWhileRead`; komentár R1. |
+| CI a ratchety | čaká na zlúčenie (#169 zlúčené) | #169, #172 | `test_ci_root_tests.py` číta YAML po jobe, `check_test_timing.py` uvoľní len chyba samotného čakania, `check_user_folder_writes.py` vidí ďalšie formy zápisu, `release_reads.py` celý vzor. #172: `LINT_ALLOW` počíta aj `#[expect(`, `check_no_named_products.py` už nevynecháva `anchorage.rs` a `stiffness.rs`, komentár `persistence.rs` o 0.3.3. |
 
 ### Odložené a na rozhodnutie
 
