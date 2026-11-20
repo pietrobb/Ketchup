@@ -97,11 +97,12 @@ pub(crate) struct Machining {
 impl Machining {
     /// What the simulation of the stock, the plan's fixtures, the cutter and its holder
     /// leaves to the user.
-    pub(crate) const NOT_CHECKED: [&'static str; 4] = [
+    pub(crate) const NOT_CHECKED: [&'static str; 5] = [
         "the machine itself: travel limits, spindle head, table and clamps not declared as fixtures of the plan",
         "cutting forces, tool deflection or breakage, and whether the feeds and speeds suit the tool and material",
         "the tool length and work offset values set on the controller; the program only calls them",
         "how the controller runs the program beyond the dialect's codes; run it in the controller's simulator or dry first",
+        "the rounding of the written coordinates to the dialect's step: the simulation runs the planned path, and the written one may differ from it by up to half a step",
     ];
 }
 

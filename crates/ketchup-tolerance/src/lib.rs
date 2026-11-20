@@ -107,6 +107,9 @@ pub const ALONG_AXIS_NEGLIGIBLE: f64 = 1.0e-3;
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// The largest distance between a curve in a part's CNC drawing and the lines drawn for it, in mm.
 pub const CNC_CURVE_CHORD_MM: f64 = 0.01;
+/// How far an arc written on a CAM dialect's grid may stray from the planned arc, in grid steps
+/// of that dialect (review 2026-11-20 R1120ac-CAM-900).
+pub const CAM_ARC_GRID_STEPS: f64 = 4.0;
 /// The largest distance between an underlay's arc and the chords drawn for it, in mm.
 pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
 /// Relative slack over the step an import cut an underlay's arc into: a chord up to this
