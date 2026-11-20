@@ -238,6 +238,15 @@ fn a_client_writes_the_cam_program_for_the_controller_it_names_without_a_prompt(
         machining["not_checked"].as_array().unwrap().len(),
         crate::app::Machining::NOT_CHECKED.len()
     );
+    // Review 2026-11-20 ac P3: the program switches no coolant on and plunges straight
+    // down, and the client is told both.
+    let not_checked = machining["not_checked"].to_string();
+    assert!(
+        !program.contains("M8") && !program.contains("M7"),
+        "{program}"
+    );
+    assert!(not_checked.contains("no M7 or M8"), "{not_checked}");
+    assert!(not_checked.contains("cut at its centre"), "{not_checked}");
     assert!(dialogs.high_risk_prompts().is_empty());
     assert_eq!(app.canonical_digest(), before);
 

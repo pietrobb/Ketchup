@@ -35,25 +35,19 @@ pub(super) fn layout_feature_control_frames(
             let offset = frame.offset_page_mm();
             let origin = [anchor[0] + offset[0], anchor[1] + offset[1]];
             let tolerance = format_decimal_mm(frame.tolerance_mm());
-            let zone = if frame.diameter_zone() { "DIA " } else { "" };
-            let condition = match frame.material_condition() {
-                DrawingMaterialCondition::None => "",
-                DrawingMaterialCondition::MaximumMaterial => " MMC",
-                DrawingMaterialCondition::LeastMaterial => " LMC",
-                DrawingMaterialCondition::RegardlessOfFeatureSize => " RFS",
-            };
+            // ISO 1101 signs, as the hole callouts write Ø (review 2026-11-20 ac P3).
+            let zone = if frame.diameter_zone() { "Ø" } else { "" };
+            let condition = modifier(frame.material_condition());
             let mut cells = vec![
                 frame.characteristic().stable_name().to_ascii_uppercase(),
                 format!("{zone}{tolerance}{condition}"),
             ];
             cells.extend(frame.datum_references().iter().map(|reference| {
-                let suffix = match reference.material_condition() {
-                    DrawingMaterialCondition::None => "",
-                    DrawingMaterialCondition::MaximumMaterial => " MMC",
-                    DrawingMaterialCondition::LeastMaterial => " LMC",
-                    DrawingMaterialCondition::RegardlessOfFeatureSize => " RFS",
-                };
-                format!("{}{suffix}", reference.label())
+                format!(
+                    "{}{}",
+                    reference.label(),
+                    modifier(reference.material_condition())
+                )
             }));
             let advance = GLYPH_WIDTH * FEATURE_CONTROL_FRAME_TEXT_HEIGHT_MM;
             let mut left = origin[0];
@@ -104,4 +98,15 @@ pub(super) fn layout_feature_control_frames(
             })
         })
         .collect()
+}
+
+/// The ISO 1101 modifier of `condition`: Ⓜ and Ⓛ as (M) and (L), since the sheet
+/// typeface has no circled letters. Regardless of feature size is ISO 8015's
+/// default and has no sign; RFS is ASME's.
+fn modifier(condition: DrawingMaterialCondition) -> &'static str {
+    match condition {
+        DrawingMaterialCondition::None | DrawingMaterialCondition::RegardlessOfFeatureSize => "",
+        DrawingMaterialCondition::MaximumMaterial => " (M)",
+        DrawingMaterialCondition::LeastMaterial => " (L)",
+    }
 }
