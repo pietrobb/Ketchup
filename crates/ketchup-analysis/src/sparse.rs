@@ -47,14 +47,80 @@ pub(crate) struct CholeskyFactor {
     values: Vec<f64>,
 }
 
+/// The bytes a `(row, column, value)` entry takes.
+pub(crate) const ENTRY_BYTES: usize = std::mem::size_of::<(usize, usize, f64)>();
+
+/// What a computation holds against its memory budget, taken before each
+/// large allocation (R1120ac-FEA-902: the window assembled ~5.8 GB before the
+/// factor's own check, and modes held several matrices beside it).
+#[derive(Debug)]
+pub(crate) struct MemoryBudget {
+    limit: usize,
+    held: usize,
+}
+
+impl MemoryBudget {
+    pub(crate) const fn new(limit: usize) -> Self {
+        Self { limit, held: 0 }
+    }
+
+    /// Takes `bytes` more, or says how much all would need.
+    pub(crate) const fn take(&mut self, bytes: usize) -> Result<(), usize> {
+        let needed = self.held.saturating_add(bytes);
+        if needed > self.limit {
+            return Err(needed);
+        }
+        self.held = needed;
+        Ok(())
+    }
+
+    pub(crate) const fn give(&mut self, bytes: usize) {
+        self.held = self.held.saturating_sub(bytes);
+    }
+
+    pub(crate) const fn held(&self) -> usize {
+        self.held
+    }
+
+    pub(crate) const fn left(&self) -> usize {
+        self.limit - self.held
+    }
+}
+
+/// Sorts entries by row and column, as [`SymmetricMatrix::from_sorted`] needs.
+pub(crate) fn sort_entries(entries: &mut [(usize, usize, f64)]) {
+    entries.sort_unstable_by_key(|&(row, column, _)| (row, column));
+}
+
 impl SymmetricMatrix {
     /// Builds the matrix from `(row, column, value)` entries of both
     /// triangles; repeated entries are summed.
     pub(crate) fn from_entries(size: usize, mut entries: Vec<(usize, usize, f64)>) -> Self {
-        entries.sort_unstable_by_key(|&(row, column, _)| (row, column));
+        sort_entries(&mut entries);
+        Self::from_sorted(size, entries.iter().copied())
+    }
+
+    /// The bytes [`Self::from_sorted`] takes for `entries` entries, at most.
+    pub(crate) const fn bytes_for(size: usize, entries: usize) -> usize {
+        (size + 1 + 2 * entries) * 8
+    }
+
+    /// The bytes the matrix holds.
+    pub(crate) fn bytes(&self) -> usize {
+        self.row_start.capacity() * std::mem::size_of::<usize>()
+            + self.columns.capacity() * std::mem::size_of::<usize>()
+            + self.values.capacity() * std::mem::size_of::<f64>()
+    }
+
+    /// [`Self::from_entries`] for entries already sorted by row and column.
+    pub(crate) fn from_sorted(
+        size: usize,
+        entries: impl Iterator<Item = (usize, usize, f64)> + Clone,
+    ) -> Self {
+        let count = entries.clone().count();
         let mut row_start = vec![0; size + 1];
-        let mut columns = Vec::with_capacity(entries.len());
-        let mut values: Vec<f64> = Vec::with_capacity(entries.len());
+        let mut columns = Vec::with_capacity(count);
+        let mut values: Vec<f64> = Vec::with_capacity(count);
         let mut last = None;
         for (row, column, value) in entries {
             if last == Some((row, column)) {
@@ -200,6 +266,12 @@ impl SymmetricMatrix {
         last
     }
 
+    /// The bytes [`Self::shifted`] takes while it builds, at most.
+    pub(crate) fn shifted_bytes(&self, other: &Self) -> usize {
+        let entries = self.values.len() + other.values.len();
+        entries * ENTRY_BYTES + Self::bytes_for(self.size, entries)
+    }
+
     /// `self − shift · other`, on the union of both patterns.
     pub(crate) fn shifted(&self, other: &Self, shift: f64) -> Self {
         let entries = (0..self.size)
@@ -296,7 +368,10 @@ impl SymmetricMatrix {
             entries = entries.saturating_add(row - first + 1);
         }
         row_offset.push(entries);
-        let needed_bytes = entries.saturating_mul(std::mem::size_of::<f64>());
+        // The values with the renumbering and the rows' starts and offsets.
+        let needed_bytes = entries
+            .saturating_mul(std::mem::size_of::<f64>())
+            .saturating_add(3 * (self.size + 1) * std::mem::size_of::<usize>());
         if needed_bytes > budget_bytes {
             return Err(FactorError::TooLarge { needed_bytes });
         }
@@ -380,6 +455,13 @@ impl SymmetricMatrix {
 }
 
 impl CholeskyFactor {
+    /// The bytes the factor holds.
+    pub(crate) fn bytes(&self) -> usize {
+        (self.order.capacity() + self.first_column.capacity() + self.row_offset.capacity())
+            * std::mem::size_of::<usize>()
+            + self.values.capacity() * std::mem::size_of::<f64>()
+    }
+
     pub(crate) fn solve(&self, rhs: &[f64]) -> Vec<f64> {
         let size = self.order.len();
         let mut work = self.order.iter().map(|&old| rhs[old]).collect::<Vec<_>>();

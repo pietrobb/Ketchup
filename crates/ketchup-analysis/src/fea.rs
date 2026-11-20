@@ -1,6 +1,6 @@
 use crate::fea_coupling::{
-    Joints, add_springs, joint_definition, spring_energy, turning_leaders, validate_couplings,
-    validate_turns,
+    Joints, add_springs, joint_definition, spring_energy, spring_entry_count, turning_leaders,
+    validate_couplings, validate_turns,
 };
 use crate::fea_frame::{
     ElementAxes, FRAME_DOFS, FrameError, consistent_load, local_stiffness, multiply,
@@ -9,7 +9,7 @@ use crate::fea_frame::{
 pub use crate::fea_modal::{
     FEA_MODAL_SOLVER_VERSION_V2, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
 };
-use crate::sparse::{FactorError, SymmetricMatrix};
+use crate::sparse::{ENTRY_BYTES, FactorError, MemoryBudget, SymmetricMatrix};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
@@ -207,9 +207,10 @@ pub struct FeaSolveSettings {
     pub relative_pivot_tolerance: f64,
     pub maximum_small_deformation_ratio: f64,
     pub convergence_relative_tolerance: f64,
-    /// The memory the stiffness matrix may take, assembled or factored; a
-    /// larger model is refused with the size it would need, before assembly
-    /// when its entries alone exceed it (R1120ac-FEA-902).
+    /// The memory a solve or a modes study may hold at once in its entries,
+    /// matrices and factor; a larger model is refused with what it would
+    /// need, before the allocation that would pass the budget
+    /// (R1120ac-FEA-902). Vectors of one value per unknown come on top.
     pub maximum_factor_bytes: usize,
 }
 
@@ -277,7 +278,7 @@ pub enum FeaError {
     NonBoundaryTraction,
     InvalidSettings,
     SingularSystem,
-    /// The stiffness matrix, assembled or factored, would need
+    /// The entries, matrices and factor held at once would need
     /// `needed_bytes`, more than the `budget_bytes` the settings allow.
     FactorTooLarge {
         needed_bytes: usize,
@@ -298,15 +299,27 @@ pub enum FeaError {
 }
 
 impl FeaError {
-    /// What a failed factorization under `settings` means for the model.
-    pub(crate) const fn from_factor(error: FactorError, settings: FeaSolveSettings) -> Self {
+    /// What a failed factorization under `settings` means for the model, with
+    /// `held_bytes` of matrices kept beside the factor.
+    pub(crate) const fn from_factor(
+        error: FactorError,
+        settings: FeaSolveSettings,
+        held_bytes: usize,
+    ) -> Self {
         match error {
             FactorError::Singular => Self::SingularSystem,
             FactorError::Cancelled => Self::Cancelled,
-            FactorError::TooLarge { needed_bytes } => Self::FactorTooLarge {
-                needed_bytes,
-                budget_bytes: settings.maximum_factor_bytes,
-            },
+            FactorError::TooLarge { needed_bytes } => {
+                Self::too_large(needed_bytes.saturating_add(held_bytes), settings)
+            }
+        }
+    }
+
+    /// The model would need `needed_bytes` held at once, more than `settings` allow.
+    pub(crate) const fn too_large(needed_bytes: usize, settings: FeaSolveSettings) -> Self {
+        Self::FactorTooLarge {
+            needed_bytes,
+            budget_bytes: settings.maximum_factor_bytes,
         }
     }
 }
@@ -536,16 +549,19 @@ impl FeaModel {
         self.validate(settings)?;
         let layout = self.dof_layout();
         let dof_count = layout.count();
-        self.check_assembly_budget(&layout, settings)?;
-        let entries = self.stiffness_entries(&layout)?;
+        let too_large = |needed| FeaError::too_large(needed, settings);
+        let mut budget = MemoryBudget::new(settings.maximum_factor_bytes);
+        let entries = self.stiffness_entries_within(&layout, &mut budget, settings)?;
         let mut forces = vec![0.0; dof_count];
         self.assemble_loads(&layout, &mut forces)?;
         // A rigid coupling's follower is no unknown of its own: its rows and
         // forces go to the unknowns it follows, and it is set from them after.
         let joints = Joints::new(self, &layout)?;
-        let entries = joints.reduce(entries, &mut forces);
+        let entries =
+            reduce_within(&joints, entries, &mut forces, &mut budget).map_err(too_large)?;
 
-        let original_stiffness = SymmetricMatrix::from_entries(dof_count, entries);
+        let original_stiffness = matrix_within(dof_count, entries, &mut budget, settings)?;
+        budget.take(original_stiffness.bytes()).map_err(too_large)?;
         let mut stiffness = original_stiffness.clone();
         let original_forces = forces.clone();
         let follower_scale = stiffness.largest_magnitude().max(1.0);
@@ -555,8 +571,8 @@ impl FeaModel {
         let constrained = self.apply_constraints(&layout, &mut stiffness, &mut forces)?;
         let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
         let mut displacement = stiffness
-            .factor(threshold, settings.maximum_factor_bytes, cancelled)
-            .map_err(|error| FeaError::from_factor(error, settings))?
+            .factor(threshold, budget.left(), cancelled)
+            .map_err(|error| FeaError::from_factor(error, settings, budget.held()))?
             .solve(&forces);
         if displacement.iter().any(|value| !value.is_finite()) {
             return Err(FeaError::NonFiniteSolution);
@@ -673,17 +689,11 @@ impl FeaModel {
         })
     }
 
-    /// Refuses a model whose stiffness entries alone, with the matrix built
-    /// from them, would take more than the budget, before any is assembled
-    /// (R1120ac-FEA-902: a million tetrahedra took ~5.8 GB in the window before
-    /// the factor's 512 MiB check). The count leaves out springs, so it never
-    /// refuses a model that fits.
-    pub(crate) fn check_assembly_budget(
-        &self,
-        layout: &DofLayout,
-        settings: FeaSolveSettings,
-    ) -> Result<(), FeaError> {
-        let element_entries = self
+    /// How many entries [`Self::stiffness_entries`] makes: a diagonal for
+    /// every unknown, a square for every element and four for every spring.
+    pub(crate) fn stiffness_entry_count(&self, layout: &DofLayout) -> Result<usize, FeaError> {
+        let springs = spring_entry_count(self, layout)?;
+        Ok(self
             .elements
             .iter()
             .map(|element| match element.kind {
@@ -691,20 +701,26 @@ impl FeaModel {
                 FeaElementKind::LinearTetrahedron4 { .. } => 12 * 12,
                 FeaElementKind::Frame2 { .. } => FRAME_DOFS * FRAME_DOFS,
             })
-            .fold(layout.count(), usize::saturating_add);
-        // Each entry is a (row, column, value) triple, and the matrix built
-        // from them reserves a column and a value for each.
-        let per_entry = std::mem::size_of::<(usize, usize, f64)>()
-            + std::mem::size_of::<usize>()
-            + std::mem::size_of::<f64>();
-        let needed_bytes = element_entries.saturating_mul(per_entry);
-        if needed_bytes > settings.maximum_factor_bytes {
-            return Err(FeaError::FactorTooLarge {
-                needed_bytes,
-                budget_bytes: settings.maximum_factor_bytes,
-            });
-        }
-        Ok(())
+            .fold(
+                layout.count().saturating_add(springs),
+                usize::saturating_add,
+            ))
+    }
+
+    /// [`Self::stiffness_entries`], taken from `budget` before any is
+    /// assembled (R1120ac-FEA-902: a million tetrahedra took ~5.8 GB in the
+    /// window before the factor's 512 MiB check).
+    pub(crate) fn stiffness_entries_within(
+        &self,
+        layout: &DofLayout,
+        budget: &mut MemoryBudget,
+        settings: FeaSolveSettings,
+    ) -> Result<Vec<(usize, usize, f64)>, FeaError> {
+        let count = self.stiffness_entry_count(layout)?;
+        budget
+            .take(count.saturating_mul(ENTRY_BYTES))
+            .map_err(|needed| FeaError::too_large(needed, settings))?;
+        self.stiffness_entries(layout)
     }
 
     /// The stiffness of every element and spring as `(row, column, value)`
@@ -713,9 +729,9 @@ impl FeaModel {
         &self,
         layout: &DofLayout,
     ) -> Result<Vec<(usize, usize, f64)>, FeaError> {
-        let mut entries = (0..layout.count())
-            .map(|dof| (dof, dof, 0.0))
-            .collect::<Vec<_>>();
+        // Exactly as many as counted, so the budget taken for them holds.
+        let mut entries = Vec::with_capacity(self.stiffness_entry_count(layout)?);
+        entries.extend((0..layout.count()).map(|dof| (dof, dof, 0.0)));
         for element in &self.elements {
             match element.kind {
                 FeaElementKind::LinearTruss2 {
@@ -748,6 +764,7 @@ impl FeaModel {
             }
         }
         add_springs(self, layout, &mut entries)?;
+        debug_assert_eq!(entries.len(), entries.capacity());
         Ok(entries)
     }
 
@@ -1880,6 +1897,41 @@ pub fn solve_convergence_study(
         required_relative_tolerance: settings.convergence_relative_tolerance,
         solutions,
     })
+}
+
+/// [`Joints::reduce`] with the reduced entries taken from `budget` while the
+/// entries they come from are still held; those are given back after. `Err`
+/// says how much all would need.
+pub(crate) fn reduce_within(
+    joints: &Joints,
+    entries: Vec<(usize, usize, f64)>,
+    forces: &mut [f64],
+    budget: &mut MemoryBudget,
+) -> Result<Vec<(usize, usize, f64)>, usize> {
+    let Some(count) = joints.reduced_len(&entries) else {
+        return Ok(entries);
+    };
+    budget.take(count.saturating_mul(ENTRY_BYTES))?;
+    budget.give(entries.capacity() * ENTRY_BYTES);
+    Ok(joints.reduce(entries, forces))
+}
+
+/// The matrix of `entries`, taken from `budget` while they are still held;
+/// they are given back once it is built.
+pub(crate) fn matrix_within(
+    size: usize,
+    entries: Vec<(usize, usize, f64)>,
+    budget: &mut MemoryBudget,
+    settings: FeaSolveSettings,
+) -> Result<SymmetricMatrix, FeaError> {
+    let most = SymmetricMatrix::bytes_for(size, entries.len());
+    budget
+        .take(most)
+        .map_err(|needed| FeaError::too_large(needed, settings))?;
+    let entry_bytes = entries.capacity() * ENTRY_BYTES;
+    let matrix = SymmetricMatrix::from_entries(size, entries);
+    budget.give((entry_bytes + most).saturating_sub(matrix.bytes()));
+    Ok(matrix)
 }
 
 fn elasticity(material: &FeaMaterial) -> [[f64; 6]; 6] {

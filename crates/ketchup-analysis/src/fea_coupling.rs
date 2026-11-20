@@ -223,6 +223,11 @@ fn springs(model: &FeaModel, layout: &DofLayout) -> Result<Vec<(f64, usize, usiz
     Ok(springs)
 }
 
+/// How many entries [`add_springs`] adds.
+pub(crate) fn spring_entry_count(model: &FeaModel, layout: &DofLayout) -> Result<usize, FeaError> {
+    Ok(4 * springs(model, layout)?.len())
+}
+
 pub(crate) fn add_springs(
     model: &FeaModel,
     layout: &DofLayout,
@@ -400,6 +405,22 @@ impl Joints {
         self.followers.keys().copied()
     }
 
+    /// How many entries [`Self::reduce`] makes of `entries`; `None` when it
+    /// passes them on as they are.
+    pub(crate) fn reduced_len(&self, entries: &[(usize, usize, f64)]) -> Option<usize> {
+        if self.followers.is_empty() {
+            return None;
+        }
+        let terms = |dof| self.followers.get(&dof).map_or(1, Vec::len);
+        Some(
+            entries
+                .iter()
+                .map(|&(row, column, _)| terms(row) * terms(column))
+                .sum::<usize>()
+                + self.followers.len(),
+        )
+    }
+
     /// `Tᵀ·K·T` and `Tᵀ·f`, with `T` writing every unknown in the unknowns
     /// that follow nothing; a follower keeps an empty diagonal entry.
     pub(crate) fn reduce(
@@ -407,10 +428,10 @@ impl Joints {
         entries: Vec<(usize, usize, f64)>,
         forces: &mut [f64],
     ) -> Vec<(usize, usize, f64)> {
-        if self.followers.is_empty() {
+        let Some(count) = self.reduced_len(&entries) else {
             return entries;
-        }
-        let mut reduced = Vec::with_capacity(entries.len());
+        };
+        let mut reduced = Vec::with_capacity(count);
         for (row, column, value) in entries {
             if !self.followers.contains_key(&row) && !self.followers.contains_key(&column) {
                 reduced.push((row, column, value));
