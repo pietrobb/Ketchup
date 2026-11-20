@@ -222,11 +222,27 @@ def struct_fields(source: str, name: str) -> set[str] | None:
     return set(re.findall(r"\bpub\s+(\w+)\s*:", body))
 
 
-def ignored_fields(source: str, function: str) -> set[str]:
+def ignored_fields(source: str, name: str, function: str) -> set[str]:
+    """The fields of `name` that `function` does not bind: `field: _`, those `..` leaves
+    out, and every one when it takes `self` apart nowhere (review 2026-11-20 ac P3:
+    only `field: _,` with its comma was read, so the last field of a one-line pattern,
+    `..` and a function without the pattern passed)."""
     match = re.search(rf"fn {function}\s*\([^)]*\)[^{{]*\{{", source)
     if not match:
         sys.exit(f"HEAD: no fn {function}")
-    return set(re.findall(r"\b(\w+)\s*:\s*_\s*,", enum_body(source, match.end())))
+    fields = struct_fields(source, name)
+    if fields is None:
+        sys.exit(f"HEAD: no struct {name}")
+    body = re.sub(r"//[^\n]*", "", enum_body(source, match.end()))
+    pattern = re.search(rf"\blet\s+(?:Self|{name})\s*\{{([^}}]*)\}}\s*=", body)
+    if not pattern:
+        return fields
+    bound = set()
+    for entry in pattern.group(1).split(","):
+        taken = re.fullmatch(r"\s*(?:ref\s+)?(?:mut\s+)?(\w+)\s*(?::\s*(.*?)\s*)?", entry, re.S)
+        if taken and taken.group(2) != "_":
+            bound.add(taken.group(1))
+    return fields - bound
 
 
 def field_problems(name: str, function: str, head: str, old: str, release: str) -> list[str]:
@@ -237,7 +253,7 @@ def field_problems(name: str, function: str, head: str, old: str, release: str) 
         return []
     return [
         f"{name}::{field}: {release} drops it at its next Save; mark it in {function}"
-        for field in sorted(ignored_fields(head, function) - known)
+        for field in sorted(ignored_fields(head, name, function) - known)
     ]
 
 

@@ -82,6 +82,22 @@ impl SheetSettings {
         "SheetSettings::scale: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"
     ]
     assert checker.field_problems("SheetSettings", "lost_by_released_readers", head, "", "0.1.0") == []
+    # Review 2026-11-20 ac P3: the last field of a one-line pattern, a field `..` leaves
+    # out and a function that takes nothing apart were not read as ignored.
+    for function in (
+        "let Self { north, format: _, scale: _ } = self;\n        north.is_some()",
+        "let Self { north, format: _, .. } = self;\n        north.is_some()",
+        "self.north.is_some()",
+    ):
+        changed = head.replace("let Self { format: _, scale: _, north } = self;\n        north.is_some()", function)
+        assert function in changed
+        assert checker.field_problems(
+            "SheetSettings", "lost_by_released_readers", changed, old, "0.3.2"
+        ) == [
+            *(["SheetSettings::north: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"]
+              if function.startswith("self.") else []),
+            "SheetSettings::scale: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers",
+        ]
 
 
 def test_what_a_release_reads_is_a_product_of_integers():
