@@ -506,8 +506,10 @@ CASTS_AND_ALLOWS = {
     # item (review 2026-11-13 R1113-SEC-600..602, P3: a module-wide one hid 4 unsafe blocks),
     # so 19 -> 18. `#[expect(` counted too (review 2026-11-20 ac P3): theme's four on
     # casts are gone with the casts, its one on push_arc's seven SVG arc parameters stays,
-    # so 18 -> 19, and 216 -> 208 casts.
-    "ketchup-app allows": 19,
+    # so 18 -> 19, and 216 -> 208 casts. SHGetKnownFolderPath of live_bridge::write_policy
+    # (review 2026-11-20 ac P3: the Startup folders where the shell keeps them, not as
+    # %APPDATA% names them), so 19 -> 20.
+    "ketchup-app allows": 20,
     "ketchup-app casts": 208,
     # One `#[expect(` on the CAM review's export (review 2026-11-20 ac P3), so 9 -> 10.
     "ketchup-application allows": 10,
@@ -547,7 +549,8 @@ CASTS_AND_ALLOWS = {
     # `unsafe` blocks, fns and impls, counted since review 2026-11-13 P3: system calls of
     # the app and the configuration under sudo, the OCCT bridge, Finder's open-file
     # callback, the MCP server's checks of its token file and Android's FFI entry points.
-    "ketchup-app unsafe": 18,
+    # One block more for the known Startup folders (review 2026-11-20 ac P3), so 18 -> 19.
+    "ketchup-app unsafe": 19,
     "ketchup-exact unsafe": 1,
     "ketchup-macos-open unsafe": 7,
     "ketchup-mcp unsafe": 9,

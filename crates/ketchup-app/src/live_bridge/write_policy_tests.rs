@@ -130,6 +130,27 @@ fn a_system_place_is_named_by_the_folder_or_the_one_it_is_under() {
     }
 }
 
+/// The Startup folders are where the shell keeps them, not only where the
+/// environment says: a folder moved by "User Shell Folders" is still refused
+/// (review 2026-11-20 ac P3).
+#[cfg(windows)]
+#[test]
+fn the_startup_folders_the_shell_names_are_system_places() {
+    let known = crate::live_bridge::write_policy::known_startup_folders();
+    assert_eq!(known.len(), 2, "the user's and all users': {known:?}");
+    let places = system_places();
+    for folder in &known {
+        assert!(
+            places.contains(&(folder.clone(), Place::Startup)),
+            "{folder:?} in {places:?}"
+        );
+        let inside = folder.join("run.cmd");
+        if let Ok(Some(resolved)) = crate::live_bridge::write_policy::folder_of(&inside) {
+            assert_eq!(system_place(&resolved, &places), Some(Place::Startup));
+        }
+    }
+}
+
 /// A file named at the root of the system drive is refused before anything
 /// is written, saying which place and why.
 #[test]
@@ -227,10 +248,66 @@ fn each_file_a_client_writes_is_listed_for_the_connect_tab() {
 
     let files = wire.app.live.write_log.files();
     let listed: Vec<&Path> = files.iter().map(|file| file.path.as_path()).collect();
-    assert_eq!(listed, [second.as_path(), first.as_path()]);
+    // Each export with the report of what it lost beside it (review
+    // 2026-11-20 ac P3: the report went unlisted).
+    let report = |path: &Path| PathBuf::from(format!("{}.loss.txt", path.display()));
+    let (second_report, first_report) = (report(&second), report(&first));
+    assert_eq!(
+        listed,
+        [
+            second.as_path(),
+            second_report.as_path(),
+            first.as_path(),
+            first_report.as_path()
+        ]
+    );
     assert_eq!(
         files[0].bytes,
         Some(std::fs::metadata(&second).unwrap().len())
     );
     assert_eq!(files[0].at.len(), "12:00:00".len());
+}
+
+/// A save to the document's own file names no path, and was not listed
+/// (review 2026-11-20 ac P3); it is, as the save as before it.
+#[test]
+fn a_save_in_place_is_listed_as_its_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut wire = Wire::new();
+    let path = directory.path().join("house.ketchup");
+    wire.call(Request::SaveAs {
+        expected: None,
+        path: path.display().to_string(),
+    });
+    wire.call(Request::Save { expected: None });
+    let files = wire.app.live.write_log.files();
+    let listed: Vec<&Path> = files.iter().map(|file| file.path.as_path()).collect();
+    assert_eq!(listed, [path.as_path(), path.as_path()]);
+}
+
+/// `apply_and_verify` saving to the document's own file names no path either,
+/// and went unlisted as `save` did (review 2026-11-20 ac P3); it is listed.
+#[test]
+fn an_edit_saved_in_place_is_listed_as_its_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut wire = Wire::connect(grounded_app());
+    let path = directory.path().join("house.ketchup");
+    wire.call(Request::SaveAs {
+        expected: None,
+        path: path.display().to_string(),
+    });
+    let report = wire.call(Request::ApplyAndVerify {
+        expected: None,
+        selection: Some(vec![]),
+        program: program(),
+        validators: mandatory_validators(),
+        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+        strict: false,
+        save: Some(ApplyAndVerifySave::Current {}),
+    });
+    let report = report.result.unwrap();
+    assert_eq!(report["saved"], true, "{report}");
+    let files = wire.app.live.write_log.files();
+    let listed: Vec<&Path> = files.iter().map(|file| file.path.as_path()).collect();
+    assert_eq!(listed, [path.as_path(), path.as_path()]);
 }

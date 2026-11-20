@@ -54,8 +54,19 @@ pub(super) fn admitted(
         LiveBridge::reply(app, queued.id, &queued.reply, Err(refused));
         return None;
     }
-    if let Some(path) = written_path(&queued.request) {
-        let path = PathBuf::from(path);
+    // A save to the document's own file names no path (review 2026-11-20 ac P3).
+    let saved_in_place = || match queued.request {
+        Request::Save { .. }
+        | Request::ApplyAndVerify {
+            save: Some(ApplyAndVerifySave::Current {}),
+            ..
+        } => app.file.path.clone(),
+        _ => None,
+    };
+    if let Some(path) = written_path(&queued.request)
+        .map(PathBuf::from)
+        .or_else(saved_in_place)
+    {
         queued.reply = app
             .live
             .write_log
@@ -143,7 +154,7 @@ pub(super) enum Place {
     /// A folder whose programs start when the user logs in.
     Startup,
     /// The operating system's or the installed programs' folder: Windows and
-    /// Program Files (R2 names no other), so none off Windows.
+    /// Program Files (R1 names no other), so none off Windows.
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     System,
     /// The root of the system drive itself, not the folders on it.
@@ -198,6 +209,13 @@ pub(super) fn system_places() -> Vec<(PathBuf, Place)> {
                 ));
             }
         }
+        // A Startup folder moved by "User Shell Folders" is not where the
+        // environment says (review 2026-11-20 ac P3); the shell says where.
+        places.extend(
+            known_startup_folders()
+                .into_iter()
+                .map(|folder| (folder, Place::Startup)),
+        );
         // `C:` and `\` make the root `C:\`, not the current folder of the drive.
         let mut root = variable("SystemDrive")
             .unwrap_or_else(|| PathBuf::from("C:"))
@@ -220,6 +238,38 @@ pub(super) fn system_places() -> Vec<(PathBuf, Place)> {
         places.push((PathBuf::from("/"), Place::DriveRoot));
     }
     places
+}
+
+/// The user's and all users' Startup folders where the shell keeps them now,
+/// a folder moved included; a folder the shell does not name is left out.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(super) fn known_startup_folders() -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{
+        FOLDERID_CommonStartup, FOLDERID_Startup, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath,
+    };
+    [FOLDERID_Startup, FOLDERID_CommonStartup]
+        .iter()
+        .filter_map(|id| {
+            let mut path: windows_sys::core::PWSTR = std::ptr::null_mut();
+            let flags = KF_FLAG_DONT_VERIFY.cast_unsigned();
+            // SAFETY: `id` is a known folder's id and `path` receives a string
+            // the shell allocates; on success it is NUL-terminated, read before
+            // it is freed, and freed whatever the result (null is allowed).
+            unsafe {
+                let result = SHGetKnownFolderPath(id, flags, std::ptr::null_mut(), &mut path);
+                let found = (result >= 0 && !path.is_null()).then(|| {
+                    let length = (0..).take_while(|&index| *path.add(index) != 0).count();
+                    let wide = std::slice::from_raw_parts(path, length);
+                    PathBuf::from(std::ffi::OsString::from_wide(wide))
+                });
+                CoTaskMemFree(path.cast());
+                found
+            }
+        })
+        .collect()
 }
 
 /// The system place among `places` the canonical `folder` is: the drive's
