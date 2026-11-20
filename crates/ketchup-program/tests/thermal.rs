@@ -205,3 +205,42 @@ fn wrong_inputs_are_refused() {
         "checked already",
     );
 }
+
+/// Review 2026-11-20 ac TH-900: a wall whose U and inner surface pass but in
+/// which Glaser finds condensation is not verified, so `check` exits 3 as it
+/// does for statics, not 0.
+#[test]
+fn a_condensing_wall_is_not_verified_and_check_exits_3() {
+    let osb_outside = r#"[
+        {"name": "gypsum", "thickness": 12.5, "lambda": 0.25, "mu": 10},
+        {"name": "frame", "thickness": 160, "spacing": 625, "stud": 60, "lambda": 0.13, "mu": 50,
+         "infill_lambda": 0.035, "infill_mu": 1},
+        {"name": "osb", "thickness": 15, "lambda": 0.13, "mu": 50},
+    ]"#;
+    let source = wall("site(\"CZ\")", osb_outside, ", theta_e = -15");
+    let condensing = report(&source);
+    let check = only(&condensing);
+    assert_eq!(check.transmittance, "pass", "{check:#?}");
+    assert_eq!(check.surface, "pass", "{check:#?}");
+    assert_eq!(check.condensation, "not_verified", "{check:#?}");
+    assert!(!check.condenses_in.is_empty(), "{check:#?}");
+    assert_eq!(check.status, "not_verified");
+    assert!(condensing.ok, "{:#?}", condensing.issues);
+    assert_eq!(condensing.exit_code(), 3);
+
+    let directory = std::env::temp_dir().join(format!("ketchup-th900-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("wall.star");
+    std::fs::write(&file, &source).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ketchup-program"))
+        .arg("check")
+        .arg(&file)
+        .arg("--summary")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let passing = report(&wall("site(\"SK\")", "WALL", ", theta_e = -15"));
+    assert_eq!(passing.exit_code(), 0);
+}
