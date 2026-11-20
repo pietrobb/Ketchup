@@ -98,12 +98,15 @@ fn sk_zone_sk(
             )),
         ),
         Some(altitude) => {
-            let sk = ((a + altitude.max(0.0) / b) * 1000.0).ceil() / 1000.0;
+            // A site below sea level takes A = 0, and says so (review
+            // 2026-11-10 og PG-410).
+            let used = altitude.max(0.0);
+            let sk = ((a + used / b) * 1000.0).ceil() / 1000.0;
             (
                 Some((
                     sk,
                     format!(
-                        "{SK_ANNEX} NA 2.8 table NA.1, snow zone {zone}: s_k = {a} + {altitude}/{b}"
+                        "{SK_ANNEX} NA 2.8 table NA.1, snow zone {zone}: s_k = {a} + {used}/{b}"
                     ),
                 )),
                 None,

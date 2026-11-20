@@ -156,12 +156,24 @@ fn a_sheet_is_a_dxf_2013_with_its_views_in_model_space_and_a_layout_of_its_paper
     assert!(document.line_types.get("DASHED").is_some());
 }
 
+/// The texts are in a TrueType font every system has, not AutoCAD's `txt` shapes, which a
+/// viewer without them draws in a substitute and with no Central European letters.
+#[test]
+fn a_sheets_texts_are_in_a_truetype_font() {
+    let document = read(&sheet_dxf(&plan_sheet()).expect("the sheet is written"));
+    let standard = document.text_styles.get("Standard").expect("Standard");
+    assert_eq!(standard.font_file, "arial.ttf");
+    assert_eq!(standard.true_type_font, "Arial");
+}
+
 #[test]
 fn a_sheet_is_a_dwg_of_the_same_drawing() {
     let dwg = sheet_dwg(&plan_sheet()).expect("the sheet is written as DWG");
     let dxf = crate::dwg_to_whole_dxf(&dwg, 64 << 20).expect("the DWG reads back");
     let document = read(&dxf.dxf);
     assert_eq!(document.model_space_entities().count(), 4);
+    let standard = document.text_styles.get("Standard").expect("Standard");
+    assert_eq!(standard.font_file, "arial.ttf");
 }
 
 #[test]

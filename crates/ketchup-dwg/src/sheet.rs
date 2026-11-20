@@ -184,6 +184,12 @@ fn sheet_document(sheet: &Sheet) -> Result<CadDocument, DwgError> {
         let mut document = CadDocument::new();
         document.header.insertion_units = 4;
         add_line_types(&mut document);
+        // AutoCAD's own `txt` shapes are not on other systems and have no Central European
+        // letters; Arial is everywhere.
+        if let Some(standard) = document.text_styles.get_mut("Standard") {
+            "arial.ttf".clone_into(&mut standard.font_file);
+            "Arial".clone_into(&mut standard.true_type_font);
+        }
         for layer in &sheet.layers {
             let mut entry = Layer::new(layer.name.clone());
             entry.color = Color::from_index(i16::from(layer.color));

@@ -26,6 +26,7 @@ mod digest;
 mod feature_control_frame;
 pub mod hole_callouts;
 mod polyline_curves;
+mod sheet_language;
 mod source_body;
 pub use bom_item::{BomItem, BomItems};
 pub(crate) use digest::{drawing_layout_digest, drawing_result_digest};
@@ -33,6 +34,7 @@ pub use feature_control_frame::DrawingFeatureControlFrameCell;
 pub(crate) use feature_control_frame::FEATURE_CONTROL_FRAME_TEXT_HEIGHT_MM;
 use feature_control_frame::layout_feature_control_frames;
 pub use polyline_curves::ProjectedPolylineCurve;
+pub use sheet_language::{PartsListWords, SheetLanguage};
 use source_body::unique_current_package;
 
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V1: &str = "ketchup.orthographic-drawing.v1";
@@ -2122,25 +2124,6 @@ pub struct DrawingBomBalloonLayout {
     pub circle_center_mm: [f64; 2],
     pub circle_radius_mm: f64,
     pub text_position_mm: [f64; 2],
-}
-
-/// The words a parts-list row prints beside its part name and quantity, in
-/// the language of the sheet's reader; English by default.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PartsListWords {
-    /// Follows the name of an opposite-hand part, in parentheses.
-    pub mirrored: String,
-    /// Precedes the quantity.
-    pub quantity: String,
-}
-
-impl Default for PartsListWords {
-    fn default() -> Self {
-        Self {
-            mirrored: "mirrored".to_owned(),
-            quantity: "QTY".to_owned(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

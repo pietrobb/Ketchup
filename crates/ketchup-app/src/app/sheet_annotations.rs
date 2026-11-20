@@ -66,6 +66,7 @@ impl KetchupApp {
                 &snapshot,
                 &self.exact.results,
                 &edited,
+                self.sheet_language(),
             )
             .map_err(|error| {
                 rejected("invalid_params")

@@ -23,7 +23,7 @@ pub const ELEMENTS: [&str; 6] = [
 
 pub const BASIS: [&str; 5] = [
     "U = 1 / R_T, R_T = (R'_T + R''_T) / 2 (EN ISO 6946 6.7): R'_T over the sections through the framed layers' members and bays, R''_T with each framed layer's area-weighted conductivity; R_si/R_se 0.13/0.04 a wall, 0.10/0.04 a roof, 0.17/0.04 a floor over the outside, 0.10/0.10 a ceiling under an unheated space, 0.17/0 a floor on the ground; a ventilated layer and those outside it are left out, R_se = R_si",
-    "requirement: STN 73 0540-2+Z1+Z2:2019 table 1 U_r2, normalized from 2021 (a wall and a roof over 45° 0.22, a roof up to 45° and a floor over the outside 0.15, a ceiling under an unheated space 0.20 W/(m²K); a floor on the ground R >= 2.50 m²K/W, table A.1); ČSN 73 0540-2:2011 table 3 U_N,20 for θ_im 18-22 °C (a wall, a roof over 45° and a ceiling under an unheated space 0.30, a roof up to 45° and a floor over the outside 0.24, a floor on the ground 0.45 W/(m²K))",
+    "requirement: STN 73 0540-2+Z1+Z2:2019 table 1 U_N, the normalized value (a wall and a roof over 45° 0.22, a roof up to 45° and a floor over the outside 0.15, a ceiling under an unheated space 0.20 W/(m²K); a floor on the ground R >= 2.50 m²K/W, table A.1); ČSN 73 0540-2:2011 table 3 U_N,20 for θ_im 18-22 °C (a wall, a roof over 45° and a ceiling under an unheated space 0.30, a roof up to 45° and a floor over the outside 0.24, a floor on the ground 0.45 W/(m²K))",
     "inner surface: f_Rsi = 1 - 0.25 / R_T of the section through the members with R_si 0.25 (EN ISO 13788), at least f_Rsi,cr at which the indoor air reaches 80 % on the surface (mould); the safety margins of the national standards on φ_i or f_Rsi are not added",
     "condensation: Glaser in the steady design winter state through the bays (θ_e, φ_e outside, θ_i, φ_i inside, s_d = μ d), p_sat of EN ISO 13788; where the vapour pressure would exceed saturation the build-up is not verified, as the annual balance (EN ISO 13788 monthly climate) is not computed",
     "not checked: thermal bridges, the average U of the envelope, the heat need of the building, the summer stability of the room and a floor's touch temperature",
@@ -146,11 +146,17 @@ impl ThermalReport {
                     parts: Vec::new(),
                     message: if failed {
                         format!(
-                            "thermal_check({:?}): {what} fails (U {} W/(m²K), {}; f_Rsi {} < {}; condenses in {:?})",
+                            "thermal_check({:?}): {what} fails (U {} W/(m²K), {}; f_Rsi {} {} {}; condenses in {:?})",
                             check.name,
                             shown(check.u_w_m2k),
                             check.requirement.as_deref().unwrap_or("no requirement"),
                             shown(check.f_rsi),
+                            // "<" only where the surface fails (review 2026-11-10 og PG-407).
+                            match (check.f_rsi, check.f_rsi_cr) {
+                                (Some(f), Some(cr)) if f >= cr => ">=",
+                                (Some(_), Some(_)) => "<",
+                                _ => "vs",
+                            },
                             shown(check.f_rsi_cr),
                             check.condenses_in
                         )
@@ -199,14 +205,14 @@ enum Requirement {
 
 fn requirement(country: &str, element: &str) -> (Requirement, &'static str) {
     if country == "SK" {
-        const SK: &str = "STN 73 0540-2+Z1+Z2:2019 table 1, U_r2 normalized from 2021";
+        const SK: &str = "STN 73 0540-2+Z1+Z2:2019 table 1, U_N";
         match element {
             "wall" | "steep_roof" => (Requirement::U(0.22), SK),
             "roof" | "floor_over_exterior" => (Requirement::U(0.15), SK),
             "ceiling_under_unheated" => (Requirement::U(0.20), SK),
             _ => (
                 Requirement::R(2.50),
-                "STN 73 0540-2+Z1+Z2:2019 table A.1, R_r2 normalized from 2021",
+                "STN 73 0540-2+Z1+Z2:2019 table A.1, R_N",
             ),
         }
     } else {

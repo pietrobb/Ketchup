@@ -1,6 +1,7 @@
 //! The title block in the lower right corner of a drawing sheet and the ISO A
 //! sheet formats with their frame.
 
+pub use ketchup_model::drawing::SheetLanguage;
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -163,39 +164,6 @@ impl SheetSettings {
 pub struct StoreyLevels {
     pub finished_floor_mm: i32,
     pub structural_mm: i32,
-}
-
-/// A language the sheets can be titled in, whatever the window's: a Czech
-/// project goes to a Czech building office.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum SheetLanguage {
-    #[serde(rename = "cs")]
-    Czech,
-    #[serde(rename = "sk")]
-    Slovak,
-    #[serde(rename = "en")]
-    English,
-}
-
-impl SheetLanguage {
-    pub const ALL: [Self; 3] = [Self::Czech, Self::Slovak, Self::English];
-
-    /// The ISO 639-1 code it is kept and asked for by.
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Czech => "cs",
-            Self::Slovak => "sk",
-            Self::English => "en",
-        }
-    }
-
-    #[must_use]
-    pub fn from_code(code: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|language| language.code() == code)
-    }
 }
 
 /// The usual plan cut: at window-sill height, 1.2 m above the floor.

@@ -197,7 +197,11 @@ pub(crate) fn append(
         }
         if declaration.hole_callouts {
             let report = ketchup_model::drawing::hole_callouts::generate_hole_callouts(
-                &snapshot, &exact, &sheet,
+                &snapshot,
+                &exact,
+                &sheet,
+                // A rule program's sheet declares no language.
+                ketchup_model::drawing::SheetLanguage::English,
             )
             .map_err(|error| problem(&declaration.name, error))?;
             if !report.diagnostics.is_empty() {
