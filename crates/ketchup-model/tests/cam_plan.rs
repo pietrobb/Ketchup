@@ -364,11 +364,12 @@ fn machine_neutral_2_5d_planner_is_deterministic_safe_and_complete() {
         | CamMotionPath::Arc {
             start_mm, end_mm, ..
         } => match motion.kind {
-            // Across at the safe Z; a drill also comes down to just above the stock.
+            // Across at the safe Z; a drill also comes straight down to just above the
+            // stock or the bottom it drilled.
             CamMotionKind::Rapid => {
                 start_mm[2] == 8.0
                     && (end_mm[2] == 8.0
-                        || end_mm[2] == STOCK_TOP_SETUP_Z + DRILL_APPROACH_MM
+                        || end_mm[2] <= STOCK_TOP_SETUP_Z + DRILL_APPROACH_MM
                             && end_mm[..2] == start_mm[..2])
             }
             CamMotionKind::Retract => end_mm[2] == 8.0,
@@ -652,10 +653,11 @@ fn a_drill_breaks_through_a_through_hole_and_stops_on_a_blind_floor() {
 }
 
 /// Review 2026-11-20 ac P3: every step of a deep hole came down from the safe Z at
-/// the plunge feed. It now comes down at rapid to just above the stock and is fed
-/// only from there.
+/// the plunge feed. The first step now comes down at rapid to just above the stock,
+/// each later one to just above the bottom the step before drilled, and is fed only
+/// from there, so the feed through the drilled bore does not grow with the depth.
 #[test]
-fn each_drilling_step_is_fed_only_from_just_above_the_stock() {
+fn each_drilling_step_is_fed_only_from_just_above_what_is_drilled() {
     let document = solid_document();
     let snapshot = document.current();
     let plan = drill_plan(&snapshot, None).unwrap();
@@ -663,7 +665,7 @@ fn each_drilling_step_is_fed_only_from_just_above_the_stock() {
         id: 1,
         points_mm: vec![[10.0, 10.0]],
         top_z_mm: -2.0,
-        bottom_z_mm: -9.0,
+        bottom_z_mm: -12.0,
         through: false,
     }];
     let toolpath = CamToolpath::plan(&snapshot, &plan, &operations).unwrap();
@@ -678,18 +680,28 @@ fn each_drilling_step_is_fed_only_from_just_above_the_stock() {
         .filter(|motion| motion.kind == CamMotionKind::Plunge)
         .map(line)
         .collect();
-    // From -2 to -9 in steps of at most 2 mm.
-    assert_eq!(plunges.len(), 4);
+    // From -2 to -12 in steps of at most 2 mm: five times the stepdown.
+    assert_eq!(plunges.len(), 5);
+    let mut drilled_z = f64::INFINITY;
+    let mut fed_through_bore = 0.0;
+    for (start, end) in &plunges {
+        let expected = approach_z.min(drilled_z + DRILL_APPROACH_MM);
+        assert!((start[2] - expected).abs() <= 1.0e-9, "{plunges:?}");
+        fed_through_bore += (start[2].min(drilled_z) - end[2].max(drilled_z)).max(0.0);
+        drilled_z = end[2];
+    }
+    // Only the approach above each earlier bottom is fed again.
+    let steps = plunges.len() as f64;
     assert!(
-        plunges.iter().all(|(start, _)| start[2] == approach_z),
-        "{plunges:?}"
+        fed_through_bore <= (steps - 1.0) * DRILL_APPROACH_MM + 1.0e-9,
+        "{fed_through_bore} {plunges:?}"
     );
     let descents = toolpath
         .motions
         .iter()
         .filter(|motion| motion.kind == CamMotionKind::Rapid)
         .map(line)
-        .filter(|(start, end)| start[2] == 8.0 && end[2] == approach_z)
+        .filter(|(start, end)| start[2] == 8.0 && end[2] <= approach_z)
         .count();
     assert_eq!(descents, plunges.len());
 }

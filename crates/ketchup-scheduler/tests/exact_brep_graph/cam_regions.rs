@@ -693,6 +693,8 @@ fn a_pointed_blind_hole_is_drilled_to_full_diameter_by_a_drill_of_its_point() {
     let area = std::f64::consts::PI * DRILL_RADIUS.powi(2);
     let hole_mm3 = area * (10.0 - POINTED_RIM_Z + point / 3.0);
     assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    // Every later step comes down its bore at rapid, clear of the point it drilled.
+    assert!(simulation.collisions.is_empty(), "{simulation:?}");
     assert!(simulation.residual_stock_mm3 <= 1.0e-3, "{simulation:?}");
     assert!(
         (simulation.removed_stock_mm3 - hole_mm3).abs() <= 1.0e-3,
