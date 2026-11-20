@@ -181,6 +181,20 @@ impl LiveBridge {
                 direction,
                 Arc::new(AtomicBool::new(cancelled.load(Ordering::Acquire))),
             ),
+            // R1120ac-EXA-900: the control net, answered in this call.
+            Request::SurfaceControlNet(net) => {
+                let cancelled = Arc::new(AtomicBool::new(cancelled.load(Ordering::Acquire)));
+                Self::require_request_authority(&cancelled)?;
+                Self::guard(app, &net.expected)?;
+                super::measurement::control_net(
+                    app.document.current(),
+                    net,
+                    Self::worker_path(app),
+                    app.file.container_data.clone(),
+                    cancelled,
+                )
+                .map_err(super::measurement::code)
+            }
             Request::ValidateProgram {
                 expected,
                 validators,

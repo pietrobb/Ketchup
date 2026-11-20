@@ -80,7 +80,7 @@ crates/ketchup-app/src/live_bridge/consent.rs let_else_error 2
 crates/ketchup-app/src/live_bridge/drawing_edit.rs dropped_closure 1
 crates/ketchup-app/src/live_bridge/drawing_edit.rs str_result 7
 crates/ketchup-app/src/live_bridge/drawings.rs formatted_cause 4
-crates/ketchup-app/src/live_bridge/drawings.rs str_result 6
+crates/ketchup-app/src/live_bridge/drawings.rs str_result 5
 crates/ketchup-app/src/live_bridge/dwg_import.rs str_result 2
 crates/ketchup-app/src/live_bridge/image.rs debug_formatted 1
 crates/ketchup-app/src/live_bridge/image.rs str_result 7
@@ -208,10 +208,11 @@ crates/ketchup-exact/src/sweep_loft.rs or_default 1
 crates/ketchup-geometry/src/sketch/solver.rs unreachable 4
 crates/ketchup-geometry/src/thread_profile.rs dropped_error 1
 crates/ketchup-headless/src/protocol.rs debug_formatted 1
-crates/ketchup-headless/src/protocol.rs dropped_variant 13
+crates/ketchup-headless/src/protocol.rs dropped_variant 5
 crates/ketchup-headless/src/protocol.rs or_default 1
 crates/ketchup-headless/src/protocol.rs stringified_variant 2
 crates/ketchup-headless/src/protocol.rs unreachable 2
+crates/ketchup-headless/src/protocol/cam_input.rs dropped_variant 4
 crates/ketchup-headless/src/protocol/model_tools.rs debug_formatted 4
 crates/ketchup-interaction/src/lib.rs formatted_cause 1
 crates/ketchup-interaction/src/locale_pattern.rs let_else_error 1

@@ -458,6 +458,28 @@ impl Server {
                         request.id,
                     )
                 }
+                "surface_control_net" => {
+                    #[derive(Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct ControlNet {
+                        definition_id: u64,
+                        feature_id: u64,
+                        #[serde(default)]
+                        offset: usize,
+                    }
+                    let request: ControlNet =
+                        serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;
+                    return ketchup_application::surface_control_net::surface_control_net_with_worker(
+                        &snapshot,
+                        ketchup_model::document::DefinitionId(request.definition_id),
+                        ketchup_model::document::FeatureId(request.feature_id),
+                        request.offset,
+                        self.settings.exact_worker_path.as_deref(),
+                        self.session.container_data().blobs(),
+                        &AtomicBool::new(false),
+                    )
+                    .map_err(|rejection| Error::caused_by(rejection.code(), &rejection));
+                }
                 "workset_create" => {
                     let request: PageRequest =
                         serde_json::from_value(params).map_err(|e| Error::invalid_because(&e))?;

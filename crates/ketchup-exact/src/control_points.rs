@@ -1,4 +1,6 @@
 use super::*;
+use ketchup_geometry::linalg::distance;
+use ketchup_tolerance::{CONTROL_POINT_MATCH_MM, CONTROL_POINT_MATCH_SHARE};
 
 /// One control point of a surface's B-spline form, which lies at `from_mm`,
 /// to move by `offset_mm` and, with `weight`, to give a new (positive) weight.
@@ -23,6 +25,31 @@ pub struct SurfaceControlNet {
     pub points_mm: Vec<[f64; 3]>,
     /// The weight of every control point, in the same order.
     pub weights: Vec<f64>,
+}
+
+impl SurfaceControlNet {
+    /// How far from its point a move's `from_mm` may lie and still name it:
+    /// [`CONTROL_POINT_MATCH_MM`], or less on a net whose neighbouring poles lie
+    /// nearer than four times that (R1120ac-EXA-900: a match within the linear
+    /// tolerance refused a position copied with fewer than all its digits).
+    pub fn match_tolerance_mm(&self) -> f64 {
+        let columns = usize::try_from(self.v_count).unwrap_or(usize::MAX);
+        let point = |index: usize| self.points_mm.get(index).copied();
+        let nearest = (0..self.points_mm.len())
+            .flat_map(|index| {
+                let next_column = (columns > 0 && (index + 1) % columns != 0)
+                    .then(|| point(index + 1))
+                    .flatten();
+                [next_column, index.checked_add(columns).and_then(point)]
+                    .into_iter()
+                    .flatten()
+                    .map(move |other| distance(self.points_mm[index], other))
+            })
+            .filter(|gap| *gap > DEFAULT_LINEAR_TOLERANCE_MM)
+            .fold(f64::INFINITY, f64::min);
+        (CONTROL_POINT_MATCH_SHARE * nearest)
+            .clamp(DEFAULT_LINEAR_TOLERANCE_MM, CONTROL_POINT_MATCH_MM)
+    }
 }
 
 /// What breaks `continuity` at a measured seam, if anything; the tolerances
@@ -165,6 +192,7 @@ impl ExactBackend {
             .then(|| u64::from(u_index) * u64::from(net.v_count) + u64::from(v_index))
             .and_then(|index| usize::try_from(index).ok())
             .and_then(|index| net.points_mm.get(index).copied());
+        let tolerance_mm = net.match_tolerance_mm();
         let shown = |point: [f64; 3]| format!("({}, {}, {}) mm", point[0], point[1], point[2]);
         match at {
             None => {
@@ -177,18 +205,14 @@ impl ExactBackend {
                     net.v_count
                 )));
             }
-            Some(at)
-                if (0..3)
-                    .map(|axis| (at[axis] - from_mm[axis]).powi(2))
-                    .sum::<f64>()
-                    .sqrt()
-                    > DEFAULT_LINEAR_TOLERANCE_MM =>
-            {
+            Some(at) if distance(at, from_mm) > tolerance_mm => {
                 return Err(refuse(format!(
-                    "Control point ({u_index}, {v_index}) lies at {}, not at {} where the move \
-                     expects it, in the surface's {} x {} control net. If an earlier edit \
-                     changed the net, move the point of the net again",
+                    "Control point ({u_index}, {v_index}) lies at {}, not within {} mm of {} \
+                     where the move expects it, in the surface's {} x {} control net. Read the \
+                     net with inspect surface_control_net; if an earlier edit changed the net, \
+                     move the point of the net again",
                     shown(at),
+                    tolerance_mm,
                     shown(from_mm),
                     net.u_count,
                     net.v_count

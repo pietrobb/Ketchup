@@ -535,6 +535,7 @@ fn stale_face_measurement_completion_is_not_published_as_current() {
         &app,
         &egui::Context::default(),
         MeasurementJob {
+            kind: WorkerRead::Faces,
             id: 1,
             reply,
             cancelled: cancelled.clone(),

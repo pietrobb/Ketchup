@@ -77,6 +77,9 @@ pub enum WorkerRequest {
         result_fingerprint: String,
         output: PathBuf,
     },
+    /// The control net of the single-face surface the graph makes, which a
+    /// control-point move names its point by (R1120ac-EXA-900).
+    SurfaceControlNet(GraphInput),
     SimulateCam {
         graph: ExactBRepGraph,
         request: Box<CamSimulationWireRequest>,
@@ -163,6 +166,18 @@ pub enum WorkerRequest {
     },
 }
 
+/// A surface's control net: `u_count` rows of `v_count` points (v fastest), each
+/// with its weight, and the distance within which a move's `from_mm` names a point.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SurfaceControlNetWire {
+    pub result_fingerprint: String,
+    pub u_count: u32,
+    pub v_count: u32,
+    pub points_mm: Vec<[f64; 3]>,
+    pub weights: Vec<f64>,
+    pub match_tolerance_mm: f64,
+}
+
 /// Row-major local-to-world affine placements of two loaded slots.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PairQuery {
@@ -185,6 +200,7 @@ pub enum WorkerReply {
     Mesh(MeshReceipt),
     VolumeMesh(VolumeMeshReceipt),
     Exported(ExportReceipt),
+    ControlNet(SurfaceControlNetWire),
     Cam(CamSimulationWireEvidence),
     Xde(StepXdeWorkerEvidence),
     ImportPart(WorkerImportPart),

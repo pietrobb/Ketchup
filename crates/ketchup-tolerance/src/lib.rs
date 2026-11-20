@@ -94,6 +94,16 @@ pub const CONTACT_FIT_MM: f64 = 0.01;
 /// exact surface, so only rounding separates them.
 pub const PICK_MATCH_MM: f64 = 0.001;
 
+/// Distance within which a control point lies at the `from_mm` a move expects, in mm: a
+/// position copied with fewer digits than it has still names its point (R1120ac-EXA-900).
+/// Never more than [`CONTROL_POINT_MATCH_SHARE`] of the shortest distance between
+/// neighbouring poles, so the match stays with one point of a dense net.
+pub const CONTROL_POINT_MATCH_MM: f64 = 0.001;
+
+/// The share of the shortest distance between neighbouring poles of a control net within
+/// which a `from_mm` still names its point.
+pub const CONTROL_POINT_MATCH_SHARE: f64 = 0.25;
+
 /// Distance within which a point load stands on a support of a continuous span, in mm:
 /// it then goes straight into that support instead of loading the span.
 pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;

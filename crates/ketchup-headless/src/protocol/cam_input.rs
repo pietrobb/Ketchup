@@ -1,6 +1,27 @@
 //! The CAM operations and fixtures a `cam_preview` or `cam_export` request names.
 use super::*;
 
+impl From<CamReviewError> for Error {
+    fn from(error: CamReviewError) -> Self {
+        let code = match &error {
+            CamReviewError::PlanMissing => "cam_plan_missing",
+            CamReviewError::WorkerUnavailable => "exact_worker_unavailable",
+            CamReviewError::Planning(_) => "cam_planning_rejected",
+            CamReviewError::Simulation(_) => "cam_simulation_rejected",
+            CamReviewError::Postprocessing(_) => "cam_postprocessing_rejected",
+            CamReviewError::ReviewLimit => "cam_review_limit",
+            CamReviewError::InvalidToken => "cam_review_token_invalid",
+            CamReviewError::StaleReview | CamReviewError::ReplacedFileChanged => "stale_state",
+            CamReviewError::SubstitutedEvidence => "cam_review_substituted",
+            CamReviewError::ConfirmationRequired => "confirmation_required",
+            CamReviewError::InvalidPath => "invalid_path",
+            CamReviewError::FileExists => "file_exists",
+            CamReviewError::Write(_) => "io_error",
+        };
+        Self::caused_by(code, &error)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum CamOperationInput {

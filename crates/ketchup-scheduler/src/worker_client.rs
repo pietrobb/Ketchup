@@ -4,9 +4,10 @@ use super::*;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
-    RefineInput, RefineOutcome, ReportOutcome, SkpInput, SkpOutcome, SourceFile, UnderlayInput,
-    UnderlayOutcome, UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart,
-    WorkerReply, WorkerRequest, encode_frame, protocol_identity, read_frame,
+    RefineInput, RefineOutcome, ReportOutcome, SkpInput, SkpOutcome, SourceFile,
+    SurfaceControlNetWire, UnderlayInput, UnderlayOutcome, UnderlayWriteInput,
+    UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest,
+    encode_frame, protocol_identity, read_frame,
 };
 use ketchup_rejection::{Reason, dropped};
 
@@ -286,6 +287,34 @@ impl ExactWorkerClient {
                 result_fingerprint: exported,
                 sha256: None,
             }) if exported == result_fingerprint => Ok(()),
+            reply => self.unexpected(reply),
+        }
+    }
+
+    pub(crate) fn surface_control_net_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        imported_sources: &[(&str, &Path)],
+        cancelled: &AtomicBool,
+    ) -> Result<SurfaceControlNetWire, WorkerError> {
+        let input = graph_input(graph, imported_sources)?;
+        let budget = input.budget();
+        match self.call(&WorkerRequest::SurfaceControlNet(input), cancelled, budget)? {
+            WorkerReply::ControlNet(net) => {
+                let count = usize::try_from(u64::from(net.u_count) * u64::from(net.v_count));
+                if count.ok() != Some(net.points_mm.len())
+                    || net.weights.len() != net.points_mm.len()
+                    || !(net.match_tolerance_mm.is_finite() && net.match_tolerance_mm > 0.0)
+                {
+                    return self.fail_protocol(format!(
+                        "invalid control net of {} x {} with {} points",
+                        net.u_count,
+                        net.v_count,
+                        net.points_mm.len()
+                    ));
+                }
+                Ok(net)
+            }
             reply => self.unexpected(reply),
         }
     }

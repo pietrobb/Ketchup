@@ -192,7 +192,7 @@ impl LiveBridge {
         // others (review 2026-11-02 MCP-123).
         let (job_target, job_reason) = match &self.program_check_job {
             Some(Job::Validating(_)) => ("program_validate", "A program validation is running."),
-            Some(Job::Measuring(_)) => ("measure_faces", "A face measurement is running."),
+            Some(Job::Measuring(job)) => job.kind.busy(),
             Some(Job::Plugin(_) | Job::PluginPreparing(_)) => {
                 ("run_plugin", "A plugin is running.")
             }
