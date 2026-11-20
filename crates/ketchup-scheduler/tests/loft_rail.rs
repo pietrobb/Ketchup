@@ -184,7 +184,19 @@ fn a_rail_without_a_guide_is_refused_before_anything_changes() {
                 rail,
             },
         )]));
-        assert_eq!(refused.err(), Some(CanonicalError::InvalidLoft));
+        assert!(
+            matches!(
+                refused,
+                Err(CanonicalError::InvalidFeatureInput(
+                    ketchup_model::document::FeatureInputError {
+                        field: ketchup_model::document::FeatureInputField::Rail,
+                        ..
+                    }
+                ))
+            ),
+            "{:?}",
+            refused.as_ref().err()
+        );
         assert_eq!(document.current().canonical_digest(), before);
     }
 }

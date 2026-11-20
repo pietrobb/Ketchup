@@ -136,7 +136,19 @@ fn more_inner_curves_than_a_network_takes_are_refused_before_anything_changes() 
             FeatureId(511),
             inner,
         )]));
-        assert_eq!(refused.err(), Some(CanonicalError::InvalidSweep));
+        assert!(
+            matches!(
+                refused,
+                Err(CanonicalError::InvalidFeatureInput(
+                    ketchup_model::document::FeatureInputError {
+                        field: ketchup_model::document::FeatureInputField::Inner,
+                        ..
+                    }
+                ))
+            ),
+            "{:?}",
+            refused.as_ref().err()
+        );
         assert_eq!(document.current().canonical_digest(), before);
     }
 }

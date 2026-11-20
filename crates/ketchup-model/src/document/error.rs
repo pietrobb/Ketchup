@@ -120,6 +120,8 @@ pub enum CanonicalError {
     GroupNotEmpty(GroupId),
     GroupCycle(GroupId),
     InvalidFeatureOwnership(FeatureId),
+    /// A field of a surface or loft input breaks its rule (R1120ac-EXA-901).
+    InvalidFeatureInput(FeatureInputError),
     InvalidFeatureMap,
     InvalidSolidToolPlan,
     UnsupportedSolidToolTransform,
@@ -351,6 +353,7 @@ impl CanonicalError {
             Self::GroupNotEmpty(..) => "canonical.group_not_empty",
             Self::GroupCycle(..) => "canonical.group_cycle",
             Self::InvalidFeatureOwnership(..) => "canonical.invalid_feature_ownership",
+            Self::InvalidFeatureInput(_) => "canonical.invalid_feature_input",
             Self::InvalidFeatureMap => "canonical.invalid_feature_map",
             Self::InvalidSolidToolPlan => "canonical.invalid_solid_tool_plan",
             Self::UnsupportedSolidToolTransform => "canonical.unsupported_solid_tool_transform",
@@ -741,6 +744,7 @@ impl fmt::Display for CanonicalError {
                 "feature {} has invalid definition ownership",
                 id.0
             ),
+            Self::InvalidFeatureInput(error) => write!(formatter, "{error}"),
             Self::InvalidFeatureMap => {
                 formatter.write_str("feature clone map is incomplete or non-canonical")
             }

@@ -1307,7 +1307,16 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
         }]))
         .err()
         .expect("unordered Loft sections must reject atomically");
-    assert_eq!(error, CanonicalError::InvalidLoft);
+    assert!(
+        matches!(
+            error,
+            CanonicalError::InvalidFeatureInput(ketchup_model::document::FeatureInputError {
+                field: ketchup_model::document::FeatureInputField::SectionElevation(1),
+                ..
+            })
+        ),
+        "{error:?}"
+    );
     assert_eq!(document.current().canonical_digest(), before);
     assert_eq!(document.visible_undo_steps(), undo_steps);
 
