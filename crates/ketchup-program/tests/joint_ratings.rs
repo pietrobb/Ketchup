@@ -46,6 +46,32 @@ fn an_arunda_joint_carries_its_published_allowable_load_but_stays_unverified_wit
     assert_eq!(check.missing, [NO_LOAD]);
 }
 
+/// Review 2026-11-20 ac P3: `--summary` counted only the members in its
+/// statics block, so a program whose joints left the verdict not verified
+/// showed every member passing and nothing else.
+#[test]
+fn the_summary_counts_the_joints_of_the_statics_verdict() {
+    let directory = std::env::temp_dir().join(format!("ketchup-summary-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("joints.star");
+    std::fs::write(&file, format!("{FRAME}arunda(joist, header, \"50 B\")\n")).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ketchup-program"))
+        .arg("check")
+        .arg(&file)
+        .arg("--summary")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    let summary: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {output:?}"));
+    assert_eq!(summary["statics_verdict"], "not_verified", "{summary:#}");
+    assert_eq!(
+        summary["statics"]["joints"],
+        serde_json::json!({"checked": 1, "pass": 0, "fail": 0, "not_verified": 1}),
+        "{summary:#}"
+    );
+}
+
 /// Review 2026-10-09 (P3): the dovetail was missing from BTLx without a word.
 #[test]
 fn an_arunda_dovetail_that_no_export_cuts_is_a_warning() {

@@ -93,6 +93,42 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\"{})
     );
 }
 
+/// Review 2026-11-20 ac P3: a hanger screwed twice to the side of a grounded
+/// column bends, and so does the column; nothing on the path pushes along its
+/// axis, so it has no buckling force (the slanting run from the beam to the
+/// screws gave the hanger one in MN).
+#[test]
+fn a_hanger_bent_to_a_column_does_not_buckle() {
+    let held = beam_with(
+        |x| {
+            format!(
+                "box(\"hanger {x}\", (50, 100, 600), at = ({x}, 80, 2300), material = \"GL24h\", tags = [\"hanger\"])
+box(\"column {x}\", (200, 200, 2900), at = ({}, 180, 0), material = \"GL24h\", grounded = True)
+joint(\"hanger {x}\", \"beam\", kind = \"screw\")
+joint(\"hanger {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 180, 2850), ({}, 180, 2750)])
+",
+                x - 75,
+                x + 25,
+                x + 25
+            )
+        },
+        "brace([\"beam\"], by = [\"hanger\"], edge = \"top\")\n",
+    );
+    let braces: Vec<_> = held
+        .loads
+        .members
+        .iter()
+        .flat_map(|load| &load.braced_by)
+        .filter(|brace| brace.part.starts_with("hanger"))
+        .collect();
+    assert_eq!(braces.len(), PLACES.len(), "{braces:?}");
+    for brace in braces {
+        let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
+        assert!(anchorage.stiffness_n_mm > 0.0, "{brace:?}");
+        assert_eq!(anchorage.capacity_n, None, "{brace:?}");
+    }
+}
+
 /// R1120ac-PG-901: a deck on the beam anchored to grounded blocks on one
 /// grounded lath standing on a single post passed with enough blocks (eight
 /// gave C = 109 N/mm on a post of about 30 alone): anchorages sharing a part on

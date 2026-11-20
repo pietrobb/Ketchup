@@ -136,7 +136,12 @@ pub(super) fn part_capacity(
     if long <= f64::EPSILON || reach <= f64::EPSILON {
         return f64::INFINITY;
     }
-    let along = dot(sideways, scale(run, 1.0 / long)).abs();
+    // The force along the part's axis, as [`part_give`] stretches it, not along the
+    // run: an upright hanger bent sideways runs a little across from where the member
+    // holds it to its anchor, and was given its Euler load over that share, in MN
+    // (review 2026-11-20 ac P3).
+    let (axis, _) = section(obb, run);
+    let along = dot(sideways, obb.axes[axis]).abs();
     if along <= ALONG_AXIS_NEGLIGIBLE {
         return f64::INFINITY;
     }
@@ -201,5 +206,22 @@ mod tests {
             2400.0,
         );
         assert!(across.is_infinite());
+    }
+
+    /// An upright 50 x 100 x 600 held at its foot 100 mm to the side of where
+    /// it is held at its top bends: nothing pushes along it, so it does not
+    /// buckle (it was given about 1 MN, review 2026-11-20 ac P3).
+    #[test]
+    fn an_upright_bent_sideways_on_a_slanting_run_does_not_buckle() {
+        let obb = post(50.0, 100.0, 600.0);
+        let capacity = part_capacity(
+            &obb,
+            7_400.0,
+            [25.0, 0.0, 550.0],
+            [25.0, 100.0, 150.0],
+            [0.0, 1.0, 0.0],
+            412.0,
+        );
+        assert!(capacity.is_infinite(), "{capacity}");
     }
 }
