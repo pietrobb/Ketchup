@@ -2932,7 +2932,11 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
             FeatureId(202_106),
             Some(guide),
             LoftContinuity::Curvature,
-            CanonicalError::InvalidLoft,
+            CanonicalError::InvalidFeatureInput(ketchup_model::document::FeatureInputError {
+                field: ketchup_model::document::FeatureInputField::Continuity,
+                rule: "a loft along a guide curve is at most tangent-continuous; drop the guide or \
+                       choose tangent",
+            }),
         ),
     ] {
         let before = document.current().canonical_digest();

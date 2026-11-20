@@ -1,6 +1,8 @@
 use super::*;
 use ketchup_geometry::linalg::normalize_within;
 use ketchup_tolerance::limits;
+pub(super) mod feature_input;
+pub use feature_input::{FeatureInputError, FeatureInputField};
 
 pub(super) const MAX_STABLE_SUBSHAPE_ROLE_BYTES: usize = 128;
 
@@ -1119,10 +1121,7 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::SurfaceTrim { target, cutter } => {
-            if target == cutter {
-                return Err(CanonicalError::InvalidFeatureOwnership(*target));
-            }
-            Ok(())
+            feature_input::surface_trim(*target, *cutter)
         }
         FeatureKind::SurfaceThicken { thickness, .. } => {
             Dimension::new(thickness.source_token(), thickness.millimetres()).map(|_| ())?;
@@ -1172,7 +1171,7 @@ pub(super) fn validate_feature_kind(
             | SurfaceBodySpec::Blend { .. }
             | SurfaceBodySpec::ControlPoint { .. }
             | SurfaceBodySpec::Boundary { .. }),
-        ) => validate_unlofted_surface_body(spec, tolerance_mm),
+        ) => feature_input::surface_body(spec, tolerance_mm),
         FeatureKind::Loft {
             sections,
             guide,
@@ -1184,71 +1183,8 @@ pub(super) fn validate_feature_kind(
             guide,
             continuity,
             rail,
-        }) => {
-            if !(2..=limits::LOFT_SECTIONS).contains(&sections.len())
-                || (guide.is_some() && *continuity == LoftContinuity::Curvature)
-                || (rail.is_some() && (guide.is_none() || rail == guide))
-                || sections.windows(2).any(|pair| {
-                    pair[0].elevation_mm >= pair[1].elevation_mm
-                        || pair[0].profile == pair[1].profile
-                })
-                || sections.iter().any(|section| {
-                    !section.elevation_mm.is_finite()
-                        || section.elevation_mm.abs() > MAX_COORDINATE_MM
-                })
-                || sections
-                    .iter()
-                    .map(|section| section.profile)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != sections.len()
-            {
-                return Err(CanonicalError::InvalidLoft);
-            }
-            Ok(())
-        }
+        }) => feature_input::loft(sections, *guide, *continuity, *rail),
         FeatureKind::Boolean { .. } => Ok(()),
-    }
-}
-
-/// A planar, blend, control-point or boundary surface body; lofts share `validate_feature_kind`'s loft rules.
-fn validate_unlofted_surface_body(
-    spec: &SurfaceBodySpec,
-    tolerance_mm: f64,
-) -> Result<(), CanonicalError> {
-    match spec {
-        SurfaceBodySpec::Blend { first, second, .. } => (first != second)
-            .then_some(())
-            .ok_or(CanonicalError::InvalidFeatureOwnership(*first)),
-        SurfaceBodySpec::Boundary { segments, inner } => {
-            (is_valid_boundary_loop(segments, tolerance_mm)
-                && are_valid_network_curves(inner, tolerance_mm))
-            .then_some(())
-            .ok_or(CanonicalError::InvalidSweep)
-        }
-        SurfaceBodySpec::ControlPoint {
-            target,
-            from_mm,
-            offset_mm,
-            weight,
-            keep,
-            ..
-        } => {
-            let mut kept = BTreeSet::new();
-            (from_mm
-                .iter()
-                .chain(offset_mm)
-                .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
-                && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
-                && (weight.is_some() || offset_mm.iter().any(|value| *value != 0.0))
-                && keep.len() <= limits::FEATURE_REFERENCES
-                && keep
-                    .iter()
-                    .all(|seam| seam.surface != *target && kept.insert(seam.surface)))
-            .then_some(())
-            .ok_or(CanonicalError::InvalidFeatureOwnership(*target))
-        }
-        SurfaceBodySpec::Planar { .. } | SurfaceBodySpec::Loft { .. } => Ok(()),
     }
 }
 

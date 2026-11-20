@@ -683,10 +683,18 @@ fn validate_loft_paths(
     feature: &Feature,
     feature_position: usize,
     continuity: LoftContinuity,
-    paths: impl IntoIterator<Item = FeatureId>,
+    guide: Option<FeatureId>,
+    rail: Option<FeatureId>,
 ) -> Result<(), CanonicalError> {
     let definition = &product.definitions[&feature.definition_id];
-    for path in paths {
+    let paths = [
+        (FeatureInputField::Guide, guide),
+        (FeatureInputField::Rail, rail),
+    ];
+    for (field, path) in paths
+        .into_iter()
+        .filter_map(|(field, path)| path.map(|path| (field, path)))
+    {
         let path_feature = product
             .features
             .get(&path)
@@ -696,13 +704,13 @@ fn validate_loft_paths(
             .iter()
             .position(|candidate| *candidate == path)
             .is_some_and(|position| position < feature_position);
-        if continuity == LoftContinuity::Curvature
-            || path_feature.definition_id != feature.definition_id
-            || !matches!(path_feature.kind, FeatureKind::SpatialPath { .. })
-            || !path_precedes_loft
-        {
-            return Err(CanonicalError::InvalidLoft);
-        }
+        feature_input::loft_path(
+            field,
+            continuity,
+            path_feature.definition_id == feature.definition_id
+                && matches!(path_feature.kind, FeatureKind::SpatialPath { .. })
+                && path_precedes_loft,
+        )?;
     }
     Ok(())
 }
@@ -1099,7 +1107,7 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     .iter()
                     .position(|candidate| *candidate == feature.id)
                     .expect("validated definition contains feature");
-                for section in sections {
+                for (index, section) in sections.iter().enumerate() {
                     let profile = product
                         .features
                         .get(&section.profile)
@@ -1117,15 +1125,13 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                             points.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
                         }),
                     };
-                    if profile.definition_id != feature.definition_id
-                        || !valid_profile
-                        || !source_precedes_loft
-                    {
-                        return Err(CanonicalError::InvalidLoft);
-                    }
+                    let ours = profile.definition_id == feature.definition_id;
+                    feature_input::loft_profile(
+                        index,
+                        ours && valid_profile && source_precedes_loft,
+                    )?;
                 }
-                let paths = guide.into_iter().chain(rail);
-                validate_loft_paths(product, feature, feature_position, continuity, paths)?;
+                validate_loft_paths(product, feature, feature_position, continuity, guide, rail)?;
             }
             FeatureKind::Boolean { target, tool, .. } => {
                 let target_feature = product
