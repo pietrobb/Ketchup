@@ -335,9 +335,10 @@ fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
                 let stat = rustix::fs::fstat(&opened).map_err(failed)?;
                 // Another folder or a link put in its place since it was read.
                 if (stat.st_dev, stat.st_ino) != (found.st_dev, found.st_ino) {
-                    return Err(unreadable(io::Error::other(
-                        "a folder on the way changed while it was read",
-                    ))
+                    return Err(HomeError::ChangedWhileRead {
+                        home: path.to_owned(),
+                        folder: at.join(&part),
+                    }
                     .into());
                 }
                 above.push(std::mem::replace(&mut folder, (opened, stat)));
@@ -370,10 +371,27 @@ fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
 #[cfg(unix)]
 #[derive(Debug)]
 enum HomeError {
-    Unreadable { home: PathBuf, error: io::Error },
-    SharedWithOthers { home: PathBuf },
-    OwnersDiffer { home: PathBuf, base: PathBuf },
-    ManyHolders { folder: PathBuf },
+    Unreadable {
+        home: PathBuf,
+        error: io::Error,
+    },
+    /// Another folder or a link put in the place of `folder` on the way to
+    /// `home` while it was read: HOME is right, the race was lost (review
+    /// 2026-11-20 ac P3).
+    ChangedWhileRead {
+        home: PathBuf,
+        folder: PathBuf,
+    },
+    SharedWithOthers {
+        home: PathBuf,
+    },
+    OwnersDiffer {
+        home: PathBuf,
+        base: PathBuf,
+    },
+    ManyHolders {
+        folder: PathBuf,
+    },
 }
 
 #[cfg(unix)]
@@ -383,6 +401,13 @@ impl std::fmt::Display for HomeError {
             Self::Unreadable { home, .. } => write!(
                 f,
                 "the home {} that HOME names cannot be read; set HOME to your home folder",
+                home.display()
+            ),
+            Self::ChangedWhileRead { home, folder } => write!(
+                f,
+                "the folder {} on the way to {} was replaced while it was read; \
+                 try again, and if it keeps changing, find what renames it",
+                folder.display(),
                 home.display()
             ),
             Self::SharedWithOthers { home } => write!(
@@ -413,7 +438,8 @@ impl std::error::Error for HomeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Unreadable { error, .. } => Some(error),
-            Self::SharedWithOthers { .. }
+            Self::ChangedWhileRead { .. }
+            | Self::SharedWithOthers { .. }
             | Self::OwnersDiffer { .. }
             | Self::ManyHolders { .. } => None,
         }
@@ -425,6 +451,7 @@ impl From<HomeError> for io::Error {
     fn from(error: HomeError) -> Self {
         let kind = match &error {
             HomeError::Unreadable { error, .. } => error.kind(),
+            HomeError::ChangedWhileRead { .. } => io::ErrorKind::Other,
             HomeError::SharedWithOthers { .. }
             | HomeError::OwnersDiffer { .. }
             | HomeError::ManyHolders { .. } => io::ErrorKind::PermissionDenied,

@@ -5,6 +5,7 @@
 use super::Response;
 use crate::delivery::Deliver;
 use eframe::egui;
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -43,9 +44,10 @@ impl WriteLog {
     }
 
     /// The sender a request writing `path` answers on in place of `reply`:
-    /// the answer goes on to `reply` as it came, and when it is a success that
-    /// left a file at `path` other than the one there before, the file is
-    /// listed. A request answered never drops its `reply` unanswered.
+    /// the answer goes on to `reply` as it came, and when it is a success the
+    /// files it says it wrote are listed ([`answered_files`]), else `path` when
+    /// the answer says it was saved or the file there is another than before. A
+    /// request answered never drops its `reply` unanswered.
     pub(super) fn watch(
         &self,
         path: PathBuf,
@@ -64,9 +66,23 @@ impl WriteLog {
                 let Some(answer) = answers.iter().next() else {
                     return;
                 };
-                if answer.ok && stamp(&path).is_some_and(|after| Some(after) != before) {
-                    log.record(&path);
-                    context.request_repaint();
+                if answer.ok {
+                    let result = answer.result.as_ref();
+                    let mut files = answered_files(result);
+                    // A save of the same size within the clock of a FAT disk
+                    // leaves the stamp as it was, so the answer is believed.
+                    let saved = result.is_some_and(|result| result["saved"] == true);
+                    if files.is_empty()
+                        && (saved || stamp(&path).is_some_and(|after| Some(after) != before))
+                    {
+                        files.push(path);
+                    }
+                    for file in files.iter().rev() {
+                        log.record(file);
+                    }
+                    if !files.is_empty() {
+                        context.request_repaint();
+                    }
                 }
                 forward.deliver(answer);
             });
@@ -105,6 +121,53 @@ fn stamp(path: &Path) -> Option<(Option<SystemTime>, u64)> {
     std::fs::metadata(path)
         .ok()
         .map(|metadata| (metadata.modified().ok(), metadata.len()))
+}
+
+/// The files a successful answer says its request wrote, as the exporter
+/// named them (review 2026-11-20 ac P3: the log knew only the path asked for,
+/// so a DXF set, its list, the reports and companions beside an export and a
+/// variant's takeoff went unlisted): a document saved where `save_path` says,
+/// and for an export its `files` (a set's sheets) or else its `path`, with
+/// `set_list`, `loss_report`, `support_report`, `companions`, `cut_list_path`
+/// and `takeoff_path`.
+fn answered_files(result: Option<&Value>) -> Vec<PathBuf> {
+    let Some(result) = result else {
+        return Vec::new();
+    };
+    let named = |key: &str| result.get(key).and_then(Value::as_str).map(PathBuf::from);
+    let listed = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(PathBuf::from)
+    };
+    let mut files = Vec::new();
+    if result["saved"] == true {
+        files.extend(named("save_path"));
+    }
+    // `exported` is true, or how many variants were.
+    let exported = &result["exported"];
+    if *exported == true || exported.as_u64().is_some_and(|count| count > 0) {
+        if result.get("files").is_some() {
+            files.extend(listed("files"));
+        } else {
+            files.extend(named("path"));
+        }
+        for key in [
+            "set_list",
+            "loss_report",
+            "support_report",
+            "cut_list_path",
+            "takeoff_path",
+        ] {
+            files.extend(named(key));
+        }
+        files.extend(listed("companions"));
+    }
+    files
 }
 
 /// `time` on a clock `offset` seconds ahead of UTC, `HH:MM:SS`.
@@ -179,5 +242,89 @@ mod tests {
         assert_eq!(files[0].path, path);
         assert_eq!(files[0].bytes, Some(11));
         assert_eq!(answer(true, None).len(), 1, "the file untouched");
+    }
+
+    /// Every file an answer says was written is listed, the first named
+    /// first: a DXF set's sheets and its list (the path asked for is no file
+    /// of a set), the reports and companions beside an export, a variant
+    /// export's two tables and a document saved by apply_and_verify.
+    #[test]
+    fn the_files_an_answer_names_are_listed_not_only_the_path_asked_for() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = WriteLog::default();
+        let answered = |path: &str, result: serde_json::Value| {
+            let (reply, client) = mpsc::sync_channel(1);
+            let watched = log.watch(directory.path().join(path), reply, egui::Context::default());
+            let mut response = Response::error(1, "unused");
+            response.ok = true;
+            response.result = Some(result);
+            watched.deliver(response);
+            client.recv().unwrap();
+            let files = log.files();
+            log.files_now().clear();
+            files
+                .iter()
+                .map(|file| file.path.display().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            answered(
+                "plan.dxf",
+                serde_json::json!({"exported": true, "path": "plan.dxf",
+                    "files": ["plan-01.dxf", "plan-02.dxf"], "set_list": "plan.sheets.txt"}),
+            ),
+            ["plan-01.dxf", "plan-02.dxf", "plan.sheets.txt"]
+        );
+        assert_eq!(
+            answered(
+                "x.btlx",
+                serde_json::json!({"exported": true, "path": "x.btlx", "loss_report": null,
+                    "support_report": "x.btlx.support.txt", "companions": ["x.drawings.svg"]}),
+            ),
+            ["x.btlx", "x.btlx.support.txt", "x.drawings.svg"]
+        );
+        assert_eq!(
+            answered(
+                "cabinet.csv",
+                serde_json::json!({"exported": 2, "cut_list_path": "cabinet.csv",
+                    "takeoff_path": "cabinet.takeoff.csv"}),
+            ),
+            ["cabinet.csv", "cabinet.takeoff.csv"]
+        );
+        assert_eq!(
+            answered(
+                "a.ketchup",
+                serde_json::json!({"saved": true, "save_path": "a.ketchup"}),
+            ),
+            ["a.ketchup"]
+        );
+        assert!(
+            answered(
+                "v.csv",
+                serde_json::json!({"exported": 0, "takeoff_path": "v.csv"})
+            )
+            .is_empty(),
+            "no variant exported"
+        );
+    }
+
+    /// A save the answer reports is listed even when the file's stamp did not
+    /// change, as a save of the same size within a FAT disk's two-second clock.
+    #[test]
+    fn a_save_is_listed_when_the_stamp_stays_the_same() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("a.ketchup");
+        std::fs::write(&path, b"same").unwrap();
+        let log = WriteLog::default();
+        let (reply, client) = mpsc::sync_channel(1);
+        let watched = log.watch(path.clone(), reply, egui::Context::default());
+        let mut response = Response::error(1, "unused");
+        response.ok = true;
+        response.result = Some(serde_json::json!({"saved": true, "dirty": false}));
+        watched.deliver(response);
+        client.recv().unwrap();
+        let files = log.files();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, path);
     }
 }

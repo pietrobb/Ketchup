@@ -503,8 +503,10 @@ CASTS_AND_ALLOWS = {
     # 2026-11-10: the windowed release printed `--version` to no console), so 18 -> 19.
     # Becoming another user under sudo moved to ketchup-user-files, one allowance on each
     # item (review 2026-11-13 R1113-SEC-600..602, P3: a module-wide one hid 4 unsafe blocks),
-    # so 19 -> 18.
-    "ketchup-app allows": 18,
+    # so 19 -> 18. SHGetKnownFolderPath of live_bridge::write_policy (review 2026-11-20 ac
+    # P3: the Startup folders where the shell keeps them, not as %APPDATA% names them),
+    # so 18 -> 19.
+    "ketchup-app allows": 19,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 28,
@@ -543,7 +545,8 @@ CASTS_AND_ALLOWS = {
     # `unsafe` blocks, fns and impls, counted since review 2026-11-13 P3: system calls of
     # the app and the configuration under sudo, the OCCT bridge, Finder's open-file
     # callback, the MCP server's checks of its token file and Android's FFI entry points.
-    "ketchup-app unsafe": 18,
+    # One block more for the known Startup folders (review 2026-11-20 ac P3), so 18 -> 19.
+    "ketchup-app unsafe": 19,
     "ketchup-exact unsafe": 1,
     "ketchup-macos-open unsafe": 7,
     "ketchup-mcp unsafe": 9,
