@@ -36,19 +36,24 @@ pub struct RevisionComparison {
     pub removed: Vec<RevisedEntity>,
     /// The entities both have that draw alike.
     pub unchanged: usize,
+    /// The entities of the earlier that the later draws alike, in the same place, under
+    /// another handle: ArchiCAD, Revit and Allplan number entities anew on each export
+    /// (review 2026-11-10 og:R1110-UL-401), so they are neither removed nor added.
+    pub renumbered: usize,
     /// The top-level entities of either without a handle, which nothing tells apart
     /// from another of their kind in a drawing changed since, so they are not compared.
     pub without_handle: usize,
+    /// How many top-level entities with a handle the earlier and the later have.
+    pub with_handle: [usize; 2],
 }
 
 impl RevisionComparison {
-    /// Whether nothing was compared: neither drawing has an entity with a handle.
+    /// Whether the two cannot be compared entity by entity: one of them, or both, has no
+    /// entity with a handle, so every entity of one would read as removed and every one of
+    /// the other as added (UL-401).
     #[must_use]
-    pub fn compared_nothing(&self) -> bool {
-        self.changed.is_empty()
-            && self.added.is_empty()
-            && self.removed.is_empty()
-            && self.unchanged == 0
+    pub fn lacks_handles(&self) -> bool {
+        self.with_handle.contains(&0)
     }
 }
 
@@ -96,33 +101,97 @@ pub fn compare_revisions(earlier: Revision<'_>, later: Revision<'_>) -> Revision
     let ((then, then_without), (now, now_without)) = (handled(earlier.lines), handled(later.lines));
     let mut comparison = RevisionComparison {
         without_handle: then_without + now_without,
+        with_handle: [then.len(), now.len()],
         ..RevisionComparison::default()
     };
+    let mut removed = Vec::new();
     for (key, &id) in &then {
         let Some(&found) = now.get(key) else {
-            comparison.removed.push(entity(earlier, id, None));
+            removed.push(id);
             continue;
         };
-        match compare::difference_between(
+        let difference = compare::difference_between(
             earlier.lines,
             id,
             earlier.offset_mm,
             later.lines,
             found,
             later.offset_mm,
-        ) {
+        )
+        .or_else(|| {
+            compare::restyled(earlier.lines, id, later.lines, found).then_some(Difference::Style)
+        });
+        match difference {
             Some(difference) => comparison
                 .changed
                 .push(entity(later, found, Some(difference))),
             None => comparison.unchanged += 1,
         }
     }
-    for (key, &id) in &now {
-        if !then.contains_key(key) {
-            comparison.added.push(entity(later, id, None));
+    let added = now
+        .iter()
+        .filter(|(key, _)| !then.contains_key(key))
+        .map(|(_, &id)| id);
+    let (renumbered, added) = pair_renumbered(earlier, &removed, later, added);
+    comparison.renumbered = renumbered.len();
+    comparison.removed = removed
+        .iter()
+        .filter(|id| !renumbered.contains(id))
+        .map(|&id| entity(earlier, id, None))
+        .collect();
+    comparison.added = added
+        .into_iter()
+        .map(|id| entity(later, id, None))
+        .collect();
+    comparison
+}
+
+/// Of `removed`, objects of `earlier`, those that an object of `added`, of `later`,
+/// draws alike in the same place under another handle; and the objects of `added` left.
+/// Each is looked for among those of its kind where it lies, not among all.
+fn pair_renumbered(
+    earlier: Revision<'_>,
+    removed: &[usize],
+    later: Revision<'_>,
+    added: impl Iterator<Item = usize>,
+) -> (std::collections::BTreeSet<usize>, Vec<usize>) {
+    let kind = |lines: &UnderlayLines, id: usize| lines.objects().objects[id].kind.name();
+    let mut by_place = BTreeMap::<_, Vec<usize>>::new();
+    for &id in removed {
+        let place = compare::place_mm(earlier.lines, id, earlier.offset_mm);
+        by_place
+            .entry((kind(earlier.lines, id), place))
+            .or_default()
+            .push(id);
+    }
+    let mut paired = std::collections::BTreeSet::new();
+    let mut left = Vec::new();
+    for found in added {
+        let place = compare::place_mm(later.lines, found, later.offset_mm);
+        let candidates = by_place.get_mut(&(kind(later.lines, found), place));
+        let alike = candidates.and_then(|candidates| {
+            let at = candidates.iter().position(|&id| {
+                compare::difference_between(
+                    earlier.lines,
+                    id,
+                    earlier.offset_mm,
+                    later.lines,
+                    found,
+                    later.offset_mm,
+                )
+                .is_none()
+                    && !compare::restyled(earlier.lines, id, later.lines, found)
+            })?;
+            Some(candidates.swap_remove(at))
+        });
+        match alike {
+            Some(id) => {
+                paired.insert(id);
+            }
+            None => left.push(found),
         }
     }
-    comparison
+    (paired, left)
 }
 
 /// The names of the overlay's layers, in the window's language.

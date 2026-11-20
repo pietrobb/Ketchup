@@ -134,6 +134,189 @@ fn revision_b_is_compared_with_a_by_handle_and_drawn_over_it() {
     assert!(objects.iter().any(|object| object.handle == 0xB0));
 }
 
+/// A drawing of `entities` whose layer `doors` has color `doors_color` and whose
+/// linetype table has DASHED.
+fn styled_drawing(doors_color: u8, entities: &[String]) -> Vec<u8> {
+    let mut dxf = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n70\n1\n\
+         0\nLTYPE\n2\nDASHED\n70\n0\n3\n__ __\n72\n65\n73\n2\n40\n15\n49\n10\n74\n0\n49\n-5\n74\n0\n\
+         0\nENDTAB\n0\nTABLE\n2\nLAYER\n70\n2\n\
+         0\nLAYER\n2\nwalls\n70\n0\n62\n7\n6\nCONTINUOUS\n\
+         0\nLAYER\n2\ndoors\n70\n0\n62\n{doors_color}\n6\nCONTINUOUS\n\
+         0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n"
+    );
+    for entity in entities {
+        dxf.push_str(entity);
+    }
+    dxf.push_str("0\nENDSEC\n0\nEOF\n");
+    dxf.into_bytes()
+}
+
+/// A line of `handle` on `layer` with the entity groups `style` (color, linetype,
+/// lineweight), at the height `y`.
+fn styled_line(handle: &str, layer: &str, style: &str, y: f64) -> String {
+    format!(
+        "0\nLINE\n5\n{handle}\n100\nAcDbEntity\n8\n{layer}\n{style}100\nAcDbLine\n\
+         10\n0\n20\n{y}\n30\n0\n11\n5000\n21\n{y}\n31\n0\n"
+    )
+}
+
+fn styled_text(handle: &str, style: &str) -> String {
+    format!(
+        "0\nTEXT\n5\n{handle}\n100\nAcDbEntity\n8\nwalls\n{style}100\nAcDbText\n\
+         10\n0\n20\n9000\n30\n0\n40\n250\n1\nKuchyňa\n100\nAcDbText\n"
+    )
+}
+
+/// Review 2026-11-10 og:R1110-UL-400: a revision that only redraws an entity otherwise —
+/// another color, linetype or lineweight, its layer's color, a text's color — was reported
+/// unchanged, so a wall the architect dashed as to be pulled down was not seen.
+#[test]
+fn a_revision_that_only_restyles_an_entity_reports_it_changed_in_style() {
+    let entities = |restyled: bool| {
+        let pick = |plain: &'static str, styled: &'static str| {
+            if restyled { styled } else { plain }
+        };
+        vec![
+            styled_line("A0", "walls", pick("", "62\n1\n"), 0.0),
+            styled_line("A1", "walls", pick("", "6\nDASHED\n"), 1000.0),
+            styled_line("A2", "walls", pick("", "370\n50\n"), 2000.0),
+            styled_text("A3", pick("", "62\n3\n")),
+            // ByLayer: only the layer's color changes.
+            styled_line("A4", "doors", "", 4000.0),
+            styled_line("A5", "walls", "", 5000.0),
+        ]
+    };
+    let a = read(&styled_drawing(7, &entities(false)));
+    let b = read(&styled_drawing(5, &entities(true)));
+    let comparison = compare_revisions(
+        Revision {
+            lines: &a.lines,
+            offset_mm: a.offset_mm,
+        },
+        Revision {
+            lines: &b.lines,
+            offset_mm: b.offset_mm,
+        },
+    );
+    assert_eq!(
+        handles(&comparison.changed),
+        ["A0", "A1", "A2", "A3", "A4"],
+        "{comparison:?}"
+    );
+    assert!(
+        comparison
+            .changed
+            .iter()
+            .all(|entity| entity.difference == Some(Difference::Style)),
+        "{comparison:?}"
+    );
+    assert_eq!(comparison.unchanged, 1, "A5 draws alike");
+}
+
+fn compare(
+    a: &ketchup_model::import::DxfUnderlay,
+    b: &ketchup_model::import::DxfUnderlay,
+) -> ketchup_model::import::RevisionComparison {
+    compare_revisions(
+        Revision {
+            lines: &a.lines,
+            offset_mm: a.offset_mm,
+        },
+        Revision {
+            lines: &b.lines,
+            offset_mm: b.offset_mm,
+        },
+    )
+}
+
+/// Review 2026-11-10 og:R1110-UL-401: ArchiCAD, Revit and Allplan give every entity a
+/// new handle on each export, so one real change was reported as every entity removed
+/// and added again. Those drawn alike in the same place pair up as renumbered.
+#[test]
+fn entities_renumbered_by_the_export_pair_up_by_what_they_draw() {
+    let walls = |handles: [&str; 4], east_x: f64| {
+        drawing(&[
+            line(handles[0], "walls", [0.0, 0.0], [6000.0, 0.0]),
+            line(handles[1], "walls", [0.0, 4000.0], [6000.0, 4000.0]),
+            text(handles[2], [500.0, 500.0], "Obývačka"),
+            // Apart from the others: lines meeting end to end are joined on reading.
+            line(handles[3], "walls", [east_x, 500.0], [east_x, 3500.0]),
+        ])
+    };
+    let a = read(&walls(["A0", "A1", "A2", "A3"], 6000.0));
+    // Every handle new; the east wall moved 300 mm out.
+    let b = read(&walls(["C0", "C1", "C2", "C3"], 6300.0));
+    let comparison = compare(&a, &b);
+    assert_eq!(comparison.renumbered, 3, "{comparison:?}");
+    assert_eq!(handles(&comparison.added), ["C3"]);
+    assert_eq!(handles(&comparison.removed), ["A3"]);
+    assert!(comparison.changed.is_empty());
+    assert_eq!(comparison.unchanged, 0);
+    assert!(!comparison.lacks_handles());
+}
+
+/// UL-401: a drawing without handles against one with them was reported as all of one
+/// removed and all of the other added; it is refused as nothing to compare by.
+#[test]
+fn a_revision_without_handles_against_one_with_them_is_refused() {
+    let with = read(&drawing(&[line("A0", "walls", [0.0, 0.0], [1000.0, 0.0])]));
+    let without = read(&drawing(&[
+        "0\nLINE\n8\nwalls\n10\n0\n20\n0\n30\n0\n11\n1000\n21\n0\n31\n0\n".to_owned(),
+    ]));
+    for comparison in [compare(&with, &without), compare(&without, &with)] {
+        assert!(comparison.lacks_handles(), "{comparison:?}");
+    }
+}
+
+/// Review 2026-11-10 og:R1110-UL-402: 100 000 lines on one layer were compared in 0.13 s
+/// but their overlay took 22.7 s, each entity walking every polyline of its layer.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_the_overlay_of_a_hundred_thousand_changed_lines_on_one_layer_takes_a_second() {
+    let walls = |shift: f64| {
+        let entities = (0..100_000_u32)
+            .map(|at| {
+                let x = 10.0 * f64::from(at);
+                line(
+                    &format!("{:X}", at + 0x100),
+                    "walls",
+                    [x, shift],
+                    [x, 5.0 + shift],
+                )
+            })
+            .collect::<Vec<_>>();
+        read(&drawing(&entities))
+    };
+    let (a, b) = (walls(0.0), walls(1.0));
+    let (earlier, later) = (
+        Revision {
+            lines: &a.lines,
+            offset_mm: a.offset_mm,
+        },
+        Revision {
+            lines: &b.lines,
+            offset_mm: b.offset_mm,
+        },
+    );
+    let started = std::time::Instant::now();
+    let comparison = compare_revisions(earlier, later);
+    let names = OverlayLayers {
+        changed: "changed".to_owned(),
+        added: "added".to_owned(),
+        removed: "removed".to_owned(),
+    };
+    let (_, overlay) = revision_overlay(earlier, later, &comparison, &names);
+    let took = started.elapsed();
+    assert_eq!(comparison.changed.len(), 100_000);
+    assert_eq!(overlay.layers()[0].polylines().count(), 100_000);
+    assert!(
+        took < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+        "{took:?}"
+    );
+}
+
 #[test]
 fn drawings_without_handles_compare_nothing_rather_than_guess() {
     let unhandled = |x: f64| {
@@ -153,6 +336,6 @@ fn drawings_without_handles_compare_nothing_rather_than_guess() {
             offset_mm: b.offset_mm,
         },
     );
-    assert!(comparison.compared_nothing(), "{comparison:?}");
+    assert!(comparison.lacks_handles(), "{comparison:?}");
     assert_eq!(comparison.without_handle, 2);
 }

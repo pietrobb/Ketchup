@@ -252,7 +252,7 @@ fn verdict(catalog: &LocaleCatalog, review: &FeaReviewSummary) -> String {
     format!(
         "{}: {} · {}: {}",
         catalog.text("fea-review-converged"),
-        review.converged,
+        review.judgement.converged,
         catalog.text("fea-review-within-limits"),
         review.all_levels_within_declared_limits
     )
@@ -359,6 +359,7 @@ impl FeaReviewDialog {
 mod tests {
     use super::*;
     use crate::length_input::DecimalSeparator::{Comma, Point};
+    use ketchup_application::fea_workflow::FeaConvergenceJudgement;
 
     fn dialog(youngs_modulus_mpa: &str) -> FeaReviewDialog {
         FeaReviewDialog {
@@ -454,10 +455,14 @@ mod tests {
             units: "mm",
             solver_version: "test",
             levels: Vec::new(),
-            final_displacement_relative_change: 0.0,
-            final_energy_relative_change: 0.0,
+            judgement: FeaConvergenceJudgement {
+                final_displacement_relative_change: 0.0,
+                final_energy_relative_change: 0.0,
+                final_stress_relative_change: 0.0,
+                final_refinement_ratio: 2.0,
+                converged: true,
+            },
             required_relative_tolerance: 0.01,
-            converged: true,
             all_levels_within_declared_limits: true,
             excluded_physics: ["", "", "", "", ""],
             modes: None,

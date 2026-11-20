@@ -171,6 +171,17 @@ pub const NEGLIGIBLE: f64 = 1.0e-12;
 /// errors far below [`APPROXIMATION`].
 pub const FINITE_DIFFERENCE_STEP: f64 = 1.0e-6;
 
+/// A vector of the natural-frequency search keeping no more than this share of its mass
+/// norm once the vectors before it are taken out of it lies in their span: what is left is
+/// mostly rounding, and a scattered vector replaces it (og:R1119og-FEA-802).
+pub const MODE_VECTOR_DEPENDENT: f64 = 1.0e-6;
+
+/// How far above the highest natural frequency found the Sturm check of the modes puts
+/// its shift, as shares of that eigenvalue, tried in turn. The pivot of that mode is about
+/// this share of its stiffness, and one too small to tell its sign from rounding moves the
+/// shift further; all lie far above the [`ROUNDING`] an eigenvalue settles to.
+pub const STURM_SHIFT_GAPS: [f64; 3] = [1.0e-3, 1.0e-2, 1.0e-1];
+
 /// Starting Levenberg–Marquardt damping of the sketch solver, relative to unit-scaled
 /// equations; the solver adapts it every iteration.
 pub const INITIAL_DAMPING: f64 = 1.0e-6;

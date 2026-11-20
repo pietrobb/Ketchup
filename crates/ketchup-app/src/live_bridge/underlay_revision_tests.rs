@@ -114,7 +114,10 @@ fn the_architects_revision_lies_on_the_traced_plan_as_its_changes() {
     assert_eq!(handles("changed"), ["A1", "A2"], "{answer}");
     assert_eq!(handles("added"), ["B0"]);
     assert_eq!(handles("removed"), ["A3"]);
-    assert_eq!(comparison["unchanged"], 1);
+    assert_eq!(comparison["counts"]["unchanged"], 1);
+    assert_eq!(comparison["counts"]["changed"], 2);
+    assert_eq!(comparison["listed_all"], true);
+    assert_eq!(answer["overlay_layers"]["added"], "Added");
     assert_eq!(answer["overlay_underlay_id"], 2);
     assert_eq!(app.undo_step_count(), steps + 1, "one Undo step");
 
@@ -172,7 +175,7 @@ fn a_revision_without_changes_adds_nothing_and_a_wrong_request_is_refused() {
     )
     .unwrap();
     assert_eq!(same["overlay_underlay_id"], Value::Null, "{same}");
-    assert_eq!(same["comparison"]["unchanged"], 4);
+    assert_eq!(same["comparison"]["counts"]["unchanged"], 4);
     assert_eq!(app.undo_step_count(), steps);
 
     let no_underlay = import_revision(
@@ -192,14 +195,58 @@ fn a_revision_without_changes_adds_nothing_and_a_wrong_request_is_refused() {
     assert_eq!(app.document.current().underlays().count(), 1);
 }
 
+/// Review 2026-11-10 og:R1110-UL-403: the answer carried the whole comparison, megabytes
+/// for a renumbered plan. It carries the counts and the first rows of each list; the rest
+/// is paged through the overlay's objects on the layer of the list.
+#[test]
+fn a_large_revision_answers_with_counts_and_a_first_page() {
+    let (mut app, mut bridge, _) = imported(&revision_a());
+    let extra = crate::live_bridge::dwg_import::REVISION_ROWS + 50;
+    let mut entities = (0..extra)
+        .map(|at| {
+            let x = 100.0 + 10.0 * f64::from(u32::try_from(at).unwrap());
+            line(&format!("D{at:X}"), [x, 100.0], [x, 200.0])
+        })
+        .collect::<Vec<_>>();
+    entities.extend((0..4).map(|at| {
+        let ends = [[0.0, 0.0], [6000.0, 0.0], [6000.0, 4000.0], [0.0, 4000.0]];
+        line(&format!("A{at}"), ends[at], ends[(at + 1) % 4])
+    }));
+    let answer = import_revision(
+        &mut app,
+        &mut bridge,
+        &drawing(&entities),
+        json!({"as_underlay": true, "revision_of": 1}),
+    )
+    .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    let comparison = &answer["comparison"];
+    assert_eq!(comparison["counts"]["added"], extra, "{comparison}");
+    assert_eq!(comparison["counts"]["unchanged"], 4);
+    assert_eq!(
+        comparison["added"].as_array().unwrap().len(),
+        crate::live_bridge::dwg_import::REVISION_ROWS
+    );
+    assert_eq!(comparison["listed_all"], false);
+    // The rest, through the overlay's objects on the layer of the added.
+    let page = call(
+        &mut app,
+        &mut bridge,
+        "underlay_objects",
+        json!({"underlay_id": answer["overlay_underlay_id"],
+            "layer": answer["overlay_layers"]["added"], "offset": 100, "limit": 100}),
+    );
+    assert_eq!(page["objects"].as_array().unwrap().len(), 50, "{page}");
+}
+
 /// A drawing of DXF `version` whose header names `code_page`: the room of revision A or B
 /// and a note, `note` being its bytes in the file.
 fn note_drawing(version: &str, code_page: &str, revision: &str, note: &[u8]) -> Vec<u8> {
-    // Each revision's note is another entity, of a handle of its own.
-    let (walls, note_handle) = if revision == "a" {
-        (revision_a(), "C1")
+    // Each revision's note is another entity, of a handle of its own and elsewhere, so it
+    // is not paired with the other as renumbered.
+    let (walls, note_handle, note_x) = if revision == "a" {
+        (revision_a(), "C1", EAST_MM)
     } else {
-        (revision_b(), "C2")
+        (revision_b(), "C2", EAST_MM + 1000.0)
     };
     let entities = walls
         .split_once("ENTITIES\n")
@@ -209,7 +256,7 @@ fn note_drawing(version: &str, code_page: &str, revision: &str, note: &[u8]) -> 
     let mut source = format!(
         "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\n{version}\n9\n$DWGCODEPAGE\n3\n{code_page}\n\
          9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}\
-         0\nTEXT\n5\n{note_handle}\n8\nnotes\n10\n{EAST_MM}\n20\n0\n40\n200\n1\n"
+         0\nTEXT\n5\n{note_handle}\n8\nnotes\n10\n{note_x}\n20\n0\n40\n200\n1\n"
     )
     .into_bytes();
     source.extend_from_slice(note);
