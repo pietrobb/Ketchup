@@ -475,10 +475,11 @@ def hand_written_linear_algebra(counts, recorded=LINEAR_ALGEBRA):
     return problems
 
 
-# Numeric `as` casts truncate, wrap or round without saying so, and `#[allow(` switches a
-# lint off; both are counted per crate in production source and may only fall.
+# Numeric `as` casts truncate, wrap or round without saying so, and `#[allow(` or
+# `#[expect(` switches a lint off; both are counted per crate in production source and may
+# only fall (review 2026-11-20 ac P3: `#[expect(` went uncounted).
 NUMERIC_CAST = re.compile(r"\bas\s+(?:[ui](?:8|16|32|64|128|size)|f32|f64)\b")
-LINT_ALLOW = re.compile(r"#!?\[allow\(")
+LINT_ALLOW = re.compile(r"#!?\[(?:allow|expect)\(")
 # Each `unsafe` block, fn and impl is counted too: one allowance may cover any number of
 # them (review 2026-11-13 P3: four new blocks under one module-wide allow went uncounted).
 UNSAFE = re.compile(r"\bunsafe\b")
@@ -503,10 +504,13 @@ CASTS_AND_ALLOWS = {
     # 2026-11-10: the windowed release printed `--version` to no console), so 18 -> 19.
     # Becoming another user under sudo moved to ketchup-user-files, one allowance on each
     # item (review 2026-11-13 R1113-SEC-600..602, P3: a module-wide one hid 4 unsafe blocks),
-    # so 19 -> 18.
-    "ketchup-app allows": 18,
-    "ketchup-app casts": 216,
-    "ketchup-application allows": 9,
+    # so 19 -> 18. `#[expect(` counted too (review 2026-11-20 ac P3): theme's four on
+    # casts are gone with the casts, its one on push_arc's seven SVG arc parameters stays,
+    # so 18 -> 19, and 216 -> 208 casts.
+    "ketchup-app allows": 19,
+    "ketchup-app casts": 208,
+    # One `#[expect(` on the CAM review's export (review 2026-11-20 ac P3), so 9 -> 10.
+    "ketchup-application allows": 10,
     "ketchup-application casts": 28,
     "ketchup-assistant allows": 3,
     "ketchup-assistant casts": 5,

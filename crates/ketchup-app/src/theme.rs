@@ -414,23 +414,15 @@ pub fn paint_vignette(painter: &egui::Painter, rect: Rect, inner: Color32, outer
     painter.rect_filled(rect, 0.0, outer);
     let centre = Pos2::new(rect.center().x, rect.top() + rect.height() * 0.46);
     let radius = rect.width().max(rect.height()) * 0.72;
-    const SEGMENTS: usize = 64;
+    const SEGMENTS: u16 = 64;
     let mut mesh = egui::Mesh::default();
     mesh.colored_vertex(centre, inner);
     for segment in 0..=SEGMENTS {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "the fan has 64 segments, far inside f32's exact integer range"
-        )]
-        let angle = std::f32::consts::TAU * segment as f32 / SEGMENTS as f32;
+        let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
         mesh.colored_vertex(centre + Vec2::angled(angle) * radius, outer);
     }
     for segment in 0..SEGMENTS {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the fan has 65 vertices, which fits a u32 index"
-        )]
-        mesh.add_triangle(0, segment as u32 + 1, segment as u32 + 2);
+        mesh.add_triangle(0, u32::from(segment) + 1, u32::from(segment) + 2);
     }
     painter.add(egui::Shape::mesh(mesh));
 }
@@ -551,15 +543,11 @@ fn parse_path(definition: &str) -> Vec<Vec<Pos2>> {
 
 /// How many straight segments approximate one curve. Icons are at most 44 px
 /// wide, so sixteen segments are already below one pixel of chord error.
-const CURVE_SEGMENTS: usize = 16;
+const CURVE_SEGMENTS: u16 = 16;
 
 fn push_cubic(into: &mut Vec<Pos2>, from: Pos2, first: Pos2, second: Pos2, end: Pos2) {
     for step in 1..=CURVE_SEGMENTS {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "the loop runs sixteen times, far inside f32's exact integer range"
-        )]
-        let t = step as f32 / CURVE_SEGMENTS as f32;
+        let t = f32::from(step) / f32::from(CURVE_SEGMENTS);
         let inverse = 1.0 - t;
         let point = from.to_vec2() * (inverse * inverse * inverse)
             + first.to_vec2() * (3.0 * inverse * inverse * t)
@@ -627,11 +615,7 @@ fn push_arc(
     }
 
     for step in 1..=CURVE_SEGMENTS {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "the loop runs sixteen times, far inside f32's exact integer range"
-        )]
-        let angle = start_angle + delta * (step as f32 / CURVE_SEGMENTS as f32);
+        let angle = start_angle + delta * (f32::from(step) / f32::from(CURVE_SEGMENTS));
         let (asin, acos) = angle.sin_cos();
         let x = rx * acos;
         let y = ry * asin;

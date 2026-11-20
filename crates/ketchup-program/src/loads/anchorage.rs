@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give};
 
 /// The modulus of elasticity, mean and fifth percentile, N/mm², of a part of no
-/// timber strength class: softwood C24 (EN 338).
+/// wood strength class: softwood C24 (EN 338).
 const SOFTWOOD_MODULI: (f64, f64) = (11_000.0, 7_400.0);
 
 /// How a path to the ground holds a member at a point sideways.
@@ -47,7 +47,7 @@ pub(super) struct Footing<'a> {
     /// The load-path members, none of which is ground for another.
     member: &'a [bool],
     /// The long axis of each part spanning between its supports, which bends
-    /// across it like a member (R1113r95-PG-705: a second beam outside the
+    /// across it like a member (R1113r95-PG-705: a second member outside the
     /// load path was ground).
     spanning: Vec<Option<[f64; 3]>>,
     grounded: Vec<bool>,
@@ -62,7 +62,7 @@ pub(super) struct Footing<'a> {
     /// before the anchor, with the parts the paths run through.
     known: RefCell<BTreeMap<Asked, Option<Reached>>>,
     /// The parts each anchor's search met turning about one fastener.
-    met_hinges: RefCell<BTreeMap<usize, BTreeSet<usize>>>,
+    met_pivots: RefCell<BTreeMap<usize, BTreeSet<usize>>>,
 }
 
 /// An anchorage and the parts its paths to the ground run through.
@@ -281,7 +281,7 @@ impl<'a> Footing<'a> {
             touching,
             joined,
             known: RefCell::default(),
-            met_hinges: RefCell::default(),
+            met_pivots: RefCell::default(),
         }
     }
 
@@ -318,7 +318,7 @@ impl<'a> Footing<'a> {
 
     /// [`Self::anchorage`] of a path that has run `reach` before the anchor,
     /// over which it buckles as well (R1120ac-PG-902: a brace 1 200 long end
-    /// to end with an anchor 1 200 long held the beam where one rod 2 400 long
+    /// to end with an anchor 1 200 long held the member where one rod 2 400 long
     /// buckled), with the parts the paths run through.
     fn reached(
         &self,
@@ -367,7 +367,7 @@ impl<'a> Footing<'a> {
     /// How `by`, a brace or a diaphragm's sheet holding `member` at `point`,
     /// holds it from the ground through `anchor`: the path starts at the
     /// member (R1119og-PG-800: three 3 × 3 mm strips screwed to a grounded
-    /// wall held a 400 mm beam). Its own give from `point` to where it meets
+    /// wall held a 400 mm member). Its own give from `point` to where it meets
     /// the anchor, its joints with the member and the anchor, and Euler's load
     /// of its length come before [`Self::anchorage`] of the anchor, which the
     /// parts `apart` (the sheets of its diaphragm) are kept out of, buckling on
@@ -474,7 +474,7 @@ impl<'a> Footing<'a> {
 
     /// How a diaphragm's sheet `by` holds `member` at `point`: through each of
     /// `anchors` ([`Self::through`], the diaphragm's parts `chain` kept apart),
-    /// side by side (R1119og-PG-801: boards on four free posts held a beam
+    /// side by side (R1119og-PG-801: sheets on four free posts held a member
     /// unchecked, though each post gives 0.8 N/mm against 58 asked). Paths
     /// sharing a part on their way to the ground are one path, the stiffest of
     /// them (R1120ac-PG-901: eight blocks on one lath on a single post held as
@@ -539,7 +539,7 @@ impl<'a> Footing<'a> {
         let mut came: Vec<Option<(usize, f64)>> = vec![None; count];
         give[anchor] = 0.0;
         let mut queue = BinaryHeap::from([Reverse((0_u64, anchor))]);
-        let mut hinges = BTreeSet::new();
+        let mut pivots = BTreeSet::new();
         // The path's whole give, its capacity and the part buckling first,
         // its last part and that part's give.
         let mut best: Option<(f64, (f64, usize), usize, f64)> = None;
@@ -587,7 +587,7 @@ impl<'a> Footing<'a> {
                 };
                 let thin = least_side(&obb).min(least_side(&other));
                 let Hold::Fixed(joint) = hold(tie, at, held, sideways, thin) else {
-                    hinges.insert(next);
+                    pivots.insert(next);
                     continue;
                 };
                 let own = part_give(&obb, modulus, from, at, held, sideways) + joint;
@@ -609,11 +609,11 @@ impl<'a> Footing<'a> {
             }
         }
         let Some((total, (holds, buckles), end, own)) = best else {
-            self.met_hinges
+            self.met_pivots
                 .borrow_mut()
                 .entry(anchor)
                 .or_default()
-                .extend(hinges);
+                .extend(pivots);
             return None;
         };
         let (mut weakest, mut most, mut at) = (end, own, end);
@@ -641,7 +641,7 @@ impl<'a> Footing<'a> {
 
     /// How touching parts `a` and `b` hold each other: rigidly when both are
     /// grounded, else on the fasteners of a joint() fastening them, where it
-    /// names none on two when two fit ([`Self::fitting`]), one being a hinge.
+    /// names none on two when two fit ([`Self::fitting`]), one being a pivot.
     /// A free part only bearing on another turns about it freely, as on the
     /// floor (PG-163; capability review 771: a free post on a grounded slab
     /// was ground, on the bare floor not).
@@ -726,19 +726,19 @@ impl<'a> Footing<'a> {
                 "{held}: grounded, but reaches the floor only through {target}, another load_path() member{besides}, a part spanning between its supports or parts shallower across {target} than it is deep"
             ));
         }
-        let met = self.met_hinges.borrow();
-        let mut hinges: Vec<&str> = resting
+        let met = self.met_pivots.borrow();
+        let mut pivots: Vec<&str> = resting
             .iter()
             .filter_map(|anchor| met.get(anchor))
             .flatten()
             .map(|part| self.parts[*part].name.as_str())
             .collect();
-        hinges.sort_unstable();
-        hinges.dedup();
-        if !hinges.is_empty() {
+        pivots.sort_unstable();
+        pivots.dedup();
+        if !pivots.is_empty() {
             why.push(format!(
-                "{} held by a single fastener, a hinge the path turns about",
-                hinges.join(", ")
+                "{} held by a single fastener, a pivot the path turns about",
+                pivots.join(", ")
             ));
         }
         format!("{}, so it sways with {target}", why.join("; "))
