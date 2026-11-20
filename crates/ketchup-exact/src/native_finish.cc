@@ -805,13 +805,15 @@ const char* round_failure_cause(ChFiDS_ErrorStatus status) {
   }
 }
 
-// Names the selected edges whose round failed and why, so the user can lower
-// the radius or leave those edges out instead of guessing.
+// Names the selected edges whose round failed, why, and the largest radius
+// that does fit (`largest_radius`, negative when not searched), so the user
+// can lower the radius or leave those edges out instead of guessing.
 std::string fillet_failure(
     const BRepFilletAPI_MakeFillet& operation,
     const std::vector<TopoDS_Edge>& selected,
     rust::Slice<const std::uint32_t> edge_ordinals,
-    double radius) {
+    double radius,
+    double largest_radius) {
   char radius_text[32];
   std::snprintf(radius_text, sizeof(radius_text), "%g", radius);
   std::string message = std::string("Fillet of radius ") + radius_text + " mm";
@@ -845,10 +847,76 @@ std::string fillet_failure(
     if (index > 0) message += ", ";
     message += std::to_string(failed[index]);
   }
-  return message + ": " + cause + "; use a smaller radius or fewer edges";
+  message += ": ";
+  message += cause;
+  if (largest_radius >= 0.0) message += largest_fit_hint(largest_radius, true);
+  return message + "; use a smaller radius or fewer edges";
+}
+
+// Names the selected edges a chamfer could not bevel and the largest distance
+// that does (OCCT reports no faulty run for a chamfer, so every edge is named).
+std::string chamfer_failure(
+    rust::Slice<const std::uint32_t> edge_ordinals, double distance, double largest_distance) {
+  char distance_text[32];
+  std::snprintf(distance_text, sizeof(distance_text), "%g", distance);
+  std::string message = std::string("Chamfer of ") + distance_text + " mm";
+  message += edge_ordinals.size() == 1 ? " does not fit on edge " : " does not fit on edges ";
+  for (std::size_t index = 0; index < edge_ordinals.size(); ++index) {
+    if (index > 0) message += ", ";
+    message += std::to_string(edge_ordinals[index]);
+  }
+  message += ": the bevel runs past a face next to the edge or into another bevel";
+  if (largest_distance >= 0.0) message += largest_fit_hint(largest_distance, false);
+  return message + "; use a smaller distance or fewer edges";
+}
+
+bool finish_fits(
+    const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges, double amount, bool fillet) {
+  try {
+    if (fillet) {
+      BRepFilletAPI_MakeFillet operation(shape);
+      for (const TopoDS_Edge& edge : edges) operation.Add(amount, edge);
+      operation.Build();
+      return operation.IsDone() && !operation.Shape().IsNull()
+          && BRepCheck_Analyzer(operation.Shape()).IsValid();
+    }
+    BRepFilletAPI_MakeChamfer operation(shape);
+    for (const TopoDS_Edge& edge : edges) operation.Add(amount, edge);
+    operation.Build();
+    return operation.IsDone() && !operation.Shape().IsNull()
+        && BRepCheck_Analyzer(operation.Shape()).IsValid();
+  } catch (const Standard_Failure&) {
+    return false;
+  }
 }
 
 }  // namespace
+
+double largest_fitting_finish(
+    const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges, double amount, bool fillet) {
+  if (!std::isfinite(amount) || amount <= 0.0) return 0.0;
+  // Steps of the third significant digit of `amount`: at most ten builds.
+  const double step = std::pow(10.0, std::floor(std::log10(amount)) - 2.0);
+  long long fits = 0;
+  long long fails = static_cast<long long>(std::ceil(amount / step));
+  while (fails - fits > 1) {
+    const long long middle = fits + (fails - fits) / 2;
+    if (finish_fits(shape, edges, static_cast<double>(middle) * step, fillet)) {
+      fits = middle;
+    } else {
+      fails = middle;
+    }
+  }
+  return static_cast<double>(fits) * step;
+}
+
+std::string largest_fit_hint(double largest, bool fillet) {
+  const std::string what = fillet ? "radius" : "distance";
+  if (largest <= 0.0) return "; no smaller " + what + " fits these edges either";
+  char text[32];
+  std::snprintf(text, sizeof(text), "%g", largest);
+  return "; the largest " + what + " found to fit is " + text + " mm";
+}
 
 std::unique_ptr<NativeOperationResult> offset_body_face_native(
     const NativeOperationResult& body,
@@ -1072,7 +1140,12 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
           }
           return success_result(full_round, {}, false, false, std::move(edge_history));
         }
-        return error_result(STATUS_INVALID_SHAPE, fillet_failure(operation, selected, edge_ordinals, amount));
+        const double largest_radius = fillet_radius_stations.empty()
+            ? largest_fitting_finish(body.impl().shape, selected, amount, true)
+            : -1.0;
+        return error_result(
+            STATUS_INVALID_SHAPE,
+            fillet_failure(operation, selected, edge_ordinals, amount, largest_radius));
       }
       return collect_finished(operation);
     }
@@ -1090,6 +1163,14 @@ std::unique_ptr<NativeOperationResult> finish_body_native(
       }
     }
     operation.Build();
+    if (!operation.IsDone() || operation.Shape().IsNull()) {
+      // Only an even chamfer is searched: an uneven one has two figures to trade.
+      const double largest_distance = chamfer_mode == 0
+          ? largest_fitting_finish(body.impl().shape, selected, amount, false)
+          : -1.0;
+      return error_result(
+          STATUS_INVALID_SHAPE, chamfer_failure(edge_ordinals, amount, largest_distance));
+    }
     return collect_finished(operation);
   });
 }
