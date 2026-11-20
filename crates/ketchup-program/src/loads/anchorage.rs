@@ -7,18 +7,20 @@
 //! point 1: every threshold of slenderness was passed by the next shape past
 //! it).
 
+mod joint;
 mod stiffness;
 
 use super::{BraceAnchorage, Frame, Support, depth, middle};
 use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
+use joint::{Hold, Strut, hold};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, joint_give, part_capacity, part_give};
+use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give};
 
 /// The modulus of elasticity, mean and fifth percentile, N/mm², of a part of no
 /// timber strength class: softwood C24 (EN 338).
@@ -56,11 +58,15 @@ pub(super) struct Footing<'a> {
     /// The fasteners the fastening joint()s between each pair of parts, lesser
     /// index first, name.
     joined: BTreeMap<(usize, usize), Vec<[f64; 3]>>,
-    /// Answers by anchor, member and the parts kept apart.
-    known: RefCell<BTreeMap<Asked, Option<Anchorage>>>,
+    /// Answers by anchor, member, the parts kept apart and the length run
+    /// before the anchor, with the parts the paths run through.
+    known: RefCell<BTreeMap<Asked, Option<Reached>>>,
     /// The parts each anchor's search met turning about one fastener.
     met_hinges: RefCell<BTreeMap<usize, BTreeSet<usize>>>,
 }
+
+/// An anchorage and the parts its paths to the ground run through.
+type Reached = (Anchorage, BTreeSet<usize>);
 
 /// Where boxes `a` and `b`, touching, meet: the middle of the corners of the
 /// region they share within the fit.
@@ -143,7 +149,7 @@ impl Anchorage {
     }
 }
 
-type Asked = (usize, usize, Vec<usize>);
+type Asked = (usize, usize, Vec<usize>, u64);
 
 /// Of two ways a point is held, the less stiff with the sooner buckling.
 pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
@@ -160,10 +166,10 @@ pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
     }
 }
 
-/// Two paths holding one point side by side, as a diaphragm's anchors: their
-/// stiffnesses and their forces before buckling add up, named by the one
-/// giving more (R1119og-PG-801).
-pub(super) fn together(a: Anchorage, b: Anchorage) -> Anchorage {
+/// Two paths sharing no part holding one point side by side, as a diaphragm's
+/// anchors: their stiffnesses and their forces before buckling add up, named
+/// by the one giving more (R1119og-PG-801).
+fn together(a: Anchorage, b: Anchorage) -> Anchorage {
     let named = if b.stiffness_n_mm < a.stiffness_n_mm {
         b
     } else {
@@ -306,12 +312,27 @@ impl<'a> Footing<'a> {
         member: usize,
         apart: &[usize],
     ) -> Option<Anchorage> {
+        self.reached(anchor, member, apart, 0.0)
+            .map(|(anchorage, _)| anchorage)
+    }
+
+    /// [`Self::anchorage`] of a path that has run `reach` before the anchor,
+    /// over which it buckles as well (R1120ac-PG-902: a brace 1 200 long end
+    /// to end with an anchor 1 200 long held the beam where one rod 2 400 long
+    /// buckled), with the parts the paths run through.
+    fn reached(
+        &self,
+        anchor: usize,
+        member: usize,
+        apart: &[usize],
+        reach: f64,
+    ) -> Option<(Anchorage, BTreeSet<usize>)> {
         let mut apart = apart.to_vec();
         apart.sort_unstable();
         apart.dedup();
-        let key = (anchor, member, apart);
+        let key = (anchor, member, apart, reach.to_bits());
         if let Some(known) = self.known.borrow().get(&key) {
-            return *known;
+            return known.clone();
         }
         // Where the anchor holds: where it meets the member, else the brace
         // it holds.
@@ -324,18 +345,22 @@ impl<'a> Footing<'a> {
             Some((sideways, _)) => vec![sideways],
             None => vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         };
-        let mut found: Option<Anchorage> = None;
+        let mut found: Option<(Anchorage, BTreeSet<usize>)> = None;
         for sideways in directions {
-            let Some(this) = self.search(anchor, member, &key.2, held, sideways) else {
+            let Some((this, route)) = self.search(anchor, member, &key.2, held, sideways, reach)
+            else {
                 found = None;
                 break;
             };
             found = Some(match found {
-                Some(known) => weaker(known, this),
-                None => this,
+                Some((known, mut parts)) => {
+                    parts.extend(route);
+                    (weaker(known, this), parts)
+                }
+                None => (this, route.into_iter().collect()),
             });
         }
-        self.known.borrow_mut().insert(key, found);
+        self.known.borrow_mut().insert(key, found.clone());
         found
     }
 
@@ -345,8 +370,11 @@ impl<'a> Footing<'a> {
     /// wall held a 400 mm beam). Its own give from `point` to where it meets
     /// the anchor, its joints with the member and the anchor, and Euler's load
     /// of its length come before [`Self::anchorage`] of the anchor, which the
-    /// parts `apart` (the sheets of its diaphragm) are kept out of. A grounded
-    /// brace is its own anchor and its path starts at the member already.
+    /// parts `apart` (the sheets of its diaphragm) are kept out of, buckling on
+    /// from its length. A brace turning about either joint ([`hold`]) is a
+    /// strut pushing only along its axis, and one lying across the force holds
+    /// nothing (R1120ac-PG-900, PG-903). A grounded brace is its own anchor and
+    /// its path starts at the member already.
     pub(super) fn through(
         &self,
         by: usize,
@@ -355,68 +383,102 @@ impl<'a> Footing<'a> {
         point: [f64; 3],
         apart: &[usize],
     ) -> Option<Anchorage> {
+        self.routed(by, anchor, member, point, apart)
+            .map(|(anchorage, _)| anchorage)
+    }
+
+    /// [`Self::through`] with the parts the path runs through past `by`.
+    fn routed(
+        &self,
+        by: usize,
+        anchor: usize,
+        member: usize,
+        point: [f64; 3],
+        apart: &[usize],
+    ) -> Option<(Anchorage, BTreeSet<usize>)> {
         if anchor == by {
-            return self.anchorage(anchor, member, apart);
+            return self.reached(anchor, member, apart, 0.0);
         }
-        let from_anchor = self.anchorage(anchor, member, apart)?;
         let obb = self.parts[by].obb();
         let anchor_obb = self.parts[anchor].obb();
         let at = std::iter::once(by)
             .chain(apart.iter().copied())
             .find_map(|part| meeting(&anchor_obb, &self.parts[part].obb()))
             .unwrap_or(anchor_obb.centre);
-        let (modulus, modulus_05) = self.moduli[by];
+        let run = length(sub(point, at));
+        let (from_anchor, route) = self.reached(anchor, member, apart, run)?;
         let directions = match sideways_of(&self.frames[member], &self.parts[member]) {
             Some((sideways, _)) => vec![sideways],
             None => vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         };
+        let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
         let mut found: Option<Anchorage> = None;
         for sideways in directions {
-            // A joint the parts would turn about still pushes along the brace.
+            // A part only bearing on another turns about it.
             let joint = |other: usize, at: [f64; 3]| {
                 let thin = least_side(&obb).min(least_side(&self.parts[other].obb()));
                 self.tie(by, other)
-                    .and_then(|tie| joint_give(tie, at, point, sideways, thin))
-                    .unwrap_or(1.0 / SLIP_PER_FASTENER)
+                    .map_or(Hold::Turning(1.0 / SLIP_PER_FASTENER), |tie| {
+                        hold(tie, at, point, sideways, thin)
+                    })
             };
-            let own = brace_give(&obb, modulus, point, at, sideways)
-                + joint(member, point)
-                + joint(anchor, at);
-            let give = own + 1.0 / from_anchor.stiffness_n_mm;
-            let capacity = part_capacity(
-                &obb,
-                modulus_05,
-                point,
-                at,
-                sideways,
-                length(sub(point, at)),
-            );
-            let this = Anchorage {
-                stiffness_n_mm: 1.0 / give,
-                capacity_n: capacity.min(from_anchor.capacity_n),
-                weakest: if own * from_anchor.stiffness_n_mm > 1.0 {
-                    by
-                } else {
-                    from_anchor.weakest
-                },
-                buckling: if capacity < from_anchor.capacity_n {
-                    by
-                } else {
-                    from_anchor.buckling
-                },
+            let this = match (joint(member, point), joint(anchor, at)) {
+                (Hold::Fixed(to_member), Hold::Fixed(to_anchor)) => {
+                    let own = brace_give(&obb, self.moduli[by].0, point, at, sideways)
+                        + to_member
+                        + to_anchor;
+                    let capacity = part_capacity(&obb, self.moduli[by].1, point, at, sideways, run);
+                    Anchorage {
+                        stiffness_n_mm: 1.0 / (own + anchor_give),
+                        capacity_n: capacity.min(from_anchor.capacity_n),
+                        weakest: if own > anchor_give {
+                            by
+                        } else {
+                            from_anchor.weakest
+                        },
+                        buckling: if capacity < from_anchor.capacity_n {
+                            by
+                        } else {
+                            from_anchor.buckling
+                        },
+                    }
+                }
+                (to_member, to_anchor) => {
+                    let strut = Strut::of(&obb, self.moduli[by], (point, at), sideways, run);
+                    let slip = to_member.give() + to_anchor.give();
+                    let (stiffness_n_mm, capacity_n) =
+                        strut.holds(slip, anchor_give, from_anchor.capacity_n);
+                    Anchorage {
+                        stiffness_n_mm,
+                        capacity_n,
+                        weakest: if strut.across() || strut.give + slip > anchor_give {
+                            by
+                        } else {
+                            from_anchor.weakest
+                        },
+                        buckling: if strut.capacity < from_anchor.capacity_n {
+                            by
+                        } else {
+                            from_anchor.buckling
+                        },
+                    }
+                }
             };
             found = Some(match found {
                 Some(known) => weaker(known, this),
                 None => this,
             });
         }
-        found
+        found.map(|anchorage| (anchorage, route))
     }
 
     /// How a diaphragm's sheet `by` holds `member` at `point`: through each of
     /// `anchors` ([`Self::through`], the diaphragm's parts `chain` kept apart),
     /// side by side (R1119og-PG-801: boards on four free posts held a beam
-    /// unchecked, though each post gives 0.8 N/mm against 58 asked).
+    /// unchecked, though each post gives 0.8 N/mm against 58 asked). Paths
+    /// sharing a part on their way to the ground are one path, the stiffest of
+    /// them (R1120ac-PG-901: eight blocks on one lath on a single post held as
+    /// eight posts).
     pub(super) fn diaphragm(
         &self,
         by: usize,
@@ -425,10 +487,23 @@ impl<'a> Footing<'a> {
         point: [f64; 3],
         chain: &[usize],
     ) -> Option<Anchorage> {
-        anchors
+        let mut paths: Vec<(Anchorage, BTreeSet<usize>)> = anchors
             .collect::<BTreeSet<usize>>()
             .into_iter()
-            .filter_map(|anchor| self.through(by, anchor, member, point, chain))
+            .filter_map(|anchor| self.routed(by, anchor, member, point, chain))
+            .collect();
+        paths.sort_by(|a, b| b.0.stiffness_n_mm.total_cmp(&a.0.stiffness_n_mm));
+        let mut used = BTreeSet::new();
+        paths
+            .into_iter()
+            .filter(|(_, route)| {
+                let alone = route.is_disjoint(&used);
+                if alone {
+                    used.extend(route.iter().copied());
+                }
+                alone
+            })
+            .map(|(anchorage, _)| anchorage)
             .reduce(together)
     }
 
@@ -437,9 +512,10 @@ impl<'a> Footing<'a> {
         self.grounded[item] && on_floor(&self.parts[item], self.floor)
     }
 
-    /// [`Self::anchorage`] by a force `sideways` at `held`: the path giving
+    /// [`Self::reached`] by a force `sideways` at `held`: the path giving
     /// least, found as the shortest by its give, what each part and joint
-    /// gives adding up along it.
+    /// gives adding up along it, buckling over its length on from `start`;
+    /// with the parts it runs through, the anchor first.
     fn search(
         &self,
         anchor: usize,
@@ -447,7 +523,8 @@ impl<'a> Footing<'a> {
         apart: &[usize],
         held: [f64; 3],
         sideways: [f64; 3],
-    ) -> Option<Anchorage> {
+        start: f64,
+    ) -> Option<(Anchorage, Vec<usize>)> {
         let count = self.parts.len();
         let frame = &self.frames[member];
         let deep = depth(&self.parts[member], frame);
@@ -455,7 +532,7 @@ impl<'a> Footing<'a> {
         let mut entry = vec![held; count];
         // How far the path has run to each part, and the force it takes
         // before buckling up to there.
-        let mut reach = vec![0.0; count];
+        let mut reach = vec![start; count];
         let mut capacity = vec![f64::INFINITY; count];
         let mut buckling = vec![anchor; count];
         // Which part the path came from to each, and what that part gave.
@@ -509,7 +586,7 @@ impl<'a> Footing<'a> {
                     continue;
                 };
                 let thin = least_side(&obb).min(least_side(&other));
-                let Some(joint) = joint_give(tie, at, held, sideways, thin) else {
+                let Hold::Fixed(joint) = hold(tie, at, held, sideways, thin) else {
                     hinges.insert(next);
                     continue;
                 };
@@ -540,13 +617,16 @@ impl<'a> Footing<'a> {
             return None;
         };
         let (mut weakest, mut most, mut at) = (end, own, end);
+        let mut route = vec![end];
         while let Some((from, given)) = came[at] {
             if given > most {
                 (weakest, most) = (from, given);
             }
             at = from;
+            route.push(at);
         }
-        Some(Anchorage {
+        route.reverse();
+        let anchorage = Anchorage {
             stiffness_n_mm: if total > 0.0 {
                 1.0 / total
             } else {
@@ -555,7 +635,8 @@ impl<'a> Footing<'a> {
             capacity_n: holds,
             weakest,
             buckling: buckles,
-        })
+        };
+        Some((anchorage, route))
     }
 
     /// How touching parts `a` and `b` hold each other: rigidly when both are
@@ -571,7 +652,7 @@ impl<'a> Footing<'a> {
         let listed = self.joined.get(&(a.min(b), a.max(b)))?;
         Some(match listed.len() {
             0 => self.fitting(a, b),
-            1 => Tie::Hinge,
+            1 => Tie::Pin,
             count => {
                 let count = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
                 let middle: [f64; 3] = std::array::from_fn(|i| {
@@ -607,7 +688,7 @@ impl<'a> Footing<'a> {
                 turning: 2.0 * apart * apart,
             }
         } else {
-            Tie::Hinge
+            Tie::Pin
         }
     }
 
