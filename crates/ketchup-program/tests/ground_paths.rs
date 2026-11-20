@@ -347,7 +347,7 @@ fn stacked_short_pieces_are_as_slender_as_one_rod() {
             refused(&held)
                 .iter()
                 .any(|message| message.contains("piece 300")
-                    && (message.contains("too slender") || message.contains("hinge"))),
+                    && (message.contains("too slender") || message.contains("pivot"))),
             "{case}: {:?}",
             refused(&held)
         );

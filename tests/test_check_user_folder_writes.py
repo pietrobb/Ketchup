@@ -31,6 +31,25 @@ def test_counts_writes_of_files_that_name_a_users_folder(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/app/src/register.rs": 2}
 
 
+def test_every_way_of_writing_counts_and_folders_from_the_environment_too(tmp_path):
+    # Review 2026-11-20 ac P3: these writes, and folders from home_dir()/temp_dir(),
+    # were not seen.
+    write(tmp_path, "crates/app/src/copies.rs",
+          'use std::fs::write;\n'
+          'fn f() {\n'
+          '    let home = dirs::home_dir();\n'
+          '    File::create_new(a); fs::copy(a, b); File::options().write(true).open(a);\n'
+          '    std::os::unix::fs::symlink(a, b); std::os::windows::fs::symlink_file(a, b);\n'
+          '    tempfile::NamedTempFile::new_in(a); tempfile::Builder::new().tempdir_in(a);\n'
+          '    write(a, b);\n'
+          '    out.write(b); write!(out, "x");\n'
+          '}\n'
+          'fn write(a: u8) {}\n')
+    write(tmp_path, "crates/app/src/scratch.rs", "fn f() { let t = std::env::temp_dir(); fs::copy(t, b); }\n")
+    assert checker.current_counts(tmp_path) == {
+        "crates/app/src/copies.rs": 8, "crates/app/src/scratch.rs": 1}
+
+
 def test_growth_fails_and_shrinking_passes(tmp_path):
     path = write(tmp_path, "crates/app/src/settings.rs",
                  "fn f(folder: UserFolder) { std::fs::write(a, b); }\n")

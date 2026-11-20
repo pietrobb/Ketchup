@@ -405,7 +405,7 @@ def short_needed_waits(text: str) -> list[int]:
         if value >= PATIENCE_FLOOR_MS:
             continue
         if re.match(r"\s*(?:if|while|match)\b", statement) or ".is_err()" in statement \
-                or EXPECTS_ERROR.search(statement):
+                or taken_wait_errors(statement) is not None:
             continue  # polling, or asserting that nothing arrived in time
         found.append(text.count("\n", 0, wait.start()) + 1)
     return found
@@ -464,14 +464,14 @@ def fails_after(text: str, all_deadlines: list[re.Match], index: int) -> bool:
     errors: list[str] = []
     for statement in owned.split(";"):
         words = STRING.sub('""', statement)
-        expected = EXPECTS_ERROR.search(words)
-        if expected:
-            errors += [name for name in expected.groups() if name]
+        expected = taken_wait_errors(words, deadline.group(1))
+        if expected is not None:
+            errors += expected
         if not FAILS_AFTER.search(statement):
             continue
         if NOT_TIMED_OUT.search(words):
             return True
-        if TIMEOUT_EXPECTED.search(words) or expected:
+        if TIMEOUT_EXPECTED.search(words) or expected is not None:
             continue
         if errors and re.search(rf"\b(?:{'|'.join(map(re.escape, errors))})\b", words):
             continue  # it reads the error the wait ran out with
@@ -512,14 +512,48 @@ TIMED_OUT = re.compile(r"Timeout|TimedOut|timed_out|\.is_err\(\)|\.is_none\(\)")
 NOT_TIMED_OUT = re.compile(
     r"(?<![\w!])!\s*[\w.()]*?(?:timed_out\b|\.is_err\(\)|\.is_none\(\))"
     r"|\btimed_out\s*,\s*false\b|\bfalse\s*,\s*[\w.()]*?timed_out\b")
-# A statement taking the error a wait answered, which checks that it ran out as
-# `.is_err()` does (review 2026-11-13 r95 P3): `.unwrap_err()`, `.expect_err(…)` and
-# `let Err(e) = … else { panic!(…) }`. Group 1 or 2 is the name the error is bound to,
-# which later statements may inspect.
-EXPECTS_ERROR = re.compile(
-    r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=[^;]*?\.(?:unwrap_err\(\)|expect_err\()"
-    r"|\blet\s+Err\s*\(\s*(?:mut\s+)?(\w+)?[^=;]*\)\s*=[^;]*?\belse\b"
-    r"|\.unwrap_err\(\)|\.expect_err\(")
+# Taking the error of a call: `.unwrap_err()`, `.expect_err(…)`; and `let Err(e) = …
+# else { panic!(…) }` (group 1 the name, group 2 the expression).
+TAKES_ERROR = re.compile(r"\.(?:unwrap_err\(\)|expect_err\()")
+LET_ERR = re.compile(r"\blet\s+Err\s*\(\s*(?:mut\s+)?(\w+)?[^=;]*\)\s*=([^;]*?)\belse\b")
+BOUND = re.compile(r"^\s*let\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=")
+WAIT_NAME = re.compile(r"(?:recv_timeout|wait_timeout\w*|wait|next_event)$")
+
+
+def taken_wait_errors(statement: str, deadline: str = "") -> list[str] | None:
+    """Whether `statement` takes the error a wait answered, which checks that it ran
+    out as `.is_err()` does (review 2026-11-13 r95 P3), and the names the error is
+    bound to, which later statements may inspect; None when it takes none. The error
+    must be the wait's own: of a call to `recv_timeout`, `wait`, … or of one given
+    `deadline` (review 2026-11-20 ac P3: `.unwrap_err()` on anything in the statement
+    freed the wait)."""
+    def of_a_wait(expression: str) -> bool:
+        return bool(WAIT.search(expression)) or bool(
+            deadline and re.search(rf"\b{re.escape(deadline)}\b", expression))
+
+    names: list[str] = []
+    taken = False
+    for let in LET_ERR.finditer(statement):
+        if of_a_wait(let.group(2)):
+            taken = True
+            names += [let.group(1)] if let.group(1) else []
+    for take in TAKES_ERROR.finditer(statement):
+        close = take.start() - 1
+        if close < 0 or statement[close] != ")":
+            continue
+        depth, open_at = 0, close
+        while open_at >= 0:
+            depth += {")": 1, "(": -1}.get(statement[open_at], 0)
+            if depth == 0:
+                break
+            open_at -= 1
+        callee = re.search(r"(\w+)\s*$", statement[:max(open_at, 0)])
+        arguments = statement[open_at + 1:close]
+        if (callee and WAIT_NAME.search(callee.group(1))) or of_a_wait(arguments):
+            taken = True
+            bound = BOUND.search(statement)
+            names += [bound.group(1)] if bound and bound.end() <= take.start() else []
+    return names if taken else None
 # A match whose timeout arm does nothing: it panics on any other outcome, so it checks
 # that the wait ran out (review 2026-11-13 P3).
 TIMEOUT_EXPECTED = re.compile(r"\b(?:Timeout|TimedOut)\b\)*\s*=>\s*(?:\{\s*\}|\(\s*\))")

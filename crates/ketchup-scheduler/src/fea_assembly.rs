@@ -448,13 +448,25 @@ fn joints(
                 };
                 let onto_first = bond(nodes, &may_lead(first_face), &may_follow(&second_free));
                 let onto_second = bond(nodes, &may_lead(second_face), &may_follow(&first_free));
-                let ties = match bonds_of(first.part).cmp(&bonds_of(second.part)) {
-                    Ordering::Greater if !onto_first.is_empty() => onto_first,
-                    Ordering::Less if !onto_second.is_empty() => onto_second,
-                    _ if onto_second.len() > onto_first.len() => onto_second,
-                    _ => onto_first,
+                let onto_first = (onto_first, first_face, second_face);
+                let onto_second = (onto_second, second_face, first_face);
+                let (ties, leader, follower) =
+                    match bonds_of(first.part).cmp(&bonds_of(second.part)) {
+                        Ordering::Greater if !onto_first.0.is_empty() => onto_first,
+                        Ordering::Less if !onto_second.0.is_empty() => onto_second,
+                        _ if onto_second.0.len() > onto_first.0.len() => onto_second,
+                        _ => onto_first,
+                    };
+                // Faces that touch only along an edge, side by side or at a
+                // right angle, would tie into a line that turns: some triangle of the
+                // follower must lie on the leader whole (review 2026-11-20 ac P3).
+                let tied = ties.iter().map(|(node, ..)| *node).collect::<BTreeSet<_>>();
+                let touches = |node: &usize| {
+                    tied.contains(node)
+                        || lies_on(nodes, leader, nodes[*node].position_mm).is_some()
                 };
-                if ties.is_empty() {
+                if ties.is_empty() || !follower.iter().any(|triangle| triangle.iter().all(touches))
+                {
                     return Err(refused);
                 }
                 let leaders = ties.iter().flat_map(|(_, triangle, _)| *triangle).collect();

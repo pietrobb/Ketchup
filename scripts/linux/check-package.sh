@@ -16,7 +16,10 @@ tar -xzf "$archive" -C "$work"
 package="$work/$(basename "$archive" .tar.gz)"
 [ -d "$package" ] || { echo "the archive has no folder $(basename "$package")" >&2; exit 1; }
 
-if ldd "$package"/ketchup-* "$package"/lib/* | grep "not found"; then
+# ldd fails when any argument is not a dynamic ELF; under pipefail that failure
+# would hide a "not found" from the others, so its status is not the test.
+libraries="$(ldd "$package"/ketchup-* "$package"/lib/* 2>&1 || true)"
+if grep "not found" <<<"$libraries"; then
     echo "a library the package needs is neither in it nor on the system" >&2
     exit 1
 fi

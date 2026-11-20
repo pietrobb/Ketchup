@@ -479,6 +479,36 @@ fn census_of_constant_fillets() {
     ]);
 }
 
+/// A refused fillet or chamfer names the largest size that fits, and that
+/// size is made (review 2026-11-20 ac P3: the refusals were bare).
+#[test]
+fn a_refused_finish_names_the_largest_size_that_fits() {
+    let backend = ExactBackend::new();
+    let block = block(&backend);
+    let body = &block.body;
+    let top_edge = edges_at(body, &[[LENGTH / 2.0, 0.0, HEIGHT]]);
+    for (finish, size) in [
+        (EdgeFinish::Fillet, "radius"),
+        (EdgeFinish::Chamfer, "distance"),
+    ] {
+        let refused = backend
+            .finish_body(body, &top_edge, finish, HEIGHT + 5.0)
+            .expect_err("larger than the face next to the edge")
+            .to_string();
+        assert!(refused.contains(ROUND_DOES_NOT_FIT), "{refused}");
+        let largest: f64 = refused
+            .split(&format!("the largest {size} found to fit is "))
+            .nth(1)
+            .and_then(|rest| rest.split(" mm").next())
+            .and_then(|figure| figure.parse().ok())
+            .unwrap_or_else(|| panic!("{refused}"));
+        assert!((HEIGHT / 2.0..HEIGHT + 5.0).contains(&largest), "{refused}");
+        backend
+            .finish_body(body, &top_edge, finish, largest)
+            .unwrap_or_else(|error| panic!("{size} {largest}: {error}"));
+    }
+}
+
 #[test]
 fn census_of_variable_fillets() {
     let backend = ExactBackend::new();

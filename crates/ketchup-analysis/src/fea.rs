@@ -633,6 +633,19 @@ impl FeaModel {
             .map(|result| result.strain_energy_n_mm)
             .sum::<f64>()
             + spring_energy(self, &layout, &displacement);
+        // A load near the end of the number range (1e300 N) solves to finite
+        // displacements whose stresses and energy overflow, written as null
+        // (review 2026-11-20 ac P3).
+        if !(maximum_displacement_mm.is_finite()
+            && total_strain_energy_n_mm.is_finite()
+            && maximum_free_dof_residual_n.is_finite()
+            && element_results
+                .iter()
+                .all(|result| result.von_mises_stress_mpa.is_finite())
+            && reactions.iter().flatten().all(|value| value.is_finite()))
+        {
+            return Err(FeaError::NonFiniteSolution);
+        }
         let characteristic_length_mm = self.characteristic_length();
         let maximum_displacement_ratio = maximum_displacement_mm / characteristic_length_mm;
         let all_yield_strengths_supplied = self

@@ -586,6 +586,25 @@ def test_a_wait_checked_to_run_out_by_taking_its_error_is_no_budget(tmp_path):
     assert checker.violations(tmp_path) == ["crates/a/tests/ran_out.rs:12"]
 
 
+def test_only_the_error_of_the_wait_itself_frees_it(tmp_path):
+    # Review 2026-11-20 ac P3: `.unwrap_err()` or `.expect_err(…)` on anything else
+    # in the statement freed a wait the test relies on.
+    write(tmp_path, "crates/a/tests/other_error.rs", (
+        "fn other_error() {\n"
+        "    assert_eq!(replies.recv_timeout(Duration::from_millis(50)).unwrap(), parse(\"x\").unwrap_err());\n"
+        "    let answered = Instant::now() + Duration::from_millis(100);\n"
+        "    assert_eq!(wait(answered).unwrap(), parse(\"y\").expect_err(\"bad\"));\n"
+        "    let Err(_) = parse(\"z\") else { panic!() };\n"
+        "    let late = Instant::now() + Duration::from_millis(100);\n"
+        "    let Err(error) = parse(\"z\") else { panic!() };\n"
+        "    assert_eq!(wait(late).unwrap(), error);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/other_error.rs:{line}" for line in (2, 3, 6)
+    ]
+
+
 def test_a_closure_is_a_helper_only_in_the_file_that_binds_it(tmp_path):
     # Review 2026-11-13 r95 P3: closures were counted by name in the whole repository.
     write(tmp_path, "crates/a/tests/bound.rs", (

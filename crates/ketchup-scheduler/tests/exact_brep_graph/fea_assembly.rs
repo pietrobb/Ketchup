@@ -617,3 +617,59 @@ fn a_part_bonded_on_two_adjacent_faces_ties_both_joints_in_either_face_order() {
         balanced(&solution);
     }
 }
+
+/// Review 2026-11-20 ac P3: faces that touch only along an edge, at a right
+/// angle or side by side, were bonded into a hinge line. Only faces that touch
+/// over an area are bonded.
+#[test]
+fn faces_touching_only_along_an_edge_are_not_bonded() {
+    let _turn = crate::integration_support::file_turn();
+    let (mut document, definition, extrusion, lower) = simple_extrusion_document();
+    let beside = OccurrenceId(909);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: beside,
+                definition_id: definition,
+                name: "Block beside".into(),
+                // The block is 8 mm long in x: this one touches the lower's east face.
+                transform: Transform::from_translation(8.0, 0.0, 0.0).unwrap(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = block_mesh(&mut supervisor, &snapshot, definition, extrusion);
+    let packages = [&package, &package];
+    let (_, top) = bottom_and_top(&package);
+    let by_x = |left: &&ExactBRepGraphFaceEvidence, right: &&ExactBRepGraphFaceEvidence| {
+        left.centroid_mm[0].total_cmp(&right.centroid_mm[0])
+    };
+    let evidence = &package.source.face_evidence;
+    let west = evidence.iter().min_by(by_x).unwrap().face_ordinal;
+    let east = evidence.iter().max_by(by_x).unwrap().face_ordinal;
+    let joined = |lower_face, beside_face| {
+        let mut setup = stack_setup(
+            lower,
+            beside,
+            bottom_and_top(&package),
+            ExactFeaJointKind::Bonded,
+        );
+        setup.joints[0].faces[0].face_ordinal = lower_face;
+        setup.joints[0].faces[1].face_ordinal = beside_face;
+        assembly_bound_model(&snapshot, &packages, &setup)
+    };
+    // The lower's top and the west face beside meet at a right angle on an edge;
+    // the two tops lie side by side on it.
+    for (lower_face, beside_face) in [(top, west), (top, top)] {
+        assert_eq!(
+            joined(lower_face, beside_face).unwrap_err(),
+            ExactFeaSetupError::InvalidJoint { joint: 0 }
+        );
+    }
+    assert!(joined(east, west).is_ok());
+}
