@@ -173,13 +173,21 @@ impl Report {
     /// named no parameter of the program (review 2026-11-09 PG-245: it was
     /// evaluated otherwise than asked, so its verdict is not one), 1 when an
     /// error stands or a member or joint fails, 3 when something is not
-    /// verified or a load reaches no member, else 0.
+    /// verified or a load reaches no member, else 0. A build-up whose thermal
+    /// check is not verified (e.g. Glaser finds condensation, review
+    /// 2026-11-20 ac TH-900) exits 3 like statics; a failed one is an error.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
+        let thermal_unverified = self
+            .thermal
+            .buildups
+            .iter()
+            .any(|check| check.status == "not_verified");
         match (self.ok, self.statics()) {
             _ if !self.unused_overrides.is_empty() => 2,
             (false, _) | (_, Statics::Failed) => 1,
             (true, Statics::NotVerified) => 3,
+            _ if thermal_unverified => 3,
             _ => 0,
         }
     }

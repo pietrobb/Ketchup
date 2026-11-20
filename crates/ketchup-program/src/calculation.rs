@@ -350,8 +350,8 @@ fn verdict(out: &mut String, report: &Report, l: Language) {
         _ => (
             l.says("NEOVERENÉ", "NEOVĚŘENO"),
             l.says(
-                "nič nie je nevyhovujúce, ale niektorý prvok alebo spoj nie je overený, alebo zaťaženie nedosiahlo žiadny prvok; pozri Upozornenia.",
-                "nic není nevyhovující, ale některý prvek nebo spoj není ověřen, nebo zatížení nedosáhlo žádný prvek; viz Upozornění.",
+                "nič nie je nevyhovujúce, ale niektorý prvok, spoj alebo tepelná kontrola skladby nie je overená, alebo zaťaženie nedosiahlo žiadny prvok; pozri Upozornenia.",
+                "nic není nevyhovující, ale některý prvek, spoj nebo tepelná kontrola skladby není ověřena, nebo zatížení nedosáhlo žádný prvek; viz Upozornění.",
             ),
         ),
     };
