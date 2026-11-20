@@ -94,6 +94,13 @@ pub enum WorkshopPackageError {
     /// A name that is not ASCII without the ZIP UTF-8 flag (bit 11): an
     /// unpacker reads it in its own code page and writes another name.
     NameNotMarkedUtf8(String),
+    /// The entry carries an extra field; Kečup writes none, and an unpacker may take
+    /// another name from one, as from the Unicode Path field (R1120ac-ZIP-900).
+    ExtraField(String),
+    /// The entry is a link, folder or device, not a plain file (R1120ac-ZIP-901).
+    NotAPlainFile(String),
+    /// The entry has a header flag Kečup does not write: only UTF-8 (bit 11) is.
+    UnknownFlags(String),
 }
 
 impl std::fmt::Display for WorkshopPackageError {
@@ -126,6 +133,18 @@ impl std::fmt::Display for WorkshopPackageError {
             Self::NameNotMarkedUtf8(name) => write!(
                 formatter,
                 "`{name}` is not marked as UTF-8 and unpacks under another name"
+            ),
+            Self::ExtraField(name) => write!(
+                formatter,
+                "`{name}` carries an extra ZIP field an unpacker may take another name from"
+            ),
+            Self::NotAPlainFile(name) => write!(
+                formatter,
+                "`{name}` is a link, folder or device, not a plain file"
+            ),
+            Self::UnknownFlags(name) => write!(
+                formatter,
+                "`{name}` has ZIP header flags the workshop package is not written with"
             ),
         }
     }
@@ -508,8 +527,11 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         let name = std::str::from_utf8(raw_name)
             .map_err(WorkshopPackageError::NameNotText)?
             .to_owned();
+        let made_by = u16_at(at + 4)?;
+        let central_extra = u16_at(at + 30)?;
+        let external = u32_at(at + 38)?;
         let local = usize_at(at + 42)?;
-        at += 46 + name_len + u16_at(at + 30)? + u16_at(at + 32)?;
+        at += 46 + name_len + central_extra + u16_at(at + 32)?;
         if bytes(local, 4)? != LOCAL {
             return Err(not_a_package());
         }
@@ -523,7 +545,18 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         if !same_header {
             return Err(WorkshopPackageError::LocalHeaderDiffers(name));
         }
-        let start = local + 30 + name_len + u16_at(local + 28)?;
+        // Only what Kečup's writer puts in a header passes (R1120ac-ZIP-900, -901).
+        if flags & !usize::from(crate::three_mf_export::UTF8_NAME) != 0 {
+            return Err(WorkshopPackageError::UnknownFlags(name));
+        }
+        let local_extra = u16_at(local + 28)?;
+        if central_extra != 0 || local_extra != 0 {
+            return Err(WorkshopPackageError::ExtraField(name));
+        }
+        if !is_plain_file(made_by, external) {
+            return Err(WorkshopPackageError::NotAPlainFile(name));
+        }
+        let start = local + 30 + name_len + local_extra;
         let data = bytes(start, size)?;
         if crate::three_mf_export::crc32(data) != crc {
             return Err(not_a_package());
@@ -557,6 +590,22 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         return Err(WorkshopPackageError::HiddenData);
     }
     Ok(entries)
+}
+
+/// Whether the external attributes of an entry made on the system `made_by` names
+/// describe a plain file: no DOS folder or volume label, and on Unix the mode of a
+/// regular file, not of a link, folder or device an unpacker would create.
+fn is_plain_file(made_by: usize, external: u32) -> bool {
+    // not a tolerance: the ZIP host number of Unix and the file type bits of its mode.
+    const UNIX: usize = 3;
+    const FILE_TYPE: u32 = 0o170_000;
+    const REGULAR_FILE: u32 = 0o100_000;
+    // not a tolerance: the DOS attributes of a volume label and a folder.
+    const DOS_NOT_A_FILE: u32 = 0x08 | 0x10;
+    if external & DOS_NOT_A_FILE != 0 {
+        return false;
+    }
+    made_by >> 8 != UNIX || (external >> 16) & FILE_TYPE == REGULAR_FILE
 }
 
 #[cfg(test)]

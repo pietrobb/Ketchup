@@ -307,6 +307,182 @@ fn a_name_that_is_not_ascii_is_marked_as_utf8() {
     );
 }
 
+/// What one entry's headers say beyond its name, size and CRC.
+struct Header {
+    flags: u16,
+    /// The extra field, the same in the local and the central header.
+    extra: Vec<u8>,
+    made_by: u16,
+    external: u32,
+}
+
+/// What Kečup writes for `name`.
+fn plain(name: &str) -> Header {
+    Header {
+        flags: if name.is_ascii() {
+            0
+        } else {
+            crate::three_mf_export::UTF8_NAME
+        },
+        extra: Vec::new(),
+        made_by: 20,
+        external: 0,
+    }
+}
+
+/// A stored ZIP of `entries`, each with the headers `header` gives it.
+fn rezip(entries: &BTreeMap<String, Vec<u8>>, header: impl Fn(&str) -> Header) -> Vec<u8> {
+    let mut zip = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        let header = header(name);
+        let offset = u32::try_from(zip.len()).unwrap();
+        let crc = crate::three_mf_export::crc32(data);
+        let size = u32::try_from(data.len()).unwrap();
+        let name_len = u16::try_from(name.len()).unwrap();
+        let extra_len = u16::try_from(header.extra.len()).unwrap();
+        zip.extend(b"PK\x03\x04");
+        for field in [20, header.flags, 0, 0, 0] {
+            zip.extend(field.to_le_bytes());
+        }
+        for field in [crc, size, size] {
+            zip.extend(field.to_le_bytes());
+        }
+        for field in [name_len, extra_len] {
+            zip.extend(field.to_le_bytes());
+        }
+        zip.extend(name.as_bytes());
+        zip.extend(&header.extra);
+        zip.extend(data);
+        central.extend(b"PK\x01\x02");
+        for field in [header.made_by, 20, header.flags, 0, 0, 0] {
+            central.extend(field.to_le_bytes());
+        }
+        for field in [crc, size, size] {
+            central.extend(field.to_le_bytes());
+        }
+        for field in [name_len, extra_len, 0, 0, 0] {
+            central.extend(field.to_le_bytes());
+        }
+        for field in [header.external, offset] {
+            central.extend(field.to_le_bytes());
+        }
+        central.extend(name.as_bytes());
+        central.extend(&header.extra);
+    }
+    let central_offset = u32::try_from(zip.len()).unwrap();
+    let central_size = u32::try_from(central.len()).unwrap();
+    let count = u16::try_from(entries.len()).unwrap();
+    zip.extend(central);
+    zip.extend(b"PK\x05\x06");
+    for field in [0, 0, count, count] {
+        zip.extend(field.to_le_bytes());
+    }
+    for field in [central_size, central_offset] {
+        zip.extend(field.to_le_bytes());
+    }
+    zip.extend(0_u16.to_le_bytes());
+    zip
+}
+
+/// The entries of the sample package with the two programs `a.nc` and `b.nc`.
+fn two_programs() -> BTreeMap<String, Vec<u8>> {
+    let mut programs = package();
+    programs.files = vec![
+        ("a.nc".to_owned(), b"G0 X1\n".to_vec()),
+        ("b.nc".to_owned(), b"G0 X2\n".to_vec()),
+    ];
+    stored_entries(&programs.zip().unwrap()).unwrap()
+}
+
+/// The Info-ZIP Unicode Path extra field naming `unicode` for the header `name`.
+fn unicode_path(name: &str, unicode: &str) -> Vec<u8> {
+    let mut field = 0x7075_u16.to_le_bytes().to_vec();
+    field.extend(u16::try_from(5 + unicode.len()).unwrap().to_le_bytes());
+    field.push(1);
+    field.extend(crate::three_mf_export::crc32(name.as_bytes()).to_le_bytes());
+    field.extend(unicode.as_bytes());
+    field
+}
+
+/// R1120ac-ZIP-900: an extra field, such as the Unicode Path an unpacker takes for
+/// the real name, is refused: `a.nc` and `b.nc` naming each other there unpacked each
+/// as the other, and `../../evil.nc` passed. The same headers without it pass.
+#[test]
+fn an_extra_field_an_unpacker_may_take_the_name_from_is_refused() {
+    let entries = two_programs();
+    assert!(check_workshop_package(&rezip(&entries, plain)).is_ok());
+    for (other, swapped) in [("b.nc", true), ("../../evil.nc", false)] {
+        let zip = rezip(&entries, |name| {
+            let mut header = plain(name);
+            if name == "a.nc" {
+                header.extra = unicode_path(name, other);
+            } else if name == "b.nc" && swapped {
+                header.extra = unicode_path(name, "a.nc");
+            }
+            header
+        });
+        assert_eq!(
+            check_workshop_package(&zip),
+            Err(WorkshopPackageError::ExtraField("a.nc".to_owned())),
+            "{other}"
+        );
+    }
+}
+
+/// R1120ac-ZIP-901: an entry made on Unix whose mode is not a plain file, such as a
+/// link `a.nc -> /etc/hostname`, is refused; a plain Unix file passes.
+#[test]
+fn a_link_or_other_special_file_is_refused() {
+    let entries = two_programs();
+    let unix = |mode: u32| {
+        move |name: &str| {
+            let mut header = plain(name);
+            if name == "a.nc" {
+                header.made_by = (3 << 8) | 20;
+                header.external = mode << 16;
+            }
+            header
+        }
+    };
+    assert!(check_workshop_package(&rezip(&entries, unix(0o100_644))).is_ok());
+    for mode in [0o120_777, 0o040_755, 0o010_644] {
+        assert_eq!(
+            check_workshop_package(&rezip(&entries, unix(mode))),
+            Err(WorkshopPackageError::NotAPlainFile("a.nc".to_owned())),
+            "{mode:o}"
+        );
+    }
+    // A DOS directory or a device is no plain file either.
+    let dos_directory = rezip(&entries, |name| Header {
+        external: if name == "a.nc" { 0x10 } else { 0 },
+        ..plain(name)
+    });
+    assert_eq!(
+        check_workshop_package(&dos_directory),
+        Err(WorkshopPackageError::NotAPlainFile("a.nc".to_owned()))
+    );
+}
+
+/// Review 2026-11-20 ac P3: a header flag other than UTF-8 (bit 11), such as a data
+/// descriptor (bit 3) with none after the data or strong encryption (bit 6), is
+/// refused, even when both headers agree.
+#[test]
+fn a_header_flag_other_than_utf8_is_refused() {
+    let entries = two_programs();
+    for flag in [1_u16 << 3, 1 << 6, 1 << 13] {
+        let zip = rezip(&entries, |name| Header {
+            flags: if name == "a.nc" { flag } else { 0 },
+            ..plain(name)
+        });
+        assert_eq!(
+            check_workshop_package(&zip),
+            Err(WorkshopPackageError::UnknownFlags("a.nc".to_owned())),
+            "{flag:#x}"
+        );
+    }
+}
+
 /// Removes the central record of `name`, leaving its local entry in the
 /// archive where no file list names it.
 fn hide_from_central_directory(zip: &mut Vec<u8>, name: &str) {
