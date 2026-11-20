@@ -452,6 +452,16 @@ mod tests {
         let mut harness = Kittest::builder()
             .with_size(egui::Vec2::new(1600.0, 1000.0))
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        harness.step();
+        // The empty document's exact evaluation repaints the window and shows
+        // its progress until it ends; wait for it so it neither exceeds a
+        // `run` nor moves the tab's rows under a click.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while harness.state().exact.task.is_some() {
+            assert!(std::time::Instant::now() < deadline, "exact never ended");
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         harness.run();
         crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Ai);
         harness
@@ -662,9 +672,12 @@ mod tests {
         ));
         harness.get_by_label(&written.display().to_string());
         harness.get_by_label_contains("2.0 kB");
+        // By the button's id, not its place: on the Windows runner the tab's
+        // rows moved after the frame the place was read in, and the click
+        // missed (twice in CI, on #138 and #150).
         harness
             .get_by_label(&catalog.text("connect-ai-open-folder"))
-            .click();
+            .click_accesskit();
         harness.run();
         assert_eq!(probe.shown_folders(), [folder.path().to_path_buf()]);
     }
