@@ -21,6 +21,7 @@ mod continuous_span;
 pub mod cut_list;
 pub mod cutting;
 pub mod document;
+mod edge_finish_fit;
 pub mod eval;
 pub mod exact;
 mod execution_budget;

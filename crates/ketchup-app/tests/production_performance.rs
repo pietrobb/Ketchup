@@ -135,6 +135,29 @@ fn windows_memory_high_water_bytes(pid: u32) -> Option<u64> {
         .flatten()
 }
 
+/// When process `pid` started, in 100 ns ticks; `None` once it has exited.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_process_start(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: takes no pointers; a null handle is checked below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let process = Handle(process);
+    let [mut creation, mut exit, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the process handle is open and the four times are owned here.
+    let read =
+        unsafe { GetProcessTimes(process.0, &mut creation, &mut exit, &mut kernel, &mut user) }
+            != 0;
+    read.then(|| (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
 #[cfg(windows)]
 fn process_memory_high_water_bytes() -> u64 {
     windows_memory_high_water_bytes(std::process::id())
@@ -184,12 +207,29 @@ fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
         // SAFETY: as for Process32FirstW.
         more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
     }
+    // A listed parent ID is not cleared when the parent exits, and Windows
+    // reuses IDs: a process started before the one now holding its parent's
+    // ID was not started by it, and counting it once added gigabytes of
+    // unrelated processes to the corpus on a CI runner.
+    let mut started = std::collections::HashMap::new();
+    let mut started_at = |pid: u32| {
+        *started
+            .entry(pid)
+            .or_insert_with(|| windows_process_start(pid))
+    };
     let mut descendants = HashSet::from([std::process::id()]);
     loop {
         let previous_len = descendants.len();
         for &(pid, parent) in &relationships {
             // PID 0 lists itself as its own parent.
-            if pid != parent && descendants.contains(&parent) {
+            if pid != parent
+                && descendants.contains(&parent)
+                && !descendants.contains(&pid)
+                && matches!(
+                    (started_at(parent), started_at(pid)),
+                    (Some(parent_start), Some(child_start)) if child_start >= parent_start
+                )
+            {
                 descendants.insert(pid);
             }
         }

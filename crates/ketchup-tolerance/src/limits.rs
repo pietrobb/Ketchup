@@ -87,3 +87,9 @@ pub const LOFT_SECTIONS: usize = 16;
 
 /// Most surfaces one knit joins.
 pub const KNIT_SURFACES: usize = 256;
+
+/// The widest a control point's weight may stray from 1, either way: a weight
+/// lies in `1 / NURBS_WEIGHT_SPAN ..= NURBS_WEIGHT_SPAN`. Past it the rational
+/// surface is evaluated as a pole or a cusp, not a shape (`f64::MAX` and 1e-300
+/// were taken, review 2026-11-20 ac P3).
+pub const NURBS_WEIGHT_SPAN: f64 = 1.0e6;

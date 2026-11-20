@@ -145,3 +145,53 @@ fn a_stop_says_what_the_process_and_the_others_used_of_the_budget() {
          other large imports, exports or programs finish, or cancel them, and try again"
     );
 }
+
+/// Alone past the budget, the advice is not to wait for the others.
+#[test]
+fn a_job_alone_past_the_budget_is_not_told_to_wait_for_others() {
+    let stop = BudgetStop {
+        used: 9 << 30,
+        others: 0,
+        total: 8 << 30,
+    };
+    let text = stop.to_string();
+    assert!(text.contains("alone") && text.contains("Split"), "{text}");
+    assert!(!text.contains("finish"), "{text}");
+}
+
+fn files(files: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    let files = files
+        .iter()
+        .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+        .collect::<std::collections::HashMap<_, _>>();
+    move |path| files.get(path).cloned()
+}
+
+/// In a container the budget is a share of its limit, not of the host's memory.
+#[test]
+fn the_container_limit_bounds_the_budget() {
+    // cgroup v2: the least of the group and its ancestors; "max" is no limit.
+    let nested = files(&[
+        ("/proc/self/cgroup", "0::/ci/job\n"),
+        ("/sys/fs/cgroup/ci/job/memory.max", "max\n"),
+        ("/sys/fs/cgroup/ci/memory.max", "2147483648\n"),
+    ]);
+    assert_eq!(cgroup_memory_limit(nested), Some(2 << 30));
+    let container = files(&[
+        ("/proc/self/cgroup", "0::/\n"),
+        ("/sys/fs/cgroup/memory.max", "1073741824\n"),
+    ]);
+    assert_eq!(cgroup_memory_limit(container), Some(1 << 30));
+    let unlimited = files(&[
+        ("/proc/self/cgroup", "0::/user.slice\n"),
+        ("/sys/fs/cgroup/user.slice/memory.max", "max\n"),
+    ]);
+    assert_eq!(cgroup_memory_limit(unlimited), None);
+    // cgroup v1.
+    let v1 = files(&[
+        ("/proc/self/cgroup", "4:memory:/docker/abc\n"),
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "536870912\n"),
+    ]);
+    assert_eq!(cgroup_memory_limit(v1), Some(1 << 29));
+    assert_eq!(cgroup_memory_limit(files(&[])), None);
+}

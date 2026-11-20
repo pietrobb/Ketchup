@@ -93,6 +93,17 @@ fn axial_bar_matches_closed_form_and_reports_equilibrium_and_limits() {
     );
 }
 
+/// 1e300 N solves to finite displacements, but the strain energy overflows:
+/// refused, never written as null (review 2026-11-20 ac P3).
+#[test]
+fn load_near_the_end_of_the_number_range_is_refused() {
+    let error = axial_bar(4, 1.0e300)
+        .solve(FeaSolveSettings::default())
+        .unwrap_err();
+    assert_eq!(error, FeaError::NonFiniteSolution);
+    assert!(!error.to_string().contains("NonFinite"), "{error}");
+}
+
 #[test]
 fn reversed_connectivity_duplicate_element_is_rejected() {
     let mut model = axial_bar(1, 10_000.0);

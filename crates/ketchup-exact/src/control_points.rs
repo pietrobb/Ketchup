@@ -166,10 +166,12 @@ impl ExactBackend {
                 "A control point moves by a finite offset within the model".to_owned(),
             ));
         }
-        if weight.is_some_and(|weight| !(weight.is_finite() && weight > 0.0)) {
-            return Err(refuse(
-                "A control point's weight is finite and positive".to_owned(),
-            ));
+        let span = ketchup_tolerance::limits::NURBS_WEIGHT_SPAN;
+        if weight.is_some_and(|weight| !(1.0 / span..=span).contains(&weight)) {
+            return Err(refuse(format!(
+                "A control point's weight lies between {} and {span}",
+                1.0 / span
+            )));
         }
         if offset_mm == [0.0; 3] && weight.is_none() {
             return Err(refuse(

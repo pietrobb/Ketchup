@@ -33,10 +33,29 @@ fn control_point(offset_mm: [f64; 3], weight: Option<f64>, keep: &[u64]) -> Surf
 fn a_control_point_move_names_the_weight_offset_or_seam_not_the_target() {
     let up = [0.0, 0.0, 1.0];
     assert_eq!(surface_body(&control_point(up, None, &[621]), 1e-6), Ok(()));
+    for weight in [1e-6, 2.5, 1e6] {
+        assert_eq!(
+            surface_body(&control_point(up, Some(weight), &[]), 1e-6),
+            Ok(())
+        );
+    }
     for (spec, field) in [
         (control_point(up, Some(0.0), &[]), FeatureInputField::Weight),
         (
             control_point(up, Some(-1.0), &[]),
+            FeatureInputField::Weight,
+        ),
+        // Unbounded weights were taken (review 2026-11-20 ac P3).
+        (
+            control_point(up, Some(f64::MAX), &[]),
+            FeatureInputField::Weight,
+        ),
+        (
+            control_point(up, Some(1e-300), &[]),
+            FeatureInputField::Weight,
+        ),
+        (
+            control_point(up, Some(f64::NAN), &[]),
             FeatureInputField::Weight,
         ),
         (

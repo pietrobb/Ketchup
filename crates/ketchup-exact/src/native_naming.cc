@@ -330,7 +330,10 @@ std::unique_ptr<NativeOperationResult> named_finish_native(
         std::ostringstream message;
         message << "the " << (fillet ? "fillet" : "chamfer") << " of " << amount
                 << " mm does not fit on the selected edges (finish did not complete); "
-                   "the faces next to an edge must be wider than the amount";
+                   "the faces next to an edge must be wider than the amount"
+                << largest_fit_hint(
+                       largest_fitting_finish(body.impl().shape, selected, amount, fillet),
+                       fillet);
         return error_result(STATUS_INVALID_SHAPE, message.str());
       }
       const TopoDS_Shape result = operation.Shape();

@@ -251,6 +251,16 @@ std::unique_ptr<NativeOperationResult> error_result(
 
 bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal);
 
+// The largest constant radius (fillet) or distance (chamfer) below `amount`
+// that finishes every one of `edges` of `shape` into a valid shape, on a grid
+// of three significant digits of `amount`; every figure returned was built.
+// Zero when not even the smallest step fits.
+double largest_fitting_finish(
+    const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges, double amount, bool fillet);
+
+// "; the largest radius found to fit is 19.9 mm" for a refused finish.
+std::string largest_fit_hint(double largest, bool fillet);
+
 NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal);
 
 NativeEdgeEvidence inspect_edge(const TopoDS_Edge& edge, std::uint32_t ordinal);

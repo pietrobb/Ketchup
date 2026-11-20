@@ -2478,7 +2478,13 @@ fn surface_feature_refusals_name_their_field_and_rule() {
         (
             control_point([0.0, 0.0, 1.0], Some(0.0), Vec::new()),
             "weight",
-            "greater than zero",
+            "between 0.000001 and 1000000",
+        ),
+        // Unbounded weights were taken (review 2026-11-20 ac P3).
+        (
+            control_point([0.0, 0.0, 1.0], Some(f64::MAX), Vec::new()),
+            "weight",
+            "between 0.000001 and 1000000",
         ),
         (
             control_point([0.0; 3], None, Vec::new()),

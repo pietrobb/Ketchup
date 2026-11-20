@@ -114,9 +114,12 @@ fn control_point(
         "each value must be finite and within the coordinate limit",
     )?;
     rule(
-        weight.is_none_or(|weight| weight.is_finite() && weight > 0.0),
+        weight.is_none_or(|weight| {
+            (1.0 / limits::NURBS_WEIGHT_SPAN..=limits::NURBS_WEIGHT_SPAN).contains(&weight)
+        }),
         "weight",
-        "a weight must be finite and greater than zero",
+        "a weight must lie between 0.000001 and 1000000; 1 leaves the point as plain as its \
+         neighbours",
     )?;
     rule(
         weight.is_some() || offset_mm.iter().any(|value| *value != 0.0),

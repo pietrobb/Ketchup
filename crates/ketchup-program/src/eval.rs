@@ -1595,22 +1595,7 @@ fn apply_named_edge_finish(
         anyhow::bail!("{operation} on {part_name:?}: amount must be positive");
     }
     with_part(state, part_name, |part| {
-        let mut unique = BTreeSet::new();
-        for [first, second] in &edges {
-            if first == second {
-                anyhow::bail!("{operation} edge faces must be different, got {first:?} twice");
-            }
-            let mut pair = [
-                part.exact_face_label(first)
-                    .map_err(|error| anyhow::anyhow!("{operation} on {part_name:?}: {error}"))?,
-                part.exact_face_label(second)
-                    .map_err(|error| anyhow::anyhow!("{operation} on {part_name:?}: {error}"))?,
-            ];
-            pair.sort_unstable();
-            if !unique.insert(pair) {
-                anyhow::bail!("{operation} edge ({first:?}, {second:?}) is listed more than once");
-            }
-        }
+        crate::edge_finish_fit::check_edge_finish(part, operation, &edges, amount_mm)?;
         let count = part.finishes().count();
         let name = requested_name
             .clone()
