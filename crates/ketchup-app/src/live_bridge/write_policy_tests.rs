@@ -284,3 +284,30 @@ fn a_save_in_place_is_listed_as_its_document() {
     let listed: Vec<&Path> = files.iter().map(|file| file.path.as_path()).collect();
     assert_eq!(listed, [path.as_path(), path.as_path()]);
 }
+
+/// `apply_and_verify` saving to the document's own file names no path either,
+/// and went unlisted as `save` did (review 2026-11-20 ac P3); it is listed.
+#[test]
+fn an_edit_saved_in_place_is_listed_as_its_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut wire = Wire::connect(grounded_app());
+    let path = directory.path().join("house.ketchup");
+    wire.call(Request::SaveAs {
+        expected: None,
+        path: path.display().to_string(),
+    });
+    let report = wire.call(Request::ApplyAndVerify {
+        expected: None,
+        selection: Some(vec![]),
+        program: program(),
+        validators: mandatory_validators(),
+        timeout_ms: MAX_APPLY_VERIFY_TIMEOUT_MS,
+        strict: false,
+        save: Some(ApplyAndVerifySave::Current {}),
+    });
+    let report = report.result.unwrap();
+    assert_eq!(report["saved"], true, "{report}");
+    let files = wire.app.live.write_log.files();
+    let listed: Vec<&Path> = files.iter().map(|file| file.path.as_path()).collect();
+    assert_eq!(listed, [path.as_path(), path.as_path()]);
+}

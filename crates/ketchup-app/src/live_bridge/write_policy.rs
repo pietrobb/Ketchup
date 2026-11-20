@@ -56,7 +56,11 @@ pub(super) fn admitted(
     }
     // A save to the document's own file names no path (review 2026-11-20 ac P3).
     let saved_in_place = || match queued.request {
-        Request::Save { .. } => app.file.path.clone(),
+        Request::Save { .. }
+        | Request::ApplyAndVerify {
+            save: Some(ApplyAndVerifySave::Current {}),
+            ..
+        } => app.file.path.clone(),
         _ => None,
     };
     if let Some(path) = written_path(&queued.request)
