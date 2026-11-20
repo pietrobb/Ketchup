@@ -140,9 +140,10 @@ impl std::fmt::Display for FeaReviewError {
             }
             Self::InvalidTarget(reason) => write!(formatter, "FEA target rejected: {reason}"),
             Self::Meshing(reason) => write!(formatter, "FEA meshing rejected: {reason}"),
-            Self::Setup(cause) => write!(formatter, "FEA setup rejected: {cause:?}"),
-            Self::MeshNotRefined => formatter.write_str("FEA solve rejected: MeshNotRefined"),
-            Self::Solve(cause) => write!(formatter, "FEA solve rejected: {cause:?}"),
+            Self::Setup(cause) => write!(formatter, "FEA setup rejected: {cause}"),
+            Self::MeshNotRefined => formatter
+                .write_str("FEA solve rejected: each mesh level must be finer than the one before"),
+            Self::Solve(cause) => write!(formatter, "FEA solve rejected: {cause}"),
         }
     }
 }
@@ -617,5 +618,21 @@ mod tests {
             ]),
             Err(FeaReviewError::InvalidRefinementLevels)
         );
+    }
+
+    /// The user reads what to change, not the Rust name of the error.
+    #[test]
+    fn refusals_read_as_advice_not_rust_names() {
+        let singular = FeaReviewError::Solve(FeaError::SingularSystem).to_string();
+        assert!(!singular.contains("SingularSystem"), "{singular}");
+        assert!(singular.contains("add a support") && singular.contains("orders of magnitude"));
+        let joint =
+            FeaReviewError::Setup(ExactFeaSetupError::InvalidJoint { joint: 0 }).to_string();
+        assert!(
+            joint.contains("joint 1") && !joint.contains("InvalidJoint"),
+            "{joint}"
+        );
+        let mesh = FeaReviewError::MeshNotRefined.to_string();
+        assert!(!mesh.contains("MeshNotRefined"), "{mesh}");
     }
 }

@@ -178,3 +178,41 @@ pub enum ExactFeaSetupError {
         mate_id: ketchup_model::assembly::AssemblyMateId,
     },
 }
+
+/// What the user changes, not the Rust name (review 2026-11-20 ac P3).
+impl std::fmt::Display for ExactFeaSetupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleGeometry => {
+                formatter.write_str("the part changed since it was meshed; run the study again")
+            }
+            Self::InvalidInstancePath(cause) => write!(formatter, "the studied part: {cause}"),
+            Self::OccurrenceMismatch => {
+                formatter.write_str("the mesh belongs to another part than the one studied")
+            }
+            Self::IncompleteSetup => formatter.write_str(
+                "the study needs a name, at least one fixed face and at least one loaded face",
+            ),
+            Self::InvalidBoundarySelection => formatter.write_str(
+                "a fixed or loaded face is not a face of the meshed part; pick the faces again",
+            ),
+            Self::NonRigidPlacement => formatter.write_str(
+                "a part is scaled or sheared where the assembly places it; study it unscaled",
+            ),
+            Self::ConflictingMaterial => {
+                formatter.write_str("two parts name one material with different values")
+            }
+            Self::InvalidJoint { joint } => write!(
+                formatter,
+                "joint {} cannot be built: its faces belong to one part, do not touch over an \
+                 area, or share every free node with an earlier joint",
+                joint + 1
+            ),
+            Self::InvalidMate { mate_id } => write!(
+                formatter,
+                "mate {} is not a face-to-face mate between two studied parts",
+                mate_id.0
+            ),
+        }
+    }
+}
