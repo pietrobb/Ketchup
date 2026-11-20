@@ -36,10 +36,15 @@ BASELINE_NAME = "user_folder_writes_baseline.txt"
 OWN_CRATE = "crates/ketchup-user-files/"
 USER_FOLDERS = re.compile(
     r'"(?:HOME|XDG_[A-Z_]+|TMPDIR|APPDATA|LOCALAPPDATA|USERPROFILE|CLAUDE_CONFIG_DIR|CODEX_HOME)"'
-    r"|\bUserFolder\b")
+    r"|\bUserFolder\b|\b(?:home_dir|temp_dir)\s*\(")
+# Review 2026-11-20 ac P3 added `File::create_new`, `fs::copy`, `File::options()`, links,
+# tempfile's `*_in` constructors, a bare `write(` and folders from `home_dir()`/`temp_dir()`.
 WRITES = re.compile(
-    r"\bfs::write\s*\(|\bFile::create\s*\(|\bOpenOptions\b|\bDirBuilder\b|\bcreate_dir_all\s*\("
-    r"|\bfs::rename\s*\(|\.persist(?:_noclobber)?\s*\(")
+    r"\bfs::write\s*\(|\bFile::create(?:_new)?\s*\(|\bOpenOptions\b|\bFile::options\s*\("
+    r"|\bDirBuilder\b|\bcreate_dir_all\s*\(|\bfs::rename\s*\(|\bfs::copy\s*\("
+    r"|\.persist(?:_noclobber)?\s*\(|\bsymlink(?:_file|_dir)?\s*\("
+    r"|\b(?:NamedTempFile|TempDir|tempfile)::\w*?new_in\s*\(|\b(?:tempfile|tempdir)_in\s*\("
+    r"|(?<![.\w:])(?<!fn )write\s*\(")
 
 
 def is_test_file(relative: Path) -> bool:
