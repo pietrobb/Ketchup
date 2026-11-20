@@ -547,6 +547,8 @@ pub enum CamPlannerError {
     UnsupportedTool,
     UnsupportedRegion,
     UnsupportedHole,
+    /// A blind hole's floor is the drill's point; this drill's is not the floor's.
+    DrillPointDoesNotFitFloor,
     UnresolvedFace,
     StaleToolpath,
 }
@@ -580,6 +582,11 @@ impl std::fmt::Display for CamPlannerError {
             Self::UnsupportedHole => formatter.write_str(
                 "CAM hole is not a straight round hole along the setup Z axis, \
                  or the drill is not its diameter",
+            ),
+            Self::DrillPointDoesNotFitFloor => formatter.write_str(
+                "the drill's point does not make the floor of this blind hole: a flat floor \
+                 needs a flat-bottom (180 degree) drill, a pointed floor a drill of its \
+                 point angle; or model the floor the drill leaves",
             ),
             Self::UnresolvedFace => formatter.write_str(
                 "CAM operation names a face that was not read from the evaluated target",
@@ -966,6 +973,7 @@ impl CamToolpath {
                             &lanes,
                             depth,
                             plan,
+                            false,
                         )?;
                     }
                     CamOperationKind::Face
@@ -1020,6 +1028,7 @@ impl CamToolpath {
                             &lanes,
                             depth,
                             plan,
+                            true,
                         )?;
                     }
                     CamOperationKind::Pocket
@@ -1721,6 +1730,8 @@ impl MotionBuilder {
     }
 }
 
+/// Zigzags the cutter centre along X over `lanes` at `depth`; with `walls`, then
+/// runs it once round the rectangle the lanes span.
 fn append_raster(
     builder: &mut MotionBuilder,
     minimum_x: f64,
@@ -1728,6 +1739,7 @@ fn append_raster(
     lanes: &[f64],
     depth: f64,
     plan: &CamPlan,
+    walls: bool,
 ) -> Result<(), CamPlannerError> {
     let start = [minimum_x, lanes[0]];
     builder.rapid_to(start)?;
@@ -1747,6 +1759,26 @@ fn append_raster(
             builder.line(
                 CamMotionKind::Cut,
                 [x, *next_y, depth],
+                Some(plan.tool.feed_mm_per_min),
+            )?;
+        }
+    }
+    if walls {
+        // The zigzag turns at each end only every other lane, so between its
+        // lanes it leaves ridges on the walls across them (R1120ac-CAM-902): one
+        // pass round the cutter's rectangle cuts every wall to its allowance.
+        let corners = [
+            [minimum_x, lanes[0]],
+            [maximum_x, lanes[0]],
+            [maximum_x, lanes[lanes.len() - 1]],
+            [minimum_x, lanes[lanes.len() - 1]],
+        ];
+        let last = if lanes.len() % 2 == 1 { 2 } else { 3 };
+        for step in 1..=4 {
+            let [x, y] = corners[(last + step) % 4];
+            builder.line(
+                CamMotionKind::Cut,
+                [x, y, depth],
                 Some(plan.tool.feed_mm_per_min),
             )?;
         }

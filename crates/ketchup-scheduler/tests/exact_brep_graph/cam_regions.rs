@@ -526,6 +526,189 @@ fn plate_with_holes() -> (DocumentStore, CamPlan, FeatureId) {
     (document, plan, last)
 }
 
+/// `plan` with a drill whose point is `point_angle_deg`.
+fn plan_with_drill_point(
+    document: &DocumentStore,
+    plan: &CamPlan,
+    point_angle_deg: Option<f64>,
+) -> CamPlan {
+    let mut tool = plan.tool().clone();
+    tool.point_angle_deg = point_angle_deg;
+    CamPlan::new(
+        &document.current(),
+        CamPlanId(98),
+        "Drill with another point",
+        plan.stock().clone(),
+        tool,
+        plan.setup().clone(),
+        plan.cut_parameters().clone(),
+        plan.target().definition_id,
+        plan.target().feature_id,
+    )
+    .unwrap()
+}
+
+const POINTED_RIM_Z: f64 = 4.0;
+
+/// A 40 x 30 x 10 plate centred on the origin with a 6 mm hole drilled into its
+/// top to z = 4 and ending there in the cone of a 118° drill point, as a
+/// revolved drill body cut out of the plate.
+fn plate_with_pointed_hole() -> (DocumentStore, CamPlan, FeatureId) {
+    let apex = POINTED_RIM_Z - DRILL_RADIUS / 59.0_f64.to_radians().tan();
+    let section = [
+        [0.0, 12.0],
+        [DRILL_RADIUS, 12.0],
+        [DRILL_RADIUS, POINTED_RIM_Z],
+        [0.0, apex],
+    ];
+    let cut = FeatureId(975);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DEFINITION,
+                name: "Plate with a pointed hole".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PLATE_PROFILE,
+                definition_id: DEFINITION,
+                name: "Plate outline".into(),
+                kind: FeatureKind::polygon(&[
+                    [-20.0, -15.0],
+                    [20.0, -15.0],
+                    [20.0, 15.0],
+                    [-20.0, 15.0],
+                ]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: PLATE,
+                definition_id: DEFINITION,
+                name: "Plate".into(),
+                kind: FeatureKind::extrusion(PLATE_PROFILE, dimension(10.0)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(972),
+                definition_id: DEFINITION,
+                name: "YZ".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Yz)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(973),
+                definition_id: DEFINITION,
+                name: "Drill section".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: FeatureId(972),
+                    entities: (0..4)
+                        .map(|index| SketchEntity::Line {
+                            id: SketchEntityId(index as u64 + 1),
+                            start_mm: section[index],
+                            end_mm: section[(index + 1) % 4],
+                        })
+                        .collect(),
+                    constraints: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(974),
+                definition_id: DEFINITION,
+                name: "Drill body".into(),
+                kind: FeatureKind::Revolve {
+                    profile: FeatureId(973),
+                    axis_start_mm: [0.0, 0.0],
+                    axis_end_mm: [0.0, 1.0],
+                    angle_degrees: 360.0,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: cut,
+                definition_id: DEFINITION,
+                name: "Pointed hole".into(),
+                kind: FeatureKind::Boolean {
+                    operation: BooleanOperation::Cut,
+                    target: PLATE,
+                    tool: FeatureId(974),
+                },
+            },
+        ]))
+        .unwrap();
+    let (_, holes_plan, _) = plate_with_holes();
+    let plan = CamPlan::new(
+        &document.current(),
+        CamPlanId(97),
+        "Drill the pointed hole",
+        CamStock {
+            minimum_mm: [-20.0, -15.0, 0.0],
+            maximum_mm: [20.0, 15.0, 10.0],
+        },
+        holes_plan.tool().clone(),
+        holes_plan.setup().clone(),
+        holes_plan.cut_parameters().clone(),
+        DEFINITION,
+        cut,
+    )
+    .unwrap();
+    (document, plan, cut)
+}
+
+/// R1120ac-CAM-901: a blind hole ending in a drill point is drilled until the
+/// full diameter reaches the far rim of its wall, so the drill's point makes the
+/// modelled cone; a drill with another point is refused, not run to the rim.
+#[test]
+fn a_pointed_blind_hole_is_drilled_to_full_diameter_by_a_drill_of_its_point() {
+    let _turn = crate::integration_support::file_turn();
+    let (document, plan, last) = plate_with_pointed_hole();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, DEFINITION, last).unwrap();
+    let mut worker =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+    let wall = package
+        .face_evidence
+        .iter()
+        .find(|face| face.surface_kind == "cylinder")
+        .unwrap()
+        .face_ordinal;
+    let hole = CamHole::from_cylindrical_face(&package, wall, plan.setup()).unwrap();
+    assert!(distance(hole.center_mm, [0.0, 0.0]) <= 1.0e-6, "{hole:?}");
+    assert!((hole.top_z_mm - 10.0).abs() <= 1.0e-6, "{hole:?}");
+    assert!(
+        (hole.bottom_z_mm - POINTED_RIM_Z).abs() <= 1.0e-6,
+        "{hole:?}"
+    );
+    assert!(!hole.through);
+    let angle = hole.floor_point_angle_deg.unwrap();
+    assert!((angle - 118.0).abs() <= 1.0e-6, "{angle}");
+
+    let drill = CamOperation::drill_hole(1, &hole, plan.tool()).unwrap();
+    let point = plan.tool().tip_length_mm();
+    let CamOperation::Drill { bottom_z_mm, .. } = drill else {
+        panic!("{drill:?}");
+    };
+    assert!((bottom_z_mm - (POINTED_RIM_Z - point)).abs() <= 1.0e-6);
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &[drill]).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let simulation = worker
+        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .unwrap();
+    let area = std::f64::consts::PI * DRILL_RADIUS.powi(2);
+    let hole_mm3 = area * (10.0 - POINTED_RIM_Z + point / 3.0);
+    assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    assert!(simulation.residual_stock_mm3 <= 1.0e-3, "{simulation:?}");
+    assert!(
+        (simulation.removed_stock_mm3 - hole_mm3).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+
+    for other in [Some(140.0), Some(180.0), Some(90.0)] {
+        let other_plan = plan_with_drill_point(&document, &plan, other);
+        assert_eq!(
+            CamOperation::drill_hole(1, &hole, other_plan.tool()),
+            Err(CamPlannerError::DrillPointDoesNotFitFloor),
+            "{other:?}"
+        );
+    }
+}
+
 #[test]
 fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_cannot_make() {
     let _turn = crate::integration_support::file_turn();
@@ -563,23 +746,51 @@ fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_c
     let wide = hole_at(WIDE_HOLE);
     assert!((wide.radius_mm - 4.0).abs() <= 1.0e-6);
 
+    assert_eq!(through.floor_point_angle_deg, None);
+    assert_eq!(blind.floor_point_angle_deg, Some(180.0));
+
     // A drill makes only a hole of its own diameter.
     assert!(CamOperation::drill_hole(3, wide, plan.tool()).is_err());
+    // R1120ac-CAM-901: a pointed drill cannot make a flat floor; stopped at it, it
+    // leaves its cone, and driven on until the full diameter reaches the floor, it
+    // cuts below it. A flat-bottom drill makes it.
+    assert_eq!(
+        CamOperation::drill_hole(2, blind, plan.tool()),
+        Err(CamPlannerError::DrillPointDoesNotFitFloor)
+    );
+    let flat = plan_with_drill_point(&document, &plan, Some(180.0));
     let operations = [
-        CamOperation::drill_hole(1, through, plan.tool()).unwrap(),
-        CamOperation::drill_hole(2, blind, plan.tool()).unwrap(),
+        CamOperation::drill_hole(1, through, flat.tool()).unwrap(),
+        CamOperation::drill_hole(2, blind, flat.tool()).unwrap(),
     ];
-    let toolpath = CamToolpath::plan(&snapshot, &plan, &operations).unwrap();
+    let toolpath = CamToolpath::plan(&snapshot, &flat, &operations).unwrap();
     let cancelled = AtomicBool::new(false);
     let simulation = worker
-        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .simulate_cam(&snapshot, &flat, &toolpath, &[], &cancelled)
         .unwrap();
+    let area = std::f64::consts::PI * DRILL_RADIUS.powi(2);
+    let wide_mm3 = std::f64::consts::PI * 16.0 * 4.0;
+    assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
+    assert!(simulation.collisions.is_empty(), "{simulation:?}");
+    assert!(
+        (simulation.removed_stock_mm3 - area * (10.0 + 4.0)).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+    assert!(
+        (simulation.residual_stock_mm3 - wide_mm3).abs() <= 1.0e-3,
+        "{simulation:?}"
+    );
+
     // R1119og-MF-800: the standard 118° point is simulated as it is. It passes the
-    // through hole's exit with the full diameter, so that hole is made whole; in
-    // the flat-floored blind hole it leaves its cone, a third of whose cylinder it
-    // cuts, and the simulation counts that cone as stock left.
+    // through hole's exit with the full diameter, so that hole is made whole.
     let point = plan.tool().tip_length_mm();
     assert!((point - DRILL_RADIUS / 59.0_f64.to_radians().tan()).abs() <= 1.0e-12);
+    let toolpath = CamToolpath::plan(
+        &snapshot,
+        &plan,
+        &[CamOperation::drill_hole(1, through, plan.tool()).unwrap()],
+    )
+    .unwrap();
     let deepest = toolpath
         .motions
         .iter()
@@ -588,18 +799,12 @@ fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_c
         })
         .fold(f64::INFINITY, f64::min);
     assert!((deepest - (-point - 1.0)).abs() <= 1.0e-9, "{deepest}");
-    let area = std::f64::consts::PI * DRILL_RADIUS.powi(2);
-    let cone_left_mm3 = area * point * 2.0 / 3.0;
-    let drilled_mm3 = area * (10.0 + 4.0) - cone_left_mm3;
-    let wide_mm3 = std::f64::consts::PI * 16.0 * 4.0;
+    let simulation = worker
+        .simulate_cam(&snapshot, &plan, &toolpath, &[], &cancelled)
+        .unwrap();
     assert!(simulation.gouge_mm3 <= 1.0e-5, "{simulation:?}");
-    assert!(simulation.collisions.is_empty(), "{simulation:?}");
     assert!(
-        (simulation.removed_stock_mm3 - drilled_mm3).abs() <= 1.0e-3,
-        "{simulation:?}"
-    );
-    assert!(
-        (simulation.residual_stock_mm3 - (cone_left_mm3 + wide_mm3)).abs() <= 1.0e-3,
+        (simulation.removed_stock_mm3 - area * 10.0).abs() <= 1.0e-3,
         "{simulation:?}"
     );
 

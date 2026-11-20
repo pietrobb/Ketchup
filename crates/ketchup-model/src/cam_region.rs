@@ -133,6 +133,9 @@ pub struct CamHole {
     /// Whether the far rim is a hole in a flat face the drill comes out through,
     /// rather than the edge of the hole's own floor.
     pub through: bool,
+    /// The included angle of the point a blind hole ends in below its far rim:
+    /// 180 for a flat floor. `None` for a through hole.
+    pub floor_point_angle_deg: Option<f64>,
 }
 
 impl CamHole {
@@ -210,13 +213,79 @@ impl CamHole {
         // through hole; the edge of a flat or pointed floor is not.
         let through =
             rim_is_island_of_flat_face(package, face_ordinal, lower.2, center, lower.1, setup)?;
+        let floor_point_angle_deg = if through {
+            None
+        } else {
+            Some(floor_point_angle(
+                package,
+                face_ordinal,
+                lower.2,
+                lower.0[2],
+                in_setup,
+                square,
+            )?)
+        };
         Ok(Self {
             center_mm: center,
             radius_mm: upper.1,
             top_z_mm: upper.0[2],
             bottom_z_mm: lower.0[2],
             through,
+            floor_point_angle_deg,
         })
+    }
+}
+
+/// The included angle of the floor below `rim`, the far rim of the blind hole
+/// wall `wall_ordinal` at setup Z `rim_z`: 180 for a flat floor, the cone's angle
+/// for a floor that narrows to a point below the rim. A cone cut off short of its
+/// point, or any other floor, is refused.
+fn floor_point_angle(
+    package: &ExactBRepGraphPackage,
+    wall_ordinal: u32,
+    rim: &ExactBRepGraphEdgeEvidence,
+    rim_z: f64,
+    in_setup: impl Fn([f64; 3]) -> [f64; 3],
+    square: impl Fn([f64; 3]) -> bool,
+) -> Result<f64, CamPlannerError> {
+    let refused = || CamPlannerError::UnsupportedHole;
+    let floor = rim
+        .adjacent_face_ordinals
+        .iter()
+        .find(|ordinal| **ordinal != wall_ordinal)
+        .and_then(|ordinal| {
+            package
+                .face_evidence
+                .iter()
+                .find(|face| face.face_ordinal == *ordinal)
+        })
+        .ok_or_else(refused)?;
+    match (floor.surface_kind.as_str(), floor.cone) {
+        ("plane", None) if square(floor.unit_normal) => Ok(180.0),
+        // OCCT reports a cone's surface kind as "other"; its cone evidence names it.
+        (_, Some(cone)) => {
+            let rims = package
+                .edge_evidence
+                .iter()
+                .filter(|edge| {
+                    edge.adjacent_face_ordinals.contains(&floor.face_ordinal)
+                        && edge.curve_kind == "circle"
+                })
+                .count();
+            if rims != 1
+                || !square(cone.unit_axis_direction)
+                || in_setup(floor.centroid_mm)[2] >= rim_z - LOOP_TOLERANCE_MM
+            {
+                return Err(refused());
+            }
+            // The normal leans off the cone's side by the half angle's complement.
+            let half = dot(cone.unit_normal, cone.unit_axis_direction)
+                .abs()
+                .clamp(0.0, 1.0)
+                .asin();
+            Ok(2.0 * half.to_degrees())
+        }
+        _ => Err(refused()),
     }
 }
 
@@ -316,19 +385,37 @@ impl CamOperation {
         }
     }
 
-    /// Drills `hole` from its rim to its far rim with `tool`, which must be a
-    /// drill of the hole's diameter; through the far rim if the hole is through.
+    /// Drills `hole` from its rim with `tool`, which must be a drill of the hole's
+    /// diameter: through the far rim if the hole is through, else until its full
+    /// diameter reaches the far rim (R1120ac-CAM-901). Its point then makes the
+    /// floor, so it must be the floor's: flat for a flat floor, the cone's angle
+    /// for a pointed one.
     pub fn drill_hole(id: u64, hole: &CamHole, tool: &CamTool) -> Result<Self, CamPlannerError> {
         if tool.kind != CamToolKind::Drill
             || (tool.diameter_mm * 0.5 - hole.radius_mm).abs() > LOOP_TOLERANCE_MM
         {
             return Err(CamPlannerError::UnsupportedHole);
         }
+        let bottom_z_mm = match hole.floor_point_angle_deg {
+            None => hole.bottom_z_mm,
+            Some(angle) => {
+                let floor = if angle >= 180.0 {
+                    0.0
+                } else {
+                    hole.radius_mm / (angle.to_radians() * 0.5).tan()
+                };
+                let point = tool.tip_length_mm();
+                if (point - floor).abs() > LOOP_TOLERANCE_MM {
+                    return Err(CamPlannerError::DrillPointDoesNotFitFloor);
+                }
+                hole.bottom_z_mm - point
+            }
+        };
         Ok(Self::Drill {
             id,
             points_mm: vec![hole.center_mm],
             top_z_mm: hole.top_z_mm,
-            bottom_z_mm: hole.bottom_z_mm,
+            bottom_z_mm,
             through: hole.through,
         })
     }

@@ -892,3 +892,78 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
         )))
     );
 }
+
+/// R1120ac-CAM-902: a rectangular pocket is cut to its radial allowance along the
+/// whole of every wall, not only where the zigzag turns. Each wall point is measured
+/// to the nearest cutter-centre move of the last depth pass; the round corners a
+/// round cutter cannot reach are left out.
+#[test]
+fn a_rectangular_pocket_leaves_only_its_allowance_along_every_wall() {
+    let document = solid_document();
+    let snapshot = document.current();
+    let canonical = plan(&snapshot).unwrap();
+    let [minimum, maximum] = [[8.0, 7.0], [32.0, 23.0]];
+    let pocket = CamOperation::Pocket {
+        id: 1,
+        minimum_mm: minimum,
+        maximum_mm: maximum,
+        top_z_mm: -2.0,
+        bottom_z_mm: -6.0,
+    };
+    let toolpath = CamToolpath::plan(&snapshot, &canonical, &[pocket]).unwrap();
+    let floor = -6.0 + canonical.cut_parameters().axial_allowance_mm;
+    let moves: Vec<([f64; 2], [f64; 2])> = toolpath
+        .motions
+        .iter()
+        .filter(|motion| motion.kind == CamMotionKind::Cut)
+        .map(|motion| match motion.path {
+            CamMotionPath::Line { start_mm, end_mm } => {
+                assert!((start_mm[2] - end_mm[2]).abs() < 1.0e-12);
+                (start_mm, end_mm)
+            }
+            CamMotionPath::Arc { .. } => panic!("a rectangular pocket cuts only lines"),
+        })
+        .filter(|(start, _)| (start[2] - floor).abs() < 1.0e-9)
+        .map(|(start, end)| ([start[0], start[1]], [end[0], end[1]]))
+        .collect();
+    assert!(!moves.is_empty());
+    let radius = canonical.tool().diameter_mm * 0.5;
+    let left_on = |point: [f64; 2]| {
+        moves
+            .iter()
+            .map(|&(a, b)| ketchup_geometry::linalg::point_segment_distance2(point, a, b))
+            .fold(f64::INFINITY, f64::min)
+            - radius
+    };
+    let allowance = canonical.cut_parameters().radial_allowance_mm;
+    let reach = radius + allowance;
+    let samples = 400;
+    let mut walls = Vec::new();
+    for index in 0..=samples {
+        let share = f64::from(index) / f64::from(samples);
+        let y = minimum[1] + reach + share * (maximum[1] - minimum[1] - 2.0 * reach);
+        let x = minimum[0] + reach + share * (maximum[0] - minimum[0] - 2.0 * reach);
+        walls.extend([
+            [minimum[0], y],
+            [maximum[0], y],
+            [x, minimum[1]],
+            [x, maximum[1]],
+        ]);
+    }
+    let left: Vec<(f64, [f64; 2])> = walls
+        .iter()
+        .map(|point| (left_on(*point), *point))
+        .collect();
+    let thickest = left
+        .iter()
+        .copied()
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap();
+    let thinnest = left
+        .iter()
+        .copied()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap();
+    assert!(thickest.0 <= allowance + 1.0e-9, "{thickest:?}");
+    assert!(thinnest.0 >= allowance - 1.0e-9, "{thinnest:?}");
+}
