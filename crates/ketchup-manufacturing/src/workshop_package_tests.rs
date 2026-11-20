@@ -28,6 +28,12 @@ fn the_package_lists_what_its_files_lose_as_csv() {
         String::from_utf8(entries[WORKSHOP_LOSSES].clone()).unwrap(),
         "output,part,element,reason\n\"BTLx\",\"Post, \"\"A\"\"\",\"a tapped hole (M8)\",\"no tapping\"\n"
     );
+    // Review 2026-11-20 ac P3: a part named as a formula is not run as one.
+    let mut formula = package();
+    formula.losses[0].part = "=HYPERLINK(\"http://x\")".to_owned();
+    let entries = stored_entries(&formula.zip().unwrap()).unwrap();
+    let csv = String::from_utf8(entries[WORKSHOP_LOSSES].clone()).unwrap();
+    assert!(csv.contains(",\"'=HYPERLINK(\"\"http://x\"\")\","), "{csv}");
     let mut lossless = package();
     lossless.losses.clear();
     let entries = stored_entries(&lossless.zip().unwrap()).unwrap();

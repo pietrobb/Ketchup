@@ -86,6 +86,11 @@ const DRILL_POINT_ANGLE_RANGE_DEG: std::ops::RangeInclusive<f64> = 60.0..=180.0;
 /// How far a drill's full diameter passes the exit of a through hole, so the hole
 /// breaks out clean instead of leaving a burr ring.
 pub const DRILL_BREAKTHROUGH_MM: f64 = 1.0;
+/// How far above the stock's top each drilling step ends its rapid descent; it is
+/// fed only from there (review 2026-11-20 ac P3). In the drilled part of the hole it
+/// is still fed: a rapid there runs along the bore's wall, which the simulation
+/// reports as a collision.
+pub const DRILL_APPROACH_MM: f64 = 1.0;
 
 impl CamTool {
     /// How far the cutting end reaches below the start of its full diameter: the
@@ -1129,9 +1134,17 @@ impl CamToolpath {
                         finished_z,
                         plan.cut_parameters.maximum_stepdown_mm,
                     )?;
+                    let approach_z = stock_bounds[1][2] + DRILL_APPROACH_MM;
                     for point in points_mm {
                         for depth in &depths {
                             builder.rapid_to(*point)?;
+                            if approach_z < builder.safe_z - GEOMETRY_TOLERANCE_MM {
+                                builder.line(
+                                    CamMotionKind::Rapid,
+                                    [point[0], point[1], approach_z],
+                                    None,
+                                )?;
+                            }
                             builder.line(
                                 CamMotionKind::Plunge,
                                 [point[0], point[1], *depth],

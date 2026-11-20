@@ -1,9 +1,10 @@
 use ketchup_model::cam::{
-    CAM_POSTPROCESSOR_SCHEMA_V1, CAM_SIMULATION_SCHEMA_V1, CamCutParameters, CamError,
+    CAM_POSTPROCESSOR_SCHEMA_V1, CAM_SIMULATION_SCHEMA_V1, CamCutParameters, CamError, CamMotion,
     CamMotionKind, CamMotionPath, CamOperation, CamOperationKind, CamPath2d, CamPathSegment2d,
     CamPlan, CamPlanHealth, CamPlanId, CamPlannerError, CamPostprocessedMotionKind,
     CamPostprocessorDialect, CamPostprocessorError, CamPostprocessorOutput, CamSetup,
     CamSimulationEvidence, CamStock, CamTool, CamToolKind, CamToolpath, CamWorkOffset,
+    DRILL_APPROACH_MM,
 };
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
@@ -17,6 +18,8 @@ const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);
 const SOLID: FeatureId = FeatureId(11);
 const PLAN: CamPlanId = CamPlanId(1);
+/// The stock's top in the setup of [`plan`], whose origin is at world Z 12.
+const STOCK_TOP_SETUP_Z: f64 = 0.0;
 
 fn sha256_hex(content: &[u8]) -> String {
     use sha2::Digest;
@@ -361,7 +364,13 @@ fn machine_neutral_2_5d_planner_is_deterministic_safe_and_complete() {
         | CamMotionPath::Arc {
             start_mm, end_mm, ..
         } => match motion.kind {
-            CamMotionKind::Rapid => start_mm[2] == 8.0 && end_mm[2] == 8.0,
+            // Across at the safe Z; a drill also comes down to just above the stock.
+            CamMotionKind::Rapid => {
+                start_mm[2] == 8.0
+                    && (end_mm[2] == 8.0
+                        || end_mm[2] == STOCK_TOP_SETUP_Z + DRILL_APPROACH_MM
+                            && end_mm[..2] == start_mm[..2])
+            }
             CamMotionKind::Retract => end_mm[2] == 8.0,
             CamMotionKind::Plunge | CamMotionKind::Cut => end_mm[2] < 0.0,
         },
@@ -640,6 +649,49 @@ fn a_drill_breaks_through_a_through_hole_and_stops_on_a_blind_floor() {
         Err(CamError::InvalidPlan)
     );
     assert_eq!(plan(&snapshot).unwrap().tool().tip_length_mm(), 0.0);
+}
+
+/// Review 2026-11-20 ac P3: every step of a deep hole came down from the safe Z at
+/// the plunge feed. It now comes down at rapid to just above the stock and is fed
+/// only from there.
+#[test]
+fn each_drilling_step_is_fed_only_from_just_above_the_stock() {
+    let document = solid_document();
+    let snapshot = document.current();
+    let plan = drill_plan(&snapshot, None).unwrap();
+    let operations = [CamOperation::Drill {
+        id: 1,
+        points_mm: vec![[10.0, 10.0]],
+        top_z_mm: -2.0,
+        bottom_z_mm: -9.0,
+        through: false,
+    }];
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &operations).unwrap();
+    let approach_z = STOCK_TOP_SETUP_Z + DRILL_APPROACH_MM;
+    let line = |motion: &CamMotion| match &motion.path {
+        CamMotionPath::Line { start_mm, end_mm } => (*start_mm, *end_mm),
+        CamMotionPath::Arc { .. } => panic!("a drill moves in lines"),
+    };
+    let plunges: Vec<_> = toolpath
+        .motions
+        .iter()
+        .filter(|motion| motion.kind == CamMotionKind::Plunge)
+        .map(line)
+        .collect();
+    // From -2 to -9 in steps of at most 2 mm.
+    assert_eq!(plunges.len(), 4);
+    assert!(
+        plunges.iter().all(|(start, _)| start[2] == approach_z),
+        "{plunges:?}"
+    );
+    let descents = toolpath
+        .motions
+        .iter()
+        .filter(|motion| motion.kind == CamMotionKind::Rapid)
+        .map(line)
+        .filter(|(start, end)| start[2] == 8.0 && end[2] == approach_z)
+        .count();
+    assert_eq!(descents, plunges.len());
 }
 
 /// A drill's point angle is saved in format 120, which a Kečup that writes 119 would drop.

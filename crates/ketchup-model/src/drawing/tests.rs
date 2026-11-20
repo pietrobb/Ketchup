@@ -342,7 +342,7 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
     assert_eq!(layout.datum_symbols[0].label, "A");
     assert_eq!(
         layout.feature_control_frames[0].label,
-        "POSITION | DIA 0.1 MMC | A | B MMC"
+        "POSITION | Ø0.1 (M) | A | B (M)"
     );
     let stable_source_identity = "definition-1".to_owned();
     let drawing = OrthographicDrawing {
@@ -370,7 +370,7 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
     let cells = dxf_texts(dxf, "sheet-12/feature-control-frame-1");
     assert_eq!(
         cells.iter().map(|cell| cell.4.as_str()).collect::<Vec<_>>(),
-        ["POSITION", "DIA 0.1 MMC", "A", "B MMC"]
+        ["POSITION", "Ø0.1 (M)", "A", "B (M)"]
     );
     for ((id, x, _, height, value), box_edges) in cells.iter().zip(edges.windows(2)) {
         // The sheet's generous advance (SVG, DXF readers) and the PDF's
@@ -505,12 +505,26 @@ fn dxf_texts(dxf: &str, prefix: &str) -> Vec<(String, f64, f64, f64, String)> {
             "40" if entity == "TEXT" => height = data.parse().unwrap(),
             "1" if entity == "TEXT" => value = data,
             "1000" if entity == "TEXT" && data.starts_with(prefix) => {
-                texts.push(((*data).to_owned(), x, y, height, value.to_owned()));
+                texts.push(((*data).to_owned(), x, y, height, dxf_unescaped(value)));
             }
             _ => {}
         }
     }
     texts
+}
+
+/// `value` as a DXF reader shows it: each `\U+XXXX` is its character.
+fn dxf_unescaped(value: &str) -> String {
+    let mut text = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("\\U+") {
+        text.push_str(&rest[..start]);
+        let code = &rest[start + 3..start + 7];
+        text.push(char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap());
+        rest = &rest[start + 7..];
+    }
+    text.push_str(rest);
+    text
 }
 
 /// The vertical extent of one R12 text line, from its descenders to its cap.

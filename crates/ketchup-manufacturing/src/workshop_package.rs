@@ -370,9 +370,18 @@ fn report_text(not_made: &[NotMade]) -> String {
         .collect()
 }
 
-/// The losses as CSV with a header, every field quoted.
+/// The losses as CSV with a header, every field quoted. A field a spreadsheet
+/// would run as a formula (a part named `=HYPERLINK(...)`) is written after an
+/// apostrophe, as plain text (review 2026-11-20 ac P3).
 fn losses_csv(losses: &[Lost]) -> String {
-    let field = |text: &str| format!("\"{}\"", text.replace('"', "\"\""));
+    let field = |text: &str| {
+        let apostrophe = if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+            "'"
+        } else {
+            ""
+        };
+        format!("\"{apostrophe}{}\"", text.replace('"', "\"\""))
+    };
     std::iter::once("output,part,element,reason\n".to_owned())
         .chain(losses.iter().map(|lost| {
             [&lost.output, &lost.part, &lost.element, &lost.reason]
