@@ -23,7 +23,7 @@ They overrule every older finding they touch.
 | 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Fixed in #128: a bonded joint ties only the part where the faces overlap (node to node or node to face), a rigid spider only for an explicit bolt, faces that do not touch are refused; two 1000×50×50 layers bonded by a face bend 0.342 mm at the end |
 | 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Fixed in #129: the anchorage path starts at the member (EA/L of the brace, buckling over its length, the stiffness of both connections) and a diaphragm is checked for every anchor |
 | 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Fixed in #130: the calculation opens with the overall verdict and the exit code of the command line and a warnings section listing every error and warning of the report; a lost load no longer leaves "Vyhovuje" alone; only the braces the check counted are listed, each with C and F_cap of its path to the ground |
-| 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Fixed: a drill has a point angle (saved in format 120); a through hole is drilled past its exit until the full diameter is out, limited by the stock and the workholding, without the axial allowance; the exact CAM simulation sweeps a drill's cone and a ball end mill's ball instead of a flat cylinder, so the stock left in a blind hole's cone is counted; tests compare residual and gouge volumes with the analytic values |
+| 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Fixed in #131: a drill has a point angle (saved in format 120); a through hole is drilled past its exit until the full diameter is out, limited by the stock and the workholding, without the axial allowance; the exact CAM simulation sweeps a drill's cone and a ball end mill's ball instead of a flat cylinder, so the stock left in a blind hole's cone is counted; tests compare residual and gouge volumes with the analytic values |
 
 ## 2. Policy for an AI
 
@@ -51,33 +51,33 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 13. og:R1110r2-MF-500, MF-501: storeys | Open |
-| 14. og:R1110-CD-404, UO-406: rooms in DXF | Open |
-| 15. og:R1110-MF-404: DXF 2013 sheets | Open |
-| 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Fixed in pull request `fix/og-calc-texts`: only the highest row of the governing check says it governs; glulam cites k_h by 3.3 (3.2) and u_inst no longer cites (2.2); a column has no lateral torsional buckling text and `brace()` on it says a column's bracing is not used; the site line is in Slovak or Czech; a thermal failure prints "<" only where f_Rsi fails; the Slovak requirement is U_N (R_N on the ground); a site below sea level names the altitude 0 its s_k uses |
-| 17. R1119og-MF-805: hole callouts | Open |
+| 13. og:R1110r2-MF-500, MF-501: storeys | Fixed in #135: without a storey table the plans and level marks use the same floors as `ModelFloors::table`, found on the export's thread; a lining under a floor structure is no longer a storey, so the test house with its ceiling 2700–2954 gets its upper plan on 2954 cut at 4154 and no +2,512 level; a storey of the model no table row covers is reported (`not_in_table`, a warning in the window) |
+| 14. og:R1110-CD-404, UO-406: rooms in DXF | Fixed in #139: room fills are a light grey of their own (ACI 254), written first so the architect's lines and the room names lie over them, and from DXF 2010 on 60 % transparent (group 440); names and areas keep the colour of the rooms' layer; a room point on a line of its region (within 1 mm) is refused |
+| 15. og:R1110-MF-404: DXF 2013 sheets | Fixed in #138: a section's cutting line uses the `CENTER` linetype; black fills and pens of the marks are ByLayer instead of RGB 0, so they show on a dark screen; the `Standard` text style is Arial (TrueType); dimensions and level marks as DIMENSION entities stay for later, as the fix list says |
+| 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Fixed in #145: only the highest row of the governing check says it governs; glulam cites k_h by 3.3 (3.2) and u_inst no longer cites (2.2); a column has no lateral torsional buckling text and `brace()` on it says a column's bracing is not used; the site line is in Slovak or Czech; a thermal failure prints "<" only where f_Rsi fails; the Slovak requirement is U_N (R_N on the ground); a site below sea level names the altitude 0 its s_k uses |
+| 17. R1119og-MF-805: hole callouts | Fixed in #137: a tapped hole whose bottom the part does not show keeps its drilled depth (`M8 THREAD DEPTH 12 mm; BORE Ø6.8 mm CYLINDRICAL DEPTH 20 mm`), a coarse thread is named by its size alone, and callouts are written in the sheets' language (English, Czech, Slovak) with its decimal sign |
 
 ## 6. Workshop, import, modelling
 
 | Point | Status |
 |---|---|
-| 18. og:R1110-MF-400, MF-401, MF-406, R1119og-MF-807: losses in the workshop package | Fixed in pull request `fix/og-workshop-losses`: the package carries `losses.csv` (each thread, hole in a bought part and round hole milled instead of drilled, by part) and the BTLx `support.txt`; a package that makes nothing names the reason of each output; a CAM program lists the threads no operation cuts in its release prompt and in the AI result |
-| 19. og:R1110-MF-402, MF-403: checking the package | Fixed in pull request `fix/og-zip-check`: the check compares each stored header with the central directory, refuses data no entry accounts for, names Windows cannot write and names equal by case or NFC; the package marks a non-ASCII name as UTF-8 (bit 11) and refuses such names when it is made |
-| 20. R1119og-SKP-800: a SketchUp component changed by Scale | Fixed in #142: a component stretched with the Scale tool has the stretch baked into its own part definitions, and group placements stay rigid |
-| 21. R1119og-IMG-800: the presentation image | Fixed in pull request `fix/og-img-texture`: a picture the renderer cannot read, such as one over 64 MP, shows as its part's colour, as in the viewport; the saved image names the part, the picture and why (`lost` for a client, the status line in the window) |
-| 22. R1119og-EXA-800: a control point of a freeform surface | Open |
+| 18. og:R1110-MF-400, MF-401, MF-406, R1119og-MF-807: losses in the workshop package | Fixed in #140: the package carries `losses.csv` (each thread, hole in a bought part and round hole milled instead of drilled, by part) and the BTLx `support.txt`; a package that makes nothing names the reason of each output; a CAM program lists the threads no operation cuts in its release prompt and in the AI result |
+| 19. og:R1110-MF-402, MF-403: checking the package | Fixed in #141: the check compares each stored header with the central directory, refuses data no entry accounts for, names Windows cannot write and names equal by case or NFC; the package marks a non-ASCII name as UTF-8 (bit 11) and refuses such names when it is made |
+| 20. R1119og-SKP-800: a SketchUp component changed by Scale | Fixed in #142: a component stretched with the Scale tool imports with the stretch baked into its own part definitions, and group placements stay rigid instead of carrying a scaling transform |
+| 21. R1119og-IMG-800: the presentation image | Fixed in #143: a picture the renderer cannot read, such as one over 64 MP, shows as its part's colour, as in the viewport; the saved image names the part, the picture and why (`lost` for a client, the status line in the window) |
+| 22. R1119og-EXA-800: a control point of a freeform surface | Fixed in #144: a control point is asked for with where it lies (`from_mm`) beside its row and column, stored in the document; when an earlier edit changed the net so that row and column lie elsewhere or no longer exist, the move is refused with both positions and the size of the net instead of moving another point |
 
 ## 7. DXF revisions from the architect
 
 | Point | Status |
 |---|---|
-| 23. og:R1110-UL-400 to UL-403 | Fixed in pull request `fix/og-dxf-revisions`: a revision that only changes an entity's color, linetype or lineweight, a text's color or its layer's color reports it changed (`Style`) (UL-400); entities the later revision draws alike in the same place under a new handle, as ArchiCAD, Revit and Allplan export them, count as renumbered, not removed and added, and drawings of which one has no handles are refused with the reason (UL-401); the comparison runs on the reading thread, not the window's (UL-402); the MCP answer carries the counts and the first 100 entities of each list, the rest is paged through `inspect underlay_objects` of the overlay by layer (UL-403) |
+| 23. og:R1110-UL-400 to UL-403 | Fixed in #147: a revision that only changes an entity's color, linetype or lineweight, a text's color or its layer's color reports it changed (`Style`) (UL-400); entities the later revision draws alike in the same place under a new handle, as ArchiCAD, Revit and Allplan export them, count as renumbered, not removed and added, and drawings of which one has no handles are refused with the reason (UL-401); the comparison runs on the reading thread, not the window's (UL-402); the MCP answer carries the counts and the first 100 entities of each list, the rest is paged through `inspect underlay_objects` of the overlay by layer (UL-403) |
 
 ## 8. FEA, the rest
 
 | Point | Status |
 |---|---|
-| 24. R1119og-FEA-801 to FEA-809 | Open |
+| 24. R1119og-FEA-801 to FEA-809 | Fixed in #146, #148 and #149: a frequency study checks the count of its modes by a Sturm sequence, so no mode is skipped (FEA-801), and starts from M-orthonormal vectors, so a slender solid converges (FEA-802); a mesh study is converged only when its finest mesh has at least twice the elements of the one before and the peak stress has settled too (FEA-803); a frame's largest move includes the sag inside each element, so one simply supported element under a uniform load reports its mid-span sag instead of 0 mm (FEA-804); cancelling stops the factorization, every iteration of the frequency search and the heat solve, and the AI answer is `cancelled` (FEA-806); the excluded physics says natural frequencies come only from a modes study and that the parts' own weight is not added (FEA-809) |
 
 ## 9. Process
 
