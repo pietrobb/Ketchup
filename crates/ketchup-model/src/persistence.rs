@@ -63,8 +63,8 @@ const LARGE_CONTAINER_SCHEMA: u16 = 2;
 /// A container with an extension a released Kečup reads with fields missing and
 /// drops them at its next Save ([`ExtensionEntry::lost_by_released_readers`]),
 /// such as the storeys, north and revisions of the drawing sheets, which Kečup
-/// 0.3.2 and 0.3.3 read without (review 2026-11-10 REL-404): every release
-/// refuses it as newer. Its entries are flagged [`EntryFlag`]; a larger entry is
+/// 0.3.2 and earlier read without (review 2026-11-10 REL-404): every release,
+/// 0.3.3 too, refuses it as newer (review 2026-11-20 ac P3). Its entries are flagged [`EntryFlag`]; a larger entry is
 /// allowed too, as in [`LARGE_CONTAINER_SCHEMA`].
 const NEWER_EXTENSION_CONTAINER_SCHEMA: u16 = 3;
 /// The largest entry Kečup 0.2.0 reads (`MAX_SNAPSHOT_BYTES`, `MAX_SIDECAR_BYTES`).

@@ -347,6 +347,19 @@ def test_numeric_casts_and_lint_allows_are_counted_per_crate_and_only_fall(tmp_p
     assert "lower CASTS_AND_ALLOWS" in checker.grown_casts_and_allows(counts, {"a casts": 4, "a allows": 1})[0]
 
 
+def test_an_expect_switches_a_lint_off_and_counts_as_an_allow(tmp_path):
+    # Review 2026-11-20 ac P3: `#[expect(` went uncounted.
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#![expect(clippy::module_name_repetitions)]\n"
+        '#[expect(\n    clippy::too_many_arguments,\n    reason = "seven"\n)]\nfn f() {}\n'
+        "// an expect( in a comment\n",
+        encoding="utf-8",
+    )
+    assert checker.cast_and_allow_counts(tmp_path) == {"a allows": 2}
+
+
 def test_unsafe_under_an_allow_already_counted_is_counted_itself(tmp_path):
     # Review 2026-11-13 P3: four unsafe blocks under one module-wide allow left the
     # counts as they were.
