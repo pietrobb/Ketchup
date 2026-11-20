@@ -86,7 +86,6 @@ crates/ketchup-manufacturing/src/dxf_export.rs expect_used 5
 crates/ketchup-manufacturing/src/fabrication.rs expect_used 2
 crates/ketchup-manufacturing/src/fabrication/production.rs expect_used 1
 crates/ketchup-manufacturing/src/project_drawings.rs expect_used 1
-crates/ketchup-manufacturing/src/sheet_dxf.rs expect_used 3
 crates/ketchup-manufacturing/src/viewer_export.rs expect_used 2
 crates/ketchup-mcp/src/discovery.rs print_stderr 3
 crates/ketchup-mcp/src/stage.rs expect_used 2

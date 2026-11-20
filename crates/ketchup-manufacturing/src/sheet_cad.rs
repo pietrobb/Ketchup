@@ -308,14 +308,26 @@ fn mark_points(mark: &Mark) -> Vec<[f64; 2]> {
 }
 
 /// What a stroke draws with beyond its layer: a colour other than black, its width as the
-/// nearest lineweight, and dashes.
+/// nearest lineweight, and dashes: a dash and a gap dashed, a longer pattern (dash, gap, dot,
+/// gap) dash-dot.
 fn pen(stroke: &Stroke) -> Pen {
-    let black = stroke.color.iter().all(|channel| *channel < 48);
+    let pattern = match stroke.dash_mm.len() {
+        0 => None,
+        1 | 2 => Some(LinePattern::Dashed),
+        _ => Some(LinePattern::DashDot),
+    };
     Pen {
-        color: (!black).then_some(stroke.color),
+        color: own_color(stroke.color),
         lineweight: Some(lineweight(stroke.width_mm)),
-        pattern: (!stroke.dash_mm.is_empty()).then_some(LinePattern::Dashed),
+        pattern,
     }
+}
+
+/// `color` unless it is black: black takes the layer's colour, which draws black on paper and
+/// white on a dark screen, where RGB black would vanish.
+fn own_color(color: [u8; 3]) -> Option<[u8; 3]> {
+    let black = color.iter().all(|channel| *channel < 48);
+    (!black).then_some(color)
 }
 
 /// The entities of `mark` on the layers `(lines, fill, texts)`: points mapped by `to`, text
@@ -356,7 +368,7 @@ fn entities(
             out.push(SheetEntity::Fill {
                 layer: fill.to_owned(),
                 loops: loops.clone(),
-                color: Some(*color),
+                color: own_color(*color),
             });
             if let Some(stroke) = outline {
                 for points in loops {
