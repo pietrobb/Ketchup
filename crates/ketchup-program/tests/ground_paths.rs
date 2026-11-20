@@ -534,21 +534,30 @@ fn a_strip_footing_shallower_than_the_beam_is_ground() {
 /// R1113r95-PG-701: a grounded post 50 x 100 x 2 400 touching the block on a
 /// patch 2 x 2 or 0.05 x 0.05 mm, or with its corner sunk 0.05 mm into it,
 /// held the beam. Touching is meeting over a patch at least half the square
-/// of the thinner part's thinnest side.
+/// of the thinner part's thinnest side. The post is 400 x 400, stiff enough
+/// to hold the beam where it meets the block face to face, so only the patch
+/// refuses it (review 2026-11-20 R1120ac-TST-900: a post 50 x 100 was refused
+/// as too flexible, with or without the rule).
 #[test]
 fn a_post_touching_the_anchorage_on_a_speck_is_no_ground() {
+    let posts = |off: f64, height: f64| {
+        blocks(|x| {
+            format!(
+                "box(\"post {x}\", (400, 400, {height}), at = ({}, {}, 0), material = \"GL24h\", grounded = True)\n",
+                f64::from(x) + off,
+                200.0 + off
+            )
+        })
+    };
+    let face = posts(0.0, 2400.0);
+    assert_eq!(ignored(&face), Vec::<&str>::new());
+    assert_eq!(checked(&face, "beam").status, "pass");
     for (case, off, height) in [
         ("patch 2 x 2", 48.0, 2400.0),
         ("patch 0.05 x 0.05", 49.95, 2400.0),
         ("corner sunk 0.05", 49.95, 2400.05),
     ] {
-        let held = blocks(|x| {
-            format!(
-                "box(\"post {x}\", (50, 100, {height}), at = ({}, {}, 0), material = \"GL24h\", grounded = True)\n",
-                f64::from(x) + off,
-                200.0 + off
-            )
-        });
+        let held = posts(off, height);
         assert_ne!(checked(&held, "beam").status, "pass", "{case}");
         assert!(
             refused(&held)

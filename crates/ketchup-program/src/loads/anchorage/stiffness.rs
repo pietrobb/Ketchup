@@ -28,7 +28,7 @@ pub(super) enum Tie {
     /// them.
     Rigid,
     /// One fastener: it slips, and the parts turn about it freely.
-    Hinge,
+    Pin,
     /// `count` fasteners `turning` = the sum of their squared distances from
     /// their middle (mm²) apart: they slip, and turn against their slip.
     Fasteners { count: f64, turning: f64 },
@@ -36,39 +36,13 @@ pub(super) enum Tie {
 
 /// The moment a unit force `sideways` at `held` puts on a section at `at`,
 /// N mm per N.
-fn moment(held: [f64; 3], at: [f64; 3], sideways: [f64; 3]) -> [f64; 3] {
+pub(super) fn moment(held: [f64; 3], at: [f64; 3], sideways: [f64; 3]) -> [f64; 3] {
     cross(sub(held, at), sideways)
-}
-
-/// How far a unit force `sideways` at `held` moves it through a joint `tie`
-/// at `at`, mm per N; None where the parts turn about it freely under a moment
-/// beyond the thinner part's thickness `thin` there, which the parts bearing
-/// on each other carry no further (R1113r95-PG-702: a free post on one screw at
-/// its foot held the beam).
-pub(super) fn joint_give(
-    tie: Tie,
-    at: [f64; 3],
-    held: [f64; 3],
-    sideways: [f64; 3],
-    thin: f64,
-) -> Option<f64> {
-    let lever = length(moment(held, at, sideways));
-    match tie {
-        Tie::Rigid => Some(0.0),
-        Tie::Hinge => (lever <= thin).then_some(1.0 / SLIP_PER_FASTENER),
-        Tie::Fasteners { count, turning } => {
-            // Fasteners in one spot turn like one.
-            if turning < thin * thin / 4.0 {
-                return (lever <= thin).then_some(1.0 / (count * SLIP_PER_FASTENER));
-            }
-            Some(1.0 / (count * SLIP_PER_FASTENER) + lever * lever / (SLIP_PER_FASTENER * turning))
-        }
-    }
 }
 
 /// A part's section across the axis of `obb` nearest `direction`: that axis
 /// and the two across it with the part's widths along them.
-fn section(obb: &Obb, direction: [f64; 3]) -> (usize, [(usize, f64); 2]) {
+pub(super) fn section(obb: &Obb, direction: [f64; 3]) -> (usize, [(usize, f64); 2]) {
     let along = (0..3)
         .max_by(|a, b| {
             dot(obb.axes[*a], direction)
@@ -166,9 +140,19 @@ pub(super) fn part_capacity(
     if along <= ALONG_AXIS_NEGLIGIBLE {
         return f64::INFINITY;
     }
+    euler_load(obb, modulus_05, run, reach) / along
+}
+
+/// Euler's load of the part of box `obb` pushed along its axis nearest `run`
+/// over the length `reach`, about its weaker axis, at the modulus
+/// `modulus_05`, N; infinite over no length.
+pub(super) fn euler_load(obb: &Obb, modulus_05: f64, run: [f64; 3], reach: f64) -> f64 {
+    if reach <= f64::EPSILON {
+        return f64::INFINITY;
+    }
     let (_, [(_, wide_i), (_, wide_j)]) = section(obb, run);
     let least = (wide_i * wide_j.powi(3)).min(wide_j * wide_i.powi(3)) / 12.0;
-    std::f64::consts::PI.powi(2) * modulus_05 * least / (reach * reach) / along
+    std::f64::consts::PI.powi(2) * modulus_05 * least / (reach * reach)
 }
 
 #[cfg(test)]
@@ -217,27 +201,5 @@ mod tests {
             2400.0,
         );
         assert!(across.is_infinite());
-    }
-
-    /// One fastener lets the parts turn: a moment beyond the part's thickness
-    /// finds nothing holding it. Two fasteners apart hold it against their slip.
-    #[test]
-    fn one_fastener_is_a_hinge_two_hold_against_their_slip() {
-        let (held, sideways) = ([0.0, 0.0, 2400.0], [0.0, 1.0, 0.0]);
-        let foot = [0.0, 0.0, 10.0];
-        assert_eq!(joint_give(Tie::Hinge, foot, held, sideways, 50.0), None);
-        assert!(joint_give(Tie::Hinge, [0.0, 0.0, 2390.0], held, sideways, 50.0).is_some());
-        let two = Tie::Fasteners {
-            count: 2.0,
-            turning: 2.0 * 25.0 * 25.0,
-        };
-        let give = joint_give(two, foot, held, sideways, 50.0).unwrap();
-        let expected =
-            1.0 / (2.0 * SLIP_PER_FASTENER) + 2390.0_f64.powi(2) / (SLIP_PER_FASTENER * 1250.0);
-        assert!((give - expected).abs() < 1e-9);
-        assert_eq!(
-            joint_give(Tie::Rigid, foot, held, sideways, 50.0),
-            Some(0.0)
-        );
     }
 }
