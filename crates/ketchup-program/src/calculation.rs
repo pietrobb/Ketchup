@@ -10,6 +10,7 @@
 //! lines for the engineer who signs it.
 use crate::loads::{Brace, LOAD_KINDS, Loads, MemberLoad};
 use crate::member_check::{Check, MemberCheck};
+use crate::site::Site;
 use crate::{Report, Severity, Statics};
 
 /// The language of the calculation.
@@ -63,9 +64,15 @@ fn kind_name(kind: &str, language: Language) -> String {
         )
 }
 
-/// A check's name and the clauses and equations it follows.
-fn check_name(name: &str, language: Language) -> (String, &'static str) {
+/// A check's name and the clauses and equations it follows; k_h of glulam is
+/// in 3.3 (review 2026-11-10 og PG-404).
+fn check_name(name: &str, glulam: bool, language: Language) -> (String, &'static str) {
     let (slovak, czech, clauses) = match name {
+        "bending" if glulam => (
+            "Ohyb",
+            "Ohyb",
+            "EN 1995-1-1 6.1.6 (6.11), (6.12); k_h 3.3 (3.2)",
+        ),
         "bending" => (
             "Ohyb",
             "Ohyb",
@@ -85,7 +92,7 @@ fn check_name(name: &str, language: Language) -> (String, &'static str) {
         "deflection_inst" => (
             "Okamžitý priehyb",
             "Okamžitý průhyb",
-            "EN 1995-1-1 2.2.3 (2.2), 7.2 tab. 7.2; EN 1990 6.5.3 (6.14b)",
+            "EN 1995-1-1 2.2.3, 7.2 tab. 7.2; EN 1990 6.5.3 (6.14b)",
         ),
         "deflection_fin" => (
             "Konečný priehyb",
@@ -440,19 +447,74 @@ fn scope(out: &mut String, report: &Report, l: Language) {
             "Dřevěné prvky jsou posouzeny podle EN 1995-1-1 s k_mod, k_def a γ_M výrobku jejich třídy; součinitele jsou doporučené hodnoty EN, nikoli hodnoty národní přílohy."
         )
     ));
-    if let Some(site) = report
-        .design
-        .basis
-        .iter()
-        .find_map(|line| line.strip_prefix("site: "))
-    {
+    if let Some(site) = &report.design.site {
         out.push_str(&format!(
             "<li>{}: {}</li>\n",
             l.says("Miesto stavby", "Místo stavby"),
-            escape(site)
+            site_line(site, l)
         ));
     }
     out.push_str("</ul>\n");
+}
+
+/// The site, its s_k and the psi of snow in the sheet's language (review
+/// 2026-11-10 og PG-406: the line was English in the middle of the text).
+fn site_line(site: &Site, l: Language) -> String {
+    let above_sea = |metres: f64| format!("{} m n. m.", decimal_commas(&metres.to_string()));
+    let mut place = escape(&site.country);
+    if let Some(municipality) = &site.municipality {
+        place.push_str(&format!(", {}", escape(municipality)));
+    }
+    if let Some(altitude) = site.altitude_m {
+        place.push_str(&format!(", {}", above_sea(altitude)));
+    }
+    let sk = match (site.sk_kn_m2, site.snow_zone.as_deref()) {
+        // Both s_k and a zone: s_k is the annex's for the zone.
+        (Some(sk), Some(zone)) => format!(
+            "s_k = {} kN/m² ({}, {} {zone})",
+            decimal_commas(&sk.to_string()),
+            if site.country == "SK" {
+                "STN EN 1991-1-3/NA1:2012 NA 2.8 tab. NA.1"
+            } else {
+                "ČSN EN 1991-1-3 NA, Z1:2006"
+            },
+            l.says("snehová oblasť", "sněhová oblast")
+        ),
+        (Some(sk), None) => format!(
+            "s_k = {} kN/m² ({})",
+            decimal_commas(&sk.to_string()),
+            escape(&site.source)
+        ),
+        (None, _) => format!(
+            "{} {})",
+            l.says(
+                "s_k nie je známe (znenie kontroly, v angličtine:",
+                "s_k není známo (znění kontroly, v angličtině:"
+            ),
+            escape(&site.source)
+        ),
+    };
+    let (psi0, psi2) = Site::snow_psi(Some(site));
+    let high = psi0 > 0.5;
+    let altitude = match site.altitude_m {
+        Some(_) if high => l.says("nad 1000 m n. m.", "nad 1000 m n. m."),
+        Some(_) => l.says("do 1000 m n. m.", "do 1000 m n. m."),
+        None => l.says(
+            "nadmorská výška nezadaná, uvažuje sa do 1000 m n. m.",
+            "nadmořská výška nezadána, uvažuje se do 1000 m n. m.",
+        ),
+    };
+    format!(
+        "{place}; {sk}; ψ0/ψ2 {} {}/{} (EN 1990 tab. A1.1, {altitude}); {} {}",
+        l.says("snehu", "sněhu"),
+        decimal_commas(&psi0.to_string()),
+        decimal_commas(&psi2.to_string()),
+        l.says(
+            "dielčie súčinitele a ostatné ψ sú odporúčané hodnoty EN, nie hodnoty národných príloh",
+            "dílčí součinitele a ostatní ψ jsou doporučené hodnoty EN, nikoli hodnoty národních příloh"
+        ),
+        escape(&site.country)
+    )
 }
 
 fn member_section(
@@ -544,9 +606,18 @@ fn member_section(
             l.says("Miesto", "Místo"),
             l.says("Využitie", "Využití")
         ));
-        for check in &member.checks {
-            let (name, clauses) = check_name(check.name, l);
-            let governing = member.governing.as_deref() == Some(check.name);
+        // The governing check's highest row governs, not every row of its
+        // name (review 2026-11-10 og PG-403).
+        let governing_row = member
+            .checks
+            .iter()
+            .enumerate()
+            .filter(|(_, check)| member.governing.as_deref() == Some(check.name))
+            .max_by(|(_, a), (_, b)| a.utilization.total_cmp(&b.utilization))
+            .map(|(row, _)| row);
+        for (row, check) in member.checks.iter().enumerate() {
+            let (name, clauses) = check_name(check.name, member.glulam, l);
+            let governing = governing_row == Some(row);
             out.push_str(&format!(
                 "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"n{}\">{}</td></tr>\n",
                 escape(&name),
@@ -602,21 +673,28 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
     };
     let braces = member.held_by.as_slice();
     let demands = member.bracing.as_slice();
-    out.push_str(&format!(
-        "<p><b>{}</b> ",
-        l.says(
-            "Zaistené úseky (okraj držaný do strany):",
-            "Zajištěné úseky (okraj držený do strany):"
-        )
-    ));
-    if braces.is_empty() {
+    // A column buckles over its length and is not checked for lateral
+    // torsional buckling, so nothing is said of it (review 2026-11-10 og PG-405).
+    let column = member.role == "column";
+    if !(column && braces.is_empty()) {
         out.push_str(&format!(
-            "{}</p>\n",
+            "<p><b>{}</b> ",
             l.says(
-                "žiadna časť nedrží okraj prvku do strany; klopenie sa posudzuje medzi podperami.",
-                "žádná část nedrží okraj prvku do strany; klopení se posuzuje mezi podporami."
+                "Zaistené úseky (okraj držaný do strany):",
+                "Zajištěné úseky (okraj držený do strany):"
             )
         ));
+    }
+    if braces.is_empty() {
+        if !column {
+            out.push_str(&format!(
+                "{}</p>\n",
+                l.says(
+                    "žiadna časť nedrží okraj prvku do strany; klopenie sa posudzuje medzi podperami.",
+                    "žádná část nedrží okraj prvku do strany; klopení se posuzuje mezi podporami."
+                )
+            ));
+        }
     } else {
         let stretches: Vec<String> = braces
             .iter()

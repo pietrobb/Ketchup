@@ -96,6 +96,14 @@
     ],
     "members": {
       "count": 230
+    },
+    "site": {
+      "altitude_m": 150.0,
+      "country": "SK",
+      "municipality": "Senec",
+      "sk_kn_m2": 0.609,
+      "snow_zone": "1",
+      "source": "STN EN 1991-1-3/NA1:2012 NA 2.8 table NA.1, snow zone 1: s_k = 0.454 + 150/970"
     }
   },
   "errors": 0,
