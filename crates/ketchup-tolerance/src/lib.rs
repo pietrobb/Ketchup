@@ -60,8 +60,10 @@ pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 
 /// Deviation allowed between a Loft stretched to a rail and the rail, in mm. The Loft is
 /// fitted through stretched stations across the guide and gets more stations until the
-/// rail lies this close to it; ten nanometres sit far below any machined or printed surface.
-pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-5;
+/// rail lies this close to it; a tenth of a micrometre sits far below any machined or printed
+/// surface, as for threads. Ten nanometres needed more than 64 stations along a bent guide
+/// such as a U (R1120ac-EXA-903).
+pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-4;
 
 /// Deviation allowed between a surface filled through a network of curves and each curve
 /// of the network, in mm. The kernel fits a smooth plate to points on every curve and

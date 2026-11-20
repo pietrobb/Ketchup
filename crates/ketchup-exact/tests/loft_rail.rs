@@ -7,7 +7,7 @@ use ketchup_exact::{
     ExactBackend, FramedLoftProfile, FramedLoftSection, FramedLoftSpec, GeometryErrorCode,
     LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, SpatialProfileSegment,
 };
-use ketchup_geometry::linalg::{Frame, cross, length, sub};
+use ketchup_geometry::linalg::{Frame, Vec3, cross, length, sub};
 
 const HEIGHT: f64 = 20.0;
 const END_RADIUS: f64 = 5.0;
@@ -160,6 +160,78 @@ fn a_surface_loft_follows_the_rail_too() {
     assert!(
         (mesh_area - exact_area).abs() <= 0.01 * exact_area,
         "mesh area {mesh_area} != exact area {exact_area}"
+    );
+}
+
+/// A U in the XZ plane, two mirrored cubic halves: up from x = 15 - `half`,
+/// over the top at z = `top` with x = 15 and down to x = 15 + `half`.
+fn u_bend(half: f64, top: f64) -> Vec<SpatialProfileSegment> {
+    let at = |dx: f64, z: f64| [15.0 + dx, 0.0, z];
+    let up = 2.0 * top / 3.0;
+    let flat = half / 3.0;
+    vec![
+        SpatialProfileSegment::CubicBezier {
+            start_mm: at(-half, 0.0),
+            control_1_mm: at(-half, up),
+            control_2_mm: at(-flat, top),
+            end_mm: at(0.0, top),
+        },
+        SpatialProfileSegment::CubicBezier {
+            start_mm: at(0.0, top),
+            control_1_mm: at(flat, top),
+            control_2_mm: at(half, up),
+            end_mm: at(half, 0.0),
+        },
+    ]
+}
+
+#[test]
+fn a_rail_along_a_u_shaped_guide_takes_the_crossing_of_its_own_leg() {
+    // Every station plane on one leg crosses the other leg of the guide and of
+    // the rail too (R1120ac-EXA-903); the station's crossing is the near one.
+    let circle = FramedLoftProfile::Planar(PlanarProfileLoop::Circle {
+        center_mm: [0.0, 0.0],
+        radius_mm: END_RADIUS,
+    });
+    // The second section faces down at x = 30, turned half about y as the
+    // guide turns it, 1 mm along its normal from its frame's origin.
+    let down = Frame {
+        origin: Vec3::new(30.0, 0.0, 1.0),
+        x: -Vec3::X,
+        y: Vec3::Y,
+        z: -Vec3::Z,
+    };
+    let spec = FramedLoftSpec {
+        sections: vec![
+            FramedLoftSection {
+                elevation_mm: 0.0,
+                frame: Frame::WORLD,
+                profile: circle.clone(),
+            },
+            FramedLoftSection {
+                elevation_mm: 1.0,
+                frame: down,
+                profile: circle,
+            },
+        ],
+    };
+    // The guide tops out at z = 30 and the rail at z = 36, so the section at
+    // the top is stretched from radius 5 to 6.
+    let body = ExactBackend::new()
+        .loft_framed_with_rail(
+            &spec,
+            &u_bend(15.0, 30.0),
+            &u_bend(15.0 + END_RADIUS, 36.0),
+            LoftSurfaceContinuity::Position,
+            true,
+        )
+        .expect("loft along the U with a rail beside it");
+    let topology = &body.body.topology;
+    assert_eq!(topology.solid_count, 1);
+    assert!(
+        (topology.bounds_mm.max.z - 36.0).abs() <= 0.05,
+        "the bend reaches z = {}",
+        topology.bounds_mm.max.z
     );
 }
 

@@ -256,7 +256,8 @@ impl ExactBackend {
     /// A Loft along `guide` whose every section across the guide is scaled about
     /// the guide so its border meets `rail` where the rail crosses the section's
     /// plane. The rail starts on the first section, ends on the last and crosses
-    /// every section between once.
+    /// every section between; where the plane also cuts a farther part of a bent
+    /// guide or rail, the crossings nearest the section count.
     pub fn loft_framed_with_rail(
         &self,
         spec: &FramedLoftSpec,
