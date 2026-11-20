@@ -75,6 +75,7 @@ impl FeaModel {
         }
         let layout = self.dof_layout();
         let size = layout.count();
+        self.check_assembly_budget(&layout, settings)?;
         let (mass_entries, total_mass_t) = self.mass_entries(&layout)?;
         let joints = Joints::new(self, &layout)?;
         let mut unused = vec![0.0; size];

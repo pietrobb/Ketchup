@@ -177,6 +177,28 @@ fn an_assembly_of_joined_occurrences_is_reviewed_with_its_natural_frequencies() 
     let [lowest, next] = [0, 1].map(|index| frequencies[index].as_f64().unwrap());
     assert!(0.0 < lowest && lowest <= next, "{frequencies:?}");
     assert!(modes["maximum_relative_residual"].as_f64().unwrap() <= 1.0e-6);
+    // R1120ac-FEA-900: the modes of the level before, how much they changed,
+    // whether that is within the tolerance, and what modes leave out.
+    let previous = modes["previous_level_frequencies_hz"].as_array().unwrap();
+    assert_eq!(previous.len(), 2, "{modes}");
+    let change = (0..2)
+        .map(|index| {
+            let [was, is] = [&previous[index], &frequencies[index]].map(|f| f.as_f64().unwrap());
+            (is - was).abs() / is.abs().max(was.abs())
+        })
+        .fold(0.0, f64::max);
+    let reported = modes["maximum_relative_frequency_change"].as_f64().unwrap();
+    assert!((reported - change).abs() <= 1.0e-12, "{modes}");
+    let tolerance = result["convergence"]["required_relative_tolerance"]
+        .as_f64()
+        .unwrap();
+    assert_eq!(modes["converged"], change <= tolerance, "{modes}");
+    let not_checked = modes["not_checked"].as_array().unwrap();
+    assert_eq!(not_checked.len(), 4, "{modes}");
+    assert!(
+        not_checked[0].as_str().unwrap().contains("too stiff"),
+        "{modes}"
+    );
 
     // A soft spring joint lets the upper cylinder sink by its load over the
     // spring's stiffness, on top of how both cylinders deform.

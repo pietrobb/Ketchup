@@ -526,3 +526,94 @@ fn stacked_occurrences_bonded_over_a_face_deform_as_one_body_and_apart_ones_are_
         ExactFeaSetupError::InvalidJoint { joint: 0 }
     );
 }
+
+/// R1120ac-FEA-901: a block bonded on its top to one block and on its side to
+/// another has the nodes of the edge between the faces in both joints; it was
+/// refused as `InvalidJoint { joint: 1 }` by which face of each joint came
+/// first. Each order now ties the block beside too.
+#[test]
+fn a_part_bonded_on_two_adjacent_faces_ties_both_joints_in_either_face_order() {
+    let _turn = crate::integration_support::file_turn();
+    let (mut document, definition, extrusion, lower) = simple_extrusion_document();
+    let upper = OccurrenceId(907);
+    let beside = OccurrenceId(908);
+    let placed = |id, transform| CanonicalCommand::CreateOccurrence {
+        id,
+        definition_id: definition,
+        name: "Bonded occurrence".into(),
+        transform,
+        parent: None,
+        tags: Default::default(),
+        visible: true,
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            placed(
+                upper,
+                Transform::from_translation(0.0, 0.0, HEIGHT_MM).unwrap(),
+            ),
+            // The block is 8 mm long in x: this one touches the lower's east face.
+            placed(beside, Transform::from_translation(8.0, 0.0, 0.0).unwrap()),
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = block_mesh(&mut supervisor, &snapshot, definition, extrusion);
+    let packages = [&package, &package, &package];
+    let faces = bottom_and_top(&package);
+    let by_x = |left: &&ExactBRepGraphFaceEvidence, right: &&ExactBRepGraphFaceEvidence| {
+        left.centroid_mm[0].total_cmp(&right.centroid_mm[0])
+    };
+    let evidence = &package.source.face_evidence;
+    let west = evidence.iter().min_by(by_x).unwrap().face_ordinal;
+    let east = evidence.iter().max_by(by_x).unwrap().face_ordinal;
+    let mesh_nodes = package.mesh.vertices_mm.len();
+    let base = stack_setup(lower, upper, faces, ExactFeaJointKind::Bonded);
+    for (top_first, east_first) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut setup = base.clone();
+        setup.parts.push(ExactFeaAssemblyPart {
+            instance_path: InstancePath::root(beside),
+            material: steel(),
+            constrained_face_ordinals: Vec::new(),
+            face_tractions: Vec::new(),
+        });
+        if !top_first {
+            setup.joints[0].faces.reverse();
+        }
+        let mut side = [
+            ExactFeaJointFace {
+                part: 0,
+                face_ordinal: east,
+            },
+            ExactFeaJointFace {
+                part: 2,
+                face_ordinal: west,
+            },
+        ];
+        if !east_first {
+            side.reverse();
+        }
+        setup.joints.push(ExactFeaJoint {
+            faces: side,
+            kind: ExactFeaJointKind::Bonded,
+        });
+        let order = format!("top first {top_first}, east first {east_first}");
+        let bonded = assembly_bound_model(&snapshot, &packages, &setup)
+            .unwrap_or_else(|error| panic!("{order}: {error:?}"));
+        let beside_nodes = 2 * mesh_nodes..3 * mesh_nodes;
+        assert!(
+            bonded.model.couplings.iter().any(|coupling| coupling
+                .nodes
+                .iter()
+                .any(|node| beside_nodes.contains(node))),
+            "{order}: the block beside is tied to nothing"
+        );
+        // Held only through the lower block, the block beside is not free.
+        let solution = bonded
+            .model
+            .solve(FeaSolveSettings::default())
+            .unwrap_or_else(|error| panic!("{order}: {error:?}"));
+        balanced(&solution);
+    }
+}

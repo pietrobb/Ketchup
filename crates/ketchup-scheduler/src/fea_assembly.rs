@@ -6,7 +6,9 @@
 //! node of one face that lies on the other moves with the point of the other
 //! face's mesh it lies at, so two parts glued over a face bend as one piece,
 //! and the parts of the faces off each other stay free (R1119og-FEA-800).
-//! Faces that do not touch anywhere are refused.
+//! Faces that do not touch anywhere are refused. A part bonded in more joints
+//! than the other leads the ties, so the nodes of an edge two of its bonded
+//! faces share follow nothing (R1120ac-FEA-901).
 //!
 //! A connector, the way a bolt is often modelled, ties every node of each
 //! joined face rigidly to a reference node at the first face's area centroid,
@@ -27,6 +29,7 @@ use ketchup_model::assembly::{
 };
 use ketchup_model::document::{InstancePath, Snapshot};
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, APPROXIMATION, NEGLIGIBLE};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -416,13 +419,40 @@ fn joints(
         let (second_face, second_free) = side(second).ok_or(refused.clone())?;
         let (leaders, followers): (BTreeSet<usize>, Vec<usize>) = match joint.kind {
             ExactFeaJointKind::Bonded => {
-                // The finer face, with more nodes on the other, follows it.
-                let onto_first = bond(nodes, first_face, &second_free);
-                let onto_second = bond(nodes, second_face, &first_free);
-                let ties = if onto_second.len() > onto_first.len() {
-                    onto_second
-                } else {
-                    onto_first
+                // A part bonded on two adjacent faces has the nodes of their
+                // common edge in both joints (review 2026-11-20 ac FEA-901).
+                // The part bonded in more joints leads, so its edge nodes
+                // never follow; else the finer face, with more nodes on the
+                // other, follows it. A node that already follows a joint or
+                // leads a tie does not follow this one, and a triangle with a
+                // node that follows does not lead; the joint is refused only
+                // when no node is left to tie.
+                let may_follow = |free: &BTreeSet<usize>| -> BTreeSet<usize> {
+                    free.iter()
+                        .copied()
+                        .filter(|node| !joined.contains(node) && !tie_leaders.contains(node))
+                        .collect()
+                };
+                let may_lead = |face: &[[usize; 3]]| -> Vec<[usize; 3]> {
+                    face.iter()
+                        .copied()
+                        .filter(|triangle| triangle.iter().all(|node| !joined.contains(node)))
+                        .collect()
+                };
+                let bonds_of = |part: usize| {
+                    joints
+                        .iter()
+                        .filter(|joint| matches!(joint.kind, ExactFeaJointKind::Bonded))
+                        .filter(|joint| joint.faces.iter().any(|face| face.part == part))
+                        .count()
+                };
+                let onto_first = bond(nodes, &may_lead(first_face), &may_follow(&second_free));
+                let onto_second = bond(nodes, &may_lead(second_face), &may_follow(&first_free));
+                let ties = match bonds_of(first.part).cmp(&bonds_of(second.part)) {
+                    Ordering::Greater if !onto_first.is_empty() => onto_first,
+                    Ordering::Less if !onto_second.is_empty() => onto_second,
+                    _ if onto_second.len() > onto_first.len() => onto_second,
+                    _ => onto_first,
                 };
                 if ties.is_empty() {
                     return Err(refused);

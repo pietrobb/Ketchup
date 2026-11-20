@@ -366,6 +366,10 @@ pub(super) fn review_value(review: &FeaReviewSummary) -> Value {
             "total_mass_kg":modes.total_mass_kg,
             "frequencies_hz":modes.frequencies_hz,
             "maximum_relative_residual":modes.maximum_relative_residual,
+            "previous_level_frequencies_hz":modes.previous_frequencies_hz,
+            "maximum_relative_frequency_change":modes.maximum_relative_frequency_change,
+            "converged":modes.converged,
+            "not_checked":modes.not_checked,
         })),
         "document_mutated":false,
     })

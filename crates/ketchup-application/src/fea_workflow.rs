@@ -1,5 +1,5 @@
 pub use ketchup_analysis::fea::FeaConvergenceJudgement;
-use ketchup_analysis::fea::{FeaError, FeaModel, FeaSolveSettings};
+use ketchup_analysis::fea::{FeaError, FeaModel, FeaModes, FeaSolveSettings};
 use ketchup_model::document::{DefinitionId, FeatureId, Snapshot};
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::graph::sha256_bytes;
@@ -52,7 +52,23 @@ pub struct FeaModalSummary {
     pub frequencies_hz: Vec<f64>,
     /// The largest backward error of the modes found.
     pub maximum_relative_residual: f64,
+    /// The same modes on the level before the finest (R1120ac-FEA-900).
+    pub previous_frequencies_hz: Vec<f64>,
+    /// The largest relative change of a frequency between the two levels.
+    pub maximum_relative_frequency_change: f64,
+    /// Every frequency changed by at most the study's tolerance, and both
+    /// levels found as many modes.
+    pub converged: bool,
+    pub not_checked: [&'static str; 4],
 }
+
+/// What natural frequencies leave out (R1120ac-FEA-900).
+pub const FEA_MODES_NOT_CHECKED: [&str; 4] = [
+    "linear tetrahedra are too stiff: frequencies fall as the mesh is refined, so a coarse mesh overstates them",
+    "supports are rigid: a softer support lowers the frequencies",
+    "no damping",
+    "no prestress or stress stiffening from the static load",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeaMeshLevelSummary {
@@ -85,7 +101,8 @@ pub struct FeaReviewSummary {
     pub required_relative_tolerance: f64,
     pub all_levels_within_declared_limits: bool,
     pub excluded_physics: [&'static str; 5],
-    /// The natural frequencies of the finest mesh, when the study asked.
+    /// The natural frequencies of the finest mesh against the level before,
+    /// when the study asked.
     pub modes: Option<FeaModalSummary>,
 }
 
@@ -302,7 +319,7 @@ fn mesh(
 }
 
 /// Solves every level, judges the convergence between the last two, and
-/// finds the natural frequencies of the finest when asked.
+/// finds the natural frequencies of the last two when asked.
 fn conclude(
     snapshot: &Snapshot,
     graph_digest: String,
@@ -337,23 +354,23 @@ fn conclude(
         (final_solution, finest_level.model.elements.len()),
         settings.convergence_relative_tolerance,
     );
+    // Modes of the finest level alone were given as plain numbers, though
+    // linear tetrahedra overstate them on a coarse mesh by tens of per cent
+    // (R1120ac-FEA-900): the level before is solved too and compared.
     let modes = match mode_count {
         0 => None,
         count => {
-            let found = finest_level
-                .model
-                .modes_with_cancellation(settings, count, cancelled)
-                .map_err(FeaReviewError::Solve)?;
-            Some(FeaModalSummary {
-                solver_version: found.solver_version,
-                total_mass_kg: found.total_mass_kg,
-                frequencies_hz: found.modes.iter().map(|mode| mode.frequency_hz).collect(),
-                maximum_relative_residual: found
-                    .modes
-                    .iter()
-                    .map(|mode| mode.relative_residual)
-                    .fold(0.0, f64::max),
-            })
+            let [previous_found, found] = [previous_level, finest_level].map(|level| {
+                level
+                    .model
+                    .modes_with_cancellation(settings, count, cancelled)
+                    .map_err(FeaReviewError::Solve)
+            });
+            Some(modal_summary(
+                &previous_found?,
+                &found?,
+                settings.convergence_relative_tolerance,
+            ))
         }
     };
     let summaries = levels
@@ -405,6 +422,35 @@ fn conclude(
         excluded_physics: final_solution.validity.excluded_physics,
         modes,
     })
+}
+
+/// The finest level's modes against those of the level before: converged when
+/// both found as many and none moved by more than `tolerance`.
+fn modal_summary(previous: &FeaModes, found: &FeaModes, tolerance: f64) -> FeaModalSummary {
+    let frequencies = |modes: &FeaModes| -> Vec<f64> {
+        modes.modes.iter().map(|mode| mode.frequency_hz).collect()
+    };
+    let (previous_frequencies_hz, frequencies_hz) = (frequencies(previous), frequencies(found));
+    let maximum_relative_frequency_change = frequencies_hz
+        .iter()
+        .zip(&previous_frequencies_hz)
+        .map(|(current, previous)| relative_change(*previous, *current))
+        .fold(0.0, f64::max);
+    FeaModalSummary {
+        solver_version: found.solver_version,
+        total_mass_kg: found.total_mass_kg,
+        converged: previous_frequencies_hz.len() == frequencies_hz.len()
+            && maximum_relative_frequency_change <= tolerance,
+        frequencies_hz,
+        maximum_relative_residual: found
+            .modes
+            .iter()
+            .map(|mode| mode.relative_residual)
+            .fold(0.0, f64::max),
+        previous_frequencies_hz,
+        maximum_relative_frequency_change,
+        not_checked: FEA_MODES_NOT_CHECKED,
+    }
 }
 
 fn validate_refinement_levels(levels: &[ExactVolumeMeshWireOptions]) -> Result<(), FeaReviewError> {
@@ -492,6 +538,7 @@ fn review_digest(
             .frequencies_hz
             .iter()
             .chain([&modes.total_mass_kg])
+            .chain(&modes.previous_frequencies_hz)
             .flat_map(|value| value.to_bits().to_le_bytes())
             .collect::<Vec<_>>();
         push_prefixed(&mut bytes, &values);
@@ -511,6 +558,48 @@ mod tests {
             max_relative_volume_error: 0.05,
             min_tetrahedron_quality: 1.0e-6,
         }
+    }
+
+    fn found(frequencies_hz: &[f64]) -> FeaModes {
+        FeaModes {
+            schema: "test",
+            solver_version: "test",
+            case_id: "beam".into(),
+            model_digest: String::new(),
+            total_mass_kg: 1.0,
+            iterations: 1,
+            modes: frequencies_hz
+                .iter()
+                .map(|frequency_hz| ketchup_analysis::fea::FeaMode {
+                    frequency_hz: *frequency_hz,
+                    angular_frequency_rad_s: 2.0 * std::f64::consts::PI * frequency_hz,
+                    displacements_mm: Vec::new(),
+                    rotations_rad: Vec::new(),
+                    relative_residual: 1.0e-12,
+                })
+                .collect(),
+        }
+    }
+
+    /// R1120ac-FEA-900: a beam of 40 x 2 x 4 linear tetrahedra cells gave
+    /// 59.10 Hz where the finer mesh gives 41.78; the frequencies are reported
+    /// against the level before and are not converged.
+    #[test]
+    fn modes_are_judged_against_the_level_before() {
+        let coarse = modal_summary(&found(&[59.10, 120.0]), &found(&[41.78, 118.0]), 0.05);
+        assert_eq!(coarse.previous_frequencies_hz, [59.10, 120.0]);
+        assert!(
+            (coarse.maximum_relative_frequency_change - (59.10 - 41.78) / 59.10).abs() <= 1.0e-12,
+            "{coarse:?}"
+        );
+        assert!(!coarse.converged);
+        assert_eq!(coarse.not_checked, FEA_MODES_NOT_CHECKED);
+
+        let settled = modal_summary(&found(&[41.90, 118.2]), &found(&[41.78, 118.0]), 0.05);
+        assert!(settled.converged, "{settled:?}");
+        // The level before found fewer modes: not converged.
+        let fewer = modal_summary(&found(&[41.90]), &found(&[41.78, 118.0]), 0.05);
+        assert!(!fewer.converged, "{fewer:?}");
     }
 
     /// The solver no longer stops at 4 096 elements; the mesher's own limit
