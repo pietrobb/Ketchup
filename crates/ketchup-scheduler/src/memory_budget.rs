@@ -46,6 +46,18 @@ pub struct BudgetStop {
 
 impl fmt::Display for BudgetStop {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Alone past the budget, waiting for the others would not help (review
+        // 2026-11-20 ac P3).
+        if self.used >= self.total {
+            return write!(
+                formatter,
+                "this background job alone needed more than the window's memory budget of \
+                 {:.1} GiB (it used {:.1} GiB), so it was stopped. Split the file or the \
+                 model into smaller parts, simplify it, or use a computer with more memory",
+                gibibytes(self.total),
+                gibibytes(self.used)
+            );
+        }
         write!(
             formatter,
             "the background jobs of the window together needed more than its memory budget \
@@ -87,22 +99,59 @@ pub struct Registration {
 /// The process is in a request until this is dropped.
 pub struct Busy(Arc<Tracked>);
 
-/// Memory the exact workers of one request may commit: half of this computer's, so a
-/// hostile or huge STEP or IGES file stops the worker instead of exhausting the system
-/// and the window with it. Workers running side by side share it
+/// Memory the exact workers of one request may commit: half of this computer's, or of
+/// the memory limit of the container it runs in when that is less, so a hostile or
+/// huge STEP or IGES file stops the worker instead of exhausting the system and the
+/// window with it. Workers running side by side share it
 /// ([`crate::ExactWorkerSupervisor::spawn_sharing`]). 4 GiB when the system does not
 /// say how much it has.
 pub fn exact_worker_memory_bytes() -> usize {
     static BYTES: OnceLock<usize> = OnceLock::new();
     *BYTES.get_or_init(|| {
-        process_wrap::std::physical_memory_bytes()
+        let physical = process_wrap::std::physical_memory_bytes();
+        let limited = match (
+            physical,
+            cgroup_memory_limit(|path| std::fs::read_to_string(path).ok()),
+        ) {
+            (Some(physical), Some(limit)) => Some(physical.min(limit)),
+            (physical, limit) => physical.or(limit),
+        };
+        limited
             .and_then(|bytes| usize::try_from(bytes / 2).ok())
             .unwrap_or(4 << 30)
     })
 }
 
+/// The memory limit of this process's Linux control group, the least of its own and
+/// its ancestors' (cgroup v2), else the v1 memory controller's: in a container the
+/// OOM killer acts at that limit, long before the host's memory is used (review
+/// 2026-11-20 ac P3). `None` where there is none, as on Windows and macOS.
+fn cgroup_memory_limit(read: impl Fn(&str) -> Option<String>) -> Option<u64> {
+    let number = |text: String| text.trim().parse::<u64>().ok();
+    let unified = read("/proc/self/cgroup").and_then(|groups| {
+        let path = groups
+            .lines()
+            .find_map(|line| line.strip_prefix("0::"))?
+            .to_owned();
+        let mut limit = None::<u64>;
+        let mut group = path.trim_end_matches('/');
+        loop {
+            if let Some(bytes) = read(&format!("/sys/fs/cgroup{group}/memory.max")).and_then(number)
+            {
+                limit = Some(limit.map_or(bytes, |limit| limit.min(bytes)));
+            }
+            match group.rfind('/') {
+                Some(parent) => group = &group[..parent],
+                None => break,
+            }
+        }
+        limit
+    });
+    unified.or_else(|| read("/sys/fs/cgroup/memory/memory.limit_in_bytes").and_then(number))
+}
+
 /// The budget of this window: [`exact_worker_memory_bytes`], half of this computer's
-/// memory, watched by a thread of its own.
+/// memory or of its container's limit, watched by a thread of its own.
 pub fn window_memory_budget() -> &'static Arc<MemoryBudget> {
     static BUDGET: OnceLock<Arc<MemoryBudget>> = OnceLock::new();
     BUDGET.get_or_init(|| {

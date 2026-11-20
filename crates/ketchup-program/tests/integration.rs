@@ -15,6 +15,7 @@ mod declared_bracing_bypasses;
 mod declared_bracing_doubts;
 mod document;
 mod drill_material;
+mod edge_finish_fit;
 mod exact_shapes;
 mod example_programs;
 mod expect;
