@@ -437,3 +437,22 @@ fn a_home_shared_with_others_or_not_there_holds_no_configuration() {
         "{missing}"
     );
 }
+
+/// A folder on the way replaced while it was read is said so, not that HOME
+/// is wrong (review 2026-11-20 ac P3: the lost race told the user to set HOME).
+#[cfg(unix)]
+#[test]
+fn a_folder_replaced_on_the_way_is_not_blamed_on_home() {
+    let error: io::Error = HomeError::ChangedWhileRead {
+        home: PathBuf::from("/home/ana"),
+        folder: PathBuf::from("/home"),
+    }
+    .into();
+    let text = error.to_string();
+    assert!(
+        text.contains("the folder /home on the way to /home/ana was replaced while it was read"),
+        "{text}"
+    );
+    assert!(text.contains("try again"), "{text}");
+    assert!(!text.contains("set HOME"), "{text}");
+}

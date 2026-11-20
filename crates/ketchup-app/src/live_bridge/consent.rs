@@ -439,11 +439,17 @@ fn publish_registry_entry_before_publish(
     bootstrap: &str,
     before_publish: impl FnOnce(),
 ) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
-    // Under `sudo`, as the user whose runtime folder it is (review 2026-11-13
-    // r95 P3: root made and wrote the register there through the path).
+    as_runtime_folder_owner(root, || {
+        publish_as_found(root, instance_id, address, bootstrap, before_publish)
+    })
+}
+
+/// Under `sudo`, as the user whose runtime folder `root` is, both publishing and
+/// removing the entry (reviews 2026-11-13 r95 and 2026-11-20 ac P3: root wrote,
+/// then removed, the register there through the path).
+fn as_runtime_folder_owner<T>(root: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let base = root.ancestors().nth(2).unwrap_or(root).to_owned();
-    ketchup_user_files::UserFolder::at(base, root.to_owned())
-        .as_owner(|| publish_as_found(root, instance_id, address, bootstrap, before_publish))
+    ketchup_user_files::UserFolder::at(base, root.to_owned()).as_owner(work)
 }
 
 /// [`publish_registry_entry_before_publish`] as this process is.
@@ -483,11 +489,17 @@ fn remove_registry_entry_if_unchanged(
     path: &Path,
     expected: ketchup_model::persistence::FileIdentity,
 ) -> io::Result<bool> {
-    ketchup_model::persistence::remove_regular_file_if_unchanged(
-        path,
-        expected,
-        MAX_CONSENT_BYTES as u64,
-    )
+    let remove = || {
+        ketchup_model::persistence::remove_regular_file_if_unchanged(
+            path,
+            expected,
+            MAX_CONSENT_BYTES as u64,
+        )
+    };
+    match path.parent() {
+        Some(root) => as_runtime_folder_owner(root, remove),
+        None => remove(),
+    }
 }
 
 fn start(

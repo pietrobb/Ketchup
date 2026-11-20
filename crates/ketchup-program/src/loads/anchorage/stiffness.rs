@@ -1,10 +1,10 @@
 //! How stiffly, and up to what force, a path of parts to the floor holds a
 //! point sideways (review 2026-11-13 r95, structural point 1; R1113r95-PG-702
 //! to PG-704): a unit force across the member at the point it holds, carried
-//! part by part to a grounded part fixed on the floor. Each part is a beam from
+//! part by part to a grounded part fixed on the floor. Each part is a bending member from
 //! where the path enters it to where it leaves, bending, twisting and stretching
 //! under the moment and force the point puts on it; each joint between two
-//! parts slips and turns on its fasteners, turns freely on one (a hinge) or,
+//! parts slips and turns on its fasteners, turns freely on one (a pivot) or,
 //! between two grounded parts, is rigid. Their give adds up in series, and the
 //! stiffness is one over the sum (the unit-load method on the path).
 
@@ -12,13 +12,13 @@ use crate::frame::Obb;
 use ketchup_geometry::linalg::{cross, dot, length, scale, sub};
 use ketchup_model::tolerance::ALONG_AXIS_NEGLIGIBLE;
 
-/// Shear modulus over modulus of elasticity of timber, as EN 338 and EN 14080
+/// Shear modulus over modulus of elasticity of wood, as EN 338 and EN 14080
 /// give them (G_mean = E_0,mean / 16).
 const SHEAR_PER_E: f64 = 1.0 / 16.0;
 
 /// The slip modulus of one fastener per shear plane, N/mm: EN 1995-1-1
-/// table 7.1, rho_m^1.5 d / 23 for screws and dowels, taken for a fastener of
-/// d = 6 mm in timber of rho_m = 420 kg/m³, the size of the program unknown.
+/// table 7.1, rho_m^1.5 d / 23 for screws and pins, taken for a fastener of
+/// d = 6 mm in wood of rho_m = 420 kg/m³, the size of the program unknown.
 pub(super) const SLIP_PER_FASTENER: f64 = 2245.0;
 
 /// How a joint between two parts on the path holds.
