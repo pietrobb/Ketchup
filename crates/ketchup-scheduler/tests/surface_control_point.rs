@@ -11,6 +11,9 @@ use ketchup_model::document::{
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepOperation};
 use ketchup_model::persistence;
 use ketchup_scheduler::ExactWorkerSupervisor;
+use ketchup_scheduler::protocol::SurfaceControlNetWire;
+use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
 
 const DEFINITION: DefinitionId = DefinitionId(62);
 const LOW: FeatureId = FeatureId(620);
@@ -100,36 +103,63 @@ fn move_point(
     }
 }
 
-/// Where control point (`u_index`, 16) of the blend lies. A move that expects
-/// it elsewhere is refused with where it lies, which is how a caller without
-/// the control net learns it (review 2026-11-19 og EXA-800).
+/// The blend's control net, read from the worker as a caller reads it before
+/// a move (R1120ac-EXA-900; before, only a refused move told where a point lay).
+fn blend_net(supervisor: &mut ExactWorkerSupervisor) -> SurfaceControlNetWire {
+    let graph = ExactBRepGraph::from_snapshot(&s_blend().current(), DEFINITION, BLEND).unwrap();
+    supervisor
+        .surface_control_net(&graph, &BTreeMap::new(), &AtomicBool::new(false))
+        .unwrap()
+}
+
+/// Where control point (`u_index`, 16) of the blend lies.
 fn pole(supervisor: &mut ExactWorkerSupervisor, u_index: u32) -> [f64; 3] {
-    let mut document = s_blend();
-    document
-        .apply_batch(&CommandBatch::new(vec![move_point(
-            MOVED,
-            u_index,
-            [0.0; 3],
-            [0.0, 0.0, -5.0],
-            None,
-            Vec::new(),
-        )]))
-        .unwrap();
-    let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, MOVED).unwrap();
-    let error = format!(
-        "{:?}",
-        supervisor.evaluate_exact_brep_graph(&graph).unwrap_err()
+    let net = blend_net(supervisor);
+    net.points_mm[usize::try_from(u_index * net.v_count + 16).unwrap()]
+}
+
+#[test]
+fn the_control_net_is_read_and_a_rounded_from_mm_still_names_its_point() {
+    let _turn = crate::integration_support::file_turn();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let net = blend_net(&mut supervisor);
+    let points = usize::try_from(net.u_count * net.v_count).unwrap();
+    assert!(
+        net.u_count > 2 && net.v_count > 16,
+        "{} x {}",
+        net.u_count,
+        net.v_count
     );
-    let at = error
-        .split("lies at (")
-        .nth(1)
-        .and_then(|rest| rest.split(") mm").next())
-        .unwrap_or_else(|| panic!("the refusal names where the point lies: {error}"));
-    let values = at
-        .split(", ")
-        .map(|value| value.parse::<f64>().unwrap())
-        .collect::<Vec<_>>();
-    values.try_into().unwrap()
+    assert_eq!(net.points_mm.len(), points);
+    assert_eq!(net.weights.len(), points);
+    assert!(
+        net.match_tolerance_mm > 1.0e-7 && net.match_tolerance_mm <= 1.0e-3,
+        "{}",
+        net.match_tolerance_mm
+    );
+    // Copied with four decimals, as an AI reading the net would write it.
+    let exact = net.points_mm[usize::try_from(2 * net.v_count + 16).unwrap()];
+    let rounded = exact.map(|value| (value * 1.0e4).round() / 1.0e4);
+    let mut moved = |from_mm| {
+        let mut document = s_blend();
+        document
+            .apply_batch(&CommandBatch::new(vec![move_point(
+                MOVED,
+                2,
+                from_mm,
+                [0.0, 0.0, -5.0],
+                None,
+                Vec::new(),
+            )]))
+            .unwrap();
+        let graph = ExactBRepGraph::from_snapshot(&document.current(), DEFINITION, MOVED).unwrap();
+        supervisor.evaluate_exact_brep_graph(&graph)
+    };
+    moved(rounded).unwrap();
+    let far = [exact[0] + 0.01, exact[1], exact[2]];
+    let refused = format!("{:?}", moved(far).unwrap_err());
+    assert!(refused.contains("inspect surface_control_net"), "{refused}");
 }
 
 #[test]

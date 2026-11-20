@@ -416,6 +416,10 @@ class Document:
         program = dict(operations) if isinstance(operations, Mapping) else {"operations": list(operations)}
         return self._call("apply", {"program": program, "selection": list(selection)}, mutation=True, state=True)
     def query(self, **params): return self._call("query", params)
+    def surface_control_net(self, definition_id, feature_id, *, offset=0):
+        """Where each control point of a surface feature lies; a ControlPoint move names one by these."""
+        return self._call("surface_control_net", {
+            "definition_id": definition_id, "feature_id": feature_id, "offset": offset})
     def create_workset(self, **params): return self._call("workset_create", params)
     def workset_status(self, handle): return self._call("workset_status", {"handle": handle})
     def start_batch_job(self, workset_handle, operation):

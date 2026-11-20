@@ -452,6 +452,7 @@ impl Tools {
                 "workset_status",
                 "measure",
                 "mass",
+                "surface_control_net",
                 "underlay_snap",
                 "underlay_objects",
                 "underlay_regions",
@@ -462,6 +463,10 @@ impl Tools {
             "measure" => return self.send("measure_faces", args, APPLY_PROGRAM_WAIT),
             // The answer waits for the program's evaluation, as a report does.
             "mass" => return self.send("mass", args, APPLY_PROGRAM_WAIT),
+            // The exact worker builds the surface, as a face measurement does.
+            "surface_control_net" => {
+                return self.send("surface_control_net", args, APPLY_PROGRAM_WAIT);
+            }
             "operations" => rename(&mut args, "operation", "name"),
             "workset_status" => rename(&mut args, "workset_handle", "handle"),
             "query" | "workset_create" => {

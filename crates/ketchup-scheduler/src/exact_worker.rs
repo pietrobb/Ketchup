@@ -53,6 +53,7 @@ type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
 mod cam_simulation;
 mod failure;
+mod graph_outputs;
 mod loft;
 mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
@@ -130,7 +131,10 @@ fn handle_request(
             input,
             result_fingerprint,
             output,
-        } => exact_brep_graph_step_response(backend, &input, &result_fingerprint, &output),
+        } => graph_outputs::step_response(backend, &input, &result_fingerprint, &output),
+        WorkerRequest::SurfaceControlNet(input) => {
+            graph_outputs::control_net_response(backend, &input)
+        }
         WorkerRequest::SimulateCam { graph, request } => {
             cam_simulation::cam_simulation_response(backend, &graph, &request)
         }
@@ -432,28 +436,6 @@ fn exact_brep_graph_volume_mesh_response(
         boundary_triangle_count: mesh.boundary_triangles.len() as u32,
         sha256: sha256_hex(&encoded),
         mesh_fingerprint: mesh.mesh_fingerprint,
-    }))
-}
-
-fn exact_brep_graph_step_response(
-    backend: &ExactBackend,
-    input: &GraphInput,
-    result_fingerprint: &str,
-    output_path: &Path,
-) -> WorkerResult {
-    validated_graph(&input.graph)?;
-    let sources = verified_exact_brep_graph_sources(&input.graph, &input.sources)?;
-    let output = evaluate_exact_brep_graph(backend, &input.graph, &sources)
-        .map_err(|error| geometry_failure(&error))?;
-    if output.body.result_fingerprint != result_fingerprint {
-        return Err(WorkerFailure::code("invalid_result"));
-    }
-    backend
-        .export_step(&output.body, utf8_path(output_path)?)
-        .map_err(|error| geometry_failure(&error))?;
-    Ok(WorkerReply::Exported(ExportReceipt {
-        result_fingerprint: output.body.result_fingerprint.clone(),
-        sha256: None,
     }))
 }
 

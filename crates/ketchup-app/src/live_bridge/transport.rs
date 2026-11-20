@@ -226,6 +226,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::ValidateProgram { .. }
         | Request::ProgramReport { .. }
         | Request::MeasureFaces { .. }
+        | Request::SurfaceControlNet { .. }
         | Request::Mass { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // A large document loads; imports and exports run the exact worker.
         Request::Import { path, .. } => ketchup_mcp::import_response_wait(path),
@@ -250,6 +251,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::Query { .. }
         | Request::Detail { .. }
         | Request::Mass { .. }
+        | Request::SurfaceControlNet { .. }
         | Request::WorksetStatus { .. }
         | Request::BatchJobStatus { .. }
         | Request::Program { .. }

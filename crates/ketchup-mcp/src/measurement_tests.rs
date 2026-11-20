@@ -68,6 +68,23 @@ fn measurement_schema_and_transport_preserve_both_modes_and_nested_paths() {
         received.recv().unwrap(),
         json!({"method":"mass","expected":stamp,"occurrence_ids":[4, 8]})
     );
+    // R1120ac-EXA-900: the control net a control-point move names its point by.
+    assert!(
+        schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("surface_control_net"))
+    );
+    let result = call(
+        &mut tools,
+        "inspect",
+        json!({"action":"surface_control_net", "definition_id":62, "feature_id":622, "offset":256}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"surface_control_net","definition_id":62,"feature_id":622,"offset":256})
+    );
 }
 
 #[test]

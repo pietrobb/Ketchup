@@ -1,6 +1,9 @@
-//! Read-only, batch-scoped exact collision queries. No result is canonical state.
+//! Read-only exact queries: batch-scoped collision queries and a surface's
+//! control net. No result is canonical state.
 use super::*;
-use crate::protocol::{GraphInput, PairMeasure, PairQuery, WorkerReply, WorkerRequest};
+use crate::protocol::{
+    GraphInput, PairMeasure, PairQuery, SurfaceControlNetWire, WorkerReply, WorkerRequest,
+};
 pub use ketchup_exact::{ExactPairQueryResult, ExactPairRelation};
 use ketchup_geometry::contact_patch::ContactPatch;
 
@@ -88,6 +91,37 @@ impl ExactWorkerSupervisor {
             .next()
             .ok_or_else(|| WorkerError::Protocol("missing exact face distance".to_owned()))?
             .map(|result| result.distance_mm)
+    }
+
+    /// The control net of the single-face surface `graph` makes, which a
+    /// control-point move names its point by (R1120ac-EXA-900). Its imported
+    /// sources come from `imported_source_blobs` (SHA-256 hex keys). A worker
+    /// that failed is replaced once and asked again.
+    pub fn surface_control_net(
+        &mut self,
+        graph: &ExactBRepGraph,
+        imported_source_blobs: &ketchup_model::persistence::Blobs,
+        cancelled: &AtomicBool,
+    ) -> Result<SurfaceControlNetWire, WorkerError> {
+        let sources = exact_brep_graph_sources_from_blobs(graph, imported_source_blobs)?;
+        let prepared = prepare_exact_brep_graph_sources(graph, &sources)?;
+        let source_paths = prepared.paths();
+        match self
+            .client
+            .surface_control_net_with_cancellation(graph, &source_paths, cancelled)
+        {
+            Err(error) if error.permits_restart() => {
+                self.client = Self::spawn_verified_client(
+                    &self.executable,
+                    &self.executable_sha256,
+                    self.client.memory_limit,
+                    cancelled,
+                )?;
+                self.client
+                    .surface_control_net_with_cancellation(graph, &source_paths, cancelled)
+            }
+            answer => answer,
+        }
     }
 
     fn query_pairs(
