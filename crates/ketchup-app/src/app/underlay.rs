@@ -100,9 +100,21 @@ pub(crate) struct ReadUnderlay {
     /// The GPU lines of `lines` and of the letters of its texts, laid out on the reading
     /// thread too.
     geometry: Arc<UnderlayGeometry>,
+    /// Where it is a later revision of an underlay: its comparison with it and the overlay
+    /// of the changes, made on the reading thread too.
+    revision: Option<Result<revision::RevisionWork, revision::RevisionOverlayError>>,
 }
 
 impl ReadUnderlay {
+    /// It, compared with `earlier` where it is a later revision of that underlay.
+    pub(crate) fn compared_with(mut self, earlier: Option<&revision::EarlierRevision>) -> Self {
+        if let Some(earlier) = earlier {
+            let work = revision::revision_work(earlier, &self);
+            self.revision = Some(work);
+        }
+        self
+    }
+
     /// What was read, for a bridge client: layers, lines and the first diagnostics.
     pub(crate) fn summary(&self) -> serde_json::Value {
         const LISTED: usize = 20;
@@ -163,6 +175,7 @@ pub(crate) fn read_underlay_file(
         lines,
         snaps,
         geometry,
+        revision: None,
     })
 }
 
@@ -250,10 +263,14 @@ impl KetchupApp {
         let origin = geo_origin(&self.document.current());
         // A revision is read in the code page of the underlay it revises, never in one the
         // user chose for it (review 2026-11-10 UL-400).
-        let inherited = self.file.activity.underlay.revision_of.is_some();
+        let revision_of = self.file.activity.underlay.revision_of;
+        let inherited = revision_of.is_some();
+        // Where it cannot be had, the revision is compared as it is added, and refused.
+        let earlier = revision_of.and_then(|of| self.earlier_revision(of).ok());
         let Some(context) = self.file.activity.context.clone() else {
             let cancel = CancelToken::default();
-            let result = read_underlay_file(&path, unit, origin, code_page, inherited, &cancel);
+            let result = read_underlay_file(&path, unit, origin, code_page, inherited, &cancel)
+                .map(|read| read.compared_with(earlier.as_ref()));
             self.finish_underlay_read(path, (unit, code_page), result);
             return;
         };
@@ -261,17 +278,16 @@ impl KetchupApp {
         let cancel = CancelToken::default();
         let (thread_path, thread_cancel) = (path.clone(), cancel.clone());
         std::thread::spawn(move || {
-            if sender
-                .send(read_underlay_file(
-                    &thread_path,
-                    unit,
-                    origin,
-                    code_page,
-                    inherited,
-                    &thread_cancel,
-                ))
-                .is_ok()
-            {
+            let result = read_underlay_file(
+                &thread_path,
+                unit,
+                origin,
+                code_page,
+                inherited,
+                &thread_cancel,
+            )
+            .map(|read| read.compared_with(earlier.as_ref()));
+            if sender.send(result).is_ok() {
                 context.request_repaint();
             }
         });
@@ -322,16 +338,19 @@ impl KetchupApp {
         (unit, code_page): (Option<ImportLengthUnit>, Option<DxfCodePage>),
         result: UnderlayReadResult,
     ) {
-        if let (Ok(read), Some(of)) = (&result, self.file.activity.underlay.revision_of) {
-            self.file.activity.underlay.revision_of = None;
-            if let Err(error) = self.add_revision_overlay(&path, read, of) {
-                self.digest = self.catalog.format(
-                    "digest-underlay-revision-refused",
-                    &BTreeMap::from([("reason", error.to_string())]),
-                );
+        let result = match (result, self.file.activity.underlay.revision_of) {
+            (Ok(read), Some(of)) => {
+                self.file.activity.underlay.revision_of = None;
+                if let Err(error) = self.add_revision_overlay(&path, read, of) {
+                    self.digest = self.catalog.format(
+                        "digest-underlay-revision-refused",
+                        &BTreeMap::from([("reason", error.to_string())]),
+                    );
+                }
+                return;
             }
-            return;
-        }
+            (result, _) => result,
+        };
         let result = match result {
             Ok(read) if code_page.is_none() => match code_page::doubted(&read) {
                 Some(doubted) => {

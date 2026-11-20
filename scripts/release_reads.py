@@ -119,6 +119,10 @@ REVIEWED = {
         "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.3": {
+        # Style comes only from comparing two revisions of a drawing, an answer never kept in
+        # a document; an edit's `DxfEditRefusal::ChangedInFile` never carries it (review
+        # 2026-11-10 og:R1110-UL-400).
+        "Difference": {"Style"},
         # `format_of` writes a document with a boundary surface as 115, a blend between two
         # surfaces as 118 and a moved control point of a surface as 119.
         "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},

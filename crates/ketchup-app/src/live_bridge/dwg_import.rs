@@ -19,8 +19,37 @@ use crate::app::skp_import::{SkpRead, is_skp_path, read_skp_file};
 use crate::app::underlay::revision::RevisionOverlayError;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
 use crate::delivery::Deliver;
+use ketchup_model::import::RevisionComparison;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_program::CancelToken;
+
+/// How many entities of each list a revision comparison answers with (review 2026-11-10
+/// og:R1110-UL-403: a renumbered plan's whole comparison made an answer of megabytes).
+/// Every entity of the lists is an object of the overlay on the layer of its list, so the
+/// rest is paged through `inspect underlay_objects` of the overlay by that layer.
+pub(super) const REVISION_ROWS: usize = 100;
+
+/// The counts of `comparison` and the first [`REVISION_ROWS`] entities of each list.
+fn revision_answer(comparison: &RevisionComparison) -> Value {
+    let first = |list: &[ketchup_model::import::RevisedEntity]| {
+        json!(&list[..list.len().min(REVISION_ROWS)])
+    };
+    let lists = [&comparison.changed, &comparison.added, &comparison.removed];
+    json!({
+        "counts": {
+            "changed": comparison.changed.len(),
+            "added": comparison.added.len(),
+            "removed": comparison.removed.len(),
+            "unchanged": comparison.unchanged,
+            "renumbered": comparison.renumbered,
+            "without_handle": comparison.without_handle,
+        },
+        "changed": first(&comparison.changed),
+        "added": first(&comparison.added),
+        "removed": first(&comparison.removed),
+        "listed_all": lists.iter().all(|list| list.len() <= REVISION_ROWS),
+    })
+}
 
 /// What the job's thread read.
 enum JobRead {
@@ -122,6 +151,15 @@ impl LiveBridge {
             }
         );
         let origin = ketchup_model::underlay::placement::geo_origin(&app.document.current());
+        // A later revision of an underlay is compared with it on the job's thread too.
+        let earlier = match &request {
+            Request::Import {
+                as_underlay: true,
+                revision_of: Some(of),
+                ..
+            } => app.earlier_revision(UnderlayId(*of)).ok(),
+            _ => None,
+        };
         let exact = (!as_underlay && matches!(format, ImportFormat::Step | ImportFormat::Iges))
             .then(|| app.exact_worker_executable());
         let (thread, reason) = import_job_names(format, as_underlay);
@@ -140,14 +178,17 @@ impl LiveBridge {
                         worker_cancel.flag(),
                     ))
                 } else if as_underlay {
-                    JobRead::Underlay(Box::new(read_underlay_file(
-                        &path,
-                        unit,
-                        origin,
-                        code_page,
-                        code_page_inherited,
-                        &worker_cancel,
-                    )))
+                    JobRead::Underlay(Box::new(
+                        read_underlay_file(
+                            &path,
+                            unit,
+                            origin,
+                            code_page,
+                            code_page_inherited,
+                            &worker_cancel,
+                        )
+                        .map(|read| read.compared_with(earlier.as_ref())),
+                    ))
                 } else if is_skp_path(&path) {
                     JobRead::Skp(read_skp_file(&path, &worker_cancel))
                 } else {
@@ -329,7 +370,7 @@ impl LiveBridge {
             // `import as_underlay revision_of`: the drawing read compared with the underlay
             // as its later revision, and the overlay of what changed added on it.
             let (overlay, comparison) = app
-                .add_revision_overlay(Path::new(&path), &read, UnderlayId(*of))
+                .add_revision_overlay(Path::new(&path), read, UnderlayId(*of))
                 .map_err(|error| {
                     let code = match &error {
                         RevisionOverlayError::NotFound(..) => "entity_not_found",
@@ -339,8 +380,14 @@ impl LiveBridge {
                     };
                     failed_because(code, error)
                 })?;
+            let overlay_layers = json!({
+                "changed": app.catalog.text("underlay-revision-changed"),
+                "added": app.catalog.text("underlay-revision-added"),
+                "removed": app.catalog.text("underlay-revision-removed"),
+            });
             return Ok(json!({"compared": true, "path": path, "revision_of": of,
-                "overlay_underlay_id": overlay.map(|id| id.0), "comparison": comparison,
+                "overlay_underlay_id": overlay.map(|id| id.0),
+                "comparison": revision_answer(&comparison), "overlay_layers": overlay_layers,
                 "dirty": app.is_dirty()}));
         }
         let mut summary = read.summary();
