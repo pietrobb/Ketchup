@@ -2380,6 +2380,7 @@ drawings-storey-same-floor = Storey { $storey } of the table has the finished fl
 drawings-storey-outside-model = Storey { $storey } of the table, its finished floor at { $floor } mm, lies under the model or over its top, so its plan would cut nothing. Correct or remove the row; the drawings were not written.
 drawings-storey-thick-build-up = Storey { $storey } of the table has its finished floor at { $floor } mm, more than { $most } mm over its structure at { $structural } mm, which is a storey's height, not a floor build-up. Correct the row if the model is right.
 drawings-storey-no-floor-in-model = Storey { $storey } of the table has its finished floor at { $floor } mm on its structure at { $structural } mm, but the model has no face to stand on (looking up, with no solid lying on it) from { $near } mm under the structure up to the floor, so the sheets mark the table's levels, not the model's. Correct the row if the model is right.
+drawings-storey-not-in-table = The model has a storey on its floor at { $floor } mm that no row of the table covers, so it has no plan and ±0,000 may be on the wrong floor. Add a row for it if the model is right.
 drawings-zero-altitude = ±0.000 above sea level
 drawings-zero-altitude-none = Not written
 drawings-north = North, ° counter-clockwise from +Y

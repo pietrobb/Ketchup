@@ -1,3 +1,4 @@
+pub use ketchup_analysis::fea::FeaConvergenceJudgement;
 use ketchup_analysis::fea::{FeaError, FeaModel, FeaSolveSettings};
 use ketchup_model::document::{DefinitionId, FeatureId, Snapshot};
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
@@ -79,10 +80,9 @@ pub struct FeaReviewSummary {
     pub units: &'static str,
     pub solver_version: &'static str,
     pub levels: Vec<FeaMeshLevelSummary>,
-    pub final_displacement_relative_change: f64,
-    pub final_energy_relative_change: f64,
+    /// The finest level against the one before (og:R1119og-FEA-803).
+    pub judgement: FeaConvergenceJudgement,
     pub required_relative_tolerance: f64,
-    pub converged: bool,
     pub all_levels_within_declared_limits: bool,
     pub excluded_physics: [&'static str; 5],
     /// The natural frequencies of the finest mesh, when the study asked.
@@ -182,6 +182,7 @@ impl FeaReviewWorkflow {
             &levels,
             request.solve_settings,
             request.mode_count,
+            cancelled,
         )
     }
 
@@ -265,6 +266,7 @@ impl FeaReviewWorkflow {
             &levels,
             request.solve_settings,
             request.mode_count,
+            cancelled,
         )
     }
 
@@ -308,6 +310,7 @@ fn conclude(
     levels: &[StudyLevel],
     settings: FeaSolveSettings,
     mode_count: usize,
+    cancelled: &AtomicBool,
 ) -> Result<FeaReviewSummary, FeaReviewError> {
     if levels.windows(2).any(|pair| {
         pair[1].model.elements.len() <= pair[0].model.elements.len()
@@ -317,27 +320,29 @@ fn conclude(
     }
     let solutions = levels
         .iter()
-        .map(|level| level.model.solve(settings).map_err(FeaReviewError::Solve))
+        .map(|level| {
+            level
+                .model
+                .solve_with_cancellation(settings, cancelled)
+                .map_err(FeaReviewError::Solve)
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let [.., previous, final_solution] = solutions.as_slice() else {
+    let ([.., previous_level, finest_level], [.., previous, final_solution]) =
+        (levels, solutions.as_slice())
+    else {
         return Err(FeaReviewError::InvalidRefinementLevels);
     };
-    let final_displacement_relative_change = relative_change(
-        previous.maximum_displacement_mm,
-        final_solution.maximum_displacement_mm,
+    let judgement = FeaConvergenceJudgement::between(
+        (previous, previous_level.model.elements.len()),
+        (final_solution, finest_level.model.elements.len()),
+        settings.convergence_relative_tolerance,
     );
-    let final_energy_relative_change = relative_change(
-        previous.total_strain_energy_n_mm,
-        final_solution.total_strain_energy_n_mm,
-    );
-    let converged = final_displacement_relative_change <= settings.convergence_relative_tolerance
-        && final_energy_relative_change <= settings.convergence_relative_tolerance;
-    let modes = match (mode_count, levels.last()) {
-        (0, _) | (_, None) => None,
-        (count, Some(finest)) => {
-            let found = finest
+    let modes = match mode_count {
+        0 => None,
+        count => {
+            let found = finest_level
                 .model
-                .modes(settings, count)
+                .modes_with_cancellation(settings, count, cancelled)
                 .map_err(FeaReviewError::Solve)?;
             Some(FeaModalSummary {
                 solver_version: found.solver_version,
@@ -381,8 +386,7 @@ fn conclude(
             .iter()
             .map(|level| level.mesh_fingerprint.as_str())
             .collect::<Vec<_>>(),
-        final_displacement_relative_change,
-        final_energy_relative_change,
+        &judgement,
         modes.as_ref(),
     );
     Ok(FeaReviewSummary {
@@ -395,10 +399,8 @@ fn conclude(
         units: "mm,N,MPa",
         solver_version: final_solution.solver_version,
         levels: summaries,
-        final_displacement_relative_change,
-        final_energy_relative_change,
+        judgement,
         required_relative_tolerance: settings.convergence_relative_tolerance,
-        converged,
         all_levels_within_declared_limits,
         excluded_physics: final_solution.validity.excluded_physics,
         modes,
@@ -465,8 +467,7 @@ fn review_digest(
     graph_digest: &str,
     case_id: &str,
     mesh_fingerprints: &[&str],
-    displacement_change: f64,
-    energy_change: f64,
+    judgement: &FeaConvergenceJudgement,
     modes: Option<&FeaModalSummary>,
 ) -> String {
     let mut bytes = Vec::new();
@@ -478,8 +479,13 @@ fn review_digest(
     {
         push_prefixed(&mut bytes, value.as_bytes());
     }
-    bytes.extend_from_slice(&displacement_change.to_bits().to_le_bytes());
-    bytes.extend_from_slice(&energy_change.to_bits().to_le_bytes());
+    for change in [
+        judgement.final_displacement_relative_change,
+        judgement.final_energy_relative_change,
+        judgement.final_stress_relative_change,
+    ] {
+        bytes.extend_from_slice(&change.to_bits().to_le_bytes());
+    }
     // A study without modes keeps the digest it had before modes existed.
     if let Some(modes) = modes {
         let values = modes

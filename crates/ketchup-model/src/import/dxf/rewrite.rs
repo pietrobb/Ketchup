@@ -12,6 +12,7 @@ use std::io::Cursor;
 use std::ops::Range;
 
 mod compare;
+mod drawn;
 mod refusal;
 mod revisions;
 
@@ -739,6 +740,8 @@ struct Drawing<'a> {
     /// finding the entities of many objects is not quadratic (review 2026-11-04 r19
     /// CD-162).
     by_handle: BTreeMap<u64, Option<usize>>,
+    /// The first pair of the ENTITIES section past its name.
+    entities_start: usize,
     /// The pair `ENDSEC` closing the ENTITIES section.
     entities_end: usize,
     /// The value pair of `$HANDSEED`.
@@ -751,6 +754,8 @@ struct Drawing<'a> {
     lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
+    /// Whether its entities may be transparent (group 440): DXF 2010 or later.
+    transparency: bool,
     /// Whether what it is written with beyond ASCII is then escaped `\U+XXXX`
     /// ([`escaped_beyond_ascii`]).
     escapes: bool,
@@ -817,6 +822,13 @@ struct NewBlocks {
     next_dimension: u64,
 }
 
+/// The entities the edits add: those drawn under the drawing's own and those over them.
+#[derive(Default)]
+struct Added {
+    under: Vec<u8>,
+    over: Vec<u8>,
+}
+
 impl<'a> Drawing<'a> {
     fn parse(source: &'a [u8], encoding: Option<CodePage>) -> Result<Self, EditedDxfError> {
         let pairs = pairs(source)?;
@@ -843,12 +855,14 @@ impl<'a> Drawing<'a> {
             pairs: Vec::new(),
             entities: Vec::new(),
             by_handle: BTreeMap::new(),
+            entities_start: 0,
             entities_end: 0,
             handseed: None,
             next_handle: None,
             subclassed: false,
             lightweight: false,
             utf8: false,
+            transparency: false,
             escapes: false,
             code_page: encoding,
             code_page_value: None,
@@ -978,6 +992,7 @@ impl<'a> Drawing<'a> {
         drawing.subclassed = version.as_slice() >= b"AC1012".as_slice();
         drawing.lightweight = version.as_slice() >= b"AC1014".as_slice();
         drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
+        drawing.transparency = version.as_slice() >= b"AC1024".as_slice();
         drawing.owner = drawing.entities.iter().find_map(|entity| {
             let record =
                 &pairs[entity.pairs.start..entity.records.get(1).map_or(entity.pairs.end, |r| r.0)];
@@ -1016,6 +1031,7 @@ impl<'a> Drawing<'a> {
     ) -> Result<usize, EditedDxfError> {
         let value = |pair: &Pair| self.source[pair.value()].trim_ascii();
         let name = |pair: &Pair| String::from_utf8_lossy(value(pair)).to_ascii_uppercase();
+        self.entities_start = index;
         let mut current: Option<Entity> = None;
         while index < pairs.len() {
             let pair = &pairs[index];
@@ -1265,8 +1281,9 @@ impl<'a> Drawing<'a> {
         Ok(self.spliced(handles, objects_edits, &removed, replaced, added, blocks))
     }
 
-    /// The objects `edits` adds, copied or drawn, as entities written at the end of the
-    /// ENTITIES section.
+    /// The objects `edits` adds, copied or drawn, as entities: the fills drawn, written at
+    /// the start of the ENTITIES section so they lie under the drawing's lines, and the rest,
+    /// written at its end.
     fn added_objects(
         &self,
         read: &ReadObjects,
@@ -1275,8 +1292,8 @@ impl<'a> Drawing<'a> {
         removed: &BTreeSet<u64>,
         handles: &mut Option<u64>,
         blocks: &mut NewBlocks,
-    ) -> Result<Vec<u8>, EditedDxfError> {
-        let mut added = Vec::new();
+    ) -> Result<Added, EditedDxfError> {
+        let mut added = Added::default();
         for (edit, first) in edits.added.iter().zip(added_ids(read.objects, edits)) {
             if edits.removed_objects.contains(&first) {
                 continue;
@@ -1291,28 +1308,36 @@ impl<'a> Drawing<'a> {
                         vertices_minus_z: false,
                         follows: false,
                     };
-                    added.extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
+                    added
+                        .over
+                        .extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
                 }
                 AddedObject::Drawn { layer, shape } => {
-                    added.extend(self.drawn(layer, shape, frame, handles)?);
+                    let drawn = self.drawn(layer, shape, frame, handles)?;
+                    if matches!(shape, DrawnShape::Hatch { .. }) {
+                        added.under.extend(drawn);
+                    } else {
+                        added.over.extend(drawn);
+                    }
                 }
             }
         }
         Ok(added)
     }
 
-    /// The drawing with each entity `replaced` (left out where `None`), `added` after the
-    /// last entity, the new blocks and their records, and the handle seed past `handles`.
+    /// The drawing with each entity `replaced` (left out where `None`), `added` before the
+    /// first entity and after the last, the new blocks and their records, and the handle
+    /// seed past `handles`.
     fn spliced(
         &self,
         handles: Option<u64>,
         objects_edits: ObjectEdits,
         removed: &BTreeSet<u64>,
         replaced: Vec<Option<Option<Vec<u8>>>>,
-        added: Vec<u8>,
+        added: Added,
         blocks: NewBlocks,
     ) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.source.len() + added.len());
+        let mut out = Vec::with_capacity(self.source.len() + added.under.len() + added.over.len());
         let mut copied = 0;
         let mut splice = |out: &mut Vec<u8>, range: Range<usize>, with: &[u8]| {
             out.extend_from_slice(&self.source[copied..range.start]);
@@ -1336,6 +1361,10 @@ impl<'a> Drawing<'a> {
         }
         edits_at.extend(objects_edits);
         edits_at.extend(self.blocks_without(removed));
+        // Before the first entity's own edit, which starts where it goes in: the sort below
+        // keeps the order of edits starting at one place.
+        let start = self.pairs[self.entities_start].start();
+        edits_at.push((start..start, added.under));
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -1344,7 +1373,7 @@ impl<'a> Drawing<'a> {
             }
         }
         let end = self.pairs[self.entities_end].start();
-        edits_at.push((end..end, added));
+        edits_at.push((end..end, added.over));
         // A dimension's block is found only in the BLOCKS section, so when blocks were
         // added there is one.
         if let Some(index) = self.blocks_end
@@ -2427,201 +2456,6 @@ impl<'a> Drawing<'a> {
                 None => out.extend_from_slice(&self.source[pair.start()..pair.end()]),
             }
         }
-    }
-
-    /// The entity of `shape`, drawn on `layer`, in the drawing's units.
-    fn drawn(
-        &self,
-        layer: &str,
-        shape: &DrawnShape,
-        frame: &Frame,
-        handles: &mut Option<u64>,
-    ) -> Result<Vec<u8>, DxfEditRefusal> {
-        let mut out = Vec::new();
-        let mut pair = |code: i32, value: &[u8]| {
-            out.extend_from_slice(format!("{code:>3}").as_bytes());
-            out.extend_from_slice(self.eol);
-            out.extend_from_slice(value);
-            out.extend_from_slice(self.eol);
-        };
-        let layer_bytes = self
-            .layers
-            .iter()
-            .find(|(name, _)| name == layer)
-            .map_or_else(|| self.name(layer), |(_, raw)| raw.clone());
-        // The record's head, owned by `owner`; the handle it took.
-        let owned_head = |pair: &mut dyn FnMut(i32, &[u8]),
-                          kind: &str,
-                          handles: &mut Option<u64>,
-                          owner: Option<&[u8]>| {
-            pair(0, kind.as_bytes());
-            let handle = take_handle(handles);
-            if let Some(handle) = handle {
-                pair(5, format!("{handle:X}").as_bytes());
-            }
-            if self.subclassed {
-                if let Some(owner) = owner {
-                    pair(330, owner);
-                }
-                pair(100, b"AcDbEntity");
-            }
-            pair(8, &layer_bytes);
-            handle
-        };
-        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
-            owned_head(pair, kind, handles, self.owner.as_deref());
-        };
-        let subclass = |pair: &mut dyn FnMut(i32, &[u8]), name: &str| {
-            if self.subclassed {
-                pair(100, name.as_bytes());
-            }
-        };
-        let point = |pair: &mut dyn FnMut(i32, &[u8]), code: i32, at: [f64; 2]| {
-            let [x, y] = frame.point(at);
-            pair(code, number(x).as_bytes());
-            pair(code + 10, number(y).as_bytes());
-            pair(code + 20, b"0");
-        };
-        let length = |value: f64| number(value / frame.mm_per_unit);
-        match shape {
-            DrawnShape::Polyline { points_mm, closed } if points_mm.len() == 2 && !closed => {
-                head(&mut pair, "LINE", handles);
-                subclass(&mut pair, "AcDbLine");
-                point(&mut pair, 10, points_mm[0]);
-                point(&mut pair, 11, points_mm[1]);
-            }
-            DrawnShape::Polyline { points_mm, closed } if self.lightweight => {
-                head(&mut pair, "LWPOLYLINE", handles);
-                subclass(&mut pair, "AcDbPolyline");
-                pair(90, points_mm.len().to_string().as_bytes());
-                pair(70, if *closed { b"1" } else { b"0" });
-                for at in points_mm {
-                    let [x, y] = frame.point(*at);
-                    pair(10, number(x).as_bytes());
-                    pair(20, number(y).as_bytes());
-                }
-            }
-            DrawnShape::Polyline { points_mm, closed } => {
-                // DXF 12, or 13, which marks its records as subclasses.
-                let polyline = owned_head(&mut pair, "POLYLINE", handles, self.owner.as_deref());
-                subclass(&mut pair, "AcDb2dPolyline");
-                pair(66, b"1");
-                pair(70, if *closed { b"1" } else { b"0" });
-                point(
-                    &mut pair,
-                    10,
-                    [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
-                );
-                let owner = polyline.map(|handle| format!("{handle:X}").into_bytes());
-                for at in points_mm {
-                    owned_head(&mut pair, "VERTEX", handles, owner.as_deref());
-                    subclass(&mut pair, "AcDbVertex");
-                    subclass(&mut pair, "AcDb2dVertex");
-                    point(&mut pair, 10, *at);
-                }
-                owned_head(&mut pair, "SEQEND", handles, owner.as_deref());
-            }
-            DrawnShape::Arc {
-                center_mm,
-                radius_mm,
-                start_deg,
-                end_deg,
-            } => {
-                head(&mut pair, "ARC", handles);
-                subclass(&mut pair, "AcDbCircle");
-                point(&mut pair, 10, *center_mm);
-                pair(40, length(*radius_mm).as_bytes());
-                subclass(&mut pair, "AcDbArc");
-                // A whole turn is `0 / 360`, not `0 / 0` (review 2026-11-08 UL-241).
-                let (start_deg, end_deg) = arc_angles(*start_deg, *end_deg, 360.0);
-                pair(50, number(start_deg).as_bytes());
-                pair(51, number(end_deg).as_bytes());
-            }
-            DrawnShape::Circle {
-                center_mm,
-                radius_mm,
-            } => {
-                head(&mut pair, "CIRCLE", handles);
-                subclass(&mut pair, "AcDbCircle");
-                point(&mut pair, 10, *center_mm);
-                pair(40, length(*radius_mm).as_bytes());
-            }
-            DrawnShape::Text {
-                anchor_mm,
-                height_mm,
-                rotation_deg,
-                text,
-            } => {
-                let characters = self.text_characters(text);
-                let rotation = number(rotation_deg.rem_euclid(360.0));
-                if characters <= super::MAX_DXF_LINE_CHARS {
-                    head(&mut pair, "TEXT", handles);
-                    subclass(&mut pair, "AcDbText");
-                    point(&mut pair, 10, *anchor_mm);
-                    pair(40, length(*height_mm).as_bytes());
-                    pair(1, &self.text(text));
-                    pair(50, rotation.as_bytes());
-                    subclass(&mut pair, "AcDbText");
-                } else if self.subclassed {
-                    // Too long for a TEXT's one line: an MTEXT, which the line limit cuts
-                    // into pieces (review 2026-11-07 r26 UL-240), from its bottom left.
-                    head(&mut pair, "MTEXT", handles);
-                    subclass(&mut pair, "AcDbMText");
-                    point(&mut pair, 10, *anchor_mm);
-                    pair(40, length(*height_mm).as_bytes());
-                    pair(71, b"7");
-                    pair(72, b"1");
-                    pair(1, &self.mtext(text));
-                    pair(50, rotation.as_bytes());
-                } else {
-                    return Err(DxfEditRefusal::DrawnTextTooLong {
-                        starts: text.chars().take(20).collect(),
-                        characters,
-                        written: None,
-                    });
-                }
-            }
-            // DXF 12 has no HATCH: the fill is refused rather than left out.
-            DrawnShape::Hatch { .. } if !self.subclassed => {
-                return Err(DxfEditRefusal::DrawnHatchInDxf12 {
-                    layer: layer.to_owned(),
-                });
-            }
-            DrawnShape::Hatch { rings_mm } => {
-                // A solid, not associative fill of polyline paths, the first outermost.
-                head(&mut pair, "HATCH", handles);
-                subclass(&mut pair, "AcDbHatch");
-                point(
-                    &mut pair,
-                    10,
-                    [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
-                );
-                pair(210, b"0");
-                pair(220, b"0");
-                pair(230, b"1");
-                pair(2, b"SOLID");
-                pair(70, b"1");
-                pair(71, b"0");
-                pair(91, rings_mm.len().to_string().as_bytes());
-                for (at, ring) in rings_mm.iter().enumerate() {
-                    // Polyline (2), the first also external (1) and outermost (16).
-                    pair(92, if at == 0 { b"19" } else { b"2" });
-                    pair(72, b"0");
-                    pair(73, b"1");
-                    pair(93, ring.len().to_string().as_bytes());
-                    for corner in ring {
-                        let [x, y] = frame.point(*corner);
-                        pair(10, number(x).as_bytes());
-                        pair(20, number(y).as_bytes());
-                    }
-                    pair(97, b"0");
-                }
-                pair(75, b"0");
-                pair(76, b"1");
-                pair(98, b"0");
-            }
-        }
-        Ok(out)
     }
 
     /// How many characters `text` is as [`Self::text`] writes it, as it is read (and

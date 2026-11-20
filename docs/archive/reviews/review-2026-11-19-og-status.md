@@ -22,7 +22,7 @@ They overrule every older finding they touch.
 | 1. R1119og-MF-801, MF-804: G-code without tool length compensation | Fixed in #127: every dialect writes the safe header (G40 G49 G80 G94) and G43 H with the tool's length offset before the first cut |
 | 2. R1119og-FEA-800: a face joint in an assembly is a rigid plate | Fixed in #128: a bonded joint ties only the part where the faces overlap (node to node or node to face), a rigid spider only for an explicit bolt, faces that do not touch are refused; two 1000×50×50 layers bonded by a face bend 0.342 mm at the end |
 | 3. R1119og-PG-800, PG-801: bracing anchorage without buckling and without a diaphragm | Fixed in #129: the anchorage path starts at the member (EA/L of the brace, buckling over its length, the stiffness of both connections) and a diaphragm is checked for every anchor |
-| 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Open |
+| 4. og:R1110-PG-402, R1119og-PG-802: the structural calculation for the authority | Fixed in #130: the calculation opens with the overall verdict and the exit code of the command line and a warnings section listing every error and warning of the report; a lost load no longer leaves "Vyhovuje" alone; only the braces the check counted are listed, each with C and F_cap of its path to the ground |
 | 5. R1119og-MF-800, MF-803: drilling does not pass through the part | Fixed in #131: a drill has a point angle (saved in format 120); a through hole is drilled past its exit until the full diameter is out, limited by the stock and the workholding, without the axial allowance; the exact CAM simulation sweeps a drill's cone and a ball end mill's ball instead of a flat cylinder, so the stock left in a blind hole's cone is counted; tests compare residual and gouge volumes with the analytic values |
 
 ## 2. Policy for an AI
@@ -44,8 +44,8 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 11. R1119og-EXA-801, CI-807: the nightly Windows run is red | Open |
-| 12. CI-407, CI-808: rerun and a flaky Connect test | Open |
+| 11. R1119og-EXA-801, CI-807: the nightly Windows run is red | Fixed in #136: the cause was runner load, not code (the panel test took 19 s on the last green nightly and 35 s on the red one beside three other house tests); the panel check runs as its own nightly step on one thread, `perf_*` budgets scale with the runner's measured speed, and a red scheduled run opens an issue |
+| 12. CI-407, CI-808: rerun and a flaky Connect test | Fixed in #136: GitHub refuses to rerun run 42661783930 (too old, HTTP 403); all its jobs and the checks of its commit are green, and the next nightly covers it. The Connect test gives one fixed AI set-up row and waits for it before the click, so rows arriving between frames no longer move the button |
 
 ## 5. Drawings for the authority
 
@@ -54,7 +54,7 @@ They overrule every older finding they touch.
 | 13. og:R1110r2-MF-500, MF-501: storeys | Fixed in #135: without a storey table the plans and level marks use the same floors as `ModelFloors::table`, found on the export's thread; a lining under a floor structure is no longer a storey, so the test house with its ceiling 2700–2954 gets its upper plan on 2954 cut at 4154 and no +2,512 level; a storey of the model no table row covers is reported (`not_in_table`, a warning in the window) |
 | 14. og:R1110-CD-404, UO-406: rooms in DXF | Fixed in #139: room fills are a light grey of their own (ACI 254), written first so the architect's lines and the room names lie over them, and from DXF 2010 on 60 % transparent (group 440); names and areas keep the colour of the rooms' layer; a room point on a line of its region (within 1 mm) is refused |
 | 15. og:R1110-MF-404: DXF 2013 sheets | Fixed in #138: a section's cutting line uses the `CENTER` linetype; black fills and pens of the marks are ByLayer instead of RGB 0, so they show on a dark screen; the `Standard` text style is Arial (TrueType); dimensions and level marks as DIMENSION entities stay for later, as the fix list says |
-| 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Open |
+| 16. og:R1110-PG-403 to PG-410: texts of the structural and thermal calculation | Fixed in #145: only the highest row of the governing check says it governs; glulam cites k_h by 3.3 (3.2) and u_inst no longer cites (2.2); a column has no lateral torsional buckling text and `brace()` on it says a column's bracing is not used; the site line is in Slovak or Czech; a thermal failure prints "<" only where f_Rsi fails; the Slovak requirement is U_N (R_N on the ground); a site below sea level names the altitude 0 its s_k uses |
 | 17. R1119og-MF-805: hole callouts | Fixed in #137: a tapped hole whose bottom the part does not show keeps its drilled depth (`M8 THREAD DEPTH 12 mm; BORE Ø6.8 mm CYLINDRICAL DEPTH 20 mm`), a coarse thread is named by its size alone, and callouts are written in the sheets' language (English, Czech, Slovak) with its decimal sign |
 
 ## 6. Workshop, import, modelling
@@ -71,7 +71,7 @@ They overrule every older finding they touch.
 
 | Point | Status |
 |---|---|
-| 23. og:R1110-UL-400 to UL-403 | Open |
+| 23. og:R1110-UL-400 to UL-403 | Fixed in #147: a revision that only changes an entity's color, linetype or lineweight, a text's color or its layer's color reports it changed (`Style`) (UL-400); entities the later revision draws alike in the same place under a new handle, as ArchiCAD, Revit and Allplan export them, count as renumbered, not removed and added, and drawings of which one has no handles are refused with the reason (UL-401); the comparison runs on the reading thread, not the window's (UL-402); the MCP answer carries the counts and the first 100 entities of each list, the rest is paged through `inspect underlay_objects` of the overlay by layer (UL-403) |
 
 ## 8. FEA, the rest
 

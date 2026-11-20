@@ -264,6 +264,116 @@ fn a_solid_block_weighs_its_density_times_its_volume() {
     );
 }
 
+/// Every count from one to `MAX_FEA_MODES` misses no axial or bending mode
+/// below the highest frequency it returns (review 2026-11-19 og:R1119og-FEA-801:
+/// a subspace without a component of a mode never finds it, and the next one
+/// up takes its place).
+#[test]
+fn no_count_skips_a_mode_below_the_highest_one_it_returns() {
+    let section = rectangle(20.0, 40.0);
+    let wave_speed = (YOUNG_MPA / DENSITY_T_PER_MM3).sqrt();
+    let roots = [
+        1.875_104_068_711_961,
+        4.694_091_132_974_175,
+        7.854_757_438_237_613,
+        10.995_540_734_875_467,
+        14.137_168_391_046_47,
+    ];
+    let mut expected = (1..=3)
+        .map(|wave| (2.0 * count(wave) - 1.0) * wave_speed / (4.0 * LENGTH_MM))
+        .collect::<Vec<_>>();
+    for root in roots {
+        expected.push(bending_hz(root, section.second_moment_y_mm4));
+        expected.push(bending_hz(root, section.second_moment_z_mm4));
+    }
+    let model = cantilever(40);
+    for wanted in [1, 2, 5, 10, 11, 12, 16, 20, 24, 30] {
+        let modes = model
+            .modes(FeaSolveSettings::default(), wanted)
+            .unwrap_or_else(|error| panic!("{wanted} modes: {error:?}"));
+        let highest = modes.modes.last().unwrap().frequency_hz;
+        for frequency in expected
+            .iter()
+            .filter(|frequency| **frequency < 0.99 * highest)
+        {
+            assert!(
+                modes
+                    .modes
+                    .iter()
+                    .any(|mode| relative(mode.frequency_hz, *frequency) <= 0.01),
+                "{wanted} modes up to {highest} Hz miss the one at {frequency} Hz"
+            );
+        }
+    }
+}
+
+/// A 1000 × 50 × 100 mm cantilever of 1920 tetrahedra: the starting vectors of
+/// its neighbouring unknowns all turn into the first bending shape, and the
+/// iteration must still find every requested mode (og:R1119og-FEA-802).
+#[test]
+fn a_slender_solid_cantilever_finds_every_requested_mode() {
+    let cells = [40, 2, 4];
+    let size = [1_000.0, 50.0, 100.0];
+    let index = |[x, y, z]: [usize; 3]| (z * (cells[1] + 1) + y) * (cells[0] + 1) + x;
+    let mut nodes = Vec::new();
+    for z in 0..=cells[2] {
+        for y in 0..=cells[1] {
+            for x in 0..=cells[0] {
+                let at = [x, y, z];
+                nodes.push(FeaNode {
+                    position_mm: [0, 1, 2]
+                        .map(|axis| size[axis] * count(at[axis]) / count(cells[axis])),
+                });
+            }
+        }
+    }
+    // Six tetrahedra around each cell's diagonal; neighbouring cells share faces.
+    let paths = [[1, 2], [1, 4], [2, 1], [2, 4], [4, 1], [4, 2]];
+    let mut elements = Vec::new();
+    for z in 0..cells[2] {
+        for y in 0..cells[1] {
+            for x in 0..cells[0] {
+                let corner = |bits: usize| {
+                    index([x + (bits & 1), y + ((bits >> 1) & 1), z + ((bits >> 2) & 1)])
+                };
+                for [first, second] in paths {
+                    elements.push(FeaElement {
+                        id: u64::try_from(elements.len()).unwrap() + 1,
+                        kind: FeaElementKind::LinearTetrahedron4 {
+                            nodes: [corner(0), corner(first), corner(first | second), corner(7)],
+                            material_id: 1,
+                        },
+                    });
+                }
+            }
+        }
+    }
+    assert_eq!(elements.len(), 1_920);
+    let constraints = (0..nodes.len())
+        .filter(|node| node % (cells[0] + 1) == 0)
+        .map(FeaConstraint::held)
+        .collect();
+    let model = model(nodes, elements, constraints);
+    for wanted in [4, 6, 8, 10, 14] {
+        let modes = model
+            .modes(FeaSolveSettings::default(), wanted)
+            .unwrap_or_else(|error| panic!("{wanted} modes: {error:?}"));
+        assert_eq!(modes.modes.len(), wanted);
+        assert!(
+            modes
+                .modes
+                .windows(2)
+                .all(|pair| pair[0].frequency_hz <= pair[1].frequency_hz)
+        );
+        assert!(
+            modes
+                .modes
+                .iter()
+                .all(|mode| mode.relative_residual <= 1.0e-8)
+        );
+    }
+}
+
 #[test]
 fn modes_without_a_density_or_with_a_bad_count_are_refused() {
     let mut no_density = cantilever(4);

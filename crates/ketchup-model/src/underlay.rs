@@ -135,6 +135,12 @@ impl LayerLines {
         &self.fills
     }
 
+    /// The index of each polyline's style in [`UnderlayLines::style`].
+    #[must_use]
+    pub fn polyline_styles(&self) -> &[u32] {
+        &self.styles
+    }
+
     /// Every polyline with the index of its style.
     pub fn styled_polylines(&self) -> impl Iterator<Item = (u32, &[[f64; 2]])> {
         self.styles.iter().copied().zip(self.polylines())

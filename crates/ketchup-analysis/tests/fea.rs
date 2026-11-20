@@ -1,7 +1,8 @@
 use ketchup_analysis::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaConvergenceError, FeaElement, FeaElementKind, FeaError,
     FeaLoad, FeaMaterial, FeaModel, FeaNode, FeaSolveSettings, MAX_FEA_CONSTRAINTS,
-    MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, solve_convergence_study,
+    MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, MIN_FEA_REFINEMENT_RATIO,
+    solve_convergence_study,
 };
 
 const YOUNG_MPA: f64 = 200_000.0;
@@ -139,10 +140,40 @@ fn refined_axial_bar_produces_explicit_convergence_evidence() {
     let evidence = solve_convergence_study(&levels, FeaSolveSettings::default()).unwrap();
 
     assert_eq!(evidence.levels.len(), 3);
-    assert!(evidence.converged);
-    assert!(evidence.final_displacement_relative_change < 1.0e-12);
-    assert!(evidence.final_energy_relative_change < 1.0e-12);
+    assert!(evidence.judgement.converged);
+    assert!(evidence.judgement.final_displacement_relative_change < 1.0e-12);
+    assert!(evidence.judgement.final_energy_relative_change < 1.0e-12);
+    assert_eq!(evidence.judgement.final_refinement_ratio, 4.0);
     assert_eq!(evidence.levels[2].element_count, 8);
+}
+
+/// Review 2026-11-19 og FEA-803: from one level to one hardly finer the results barely
+/// change whatever their error, so a study whose last level is not at least twice as
+/// fine has not shown convergence, however small the change.
+#[test]
+fn a_barely_finer_last_level_does_not_show_convergence() {
+    let levels = [axial_bar(20, 10_000.0), axial_bar(21, 10_000.0)];
+    let evidence = solve_convergence_study(&levels, FeaSolveSettings::default()).unwrap();
+
+    assert!(evidence.judgement.final_displacement_relative_change < 1.0e-12);
+    assert!(evidence.judgement.final_refinement_ratio < MIN_FEA_REFINEMENT_RATIO);
+    assert!(!evidence.judgement.converged);
+}
+
+/// Review 2026-11-19 og FEA-806: a set cancellation flag stops the solve instead of
+/// letting it run to the end.
+#[test]
+fn a_set_cancellation_flag_stops_the_solve() {
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(
+        axial_bar(8, 10_000.0).solve_with_cancellation(FeaSolveSettings::default(), &cancelled),
+        Err(FeaError::Cancelled)
+    );
+    assert!(
+        axial_bar(8, 10_000.0)
+            .solve_with_cancellation(FeaSolveSettings::default(), &Default::default())
+            .is_ok()
+    );
 }
 
 #[test]

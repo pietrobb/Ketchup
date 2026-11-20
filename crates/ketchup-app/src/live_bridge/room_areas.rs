@@ -14,6 +14,8 @@ use ketchup_model::underlay::drawn::DrawnShape;
 const DEFAULT_TEXT_MM: f64 = 200.0;
 /// The most rooms one call writes.
 const MAX_ROOMS: usize = 500;
+/// A room's point nearer a line of its region than this (document millimetres) is on it.
+const ON_LINE_MM: f64 = 1.0;
 
 /// The rooms to write into the drawing of `underlay_id`, on its layer `layer`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -135,6 +137,18 @@ impl LiveBridge {
                     "Ask inspect action=underlay_regions with point_mm, or show the layers of the walls.",
                 )));
             };
+            // On a wall's line the point is as much in the wall as in the room (review
+            // 2026-11-10 UO-406): the area would be the wall's.
+            if std::iter::once(&outline)
+                .chain(&holes)
+                .any(|ring| distance_to_ring(room.at_mm, ring) < ON_LINE_MM)
+            {
+                return Err(refused(program_access::invalid(
+                    &target,
+                    "Its point lies on a line of the drawing.",
+                    "Give a point inside the room, clear of its walls.",
+                )));
+            }
             let rings = std::iter::once(outline)
                 .chain(holes)
                 .map(|ring| ring.into_iter().map(to_local).collect::<Vec<_>>())
@@ -237,6 +251,24 @@ fn ring_area(ring: &[[f64; 2]]) -> f64 {
         twice += x * next_y - next_x * y;
     }
     twice.abs() / 2.0
+}
+
+/// How far `point` is from the nearest side of the closed `ring`.
+fn distance_to_ring(point: [f64; 2], ring: &[[f64; 2]]) -> f64 {
+    let [x, y] = point;
+    let mut nearest = f64::INFINITY;
+    for (at, &[ax, ay]) in ring.iter().enumerate() {
+        let [bx, by] = ring[(at + 1) % ring.len()];
+        let [dx, dy] = [bx - ax, by - ay];
+        let length = dx * dx + dy * dy;
+        let along = if length > 0.0 {
+            (((x - ax) * dx + (y - ay) * dy) / length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        nearest = nearest.min((x - ax - along * dx).hypot(y - ay - along * dy));
+    }
+    nearest
 }
 
 /// The words of the table and how it writes a number, in the sheet language.
