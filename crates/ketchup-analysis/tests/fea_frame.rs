@@ -247,6 +247,69 @@ fn a_single_element_finds_the_peak_moment_inside_it() {
     );
 }
 
+/// Review 2026-11-19 og FEA-804: one simply supported element under a uniform load
+/// moved nowhere at its nodes, so the largest move came out 0 instead of the
+/// 5·q·L⁴/(384·E·I) of its middle. A load across both section axes checks the turn
+/// about each.
+#[test]
+fn a_single_element_finds_the_largest_move_inside_it() {
+    let length = 1_200.0;
+    let section = rectangle(20.0, 50.0);
+    let mut model = beam_line(1, length, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], section);
+    model.constraints = vec![
+        FeaConstraint {
+            node: 0,
+            displacement_mm: [Some(0.0); 3],
+            rotation_rad: [Some(0.0), None, None],
+        },
+        FeaConstraint {
+            node: 1,
+            displacement_mm: [None, Some(0.0), Some(0.0)],
+            rotation_rad: [None; 3],
+        },
+    ];
+    let load = [0.0, -1.5, 0.4];
+    model.loads = vec![FeaLoad::FrameDistributed {
+        element: 1,
+        load_n_per_mm: load,
+    }];
+    let solution = model.solve(FeaSolveSettings::default()).unwrap();
+
+    let sag = |load: f64, second_moment: f64| {
+        5.0 * load * length.powi(4) / (384.0 * YOUNG_MPA * second_moment)
+    };
+    let sideways = sag(load[1], section.second_moment_z_mm4);
+    let upwards = sag(load[2], section.second_moment_y_mm4);
+    assert!(
+        solution
+            .displacements_mm
+            .iter()
+            .all(|moved| moved.iter().all(|value| value.abs() <= 1.0e-12))
+    );
+    close(solution.maximum_displacement_mm, sideways.hypot(upwards));
+}
+
+/// A cantilever under a uniform load moves most at its tip node, q·L⁴/(8·E·I), and
+/// nothing inside an element moves further.
+#[test]
+fn a_cantilever_under_uniform_load_moves_most_at_its_tip() {
+    let length = 900.0;
+    let section = rectangle(20.0, 40.0);
+    let mut model = beam_line(3, length, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], section);
+    let load = 0.8;
+    model.loads = (1..=3)
+        .map(|element| FeaLoad::FrameDistributed {
+            element,
+            load_n_per_mm: [0.0, 0.0, -load],
+        })
+        .collect();
+    let solution = model.solve(FeaSolveSettings::default()).unwrap();
+
+    let tip = load * length.powi(4) / (8.0 * YOUNG_MPA * section.second_moment_y_mm4);
+    close(solution.displacements_mm[3][2], -tip);
+    close(solution.maximum_displacement_mm, tip);
+}
+
 #[test]
 fn a_twisted_shaft_turns_t_l_over_g_j() {
     let length = 500.0;

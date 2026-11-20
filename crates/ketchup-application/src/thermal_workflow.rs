@@ -10,7 +10,8 @@
 use crate::fea_workflow::{refinement_levels_are_valid, relative_change};
 use crate::validation_rules::{ValidationRules, occurrence_materials};
 use ketchup_analysis::fea_thermal::{
-    ThermalError, ThermalMaterial, ThermalSolution, ThermalSolveSettings, solve_steady_conduction,
+    ThermalError, ThermalMaterial, ThermalSolution, ThermalSolveSettings,
+    solve_steady_conduction_with_cancellation,
 };
 use ketchup_model::document::{
     ClassificationError, DefinitionId, FeatureId, InstancePath, Snapshot,
@@ -262,8 +263,12 @@ impl ThermalReviewWorkflow {
             let bound = package
                 .occurrence_bound_thermal_model(snapshot, &setup)
                 .map_err(ThermalReviewError::Setup)?;
-            let solution = solve_steady_conduction(&bound.model, request.solve_settings)
-                .map_err(ThermalReviewError::Solve)?;
+            let solution = solve_steady_conduction_with_cancellation(
+                &bound.model,
+                request.solve_settings,
+                cancelled,
+            )
+            .map_err(ThermalReviewError::Solve)?;
             levels.push(level_summary(&package.mesh, &solution));
             solutions.push(solution);
         }

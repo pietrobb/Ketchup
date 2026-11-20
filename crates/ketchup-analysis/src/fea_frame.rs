@@ -270,6 +270,69 @@ pub(crate) fn peak_von_mises(
         .fold(0.0, f64::max)
 }
 
+/// Stations the element is first sampled at for its largest move; even, so the middle,
+/// where a symmetric span moves most, is one of them.
+const MOVE_SAMPLES: u32 = 32;
+/// Golden-section steps that close in on the largest move between two samples.
+const MOVE_REFINEMENTS: u32 = 40;
+
+/// The largest move anywhere along the element (og:R1119og-FEA-804), from its ends'
+/// moves and turns `ends` (element axes) carried along by its own shape functions, and
+/// the bending of a span held at both ends under its uniform `load`, which no node
+/// shows: one simply supported element sags 5·q·L⁴/(384·E·I) in its middle
+/// with both nodes still.
+pub(crate) fn peak_displacement(
+    youngs_modulus_mpa: f64,
+    section: &FeaFrameSection,
+    ends: [f64; FRAME_DOFS],
+    load: [f64; 3],
+    length_mm: f64,
+) -> f64 {
+    let moved = |x: f64| {
+        let ratio = x / length_mm;
+        let rest = length_mm - x;
+        let start = 1.0 - ratio * ratio * (3.0 - 2.0 * ratio);
+        let start_turn = x * (1.0 - ratio).powi(2);
+        let end_turn = -x * ratio * (1.0 - ratio);
+        let held = x * x * rest * rest / (24.0 * youngs_modulus_mpa);
+        let axial = (1.0 - ratio) * ends[0]
+            + ratio * ends[6]
+            + load[0] * x * rest / (2.0 * youngs_modulus_mpa * section.area_mm2);
+        // Bending about z: v with θz = dv/dx; about y: w with θy = −dw/dx.
+        let sideways = start * ends[1]
+            + start_turn * ends[5]
+            + (1.0 - start) * ends[7]
+            + end_turn * ends[11]
+            + load[1] * held / section.second_moment_z_mm4;
+        let upwards = start * ends[2] - start_turn * ends[4] + (1.0 - start) * ends[8]
+            - end_turn * ends[10]
+            + load[2] * held / section.second_moment_y_mm4;
+        length([axial, sideways, upwards])
+    };
+    let step = length_mm / f64::from(MOVE_SAMPLES);
+    let (best, _) = (0..=MOVE_SAMPLES)
+        .map(|index| (index, moved(step * f64::from(index))))
+        .fold((0, f64::NEG_INFINITY), |found, sample| {
+            if sample.1 > found.1 { sample } else { found }
+        });
+    let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut low = step * f64::from(best.saturating_sub(1));
+    let mut high = step * f64::from((best + 1).min(MOVE_SAMPLES));
+    let mut peak = moved(step * f64::from(best));
+    for _ in 0..MOVE_REFINEMENTS {
+        let left = high - golden * (high - low);
+        let right = low + golden * (high - low);
+        let (on_left, on_right) = (moved(left), moved(right));
+        peak = peak.max(on_left).max(on_right);
+        if on_left >= on_right {
+            high = right;
+        } else {
+            low = left;
+        }
+    }
+    peak
+}
+
 #[must_use]
 pub(crate) fn valid_section(section: &FeaFrameSection) -> bool {
     [
