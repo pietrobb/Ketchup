@@ -77,6 +77,11 @@ impl AssistantRequestInvalid {
         self.subject
     }
 
+    /// The named item inside the refused part, such as the field it names.
+    pub fn item_name(&self) -> Option<&str> {
+        self.item.as_deref()
+    }
+
     pub const fn problem(&self) -> AssistantRequestProblem {
         self.problem
     }

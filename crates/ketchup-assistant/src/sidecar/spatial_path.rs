@@ -24,15 +24,6 @@ pub fn validated_spatial_path_segments(
     Ok(segments)
 }
 
-/// Whether a boundary surface has 2 to 64 loop curves and at most 64 inner
-/// curves of a network; the model checks their geometry.
-pub(super) fn network_counts_fit(
-    segments: &[AssistantSpatialPathSegment],
-    inner: &[AssistantSpatialPathSegment],
-) -> bool {
-    (2..=limits::PATH_SEGMENTS).contains(&segments.len()) && inner.len() <= limits::PATH_SEGMENTS
-}
-
 impl AssistantSpatialPathSegment {
     #[must_use]
     pub fn canonical(&self) -> SpatialPathSegment {

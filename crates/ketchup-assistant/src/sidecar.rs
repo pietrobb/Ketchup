@@ -18,6 +18,7 @@ use std::fmt;
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 
 mod cam_kinds;
+mod feature_checks;
 mod loft;
 mod program_references;
 mod spatial_path;
@@ -1278,110 +1279,26 @@ impl AssistantCadBodyFeature {
                 guide_feature_id,
                 continuity,
                 rail_feature_id,
-            } if loft::valid(sections, *guide_feature_id, *rail_feature_id, *continuity) => Ok(()),
-            Self::Loft { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
-            Self::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
-            } if profile_feature_id.validate().is_ok() => Ok(()),
-            Self::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Boundary { segments, inner },
-            } if spatial_path::network_counts_fit(segments, inner) => Ok(()),
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Blend {
-                        first_feature_id,
-                        second_feature_id,
-                        ..
-                    },
-            } if first_feature_id.validate().is_ok()
-                && second_feature_id.validate().is_ok()
-                && first_feature_id != second_feature_id =>
-            {
-                Ok(())
-            }
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::ControlPoint {
-                        target_feature_id,
-                        offset_mm,
-                        weight,
-                        keep,
-                        ..
-                    },
-            } if target_feature_id.validate().is_ok()
-                && assistant_cad_vector_is_bounded(*offset_mm)
-                && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
-                && (weight.is_some() || offset_mm.iter().any(|value| *value != 0.0))
-                && keep.len() <= limits::FEATURE_REFERENCES
-                && keep.iter().enumerate().all(|(index, seam)| {
-                    seam.surface_feature_id.validate().is_ok()
-                        && seam.surface_feature_id != *target_feature_id
-                        && keep[..index]
-                            .iter()
-                            .all(|other| other.surface_feature_id != seam.surface_feature_id)
-                }) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Loft {
-                        sections,
-                        guide_feature_id,
-                        continuity,
-                        rail_feature_id,
-                    },
-            } if loft::valid(sections, *guide_feature_id, *rail_feature_id, *continuity) => Ok(()),
-            Self::SurfaceBody { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => loft::check(sections, *guide_feature_id, *rail_feature_id, *continuity),
+            Self::SurfaceBody { source } => feature_checks::surface_body(source),
             Self::SurfaceTrim {
                 target_feature_id,
                 cutter_feature_id,
-            } if target_feature_id.validate().is_ok()
-                && cutter_feature_id.validate().is_ok()
-                && target_feature_id != cutter_feature_id =>
-            {
-                Ok(())
-            }
-            Self::SurfaceTrim { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => feature_checks::surface_trim(*target_feature_id, *cutter_feature_id),
             Self::SurfaceExtend {
                 target_feature_id,
                 distance_mm,
-            } if target_feature_id.validate().is_ok()
-                && distance_mm.is_finite()
-                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(distance_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceExtend { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => feature_checks::surface_extend(*target_feature_id, *distance_mm),
             Self::SurfaceKnit {
                 surface_feature_ids,
                 tolerance_mm,
                 ..
-            } if (2..=limits::KNIT_SURFACES).contains(&surface_feature_ids.len())
-                && surface_feature_ids
-                    .iter()
-                    .all(|reference| reference.validate().is_ok())
-                && surface_feature_ids.iter().collect::<BTreeSet<_>>().len()
-                    == surface_feature_ids.len()
-                && tolerance_mm.is_finite()
-                && (DEFAULT_LINEAR_TOLERANCE_MM..=10.0).contains(tolerance_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceKnit { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => feature_checks::surface_knit(surface_feature_ids, *tolerance_mm),
             Self::SurfaceThicken {
                 target_feature_id,
                 thickness_mm,
                 ..
-            } if target_feature_id.validate().is_ok()
-                && thickness_mm.is_finite()
-                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(thickness_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceThicken { .. } => {
-                Err(AssistantRequestInvalid::invalid("CAD body feature"))
-            }
+            } => feature_checks::surface_thicken(*target_feature_id, *thickness_mm),
             Self::SheetMetal { .. } => self
                 .sheet_metal_spec()
                 .filter(|spec| spec.validate().is_ok())
@@ -1413,77 +1330,25 @@ impl AssistantCadBodyFeature {
                 edge_reference_ids,
                 radius_mm,
                 radius_stations,
-            } if *target_feature_id != 0
-                && (1..=limits::FEATURE_REFERENCES).contains(&edge_reference_ids.len())
-                && edge_reference_ids
-                    .iter()
-                    .all(|reference_id| is_sha256_hex(reference_id))
-                && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
-                    == edge_reference_ids.len()
-                && radius_mm.is_finite()
-                && (0.01..=100_000.0).contains(radius_mm)
-                && radius_stations.len() <= limits::FILLET_RADIUS_STATIONS
-                && (radius_stations.is_empty()
-                    || radius_stations
-                        .last()
-                        .is_some_and(|station| station.position == 1.0))
-                && radius_stations.iter().all(|station| {
-                    station.position.is_finite()
-                        && station.position > 0.0
-                        && station.position <= 1.0
-                        && station.radius_mm.is_finite()
-                        && (0.01..=100_000.0).contains(&station.radius_mm)
-                })
-                && radius_stations
-                    .windows(2)
-                    .all(|pair| pair[0].position < pair[1].position) =>
-            {
-                Ok(())
-            }
-            Self::TopologyFillet { .. } => {
-                Err(AssistantRequestInvalid::invalid("CAD body feature"))
-            }
+            } => feature_checks::fillet(
+                *target_feature_id,
+                edge_reference_ids,
+                *radius_mm,
+                radius_stations,
+            ),
             Self::TopologyChamfer {
                 target_feature_id,
                 edge_reference_ids,
                 distance_mm,
                 mode,
                 side_face_reference_ids,
-            } if *target_feature_id != 0
-                && (1..=limits::FEATURE_REFERENCES).contains(&edge_reference_ids.len())
-                && edge_reference_ids
-                    .iter()
-                    .all(|reference_id| is_sha256_hex(reference_id))
-                && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
-                    == edge_reference_ids.len()
-                && distance_mm.is_finite()
-                && (0.01..=100_000.0).contains(distance_mm)
-                && match mode {
-                    AssistantCadChamferMode::Symmetric => side_face_reference_ids.is_empty(),
-                    AssistantCadChamferMode::TwoDistance { second_distance_mm } => {
-                        second_distance_mm.is_finite()
-                            && (0.01..=100_000.0).contains(second_distance_mm)
-                            && side_face_reference_ids.len() == edge_reference_ids.len()
-                            && side_face_reference_ids
-                                .iter()
-                                .all(|reference_id| is_sha256_hex(reference_id))
-                    }
-                    AssistantCadChamferMode::DistanceAngle { angle_degrees } => {
-                        angle_degrees.is_finite()
-                            && *angle_degrees > 0.1
-                            && *angle_degrees < 89.9
-                            && side_face_reference_ids.len() == edge_reference_ids.len()
-                            && side_face_reference_ids
-                                .iter()
-                                .all(|reference_id| is_sha256_hex(reference_id))
-                    }
-                } =>
-            {
-                Ok(())
-            }
-            Self::TopologyChamfer { .. } => {
-                Err(AssistantRequestInvalid::invalid("CAD body feature"))
-            }
+            } => feature_checks::chamfer(
+                *target_feature_id,
+                edge_reference_ids,
+                *distance_mm,
+                *mode,
+                side_face_reference_ids,
+            ),
             Self::TopologyDraft {
                 target_feature_id,
                 face_reference_ids,
