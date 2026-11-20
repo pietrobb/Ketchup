@@ -1700,7 +1700,8 @@ fn gdt_datums_follow_exact_model_change_consent_undo_and_save_open() {
     assert_eq!(initial.layout.datum_symbols[0].label, "A");
     assert_eq!(
         initial.layout.feature_control_frames[0].label,
-        "PERPENDICULARITY | 0.05 RFS | A"
+        // ISO 8015: regardless of feature size is the default and has no sign.
+        "PERPENDICULARITY | 0.05 | A"
     );
     document.commit_proposal(&create).unwrap();
     let committed_digest = document.current().canonical_digest();
