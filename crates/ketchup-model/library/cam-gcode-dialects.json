@@ -6,7 +6,8 @@
     "sources": [
       "ISO 6983-1:2009 word-address format: G0/G1/G2/G3 with X Y Z, incremental I J arc centres, F feed, S speed, T tool with M6, M3/M5 spindle, M30 end, G21 millimetres, G90 absolute, G17 XY plane, G54-G59 work offsets.",
       "The program first cancels cutter radius and tool length compensation and canned cycles and sets feed per minute (G40 G49 G80 G94), then applies the length of the tool it changes to with G43 H on the rapid to the safe Z (R1119og-MF-801), so a controller measuring Z from the spindle nose keeps the tip at the programmed Z. The first move across starts only at the safe Z (MF-804).",
-      "The Ketchup records (plan, toolpath and simulation digests, feeds, safe height) are comments in parentheses, which ISO 6983 controllers skip; a ';' comment ends the block on some controllers."
+      "The Ketchup records (plan, toolpath and simulation digests, feeds, safe height) are comments in parentheses, which ISO 6983 controllers skip; a ';' comment ends the block on some controllers.",
+      "A whole value is written without a decimal point (X10, F900). A controller without decimal point programming reads such a value in its least input increment, X10 as 0.010 mm; for such a controller use the FANUC dialect, which writes every value with a decimal point."
     ],
     "decimals": 6,
     "decimal_point": "when_fractional",

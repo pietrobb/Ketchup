@@ -368,6 +368,28 @@ fn simulate_cam_geometry(
             flush(&mut stock, &mut pending_cuts)?;
         }
         if let (true, Some(tool)) = (tool_meets_stock, &tool) {
+            // A rapid along the tool's axis may slide down a bore of its own diameter,
+            // as a peck drill returns to the bottom it drilled; touching that wall is no
+            // collision, so the stock is probed by a cutter a hundredth of a millimetre
+            // thinner, which still meets any material ahead of its end. Much thinner
+            // than that, its wall lies too close to the bore's for the kernel to cut.
+            let axial = motion.path_kind == 0
+                && (motion.start_mm[0] - motion.end_mm[0]).abs() <= tolerance_mm
+                && (motion.start_mm[1] - motion.end_mm[1]).abs() <= tolerance_mm;
+            let wall_clearance_mm = (4.0 * tolerance_mm).max(0.01);
+            let thinner = if axial && request.cutter_radius_mm > 2.0 * wall_clearance_mm {
+                Some(cam_world_sweep(
+                    backend,
+                    request,
+                    motion,
+                    request.cutter_radius_mm - wall_clearance_mm,
+                    request.tool_length_mm,
+                    0.0,
+                    tip,
+                )?)
+            } else {
+                None
+            };
             append_cam_collision(
                 &mut collisions,
                 backend,
@@ -376,7 +398,7 @@ fn simulate_cam_geometry(
                 0,
                 0,
                 None,
-                &tool.body,
+                &thinner.as_ref().unwrap_or(tool).body,
                 &stock.body,
                 tolerance_mm,
             )?;
@@ -442,4 +464,70 @@ fn simulate_cam_geometry(
         result_fingerprint: String::new(),
     };
     Ok(evidence)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn axial(kind: u8, from_z: f64, to_z: f64) -> crate::CamSimulationWireMotion {
+        crate::CamSimulationWireMotion {
+            kind,
+            path_kind: 0,
+            start_mm: [10.0, 10.0, from_z],
+            end_mm: [10.0, 10.0, to_z],
+            center_mm: [0.0; 3],
+            clockwise: false,
+        }
+    }
+
+    /// Review 2026-11-20 ac P3: a peck drill may come back down its bore at rapid to
+    /// just above the bottom it drilled, but a rapid into the material under that
+    /// bottom is still a collision with the stock.
+    #[test]
+    fn a_rapid_down_its_own_bore_is_clear_and_into_uncut_stock_collides() {
+        let backend = ExactBackend::new();
+        let graph: ExactBRepGraph = serde_json::from_slice(include_bytes!(
+            "../../tests/fixtures/v9_top_side_contact/left.graph"
+        ))
+        .unwrap();
+        let mut identity = [0.0; 16];
+        for index in [0, 5, 10, 15] {
+            identity[index] = 1.0;
+        }
+        let request = CamSimulationWireRequest {
+            schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
+            plan_digest: String::new(),
+            toolpath_digest: String::new(),
+            target_exact_graph_digest: String::new(),
+            stock_bounds_mm: [[0.0, 0.0, 0.0], [20.0, 20.0, 10.0]],
+            setup_to_world: identity,
+            cutter_radius_mm: 3.0,
+            cutter_length_mm: 18.0,
+            cutter_tip: 1,
+            cutter_tip_length_mm: 1.8,
+            tool_length_mm: 50.0,
+            holder_radius_mm: 10.0,
+            holder_offset_mm: 50.0,
+            holder_length_mm: 35.0,
+            motions: vec![
+                axial(0, 15.0, 11.0),
+                axial(1, 11.0, 4.0),
+                axial(3, 4.0, 15.0),
+                axial(0, 15.0, 5.0),
+                axial(3, 5.0, 15.0),
+                axial(0, 15.0, 3.0),
+                axial(3, 3.0, 15.0),
+            ],
+            fixtures: Vec::new(),
+        };
+        let tip = AxialToolTip::Cone { length_mm: 1.8 };
+        let evidence = simulate_cam_geometry(&backend, &graph, &request, tip).unwrap();
+        let hits: Vec<_> = evidence
+            .collisions
+            .iter()
+            .map(|collision| (collision.motion_index, collision.target))
+            .collect();
+        assert_eq!(hits, [(5, 0)], "{:?}", evidence.collisions);
+    }
 }
