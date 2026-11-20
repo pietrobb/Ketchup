@@ -2,10 +2,10 @@
 //! `K·φ = ω²·M·φ`, by subspace iteration on the sparse Cholesky factor of `K`
 //! with a consistent mass matrix `M`.
 
-use crate::fea::{DofLayout, FeaElementKind, FeaError, FeaModel, FeaSolveSettings};
+use crate::fea::{DofLayout, FeaElementKind, FeaError, FeaModel, FeaSolveSettings, reduce_within};
 use crate::fea_coupling::Joints;
-use crate::fea_frame::local_mass;
-use crate::sparse::{CholeskyFactor, SymmetricMatrix};
+use crate::fea_frame::{FRAME_DOFS, local_mass};
+use crate::sparse::{CholeskyFactor, ENTRY_BYTES, MemoryBudget, SymmetricMatrix, sort_entries};
 use ketchup_model::tolerance::{MODE_VECTOR_DEPENDENT, NEGLIGIBLE, ROUNDING, STURM_SHIFT_GAPS};
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
@@ -75,50 +75,75 @@ impl FeaModel {
         }
         let layout = self.dof_layout();
         let size = layout.count();
-        self.check_assembly_budget(&layout, settings)?;
-        let (mass_entries, total_mass_t) = self.mass_entries(&layout)?;
+        let too_large = |needed| FeaError::too_large(needed, settings);
+        // Everything large is taken from the budget before it is allocated,
+        // and one set of entries is held at a time (R1120ac-FEA-902).
+        let mut budget = MemoryBudget::new(settings.maximum_factor_bytes);
+        let mass_count = self.mass_entry_count();
+        budget
+            .take(mass_count.saturating_mul(ENTRY_BYTES))
+            .map_err(too_large)?;
+        let (mass_entries, total_mass_t) = self.mass_entries(&layout, mass_count)?;
         let joints = Joints::new(self, &layout)?;
         let mut unused = vec![0.0; size];
-        let stiffness_entries = joints.reduce(self.stiffness_entries(&layout)?, &mut unused);
-        let mass_entries = joints.reduce(mass_entries, &mut unused);
+        let mut mass_entries =
+            reduce_within(&joints, mass_entries, &mut unused, &mut budget).map_err(too_large)?;
         let mut fixed = self.held_dofs(&layout);
         fixed.extend(joints.follower_dofs());
 
         let free = |&(row, column, _): &(usize, usize, f64)| {
             !fixed.contains(&row) && !fixed.contains(&column)
         };
-        let stiffness_diagonal = diagonal(size, &stiffness_entries);
+        let magnitude = |(row, column, value): (usize, usize, f64)| (row, column, value.abs());
+        sort_entries(&mut mass_entries);
         let mass_diagonal = diagonal(size, &mass_entries);
-        let free_stiffness = SymmetricMatrix::from_entries(
+        let taken = 2 * SymmetricMatrix::bytes_for(size, mass_entries.len());
+        budget.take(taken).map_err(too_large)?;
+        let mass = SymmetricMatrix::from_sorted(size, mass_entries.iter().copied().filter(free));
+        let mass_magnitudes = SymmetricMatrix::from_sorted(
             size,
-            stiffness_entries.iter().copied().filter(free).collect(),
+            mass_entries.iter().copied().filter(free).map(magnitude),
         );
-        let magnitudes = |entries: &[(usize, usize, f64)]| {
-            SymmetricMatrix::from_entries(
+        let taken = taken + mass_entries.capacity() * ENTRY_BYTES;
+        drop(mass_entries);
+        budget.give(taken.saturating_sub(mass.bytes() + mass_magnitudes.bytes()));
+
+        let stiffness_entries = self.stiffness_entries_within(&layout, &mut budget, settings)?;
+        let mut stiffness_entries =
+            reduce_within(&joints, stiffness_entries, &mut unused, &mut budget)
+                .map_err(too_large)?;
+        sort_entries(&mut stiffness_entries);
+        let stiffness_diagonal = diagonal(size, &stiffness_entries);
+        let taken = 3 * SymmetricMatrix::bytes_for(size, stiffness_entries.len());
+        budget.take(taken).map_err(too_large)?;
+        let free_stiffness =
+            SymmetricMatrix::from_sorted(size, stiffness_entries.iter().copied().filter(free));
+        let rounding_scale = Magnitudes {
+            stiffness: SymmetricMatrix::from_sorted(
                 size,
-                entries
+                stiffness_entries
                     .iter()
                     .copied()
                     .filter(free)
-                    .map(|(row, column, value)| (row, column, value.abs()))
-                    .collect(),
-            )
+                    .map(magnitude),
+            ),
+            mass: mass_magnitudes,
         };
-        let rounding_scale = Magnitudes {
-            stiffness: magnitudes(&stiffness_entries),
-            mass: magnitudes(&mass_entries),
-        };
-        let mass =
-            SymmetricMatrix::from_entries(size, mass_entries.into_iter().filter(free).collect());
-        let mut stiffness = SymmetricMatrix::from_entries(size, stiffness_entries);
+        let mut stiffness = SymmetricMatrix::from_sorted(size, stiffness_entries.iter().copied());
+        let taken = taken + stiffness_entries.capacity() * ENTRY_BYTES;
+        drop(stiffness_entries);
+        budget.give(taken.saturating_sub(
+            free_stiffness.bytes() + rounding_scale.stiffness.bytes() + stiffness.bytes(),
+        ));
         let scale = stiffness.largest_magnitude().max(1.0);
         for &dof in &fixed {
             stiffness.prescribe(dof, 0.0, scale, &mut unused);
         }
         let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
         let factor = stiffness
-            .factor(threshold, settings.maximum_factor_bytes, cancelled)
-            .map_err(|error| FeaError::from_factor(error, settings))?;
+            .factor(threshold, budget.left(), cancelled)
+            .map_err(|error| FeaError::from_factor(error, settings, budget.held()))?;
+        budget.take(factor.bytes()).map_err(too_large)?;
 
         // Unknowns that move a mass, the most flexible first.
         let mut massive = (0..size)
@@ -143,6 +168,8 @@ impl FeaModel {
         let mut width = (2 * count).max(count + 8).min(massive.len());
         let mut iterations = 0;
         loop {
+            let held = subspace_bytes(size, width);
+            budget.take(held).map_err(too_large)?;
             let settled = subspace.iterate(count, width, |values, vectors| {
                 // A shape settles more slowly than its frequency.
                 let modes = values[..count]
@@ -169,7 +196,7 @@ impl FeaModel {
             // highest one returned as the subspace found there. A mode the
             // starting vectors missed shows up as one more, and a wider
             // subspace looks again (og:R1119og-FEA-801).
-            if !subspace.misses_a_mode(&settled.values, count, settings)? {
+            if !subspace.misses_a_mode(&settled.values, count, settings, &mut budget)? {
                 return Ok(FeaModes {
                     schema: FEA_MODES_SCHEMA_V1,
                     solver_version: FEA_MODAL_SOLVER_VERSION_V2,
@@ -183,6 +210,7 @@ impl FeaModel {
             if width == massive.len() {
                 return Err(FeaError::ModesNotConverged);
             }
+            budget.give(held);
             width = (2 * width).min(massive.len());
         }
     }
@@ -280,8 +308,21 @@ impl FeaModel {
 
     /// The consistent mass of every element, in tonnes so that with newtons
     /// and millimetres a frequency comes out per second, and their total.
-    fn mass_entries(&self, layout: &DofLayout) -> Result<(Entries, f64), FeaError> {
-        let mut entries = Vec::new();
+    /// How many entries [`Self::mass_entries`] makes.
+    fn mass_entry_count(&self) -> usize {
+        self.elements
+            .iter()
+            .map(|element| match element.kind {
+                FeaElementKind::LinearTruss2 { .. } => 3 * 4,
+                FeaElementKind::LinearTetrahedron4 { .. } => 4 * 4 * 3,
+                FeaElementKind::Frame2 { .. } => FRAME_DOFS * FRAME_DOFS,
+            })
+            .fold(0, usize::saturating_add)
+    }
+
+    /// `count` is [`Self::mass_entry_count`], reserved so the budget taken holds.
+    fn mass_entries(&self, layout: &DofLayout, count: usize) -> Result<(Entries, f64), FeaError> {
+        let mut entries = Vec::with_capacity(count);
         let mut total = 0.0;
         for element in &self.elements {
             let degenerate = FeaError::DegenerateElement {
@@ -350,6 +391,7 @@ impl FeaModel {
                 }
             }
         }
+        debug_assert_eq!(entries.len(), entries.capacity());
         Ok((entries, total))
     }
 }
@@ -532,15 +574,22 @@ impl Subspace<'_> {
         values: &[f64],
         count: usize,
         settings: FeaSolveSettings,
+        budget: &mut MemoryBudget,
     ) -> Result<bool, FeaError> {
         for gap in STURM_SHIFT_GAPS {
             let shift = values[count - 1] * (1.0 + gap);
+            let building = self.stiffness.shifted_bytes(self.mass);
+            budget
+                .take(building)
+                .map_err(|needed| FeaError::too_large(needed, settings))?;
             let shifted = self.stiffness.shifted(self.mass, shift);
+            budget.give(building.saturating_sub(shifted.bytes()));
             let threshold =
                 shifted.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
             let below = shifted
-                .negative_eigenvalues(threshold, settings.maximum_factor_bytes, self.cancelled)
-                .map_err(|error| FeaError::from_factor(error, settings))?;
+                .negative_eigenvalues(threshold, budget.left(), self.cancelled)
+                .map_err(|error| FeaError::from_factor(error, settings, budget.held()))?;
+            budget.give(shifted.bytes());
             // `None`: the shift is too near an eigenvalue to tell; further away.
             if let Some(below) = below {
                 let found = values.iter().filter(|value| **value < shift).count();
@@ -549,6 +598,14 @@ impl Subspace<'_> {
         }
         Err(FeaError::ModesNotConverged)
     }
+}
+
+/// The bytes a subspace of `width` vectors of `size` unknowns holds at most:
+/// the vectors, their solves, mass products and stiffness products, the next
+/// vectors and the shapes taken from them, and the small dense matrices of
+/// the projected problem.
+const fn subspace_bytes(size: usize, width: usize) -> usize {
+    (7 * width * size + 8 * width * width) * std::mem::size_of::<f64>()
 }
 
 fn diagonal(size: usize, entries: &[(usize, usize, f64)]) -> Vec<f64> {
