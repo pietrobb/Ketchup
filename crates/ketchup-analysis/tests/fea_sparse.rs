@@ -185,3 +185,34 @@ fn a_factor_past_the_memory_budget_is_refused_with_its_size() {
     assert_eq!(budget_bytes, 1 << 20);
     assert!(needed_bytes > budget_bytes);
 }
+
+/// R1120ac-FEA-902: a million tetrahedra took ~5.8 GB of stiffness entries
+/// and matrix in the window before the factor's budget was checked. A model
+/// whose entries alone exceed the budget is now refused before any entry is
+/// assembled, with what they would take, by solve and by modes alike.
+#[test]
+fn stiffness_entries_past_the_memory_budget_are_refused_before_assembly() {
+    let model = tetrahedral_bar(60, 4, 10.0);
+    let unknowns = 3 * model.nodes.len();
+    // A diagonal per unknown, 12 x 12 per tetrahedron; 24 bytes a triple and
+    // 16 for the matrix's column and value.
+    let entries = unknowns + 144 * model.elements.len();
+    let needed = entries * 40;
+    let settings = |budget_bytes| FeaSolveSettings {
+        maximum_factor_bytes: budget_bytes,
+        ..FeaSolveSettings::default()
+    };
+    let refused = Err(FeaError::FactorTooLarge {
+        needed_bytes: needed,
+        budget_bytes: needed - 1,
+    });
+    assert_eq!(model.solve(settings(needed - 1)).map(|_| ()), refused);
+    let mut with_density = model.clone();
+    with_density.materials[0].density_kg_per_m3 = Some(2_700.0);
+    assert_eq!(
+        with_density.modes(settings(needed - 1), 1).map(|_| ()),
+        refused
+    );
+    // With room for the entries the factor's own size decides.
+    assert!(model.solve(settings(needed + (64 << 20))).is_ok());
+}

@@ -207,8 +207,9 @@ pub struct FeaSolveSettings {
     pub relative_pivot_tolerance: f64,
     pub maximum_small_deformation_ratio: f64,
     pub convergence_relative_tolerance: f64,
-    /// The memory the factored stiffness matrix may take; a larger model is
-    /// refused with the size it would need.
+    /// The memory the stiffness matrix may take, assembled or factored; a
+    /// larger model is refused with the size it would need, before assembly
+    /// when its entries alone exceed it (R1120ac-FEA-902).
     pub maximum_factor_bytes: usize,
 }
 
@@ -276,8 +277,8 @@ pub enum FeaError {
     NonBoundaryTraction,
     InvalidSettings,
     SingularSystem,
-    /// The factored stiffness matrix would need `needed_bytes`, more than
-    /// the `budget_bytes` the settings allow.
+    /// The stiffness matrix, assembled or factored, would need
+    /// `needed_bytes`, more than the `budget_bytes` the settings allow.
     FactorTooLarge {
         needed_bytes: usize,
         budget_bytes: usize,
@@ -535,6 +536,7 @@ impl FeaModel {
         self.validate(settings)?;
         let layout = self.dof_layout();
         let dof_count = layout.count();
+        self.check_assembly_budget(&layout, settings)?;
         let entries = self.stiffness_entries(&layout)?;
         let mut forces = vec![0.0; dof_count];
         self.assemble_loads(&layout, &mut forces)?;
@@ -669,6 +671,40 @@ impl FeaModel {
                 ],
             },
         })
+    }
+
+    /// Refuses a model whose stiffness entries alone, with the matrix built
+    /// from them, would take more than the budget, before any is assembled
+    /// (R1120ac-FEA-902: a million tetrahedra took ~5.8 GB in the window before
+    /// the factor's 512 MiB check). The count leaves out springs, so it never
+    /// refuses a model that fits.
+    pub(crate) fn check_assembly_budget(
+        &self,
+        layout: &DofLayout,
+        settings: FeaSolveSettings,
+    ) -> Result<(), FeaError> {
+        let element_entries = self
+            .elements
+            .iter()
+            .map(|element| match element.kind {
+                FeaElementKind::LinearTruss2 { .. } => 6 * 6,
+                FeaElementKind::LinearTetrahedron4 { .. } => 12 * 12,
+                FeaElementKind::Frame2 { .. } => FRAME_DOFS * FRAME_DOFS,
+            })
+            .fold(layout.count(), usize::saturating_add);
+        // Each entry is a (row, column, value) triple, and the matrix built
+        // from them reserves a column and a value for each.
+        let per_entry = std::mem::size_of::<(usize, usize, f64)>()
+            + std::mem::size_of::<usize>()
+            + std::mem::size_of::<f64>();
+        let needed_bytes = element_entries.saturating_mul(per_entry);
+        if needed_bytes > settings.maximum_factor_bytes {
+            return Err(FeaError::FactorTooLarge {
+                needed_bytes,
+                budget_bytes: settings.maximum_factor_bytes,
+            });
+        }
+        Ok(())
     }
 
     /// The stiffness of every element and spring as `(row, column, value)`
