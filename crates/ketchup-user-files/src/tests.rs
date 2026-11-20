@@ -450,7 +450,7 @@ fn a_folder_replaced_on_the_way_is_not_blamed_on_home() {
     .into();
     let text = error.to_string();
     assert!(
-        text.contains("/home was replaced while it was read"),
+        text.contains("the folder /home on the way to /home/ana was replaced while it was read"),
         "{text}"
     );
     assert!(text.contains("try again"), "{text}");
