@@ -306,6 +306,116 @@ fn a_changed_word_in_a_controller_program_is_refused() {
     }
 }
 
+/// Angle a controller turns through for an I/J arc from `start` to `end`: it runs equal ends as a
+/// full circle.
+fn controller_sweep(start: [f64; 2], end: [f64; 2], center: [f64; 2], clockwise: bool) -> f64 {
+    use std::f64::consts::TAU;
+    if start == end {
+        return TAU;
+    }
+    let angle = |point: [f64; 2]| (point[1] - center[1]).atan2(point[0] - center[0]);
+    let counterclockwise = (angle(end) - angle(start)).rem_euclid(TAU);
+    if clockwise {
+        (TAU - counterclockwise).rem_euclid(TAU)
+    } else {
+        counterclockwise
+    }
+}
+
+/// R1120ac-CAM-900: a corner arc whose chord is under half a step of the dialect has the same
+/// start and end once rounded, and FANUC, Grbl and LinuxCNC run I/J between equal ends as a full
+/// circle through the part. Read back as a controller reads it, no written arc may turn through
+/// more than the arc that was planned and simulated.
+#[test]
+fn a_corner_arc_shorter_than_a_step_is_never_written_as_a_full_circle() {
+    use ketchup_model::cam::{CamMotionPath, CamOperation, CamPath2d, CamPathSegment2d};
+    let document = solid_document();
+    let snapshot = document.current();
+    let canonical = plan(&snapshot).unwrap();
+    let center = [25.0, 10.0];
+    let radius = 3.2;
+    let at = |angle: f64| {
+        [
+            center[0] + radius * angle.cos(),
+            center[1] + radius * angle.sin(),
+        ]
+    };
+    let below = -std::f64::consts::FRAC_PI_2;
+    for turn in [1.0e-4, 2.0e-5, 5.0e-6] {
+        let start = at(below - turn / 2.0);
+        let operations = vec![CamOperation::Contour {
+            id: 1,
+            center_path: CamPath2d {
+                start_mm: start,
+                segments: vec![
+                    CamPathSegment2d::Arc {
+                        to_mm: at(below + turn / 2.0),
+                        center_mm: center,
+                        clockwise: false,
+                    },
+                    CamPathSegment2d::Line {
+                        to_mm: [40.0, 20.0],
+                    },
+                    CamPathSegment2d::Line { to_mm: start },
+                ],
+            },
+            top_z_mm: -2.0,
+            bottom_z_mm: -4.0,
+            applied_radial_allowance_mm: 0.2,
+        }];
+        let toolpath = CamToolpath::plan(&snapshot, &canonical, &operations).unwrap();
+        let simulation = successful_simulation(&canonical, &toolpath);
+        for id in CamPostprocessorDialect::library_ids().unwrap() {
+            let dialect = CamPostprocessorDialect::library(&id).unwrap();
+            let written = CamPostprocessorOutput::generate(
+                &snapshot,
+                &canonical,
+                &toolpath,
+                &simulation,
+                dialect,
+            )
+            .unwrap_or_else(|error| panic!("{id} at {turn}: {error}"));
+            written
+                .verify(&snapshot, &canonical, &toolpath, &simulation)
+                .unwrap();
+            let program = written.parse().unwrap();
+            assert_eq!(program.motions.len(), toolpath.motions.len(), "{id}");
+            let mut at_mm = [0.0, 0.0];
+            for (motion, planned) in program.motions.iter().zip(&toolpath.motions) {
+                let end = [motion.end_mm[0], motion.end_mm[1]];
+                if let (
+                    Some(offset),
+                    CamMotionPath::Arc {
+                        start_mm,
+                        end_mm,
+                        center_mm,
+                        clockwise,
+                    },
+                ) = (motion.center_offset_mm, &planned.path)
+                {
+                    let written_sweep = controller_sweep(
+                        at_mm,
+                        end,
+                        [at_mm[0] + offset[0], at_mm[1] + offset[1]],
+                        motion.kind == CamPostprocessedMotionKind::ArcClockwise,
+                    );
+                    let planned_sweep = controller_sweep(
+                        [start_mm[0], start_mm[1]],
+                        [end_mm[0], end_mm[1]],
+                        [center_mm[0], center_mm[1]],
+                        *clockwise,
+                    );
+                    assert!(
+                        (written_sweep - planned_sweep).abs() < 1.0e-2,
+                        "{id} at {turn}: written arc turns {written_sweep} rad, planned {planned_sweep}: {motion:?}"
+                    );
+                }
+                at_mm = end;
+            }
+        }
+    }
+}
+
 #[test]
 fn no_controller_is_named_in_the_postprocessor_code() {
     for source in [

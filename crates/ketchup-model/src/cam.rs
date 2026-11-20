@@ -494,6 +494,9 @@ pub enum CamPostprocessorError {
     Parse(String),
     DigestMismatch,
     RoundtripMismatch,
+    /// An arc the dialect's grid cannot write so that a controller runs it as planned
+    /// (R1120ac-CAM-900).
+    UnwritableArc,
 }
 
 impl std::fmt::Display for CamPostprocessorError {
@@ -517,6 +520,9 @@ impl std::fmt::Display for CamPostprocessorError {
             }
             Self::RoundtripMismatch => formatter.write_str(
                 "CAM postprocessor artifact does not roundtrip to the canonical motion program",
+            ),
+            Self::UnwritableArc => formatter.write_str(
+                "an arc does not survive rounding to the step of the dialect: a controller would run it as a different arc or a full circle; choose a dialect with more decimals or a larger corner radius",
             ),
         }
     }
@@ -1424,7 +1430,7 @@ fn canonical_postprocessed_program(
         .motions
         .iter()
         .map(|motion| match &motion.path {
-            CamMotionPath::Line { end_mm, .. } => CamPostprocessedMotion {
+            CamMotionPath::Line { end_mm, .. } => Ok(CamPostprocessedMotion {
                 kind: match motion.kind {
                     CamMotionKind::Rapid => CamPostprocessedMotionKind::Rapid,
                     CamMotionKind::Plunge => CamPostprocessedMotionKind::Plunge,
@@ -1434,27 +1440,42 @@ fn canonical_postprocessed_program(
                 end_mm: end_mm.map(number),
                 center_offset_mm: None,
                 feed_mm_per_min: motion.feed_mm_per_min.map(number),
-            },
+            }),
             CamMotionPath::Arc {
                 start_mm,
                 end_mm,
                 center_mm,
                 clockwise,
-            } => CamPostprocessedMotion {
-                kind: if *clockwise {
-                    CamPostprocessedMotionKind::ArcClockwise
-                } else {
-                    CamPostprocessedMotionKind::ArcCounterclockwise
-                },
-                end_mm: end_mm.map(number),
-                center_offset_mm: Some([
+            } => {
+                let center_offset_mm = [
                     number(center_mm[0] - start_mm[0]),
                     number(center_mm[1] - start_mm[1]),
-                ]),
-                feed_mm_per_min: motion.feed_mm_per_min.map(number),
-            },
+                ];
+                let written = crate::cam_arc_rounding::WrittenArc {
+                    start_mm: start_mm.map(number),
+                    end_mm: end_mm.map(number),
+                    center_offset_mm,
+                    clockwise: *clockwise,
+                };
+                let kind = match written.as_planned(start_mm, end_mm, center_mm, scale)? {
+                    crate::cam_arc_rounding::Written::Arc if *clockwise => {
+                        CamPostprocessedMotionKind::ArcClockwise
+                    }
+                    crate::cam_arc_rounding::Written::Arc => {
+                        CamPostprocessedMotionKind::ArcCounterclockwise
+                    }
+                    crate::cam_arc_rounding::Written::Line => CamPostprocessedMotionKind::Cut,
+                };
+                Ok(CamPostprocessedMotion {
+                    kind,
+                    end_mm: written.end_mm,
+                    center_offset_mm: (kind != CamPostprocessedMotionKind::Cut)
+                        .then_some(center_offset_mm),
+                    feed_mm_per_min: motion.feed_mm_per_min.map(number),
+                })
+            }
         })
-        .collect();
+        .collect::<Result<_, CamPostprocessorError>>()?;
     Ok(CamPostprocessedProgram {
         schema: CAM_POSTPROCESSOR_SCHEMA_V1.to_owned(),
         plan_digest: toolpath.plan_digest.clone(),
