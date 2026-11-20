@@ -66,6 +66,8 @@ impl KetchupApp {
                 consent_attached: false,
                 launch_attached: false,
                 client_name: None,
+                previous_client: None,
+                write_log: Default::default(),
                 client_export: None,
                 client_overwrite: false,
                 plugin_consents: Vec::new(),
@@ -153,11 +155,11 @@ impl KetchupApp {
                     manual_cad_tools_visible: false,
                     shortcuts_open: false,
                     about_open: false,
+                    dock_collapsed: false,
                 },
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
                 written_drawings: None,
-                temporary_folder: std::fs::canonicalize(std::env::temp_dir()).ok(),
                 btlx: app_state::BtlxSettings::default(),
                 btlx_settings: None,
                 btlx_saving: app_state::BtlxSaving::default(),
@@ -241,6 +243,7 @@ impl KetchupApp {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
                 fea_review_dialog: None,
+                thermal_review_dialog: None,
                 pdm: LocalPdmWorkflow::new(),
                 pdm_review_dialog: None,
             },
@@ -1252,6 +1255,13 @@ impl KetchupApp {
                 ui.separator();
             });
             ui.menu_button(self.catalog.text("menu-window"), |ui| {
+                let mut dock_shown = !self.window.panes.dock_collapsed;
+                if ui
+                    .checkbox(&mut dock_shown, self.catalog.text("dock-side-panel"))
+                    .changed()
+                {
+                    self.window.panes.dock_collapsed = !dock_shown;
+                }
                 ui.checkbox(
                     &mut self.window.panes.outliner_visible,
                     self.catalog.text("dock-outliner"),
@@ -1588,20 +1598,13 @@ impl KetchupApp {
                     .stroke(hairline),
             )
             .show(context, |ui| self.show_tool_rail(ui));
-        egui::SidePanel::right("right-dock")
-            .resizable(true)
-            .default_width(440.0)
-            .width_range(380.0..=720.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(palette.chrome)
-                    .inner_margin(egui::Margin::symmetric(14, 8))
-                    .stroke(hairline),
-            )
-            .show(context, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                self.show_right_dock(ui);
-            });
+        self.show_right_side(
+            context,
+            egui::Frame::new()
+                .fill(palette.chrome)
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .stroke(hairline),
+        );
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(palette.viewport_outer))
             .show(context, |ui| self.viewport(ui));
@@ -1621,6 +1624,7 @@ impl KetchupApp {
         self.show_cam_export_window(context);
         self.show_presentation_window(context);
         self.show_fea_review_window(context);
+        self.show_thermal_review_window(context);
         self.show_pdm_review_window(context);
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);

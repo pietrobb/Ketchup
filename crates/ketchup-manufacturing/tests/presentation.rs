@@ -1,10 +1,10 @@
 use super::blender_glb_export::{current_package, seeded_document};
 use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::presentation::{
-    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationError, PresentationImage,
-    PresentationLabel, PresentationOptions, PresentationScene, PresentationTexture,
-    PresentationTriangle, TextureError, TriangleTexture, part_labels, presentation_scene,
-    presentation_supersample, render_presentation, render_presentation_until,
+    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PlainPicture, PresentationError,
+    PresentationImage, PresentationLabel, PresentationOptions, PresentationScene,
+    PresentationTexture, PresentationTriangle, TextureError, TriangleTexture, part_labels,
+    presentation_scene, presentation_supersample, render_presentation, render_presentation_until,
 };
 use ketchup_model::exact_product::MeshExportSource;
 use std::sync::atomic::AtomicBool;
@@ -65,6 +65,7 @@ fn box_on_slab() -> PresentationScene {
         triangles,
         labels: Vec::new(),
         textures: Vec::new(),
+        plain_pictures: Vec::new(),
     }
 }
 
@@ -169,6 +170,7 @@ fn the_model_casts_a_soft_shadow_on_the_ground_under_it() {
         triangles: cuboid([-50.0, -50.0, 0.0], [50.0, 50.0, 120.0], [200, 60, 50, 255]),
         labels: Vec::new(),
         textures: Vec::new(),
+        plain_pictures: Vec::new(),
     };
     let shadowed = render_presentation(&standing, &options).unwrap();
     let partial =
@@ -581,9 +583,13 @@ fn part_labels_name_each_component_once_on_top_of_its_first_part() {
     );
     // Review 2026-11-13 P3: letters no built-in typeface draws are left out of a part's name
     // rather than drawn as boxes or refusing the image; a name of only such letters is skipped.
+    // Review 2026-11-13 r95 P3: a name of only letters that show nothing and spaces refused
+    // the image; the diameter sign is kept as Ø rather than left out.
     for (name, shown) in [
         ("倉庫 Reusable beam", Some("Reusable beam")),
         ("倉庫", None),
+        ("\u{200B} \u{200B}", None),
+        ("Dowel ⌀8", Some("Dowel Ø8")),
     ] {
         let mut renamed = occurrences.clone();
         for occurrence in &mut renamed {
@@ -648,6 +654,7 @@ fn a_textured_face_shows_its_picture_repeating() {
             ],
             labels: Vec::new(),
             textures: vec![PresentationTexture::decode(&checker_png(), "image/png").unwrap()],
+            plain_pictures: Vec::new(),
         }
     };
     let options = PresentationOptions {
@@ -719,9 +726,10 @@ fn a_textured_face_shows_its_picture_repeating() {
         not_jpeg.to_string().ends_with(&format!(": {reason}")),
         "{not_jpeg}"
     );
-    let face = PresentationError::Texture {
+    let face = PlainPicture {
+        part: "Wall".to_owned(),
         blob: "wall.jpg".to_owned(),
-        source: not_jpeg,
+        reason: std::sync::Arc::new(not_jpeg),
     };
     assert!(face.to_string().contains("wall.jpg"), "{face}");
     assert!(face.to_string().ends_with(&format!(": {reason}")), "{face}");
@@ -764,6 +772,7 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
         ],
         labels: Vec::new(),
         textures: vec![PresentationTexture::decode(&png_bytes, "image/png").unwrap()],
+        plain_pictures: Vec::new(),
     };
     let options = PresentationOptions {
         view_from: [0.0, -1.0, 0.0],
@@ -820,7 +829,8 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
 /// and 4 000 × 3 000 were refused, asking to lower a smoothing no one could set).
 ///
 /// Review 2026-11-13 P3: 4K and larger had no smoothing at all, since the whole smoothed image
-/// had to fit at once; it is now made in bands of rows.
+/// had to fit at once; it is now made in bands of rows. Review 2026-11-13 r95 P3: a band had
+/// to shade as many rows as it looked at around it, so from about 6K there was none again.
 #[test]
 fn a_large_image_is_smoothed_less_to_fit_the_sample_limit() {
     assert_eq!(presentation_supersample(1920, 1080, 3).unwrap(), 3);
@@ -828,7 +838,9 @@ fn a_large_image_is_smoothed_less_to_fit_the_sample_limit() {
     assert_eq!(presentation_supersample(3840, 2160, 3).unwrap(), 3);
     assert_eq!(presentation_supersample(5120, 2880, 3).unwrap(), 2);
     assert_eq!(presentation_supersample(4000, 3000, 3).unwrap(), 2);
-    assert_eq!(presentation_supersample(8192, 2929, 3).unwrap(), 1);
+    // Review 2026-11-13 r95 P3: from about 6K these came unsmoothed, with nothing said.
+    assert_eq!(presentation_supersample(6144, 3456, 3).unwrap(), 2);
+    assert_eq!(presentation_supersample(8192, 2929, 3).unwrap(), 2);
     assert_eq!(presentation_supersample(2560, 1440, 1).unwrap(), 1);
     assert!(matches!(
         presentation_supersample(8192, 2930, 3),
@@ -884,6 +896,7 @@ fn perf_a_cancel_stops_the_shadows_of_many_large_triangles_within_a_second() {
         triangles,
         labels: Vec::new(),
         textures: Vec::new(),
+        plain_pictures: Vec::new(),
     };
     let options = PresentationOptions {
         shadows: true,
@@ -897,7 +910,10 @@ fn perf_a_cancel_stops_the_shadows_of_many_large_triangles_within_a_second() {
         "{:?}",
         rendered.map(|image| (image.width, image.height))
     );
-    assert!(waited < std::time::Duration::from_secs(1), "{waited:?}");
+    assert!(
+        waited < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+        "{waited:?}"
+    );
 }
 
 /// A label far from the model is refused instead of framing a speck (review 2026-11-12
@@ -1036,4 +1052,14 @@ fn labels_fit_the_image_and_show_only_letters_the_typefaces_draw() {
             "{text:?}"
         );
     }
+    // Review 2026-11-13 r95 P3: "⌀8 dowel" refused the image, primes and arrows were refused,
+    // and a name written decomposed, as macOS writes it, was refused for its accent.
+    for text in ["⌀8 dowel", "2′ 6″ → ← ↔ ∅", "Membra\u{301}na", "q\u{301}"] {
+        assert!(with(text, [0.0, 0.0, 140.0]).is_ok(), "{text:?}");
+    }
+    assert_eq!(
+        with("⌀8 dowel", [0.0, 0.0, 140.0]).unwrap().rgba,
+        with("Ø8 dowel", [0.0, 0.0, 140.0]).unwrap().rgba,
+        "the diameter sign is drawn as Ø"
+    );
 }

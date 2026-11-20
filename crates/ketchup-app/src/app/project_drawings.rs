@@ -9,7 +9,6 @@
 //! in the document.
 
 use crate::app::drawing_export_activity::DrawingExport;
-use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_application::threads::{
     CosmeticThreadBodyError, CosmeticThreadGraph, ThreadCylinder, cosmetic_thread_graph,
@@ -18,7 +17,7 @@ use ketchup_manufacturing::project_drawings::{
     CompassSide, CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet,
     DrawingSetOptions, DrawingSolid, DrawingThread, ModelFloors, OpeningSchedule, PlanSheet,
     ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet,
-    Storey, drawing_set_until, ground_floor, storeys, table_ground_floor, table_storeys,
+    Storey, drawing_set_until, ground_floor, storeys_until, table_ground_floor, table_storeys,
 };
 use ketchup_manufacturing::revision_table::RevisionCaptions;
 use ketchup_manufacturing::title_block::{
@@ -332,6 +331,10 @@ pub(crate) struct ProjectDrawingsJob {
     executable: Option<PathBuf>,
     options: DrawingSetOptions,
     info: PdfInfo,
+    /// With no table of storeys, the catalog the plans are titled from and
+    /// their cut over the floor: the storeys are found on the job's thread,
+    /// as the window fills the table (review 2026-11-10 r2 MF-500).
+    found_plans: Option<(LocaleCatalog, f64)>,
 }
 
 impl ProjectDrawingsJob {
@@ -343,9 +346,22 @@ impl ProjectDrawingsJob {
             executable,
             mut options,
             info,
+            found_plans,
         } = self;
         let zero_among = std::mem::take(&mut solids.zero_among);
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
+        if let Some((catalog, above_floor_mm)) = found_plans {
+            let mut storeys = storeys_until(&solids, above_floor_mm, cancelled)
+                .map_err(ProjectDrawingsError::Drawing)?;
+            // A plan of annotations alone cuts nothing; its cut is at the floor.
+            if storeys.is_empty() {
+                storeys.push(Storey {
+                    floor_mm: None,
+                    cut_mm: 0.0,
+                });
+            }
+            options.plans = KetchupApp::plan_sheets(&catalog, storeys);
+        }
         if options.zero_level_mm.is_none() && options.storeys.is_empty() {
             // Found here, on the job's thread (review 2026-11-04 r19 MF-161).
             let hidden = zero_among
@@ -1418,6 +1434,17 @@ impl KetchupApp {
         settings
     }
 
+    /// The language the sheets are written in: the stored one, else the
+    /// window's.
+    pub(crate) fn sheet_language(&self) -> SheetLanguage {
+        self.sheet_settings()
+            .language
+            .unwrap_or(match self.ui_language() {
+                Some(crate::language::UiLanguage::Slovak) => SheetLanguage::Slovak,
+                Some(crate::language::UiLanguage::English) | None => SheetLanguage::English,
+            })
+    }
+
     /// The texts the sheets are titled with: those of `language`, the
     /// window's when none (Měchenice MECH-5).
     pub(crate) fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {
@@ -1485,8 +1512,34 @@ impl KetchupApp {
         ) else {
             return;
         };
-        self.file.container_data.set_extension(entry);
+        self.file
+            .container_data
+            .set_extension(if settings.lost_by_released_readers() {
+                entry.lost_by_released_readers()
+            } else {
+                entry
+            });
         self.drawings.unsaved = true;
+    }
+
+    /// Marks the kept sheet settings a released Kečup would lose part of, as
+    /// [`Self::store_sheet_settings`] does, in a file saved before the mark
+    /// (Kečup 0.3.3 kept them unmarked): its next Save writes it so that every
+    /// release refuses it as newer (review 2026-11-10 REL-404).
+    pub(crate) fn mark_kept_sheet_settings(&mut self) {
+        let Some(entry) = self.file.container_data.extensions().find(|entry| {
+            entry.namespace() == SHEET_NAMESPACE && entry.path() == SHEET_SETTINGS_PATH
+        }) else {
+            return;
+        };
+        if !entry.is_lost_by_released_readers()
+            && self
+                .stored_sheet_settings()
+                .is_ok_and(|settings| settings.lost_by_released_readers())
+        {
+            let marked = entry.clone().lost_by_released_readers();
+            self.file.container_data.set_extension(marked);
+        }
     }
 
     fn title_labels(catalog: &LocaleCatalog) -> BTreeMap<TitleField, String> {
@@ -1804,21 +1857,18 @@ impl KetchupApp {
             .filter(|annotation| snapshot.tags_visible(&annotation.tags))
             .cloned()
             .collect::<Vec<_>>();
-        // The storeys of the table, else found from the bodies as evaluated: a
-        // thread's grooves never make a floor.
-        let mut storeys = if settings.storeys.is_empty() {
-            storeys(&solids.solids, settings.plan_cut_above_floor_mm())
+        // The storeys of the table, else found on the job's thread from the
+        // bodies as drawn, as the window fills the table: finding which faces
+        // a solid lies on may take long (review 2026-11-10 r2 MF-500).
+        let above_floor_mm = settings.plan_cut_above_floor_mm();
+        let (plans, found_plans) = if settings.storeys.is_empty() {
+            (Vec::new(), Some(((*catalog).clone(), above_floor_mm)))
         } else {
-            table_storeys(&settings.storeys, settings.plan_cut_above_floor_mm())
+            let storeys = table_storeys(&settings.storeys, above_floor_mm);
+            (Self::plan_sheets(&catalog, storeys), None)
         };
-        // A plan of annotations alone cuts nothing; its cut is at the floor.
-        if storeys.is_empty() && !annotations.is_empty() {
-            storeys.push(Storey {
-                floor_mm: None,
-                cut_mm: 0.0,
-            });
-        }
-        if storeys.is_empty() {
+        // Nothing to draw: no solid to find a storey in, no annotation to plan.
+        if solids.solids.is_empty() && annotations.is_empty() {
             return Err(ProjectDrawingsError::Drawing(ProjectDrawingError::Empty));
         }
         let view_titles = ProjectView::ALL
@@ -1869,7 +1919,7 @@ impl KetchupApp {
             solids,
             executable: self.drawing_worker(),
             options: DrawingSetOptions {
-                plans: Self::plan_sheets(&catalog, storeys),
+                plans,
                 sheet_titles: SheetTitles {
                     sections: catalog.text("drawings-sheet-sections"),
                     elevations: catalog.text("drawings-sheet-elevations"),
@@ -1901,6 +1951,7 @@ impl KetchupApp {
                 },
             },
             info,
+            found_plans,
         })
     }
 
@@ -2364,18 +2415,7 @@ impl KetchupApp {
                     ui.label(self.catalog.text("drawings-document-sheets-none"));
                 }
                 for sheet in sheets {
-                    ui.horizontal(|ui| {
-                        ui.label(sheet.name());
-                        for format in SheetFileFormat::ALL {
-                            let label = match format {
-                                SheetFileFormat::Dxf => "drawings-export-sheet-dxf",
-                                SheetFileFormat::Dwg => "drawings-export-sheet-dwg",
-                            };
-                            if ui.button(self.catalog.text(label)).clicked() {
-                                export_sheet = Some((sheet.id(), format));
-                            }
-                        }
-                    });
+                    self.show_annotatable_sheet_row(ui, sheet, &mut export_sheet);
                 }
             });
         // Merely opening the window with the filled-in defaults changes

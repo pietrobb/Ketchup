@@ -208,10 +208,11 @@ const SIDE_WORDS: &[&str] = &[
     "aussen",
 ];
 
-/// Whether a word is a size with a digit other than 0: numbers apart by "x" or "×" ("6x120",
-/// "4,5×60", "80"), at most one letter but "x" before them ("M12", "d8") and "mm" or "cm" after
+/// Whether a word is a size: numbers apart by "x" or "×" ("6x120", "4,5×60", "80"), at least one
+/// of them 1 or more, at most one letter but "x" before them ("M12", "d8") and "mm" or "cm" after
 /// them ("80mm"). Other letters around a digit are no size: "screw no1" and "screw tbd1"
-/// fastened (review 2026-11-13 P3).
+/// fastened (review 2026-11-13 P3). Each number is digits with at most one "." or "," between
+/// them: "screw 1,,,", "screw 1.2.3" and "screw 0.0001" fastened (review 2026-11-13 r95 P3).
 fn sized(word: &str) -> bool {
     let word = word
         .strip_suffix("mm")
@@ -221,14 +222,20 @@ fn sized(word: &str) -> bool {
         Some(first) if first.is_alphabetic() && first != 'x' => &word[first.len_utf8()..],
         _ => word,
     };
-    !numbers.is_empty()
-        && numbers.split(['x', '×']).all(|number| {
-            !number.is_empty()
-                && number
-                    .chars()
-                    .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
-        })
-        && numbers.chars().any(|c| matches!(c, '1'..='9'))
+    let number = |number: &str| -> Option<f64> {
+        let mut halves = number.splitn(2, ['.', ',']);
+        let whole = halves.next()?;
+        let fraction = halves.next().unwrap_or("0");
+        let digits = |half: &str| !half.is_empty() && half.chars().all(|c| c.is_ascii_digit());
+        (digits(whole) && digits(fraction))
+            .then(|| format!("{whole}.{fraction}").parse().ok())
+            .flatten()
+    };
+    numbers
+        .split(['x', '×'])
+        .map(number)
+        .try_fold(0.0_f64, |largest, number| Some(largest.max(number?)))
+        .is_some_and(|largest| largest >= 1.0)
 }
 
 /// Whether `word` qualifies a kind by size, product or side: it carries a size,
@@ -454,6 +461,15 @@ mod tests {
             "screw 80mm",
         ] {
             assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
+        }
+    }
+
+    /// Review 2026-11-13 r95 P3: any digits and separators made a size, so
+    /// "screw 0.0001", "screw 1,,," and "screw 1.2.3" fastened.
+    #[test]
+    fn a_size_is_a_number_a_fastener_could_be() {
+        for kind in ["screw 0.0001", "screw 1,,,", "screw 1.2.3", "nail 3.x90"] {
+            assert_eq!(fastening(kind), JointFastening::Unknown, "{kind}");
         }
     }
 }

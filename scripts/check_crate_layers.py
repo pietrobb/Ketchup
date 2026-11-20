@@ -69,33 +69,33 @@ OVERSIZED = {}
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
-    "crates/ketchup-app/src/lib.rs": 2352,
-    "crates/ketchup-model/src/document.rs": 514,
+    "crates/ketchup-app/src/lib.rs": 2343,
+    "crates/ketchup-model/src/document.rs": 380,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
     "crates/ketchup-manufacturing/src/fabrication.rs": 4628,
     "crates/ketchup-model/src/import/dxf.rs": 4467,
     # Past FREEZE_AT_LINES when the check began to require it (review 2026-11-08 TST-253);
     # live_bridge.rs and exact_worker.rs are the ones that review found growing.
-    "crates/ketchup-app/src/app/drawing.rs": 3798,
+    "crates/ketchup-app/src/app/drawing.rs": 3787,
     "crates/ketchup-app/src/app/structure.rs": 3390,
     "crates/ketchup-app/src/app/transform.rs": 3876,
-    "crates/ketchup-app/src/app/viewport.rs": 4857,
+    "crates/ketchup-app/src/app/viewport.rs": 4817,
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
-    "crates/ketchup-app/src/live_bridge.rs": 3466,
-    "crates/ketchup-application/src/planner.rs": 4364,
+    "crates/ketchup-app/src/live_bridge.rs": 3439,
+    "crates/ketchup-application/src/planner.rs": 4312,
     "crates/ketchup-application/src/validation.rs": 4053,
-    "crates/ketchup-assistant/src/sidecar.rs": 4284,
-    "crates/ketchup-geometry/src/sketch.rs": 3058,
-    "crates/ketchup-headless/src/protocol.rs": 3373,
-    "crates/ketchup-model/src/drawing.rs": 4814,
-    "crates/ketchup-model/src/exact_product.rs": 4316,
-    "crates/ketchup-model/src/persistence.rs": 4323,
-    "crates/ketchup-model/src/persistence/legacy.rs": 4721,
+    "crates/ketchup-assistant/src/sidecar.rs": 4116,
+    "crates/ketchup-geometry/src/sketch.rs": 3055,
+    "crates/ketchup-headless/src/protocol.rs": 3068,
+    "crates/ketchup-model/src/drawing.rs": 4442,
+    "crates/ketchup-model/src/exact_product.rs": 4210,
+    "crates/ketchup-model/src/persistence.rs": 4276,
+    "crates/ketchup-model/src/persistence/legacy.rs": 4677,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4678,
-    "crates/ketchup-scheduler/src/lib.rs": 3268,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4208,
+    "crates/ketchup-scheduler/src/lib.rs": 3051,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review
@@ -109,23 +109,23 @@ MAX_FUNCTION_LINES = 400
 LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
-    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 660,
+    "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 616,
     "crates/ketchup-application/src/collision.rs::collision_report": 630,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
-    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1745,
+    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1736,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,
-    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 676,
-    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
+    "crates/ketchup-model/src/document/digest_v3.rs::feature_kind": 601,
+    "crates/ketchup-model/src/document/product_validation.rs::validate_features": 640,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 755,
-    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 423,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 568,
-    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1379,
+    "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 404,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 474,
+    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1335,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 674,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 509,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 496,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its
@@ -152,7 +152,7 @@ LONG_TESTS = {
     "crates/ketchup-model/tests/pad_pocket.rs::face_supported_pocket_and_topology_history_make_unique_losslessly": 453,
     "crates/ketchup-model/tests/workplane_sketch.rs::all_principal_planes_and_one_resolved_planar_face_support_are_canonical": 310,
     "crates/ketchup-scheduler/tests/exact_brep_graph/exchange_booleans_and_lofts.rs::worker_binds_multiple_imported_sources_by_digest_for_boolean_and_mesh": 375,
-    "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 336,
+    "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies": 332,
     "crates/ketchup-scheduler/tests/exact_brep_graph/surfaces_offsets_and_finishes.rs::worker_rebinds_topology_selected_finishes_and_rejects_lost_provenance": 376,
 }
 
@@ -507,7 +507,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-app allows": 18,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
-    "ketchup-application casts": 29,
+    "ketchup-application casts": 28,
     "ketchup-assistant allows": 3,
     "ketchup-assistant casts": 5,
     "ketchup-exact allows": 4,
@@ -530,7 +530,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-program allows": 9,
     "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
-    "ketchup-scheduler casts": 73,
+    "ketchup-scheduler casts": 70,
     # One on each item calling the system to read or change this thread's user and
     # groups, on Linux and macOS (review 2026-11-13 P3: one on the module hid them).
     "ketchup-user-files allows": 8,
@@ -549,6 +549,12 @@ CASTS_AND_ALLOWS = {
     "ketchup-mcp unsafe": 9,
     "ketchup-user-files unsafe": 8,
     "ketchup-viewer-android unsafe": 4,
+    # The vendored crates the workspace patches in build into the release too (review
+    # 2026-11-13 r95 P3: the count saw none of them): starlark's value heap and
+    # process-wrap's process groups and job objects, and its ProcessMeter (8: the window's
+    # memory budget reads and stops worker processes through their handle or pid).
+    "third_party/process-wrap unsafe": 57,
+    "third_party/starlark unsafe": 596,
 }
 
 
@@ -582,6 +588,15 @@ def cast_and_allow_counts(root):
                 found = len(pattern.findall(searched))
                 if found:
                     counts[f"{crate} {kind}"] = counts.get(f"{crate} {kind}", 0) + found
+    for path in sorted((root / "third_party").glob("*/**/*.rs")):
+        relative = path.relative_to(root)
+        if is_test_module(relative) or "target" in relative.parts:
+            continue
+        key = f"third_party/{relative.parts[1]} unsafe"
+        for line in production_lines(path):
+            found = len(UNSAFE.findall(STRING.sub('""', line.split("//", 1)[0])))
+            if found:
+                counts[key] = counts.get(key, 0) + found
     return counts
 
 
@@ -590,10 +605,12 @@ def grown_casts_and_allows(counts, recorded=CASTS_AND_ALLOWS):
     for key in sorted(set(counts) | set(recorded)):
         found, allowed = counts.get(key, 0), recorded.get(key, 0)
         if found > allowed:
-            problems.append(
-                f"{key}: {found}, limit {allowed}; use From/TryFrom or a named conversion, "
-                "and fix the lint instead of allowing it"
+            remedy = (
+                "write it in safe Rust, or audit it and raise the limit saying why"
+                if key.endswith(" unsafe")
+                else "use From/TryFrom or a named conversion, and fix the lint instead of allowing it"
             )
+            problems.append(f"{key}: {found}, limit {allowed}; {remedy}")
         elif found < allowed:
             problems.append(f"{key}: fell to {found}; lower CASTS_AND_ALLOWS to it")
     return problems

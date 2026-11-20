@@ -30,6 +30,7 @@ NOTICES = ROOT / "scripts" / "notices"
 TARGET = "x86_64-pc-windows-msvc"
 # The macOS bundles; the universal Viewer's Intel half compiles in the same crates.
 MACOS = "aarch64-apple-darwin"
+LINUX = "x86_64-unknown-linux-gnu"
 # How each platform's package ships the OCCT libraries, for the component sections.
 SHIPPED = {
     TARGET: {
@@ -41,6 +42,11 @@ SHIPPED = {
         "library": "libTK*.dylib",
         "library_folder": "Contents/Frameworks of the app",
         "occt_build": "scripts/macos/build-occt.sh",
+    },
+    LINUX: {
+        "library": "libTK*.so",
+        "library_folder": "the lib folder of the package",
+        "occt_build": "scripts/linux/build-occt.sh",
     },
 }
 # License texts that are an attribution requirement: the copyright notice must
@@ -81,18 +87,25 @@ PACKAGES = {
     "ketchup": Package(
         "Kecup",
         # The installer and the portable archive carry the Viewer too.
-        ("ketchup-app", "ketchup-scheduler", "ketchup-viewer"),
+        ("ketchup-app", "ketchup-scheduler", "ketchup-program", "ketchup-viewer"),
         ("occt", "acadrust", "starlark", "core-math", "msvc-runtime"),
     ),
     "viewer": Package("Kecup Viewer", ("ketchup-viewer",), ()),
-    # Kecup.app carries the app and its workers; the Viewer is a .app of its own.
+    # Ketchup.app carries the app and its workers; the Viewer is a .app of its own.
     "ketchup-macos": Package(
         "Kecup",
-        ("ketchup-app", "ketchup-scheduler"),
+        ("ketchup-app", "ketchup-scheduler", "ketchup-program"),
         ("occt", "acadrust", "starlark", "core-math"),
         MACOS,
     ),
     "viewer-macos": Package("Kecup Viewer", ("ketchup-viewer-macos",), (), MACOS),
+    # The Linux archive carries the app, its workers and the Viewer, as the Windows one.
+    "ketchup-linux": Package(
+        "Kecup",
+        ("ketchup-app", "ketchup-scheduler", "ketchup-program", "ketchup-viewer"),
+        ("occt", "acadrust", "starlark", "core-math"),
+        LINUX,
+    ),
     # The APK and the static web Viewer carry their notices too (review
     # 2026-11-02 REL-121). The APK's x86_64 library, for the emulator, compiles
     # in the same crates as its arm64 one.

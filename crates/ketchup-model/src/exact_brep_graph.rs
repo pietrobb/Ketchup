@@ -323,6 +323,13 @@ impl ExactBRepProfile {
     }
 }
 
+/// A neighbouring surface node whose seam keeps its continuity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExactBRepSurfaceSeam {
+    pub surface: ExactBRepNodeId,
+    pub continuity: ExactBRepLoftContinuity,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExactBRepLoftContinuity {
@@ -499,10 +506,43 @@ pub enum ExactBRepOperation {
         guide: Option<ExactBRepSpatialPath>,
         #[serde(default)]
         continuity: ExactBRepLoftContinuity,
+        /// The path every section's border stays on; see `FeatureKind::Loft::rail`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<ExactBRepSpatialPath>,
+    },
+    /// The smoothest surface spanning `boundary`, one closed loop that may
+    /// turn at corners; see `SurfaceBodySpec::Boundary`.
+    BoundarySurface {
+        boundary: ExactBRepSpatialPath,
+        /// Curves of a network the surface also passes through, each on its
+        /// own; see `SurfaceBodySpec::Boundary::inner`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inner: Option<ExactBRepSpatialPath>,
     },
     SurfaceTrim {
         target: ExactBRepNodeId,
         cutter: ExactBRepNodeId,
+    },
+    /// A surface across the gap between two single-face surfaces; see
+    /// `SurfaceBodySpec::Blend`.
+    SurfaceBlend {
+        first: ExactBRepNodeId,
+        first_continuity: ExactBRepLoftContinuity,
+        second: ExactBRepNodeId,
+        second_continuity: ExactBRepLoftContinuity,
+    },
+    /// A single-face surface with one control point moved and reweighted;
+    /// see `SurfaceBodySpec::ControlPoint`.
+    SurfaceControlPoint {
+        target: ExactBRepNodeId,
+        u_index: u32,
+        v_index: u32,
+        from_bits: [u64; 3],
+        offset_bits: [u64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight_bits: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<ExactBRepSurfaceSeam>,
     },
     SurfaceExtend {
         target: ExactBRepNodeId,
@@ -545,6 +585,9 @@ pub enum ExactBRepOperation {
         guide: Option<ExactBRepSpatialPath>,
         #[serde(default)]
         continuity: ExactBRepLoftContinuity,
+        /// The path every section's border stays on; see `FeatureKind::Loft::rail`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<ExactBRepSpatialPath>,
     },
     SheetMetal {
         base_mm_bits: Vec<[u64; 2]>,
@@ -661,13 +704,18 @@ impl ExactBRepOperation {
                 target,
                 cutter: tool,
             } => vec![target, tool],
-            Self::WeldmentJoint { first, second, .. } => vec![first, second],
+            Self::WeldmentJoint { first, second, .. }
+            | Self::SurfaceBlend { first, second, .. } => vec![first, second],
             Self::SurfaceKnit { surfaces, .. } => surfaces.iter_mut().collect(),
+            Self::SurfaceControlPoint { target, keep, .. } => std::iter::once(target)
+                .chain(keep.iter_mut().map(|seam| &mut seam.surface))
+                .collect(),
             Self::Extrude { .. }
             | Self::Revolve { .. }
             | Self::PlanarOffset { .. }
             | Self::PlanarSurface { .. }
             | Self::LoftSurface { .. }
+            | Self::BoundarySurface { .. }
             | Self::Sweep { .. }
             | Self::SpatialSweep { .. }
             | Self::Loft { .. }
@@ -689,7 +737,10 @@ impl ExactBRepOperation {
                 sections.iter().map(|section| section.profile).collect()
             }
             Self::Boolean { .. }
+            | Self::BoundarySurface { .. }
             | Self::SurfaceTrim { .. }
+            | Self::SurfaceBlend { .. }
+            | Self::SurfaceControlPoint { .. }
             | Self::SurfaceExtend { .. }
             | Self::SurfaceKnit { .. }
             | Self::SurfaceThicken { .. }
@@ -1003,7 +1054,10 @@ impl ExactBRepGraph {
                 ExactBRepOperation::PlanarOffset { .. }
                 | ExactBRepOperation::PlanarSurface { .. }
                 | ExactBRepOperation::LoftSurface { .. }
+                | ExactBRepOperation::BoundarySurface { .. }
                 | ExactBRepOperation::SurfaceTrim { .. }
+                | ExactBRepOperation::SurfaceBlend { .. }
+                | ExactBRepOperation::SurfaceControlPoint { .. }
                 | ExactBRepOperation::SurfaceExtend { .. },
             ) => BodyKind::Surface,
             _ => BodyKind::Solid,
@@ -1293,12 +1347,16 @@ impl ExactBRepGraph {
             let id = ExactBRepNodeId(index as u32);
             let spatial_segment_count = match &node.operation {
                 ExactBRepOperation::SpatialSweep { path, .. } => path.segments.len(),
-                ExactBRepOperation::Loft {
-                    guide: Some(path), ..
-                }
-                | ExactBRepOperation::LoftSurface {
-                    guide: Some(path), ..
-                } => path.segments.len(),
+                ExactBRepOperation::BoundarySurface { boundary, inner } => boundary
+                    .segments
+                    .len()
+                    .saturating_add(inner.as_ref().map_or(0, |inner| inner.segments.len())),
+                ExactBRepOperation::Loft { guide, rail, .. }
+                | ExactBRepOperation::LoftSurface { guide, rail, .. } => guide
+                    .iter()
+                    .chain(rail)
+                    .map(|path| path.segments.len())
+                    .sum(),
                 _ => 0,
             };
             segment_count = segment_count
@@ -1658,6 +1716,7 @@ mod tests {
                 .collect(),
             guide: None,
             continuity: ExactBRepLoftContinuity::Position,
+            rail: None,
         }
     }
 
@@ -1759,6 +1818,7 @@ mod tests {
             ],
             guide: None,
             continuity: ExactBRepLoftContinuity::Position,
+            rail: None,
         };
         let profiles = vec![
             profile(0, MAX_EXACT_BREP_LOFT_CONTROL_POINTS),
@@ -1825,6 +1885,17 @@ mod tests {
     fn planar_region_resource_limits_are_enforced() {
         let tolerance_mm = crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
         assert_eq!(limits::PATH_SEGMENTS, 64);
+        assert_eq!(
+            validate_geometry(
+                &loop_geometry(&boundary_loop(
+                    [0.0, 0.0],
+                    100.0,
+                    limits::PLANAR_PROFILE_SEGMENTS
+                )),
+                tolerance_mm
+            ),
+            Ok(limits::PLANAR_PROFILE_SEGMENTS)
+        );
         assert_eq!(limits::REGION_HOLES, 64);
         assert_eq!(limits::REGION_SEGMENTS, 4_096);
 
@@ -1851,7 +1922,11 @@ mod tests {
 
         assert_eq!(
             validate_geometry(
-                &loop_geometry(&boundary_loop([0.0, 0.0], 100.0, limits::PATH_SEGMENTS + 1)),
+                &loop_geometry(&boundary_loop(
+                    [0.0, 0.0],
+                    100.0,
+                    limits::PLANAR_PROFILE_SEGMENTS + 1
+                )),
                 tolerance_mm
             ),
             Err(ExactBRepGraphError::ResourceLimit),

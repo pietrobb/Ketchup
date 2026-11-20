@@ -20,6 +20,8 @@ const MEMORY_PROBE_MIN_OBSERVED_BYTES: u64 = MEMORY_PROBE_ALLOCATION_BYTES / 2;
 const MEMORY_PROBE_CHILD_HANG_GUARD: Duration = Duration::from_secs(300);
 const MEMORY_PROBE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE";
 const MEMORY_PROBE_READY_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_READY";
+/// Where the corpus child writes its metrics; set only for that child.
+const CORPUS_CHILD_METRICS_ENV: &str = "KETCHUP_PRODUCTION_CORPUS_METRICS";
 
 #[derive(Clone, Copy)]
 struct CorpusEntry {
@@ -478,7 +480,7 @@ fn process_tree_memory_high_water_observes_child_allocation() {
 
 #[test]
 fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_parity_claims() {
-    corpus_metrics();
+    isolated_corpus_metrics();
 }
 
 /// The time budgets of the corpus hold in release, nightly; the test above
@@ -486,24 +488,79 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
 fn perf_realistic_corpus_opens_rebuilds_and_draws_within_budget() {
-    for fixture in corpus_metrics().fixtures {
-        let name = fixture.name;
-        let open = fixture.cold_open_ms;
+    let metrics = isolated_corpus_metrics();
+    for fixture in metrics["fixtures"].as_array().expect("corpus fixtures") {
+        let name = fixture["name"].as_str().expect("fixture name");
+        let measured = |field: &str| fixture[field].as_f64().expect("fixture time in ms");
+        let open = measured("cold_open_ms");
         assert!(
-            open < milliseconds(OPEN_BUDGET),
+            open < milliseconds(ketchup_test_env::perf_budget(OPEN_BUDGET)),
             "{name} cold open took {open} ms"
         );
-        let rebuild = fixture.exact_rebuild_ms;
+        let rebuild = measured("exact_rebuild_ms");
         assert!(
-            rebuild < milliseconds(EXACT_REBUILD_BUDGET),
+            rebuild < milliseconds(ketchup_test_env::perf_budget(EXACT_REBUILD_BUDGET)),
             "{name} exact rebuild took {rebuild} ms"
         );
-        let frames = fixture.offscreen_ui_20_frames_ms;
+        let frames = measured("offscreen_ui_20_frames_ms");
         assert!(
-            frames < milliseconds(UI_FRAME_BUDGET),
+            frames < milliseconds(ketchup_test_env::perf_budget(UI_FRAME_BUDGET)),
             "{name} twenty offscreen UI frames took {frames} ms"
         );
     }
+}
+
+/// Runs the corpus for [`isolated_corpus_metrics`] in a process of its own.
+#[test]
+fn production_corpus_child() {
+    let Some(metrics_path) = std::env::var_os(CORPUS_CHILD_METRICS_ENV) else {
+        return;
+    };
+    let json = serde_json::to_string(&corpus_metrics()).unwrap();
+    std::fs::write(metrics_path, json).expect("write corpus metrics for the parent test");
+}
+
+/// The corpus in a child process of this test binary, as its metrics. The
+/// memory high-water of this process also holds every test running beside
+/// it: in CI run 44625008317 the corpus "grew" by 2.59 GB that way.
+fn isolated_corpus_metrics() -> serde_json::Value {
+    // One corpus at a time: an open session locks its document, and the
+    // tests of one file run side by side.
+    static CORPUS_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_corpus = CORPUS_RUN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _turn = crate::integration_support::file_turn();
+    let directory = tempfile::tempdir().expect("corpus child directory");
+    let metrics_path = directory.path().join("metrics.json");
+    // Files, not pipes: waiting for a pipe's end also waits for every process
+    // that inherited it, here the exact workers (review 2026-11-08 CI-251).
+    let output_file = |name: &str| {
+        std::fs::File::create(directory.path().join(name)).expect("corpus child output file")
+    };
+    let status = Command::new(std::env::current_exe().expect("test executable path"))
+        .args([
+            "--exact",
+            &crate::integration_support::test_name(module_path!(), "production_corpus_child"),
+            "--nocapture",
+        ])
+        .env(CORPUS_CHILD_METRICS_ENV, &metrics_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(output_file("stdout"))
+        .stderr(output_file("stderr"))
+        .status()
+        .expect("run the corpus in a process of its own");
+    let output =
+        |name: &str| std::fs::read_to_string(directory.path().join(name)).unwrap_or_default();
+    eprint!("{}", output("stderr"));
+    // A child that ran no test also exits successfully, without metrics.
+    let metrics = std::fs::read_to_string(&metrics_path);
+    assert!(
+        status.success() && metrics.is_ok(),
+        "the corpus failed in its own process (status={status}):\n{}",
+        output("stdout")
+    );
+    serde_json::from_str(&metrics.unwrap()).expect("corpus metrics are JSON")
 }
 
 /// Opens, rebuilds and draws each document of the corpus, checks what each
@@ -676,7 +733,7 @@ fn corpus_metrics() -> CorpusMetrics {
             "timings are wall-clock samples from one local run, not a cross-product benchmark",
             "UI samples are deterministic offscreen egui frames and do not claim native-window or hardware-GPU latency",
             "legacy documents with unsupported producers report exact incompleteness instead of being skipped",
-            "memory is the live process-tree OS high-water sum: peak page-file usage on Windows and VmHWM on Linux",
+            "memory is the live process-tree OS high-water sum of a test process running only the corpus: peak page-file usage on Windows and VmHWM on Linux",
             "regression budgets are generous failure ceilings, not advertised performance targets",
         ],
     };
@@ -701,7 +758,7 @@ fn one_move_among_the_largest_indexed_model_commits() {
 fn perf_one_move_among_the_largest_indexed_model_commits_within_budget() {
     let fastest = fastest_move_among_the_largest_indexed_model();
     assert!(
-        fastest < ONE_EDIT_BUDGET,
+        fastest < ketchup_test_env::perf_budget(ONE_EDIT_BUDGET),
         "one move among the largest indexed model took {fastest:?}"
     );
 }

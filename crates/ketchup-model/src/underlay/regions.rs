@@ -1273,8 +1273,14 @@ mod tests {
         let figures = find_figures(&lines, 0.01).unwrap();
         let figures_took = started.elapsed();
         assert!(regions.len() > 60_000 && figures.len() > 30_000);
-        assert!(regions_took.as_secs_f64() < 1.0, "regions {regions_took:?}");
-        assert!(figures_took.as_secs_f64() < 1.0, "figures {figures_took:?}");
+        assert!(
+            regions_took < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+            "regions {regions_took:?}"
+        );
+        assert!(
+            figures_took < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
+            "figures {figures_took:?}"
+        );
     }
 
     #[test]

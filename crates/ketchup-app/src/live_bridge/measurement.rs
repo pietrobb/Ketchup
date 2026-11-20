@@ -6,7 +6,7 @@ use ketchup_application::measurement::{FaceTarget, SelectedFaceMeasurement};
 use ketchup_rejection::Rejection;
 #[cfg(test)]
 #[path = "measurement_tests.rs"]
-pub(super) mod tests;
+pub(crate) mod tests;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

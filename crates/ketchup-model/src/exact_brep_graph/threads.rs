@@ -19,6 +19,14 @@ pub(super) fn threads_previous_node(node: &ExactBRepNode, prior_nodes: &[ExactBR
 }
 
 impl ExactBRepGraph {
+    /// Whether the graph cuts a modelled thread.
+    #[must_use]
+    pub fn models_threads(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|node| matches!(node.operation, ExactBRepOperation::ThreadGroove(_)))
+    }
+
     /// The graph with its modelled threads cosmetic: every thread groove left
     /// out, so the body is the one the document makes with cosmetic threads
     /// (drawings show a modelled thread by ISO 6410, as a cosmetic one).
@@ -27,11 +35,7 @@ impl ExactBRepGraph {
     /// # Errors
     /// The graph cannot be serialised for its digest.
     pub fn without_thread_grooves(&self) -> Result<Option<Self>, ExactBRepGraphError> {
-        if !self
-            .nodes
-            .iter()
-            .any(|node| matches!(node.operation, ExactBRepOperation::ThreadGroove(_)))
-        {
+        if !self.models_threads() {
             return Ok(None);
         }
         // Each old node's id in the new graph; a groove stands for its target.

@@ -12,6 +12,7 @@ use super::program_dry_run::QueuedReply;
 use super::*;
 use crate::app::exchange_export::{ClientExchangeExport, ExchangeFormat};
 use crate::app::presentation_export::MadePresentation;
+use ketchup_manufacturing::presentation::presentation_supersample;
 
 pub(super) struct ExchangeExportJob {
     id: u64,
@@ -31,12 +32,12 @@ pub(super) fn runs_as_job(request: &Request) -> bool {
 /// The exact format `request` exports to, which runs as a job.
 pub(super) fn exchange_format(request: &Request) -> Option<ExchangeFormat> {
     match request {
-        Request::Export { export_format, .. } if export_format == "step" => {
-            Some(ExchangeFormat::Step)
-        }
-        Request::Export { export_format, .. } if export_format == "iges" => {
-            Some(ExchangeFormat::Iges)
-        }
+        Request::Export(crate::live_bridge::interchange::ExportRequest {
+            export_format, ..
+        }) if export_format == "step" => Some(ExchangeFormat::Step),
+        Request::Export(crate::live_bridge::interchange::ExportRequest {
+            export_format, ..
+        }) if export_format == "iges" => Some(ExchangeFormat::Iges),
         _ => None,
     }
 }
@@ -152,11 +153,14 @@ pub(super) struct PresentationJob {
     receiver: mpsc::Receiver<MadePresentation>,
     /// The client was told `request_cancelled`; the job keeps its place until its thread ends.
     answered: bool,
+    /// Samples per pixel side asked for and made with: an image too large for its smoothing
+    /// is smoothed less, and the answer says so (review 2026-11-13 r95 P3).
+    supersample: (u32, u32),
 }
 
 /// Whether `request` is a presentation image, which runs as a job.
 pub(super) fn presents(request: &Request) -> bool {
-    matches!(request, Request::Export { export_format, .. } if export_format == "presentation_png")
+    matches!(request, Request::Export(crate::live_bridge::interchange::ExportRequest { export_format, .. }) if export_format == "presentation_png")
 }
 
 impl LiveBridge {
@@ -184,11 +188,20 @@ impl LiveBridge {
             return;
         }
         let image = match &request {
-            Request::Export { image, .. } => image.clone(),
+            Request::Export(crate::live_bridge::interchange::ExportRequest { image, .. }) => {
+                image.clone()
+            }
             _ => None,
         };
+        let mut supersample = (0, 0);
         let started = Self::export_target(app, request, ui_busy).and_then(|target| {
             let request = presentation_request(image).map_err(InvalidImage::refused)?;
+            let options = &request.options;
+            supersample = (
+                options.supersample,
+                presentation_supersample(options.width, options.height, options.supersample)
+                    .unwrap_or(options.supersample),
+            );
             Self::require_request_authority(&cancelled)?;
             let receiver = app
                 .start_client_presentation(
@@ -219,6 +232,7 @@ impl LiveBridge {
                     overwrite,
                     receiver,
                     answered: false,
+                    supersample,
                 }));
                 context.request_repaint_after(Duration::from_millis(10));
             }
@@ -262,7 +276,17 @@ impl LiveBridge {
             &job.cancelled,
             job.overwrite,
         );
-        let result = Self::exported(&job.path, &job.export_format, written);
+        let result = Self::exported(&job.path, &job.export_format, written).map(|mut answer| {
+            let (asked, made) = job.supersample;
+            answer["supersample"] = json!(made);
+            if made < asked {
+                answer["supersample_asked"] = json!(asked);
+                answer["supersample_reason"] = json!(
+                    "the image is too large to smooth more within the renderer's sample limit"
+                );
+            }
+            answer
+        });
         Self::reply(app, job.id, &job.reply, result);
         context.request_repaint();
     }

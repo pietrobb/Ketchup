@@ -1,8 +1,8 @@
-# Kečup Viewer interface text, English (the reference key set).
+# Ketchup Viewer interface text, English (the reference key set).
 # Every other locale must define exactly these keys; { $name } is a placeholder.
 viewer-language-name = English
-viewer-title = Kečup Viewer
-viewer-file-filter = Kečup Viewer package
+viewer-title = Ketchup Viewer
+viewer-file-filter = Ketchup Viewer package
 viewer-open = Open model
 viewer-open-prompt = Open a .ketchup-view file
 viewer-fit = Fit
@@ -63,7 +63,7 @@ viewer-comments-open = Open comments
 viewer-comments-save = Save comments for the author
 viewer-comments-save-copy = Save model copy with comments
 viewer-comments-share = Send comments to the author
-viewer-comments-filter = Kečup comments
+viewer-comments-filter = Ketchup comments
 viewer-loading = Loading the model…
 viewer-views = Views
 viewer-settings = Settings

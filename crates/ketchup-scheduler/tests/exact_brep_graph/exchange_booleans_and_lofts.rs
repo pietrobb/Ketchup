@@ -151,6 +151,7 @@ fn exact_volume_mesh_builds_occurrence_bound_fea_and_rejects_stale_or_unknown_fa
             youngs_modulus_mpa: 200_000.0,
             poisson_ratio: 0.3,
             yield_strength_mpa: Some(250.0),
+            density_kg_per_m3: None,
         },
         constrained_face_ordinals: vec![bottom],
         face_tractions: vec![ExactFeaFaceTraction {
@@ -205,6 +206,140 @@ fn exact_volume_mesh_builds_occurrence_bound_fea_and_rejects_stale_or_unknown_fa
     );
 }
 
+/// The 8 × 6 × 5 mm steel block conducts between its bottom and top faces
+/// only, so its temperature is linear in height on any tetrahedral mesh.
+#[test]
+fn exact_volume_mesh_builds_occurrence_bound_heat_conduction_on_exact_faces() {
+    use ketchup_analysis::fea_thermal::{
+        ThermalMaterial, ThermalSolveSettings, solve_steady_conduction,
+    };
+    use ketchup_scheduler::thermal_setup::{
+        ExactThermalFaceConvection, ExactThermalFaceTemperature, ExactThermalSetup,
+    };
+
+    let _turn = crate::integration_support::file_turn();
+    let (document, definition, extrusion, occurrence) = simple_extrusion_document();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, extrusion).unwrap();
+    let options = ExactVolumeMeshWireOptions {
+        surface_deflection_mm: 0.1,
+        angular_deflection_rad: 0.2,
+        max_tetrahedra: 64,
+        max_relative_volume_error: 1.0e-10,
+        min_tetrahedron_quality: 1.0e-5,
+    };
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor
+        .evaluate_exact_brep_graph_volume_mesh(&graph, options)
+        .unwrap();
+    let by_height = |pick: fn(f64, f64) -> bool| {
+        package
+            .source
+            .face_evidence
+            .iter()
+            .reduce(|best, face| {
+                if pick(face.centroid_mm[2], best.centroid_mm[2]) {
+                    face
+                } else {
+                    best
+                }
+            })
+            .unwrap()
+            .face_ordinal
+    };
+    let bottom = by_height(|face, best| face < best);
+    let top = by_height(|face, best| face > best);
+    let conductivity = 53.334;
+    let mut setup = ExactThermalSetup {
+        case_id: "block-between-two-temperatures".into(),
+        instance_path: InstancePath::root(occurrence),
+        material: ThermalMaterial {
+            id: 1,
+            conductivity_w_per_m_k: conductivity,
+        },
+        held_faces: vec![
+            ExactThermalFaceTemperature {
+                face_ordinal: bottom,
+                temperature_c: 20.0,
+            },
+            ExactThermalFaceTemperature {
+                face_ordinal: top,
+                temperature_c: 70.0,
+            },
+        ],
+        flux_faces: Vec::new(),
+        convection_faces: Vec::new(),
+    };
+
+    let bound = package
+        .occurrence_bound_thermal_model(&snapshot, &setup)
+        .unwrap();
+    assert_eq!(bound.graph_digest, graph.graph_digest);
+    assert_eq!(bound.mesh_fingerprint, package.mesh.mesh_fingerprint);
+    assert_eq!(bound.source_revision, snapshot.revision_id());
+    let solution = solve_steady_conduction(&bound.model, ThermalSolveSettings::default()).unwrap();
+    for (node, temperature) in bound.model.nodes.iter().zip(&solution.temperatures_c) {
+        let expected = 20.0 + 10.0 * node.position_mm[2];
+        assert!(
+            (temperature - expected).abs() < 1e-8,
+            "{temperature} vs {expected}"
+        );
+    }
+    // k A ΔT / h with A = 48 mm² and h = 5 mm, in W.
+    let power_w = conductivity * 48.0e-6 * 50.0 / 5.0e-3;
+    assert!((solution.heat_into_held_nodes_w - power_w).abs() < 1e-8 * power_w);
+    assert!(solution.heat_balance_w.abs() < 1e-8);
+
+    // A film on the top face instead: k (T₀ − T_top) / h = film (T_top − T∞).
+    setup.held_faces.truncate(1);
+    setup.held_faces[0].temperature_c = 100.0;
+    setup.convection_faces.push(ExactThermalFaceConvection {
+        face_ordinal: top,
+        film_coefficient_w_per_m2_k: 1_000.0,
+        ambient_c: 20.0,
+    });
+    let bound = package
+        .occurrence_bound_thermal_model(&snapshot, &setup)
+        .unwrap();
+    let solution = solve_steady_conduction(&bound.model, ThermalSolveSettings::default()).unwrap();
+    let conductance = conductivity / 5.0e-3;
+    let top_c = (conductance * 100.0 + 1_000.0 * 20.0) / (conductance + 1_000.0);
+    for (node, temperature) in bound.model.nodes.iter().zip(&solution.temperatures_c) {
+        let expected = 100.0 + (top_c - 100.0) * node.position_mm[2] / 5.0;
+        assert!(
+            (temperature - expected).abs() < 1e-8,
+            "{temperature} vs {expected}"
+        );
+    }
+
+    let mut twice = setup.clone();
+    twice.convection_faces[0].face_ordinal = bottom;
+    assert_eq!(
+        package
+            .occurrence_bound_thermal_model(&snapshot, &twice)
+            .unwrap_err(),
+        ExactFeaSetupError::InvalidBoundarySelection
+    );
+    let mut unknown = setup.clone();
+    unknown.convection_faces[0].face_ordinal = u32::MAX;
+    assert_eq!(
+        package
+            .occurrence_bound_thermal_model(&snapshot, &unknown)
+            .unwrap_err(),
+        ExactFeaSetupError::InvalidBoundarySelection
+    );
+    let mut floating = setup;
+    floating.held_faces.clear();
+    floating.convection_faces.clear();
+    assert_eq!(
+        package
+            .occurrence_bound_thermal_model(&snapshot, &floating)
+            .unwrap_err(),
+        ExactFeaSetupError::IncompleteSetup
+    );
+}
+
 #[test]
 fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refusals() {
     let _turn = crate::integration_support::file_turn();
@@ -235,7 +370,7 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
         &plan,
         &toolpath,
         &clean,
-        CamPostprocessorDialect::IsoMetricGCode,
+        CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
     )
     .unwrap();
     let neutral = CamPostprocessorOutput::generate(
@@ -246,7 +381,15 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
         CamPostprocessorDialect::ControllerNeutralJson,
     )
     .unwrap();
-    assert_eq!(iso.parse().unwrap(), neutral.parse().unwrap());
+    // ISO writes on a 1e-6 mm grid, JSON on 1e-9 mm, so the two agree within 1e-6 mm.
+    let (iso_program, neutral_program) = (iso.parse().unwrap(), neutral.parse().unwrap());
+    assert_eq!(iso_program.motions.len(), neutral_program.motions.len());
+    for (written, exact) in iso_program.motions.iter().zip(&neutral_program.motions) {
+        assert_eq!(written.kind, exact.kind);
+        for (value, exact) in written.end_mm.iter().zip(exact.end_mm) {
+            assert!((value - exact).abs() <= 1.0e-6, "{value} vs {exact}");
+        }
+    }
     iso.verify(&document.current(), &plan, &toolpath, &clean)
         .unwrap();
     neutral
@@ -289,7 +432,7 @@ fn cam_simulation_removes_stock_exactly_and_reports_fixture_gouge_and_stale_refu
             &plan,
             &toolpath,
             &collision,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );
@@ -2235,6 +2378,7 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))
@@ -2448,6 +2592,7 @@ fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))
@@ -2524,6 +2669,7 @@ fn worker_evaluates_loft_with_matching_profile_holes_and_rejects_mismatched_wire
                 .collect(),
             guide: None,
             continuity: LoftContinuity::Position,
+            rail: None,
         },
     });
     let mut document = DocumentStore::new();
@@ -2641,6 +2787,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                     ],
                     guide: Some(guide),
                     continuity: LoftContinuity::Tangent,
+                    rail: None,
                 },
             },
         ]))
@@ -2697,6 +2844,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                     ],
                     guide: None,
                     continuity,
+                    rail: None,
                 },
             }]))
             .unwrap();
@@ -2757,6 +2905,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                 ],
                 guide: Some(intersecting_guide),
                 continuity: LoftContinuity::Tangent,
+                rail: None,
             },
         },
     ]));
@@ -2810,6 +2959,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
                     ],
                     guide,
                     continuity,
+                    rail: None,
                 },
             }]))
             .err()
@@ -2925,6 +3075,7 @@ fn worker_evaluates_mixed_spline_and_sketch_loft_in_shifted_rotated_frames() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
         ]))

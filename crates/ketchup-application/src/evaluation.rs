@@ -810,6 +810,190 @@ pub fn start_exact_evaluation_scoped(
     )
 }
 
+/// Re-inspects an imported STEP/IGES body against its receipt and meshes it.
+fn evaluate_imported(
+    snapshot: &Snapshot,
+    worker: &mut ketchup_scheduler::ExactWorkerSupervisor,
+    definition_id: DefinitionId,
+    source: Arc<Vec<u8>>,
+    cancelled: &AtomicBool,
+) -> Result<ExactBodyPackage, ExactProducerError> {
+    let definition = snapshot
+        .definition(definition_id)
+        .ok_or(ExactProducerError::DefinitionUnavailable(definition_id))?;
+    let [feature_id] = definition.feature_ids() else {
+        return Err(ExactProducerError::DefinitionNotSingular(definition_id));
+    };
+    let feature = snapshot
+        .feature(*feature_id)
+        .ok_or(ExactProducerError::FeatureUnavailable(*feature_id))?;
+    let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
+        return Err(ExactProducerError::SpecificationUnavailable(*feature_id));
+    };
+    let receipt = snapshot
+        .import_receipt(spec.import_id)
+        .ok_or(ExactProducerError::ReceiptUnavailable(*feature_id))?;
+    let (format_name, parser_id, parser_version, suffix) = match receipt.format() {
+        ImportFormat::Step => (
+            "STEP",
+            STEP_PARSER_ID,
+            if spec.source_part_index.is_some() {
+                STEP_XDE_PARSER_VERSION
+            } else {
+                STEP_PARSER_VERSION
+            },
+            ".step",
+        ),
+        ImportFormat::Iges => (
+            "IGES",
+            IGES_PARSER_ID,
+            if spec.source_part_index.is_some() {
+                IGES_XDE_PARSER_VERSION
+            } else {
+                IGES_PARSER_VERSION
+            },
+            ".iges",
+        ),
+        format => return Err(ExactProducerError::UnsupportedReceiptFormat(format)),
+    };
+    if receipt.units().authority() != ImportUnitAuthority::FileDeclared
+        || receipt.parser_id() != parser_id
+        || receipt.parser_version() != parser_version
+    {
+        return Err(ExactProducerError::ReceiptNotAuthoritative {
+            format: format_name,
+        });
+    }
+    let source_unit = receipt.units().source_unit();
+    let mut expected = StepImportEvidence {
+        source_sha256: spec.source_sha256,
+        source_byte_len: spec.source_byte_len,
+        source_unit,
+        result_fingerprint: spec.result_fingerprint.clone(),
+        body_kind: spec.body_kind,
+        solid_count: spec.solid_count,
+        topology_counts: spec.topology_counts.unwrap_or([0; 5]),
+        area_mm2: spec.area_mm2,
+        volume_mm3: spec.volume_mm3,
+        bounds_mm: spec.bounds_mm,
+        backend: spec.backend.clone(),
+        tolerance: spec.tolerance.clone(),
+    };
+    let mut temporary = tempfile::Builder::new()
+        .prefix("ketchup-imported-exact-")
+        .suffix(suffix)
+        .tempfile()
+        .map_err(ExactProducerError::TemporaryFile)?;
+    temporary
+        .write_all(&source)
+        .and_then(|_| temporary.flush())
+        .map_err(ExactProducerError::TemporaryFile)?;
+    let source_sha256 = ketchup_model::graph::sha256_hex(&source);
+    let actual = match receipt.format() {
+        ImportFormat::Step => match spec.source_part_index {
+            Some(index) => worker.inspect_step_xde_part_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                index,
+                cancelled,
+            ),
+            None => worker.inspect_step_import_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                cancelled,
+            ),
+        },
+        ImportFormat::Iges => match spec.source_part_index {
+            Some(index) => worker.inspect_iges_xde_part_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                index,
+                cancelled,
+            ),
+            None => worker
+                .inspect_iges_import_with_cancellation(temporary.path(), &source_sha256, cancelled)
+                .map(|evidence| StepImportEvidence {
+                    source_sha256: evidence.source_sha256,
+                    source_byte_len: evidence.source_byte_len,
+                    source_unit: evidence.source_unit,
+                    result_fingerprint: evidence.result_fingerprint,
+                    body_kind: evidence.body_kind,
+                    solid_count: evidence.solid_count,
+                    topology_counts: evidence.topology_counts,
+                    area_mm2: evidence.area_mm2,
+                    volume_mm3: evidence.volume_mm3,
+                    bounds_mm: evidence.bounds_mm,
+                    backend: evidence.backend,
+                    tolerance: evidence.tolerance,
+                }),
+        },
+        _ => unreachable!("receipt format was validated above"),
+    }
+    .map_err(ExactProducerError::Worker)?;
+    if spec.topology_counts.is_none() {
+        expected.topology_counts = actual.topology_counts;
+    }
+    if spec.schema != ketchup_model::document::IMPORTED_EXACT_BODY_SCHEMA_V3 {
+        expected.area_mm2 = actual.area_mm2;
+    }
+    // The body keeps the recorded identity even when this libm
+    // rounds its measures a few last bits away (ADR 0010); the
+    // worker labels the mesh with what it evaluated.
+    if !actual.is_same_body_as(&expected) {
+        return Err(ExactProducerError::EvidenceMismatch {
+            format: format_name,
+            expected: Box::new(expected),
+            actual: Box::new(actual),
+        });
+    }
+    let mesh_target = tempfile::Builder::new()
+        .prefix("ketchup-imported-step-mesh-")
+        .suffix(".bin")
+        .tempfile()
+        .map_err(ExactProducerError::TemporaryFile)?;
+    let mesh = match receipt.format() {
+        ImportFormat::Step => match spec.source_part_index {
+            Some(index) => worker.tessellate_step_xde_part_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                &actual.result_fingerprint,
+                mesh_target.path(),
+                index,
+                cancelled,
+            ),
+            None => worker.tessellate_step_import_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                &actual.result_fingerprint,
+                mesh_target.path(),
+                cancelled,
+            ),
+        },
+        ImportFormat::Iges => match spec.source_part_index {
+            Some(index) => worker.tessellate_iges_xde_part_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                &actual.result_fingerprint,
+                mesh_target.path(),
+                index,
+                cancelled,
+            ),
+            None => worker.tessellate_iges_import_with_cancellation(
+                temporary.path(),
+                &source_sha256,
+                &actual.result_fingerprint,
+                mesh_target.path(),
+                cancelled,
+            ),
+        },
+        _ => unreachable!("receipt format was validated above"),
+    }
+    .map_err(ExactProducerError::Worker)?;
+    ImportedExactPackage::from_snapshot(snapshot, definition_id, source, &mesh)
+        .map(ExactBodyPackage::Imported)
+        .map_err(ExactProducerError::Package)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn start_exact_evaluation_scoped_with_cancellation(
     snapshot: Snapshot,
@@ -866,6 +1050,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
         };
         let mut render_packages = Vec::new();
         let mut topology_packages = Vec::new();
+        let mut cosmetic_packages = Vec::new();
         match prepared {
             Err(error) => report.not_evaluated = Some(error.to_string()),
             Ok((requests, coverage)) => {
@@ -914,7 +1099,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                     .expect("selected producer");
                                 let topology_only = entry.render.is_evaluated();
                                 let evaluated =
-    (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>), ExactProducerError> {
+    (|| -> Result<(ExactBodyPackage, Option<ExactBodyPackage>, Option<ExactBodyPackage>), ExactProducerError> {
         Ok(match request {
             ExactEvaluationRequest::Graph {
                 graph,
@@ -932,195 +1117,21 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     )
                     .map(ExactBodyPackage::Graph)
                     .map_err(ExactProducerError::Worker)?;
-                (package.clone(), Some(package))
+                let cosmetic = crate::threads::cosmetic_thread_body(
+                    &mut worker,
+                    &graph,
+                    &imported_sources,
+                    &worker_cancelled,
+                );
+                (package.clone(), Some(package), cosmetic)
             }
             ExactEvaluationRequest::Imported(definition_id, source) => {
-                let definition = snapshot
-                    .definition(definition_id)
-                    .ok_or(ExactProducerError::DefinitionUnavailable(definition_id))?;
-                let [feature_id] = definition.feature_ids() else {
-                    return Err(ExactProducerError::DefinitionNotSingular(definition_id));
-                };
-                let feature = snapshot
-                    .feature(*feature_id)
-                    .ok_or(ExactProducerError::FeatureUnavailable(*feature_id))?;
-                let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
-                    return Err(ExactProducerError::SpecificationUnavailable(*feature_id));
-                };
-                let receipt = snapshot
-                    .import_receipt(spec.import_id)
-                    .ok_or(ExactProducerError::ReceiptUnavailable(*feature_id))?;
-                let (format_name, parser_id, parser_version, suffix) = match receipt.format() {
-                    ImportFormat::Step => (
-                        "STEP",
-                        STEP_PARSER_ID,
-                        if spec.source_part_index.is_some() {
-                            STEP_XDE_PARSER_VERSION
-                        } else {
-                            STEP_PARSER_VERSION
-                        },
-                        ".step",
-                    ),
-                    ImportFormat::Iges => (
-                        "IGES",
-                        IGES_PARSER_ID,
-                        if spec.source_part_index.is_some() {
-                            IGES_XDE_PARSER_VERSION
-                        } else {
-                            IGES_PARSER_VERSION
-                        },
-                        ".iges",
-                    ),
-                    format => return Err(ExactProducerError::UnsupportedReceiptFormat(format)),
-                };
-                if receipt.units().authority() != ImportUnitAuthority::FileDeclared
-                    || receipt.parser_id() != parser_id
-                    || receipt.parser_version() != parser_version
-                {
-                    return Err(ExactProducerError::ReceiptNotAuthoritative { format: format_name });
-                }
-                let source_unit = receipt.units().source_unit();
-                let mut expected = StepImportEvidence {
-                    source_sha256: spec.source_sha256,
-                    source_byte_len: spec.source_byte_len,
-                    source_unit,
-                    result_fingerprint: spec.result_fingerprint.clone(),
-                    body_kind: spec.body_kind,
-                    solid_count: spec.solid_count,
-                    topology_counts: spec.topology_counts.unwrap_or([0; 5]),
-                    area_mm2: spec.area_mm2,
-                    volume_mm3: spec.volume_mm3,
-                    bounds_mm: spec.bounds_mm,
-                    backend: spec.backend.clone(),
-                    tolerance: spec.tolerance.clone(),
-                };
-                let mut temporary = tempfile::Builder::new()
-                    .prefix("ketchup-imported-exact-")
-                    .suffix(suffix)
-                    .tempfile()
-                    .map_err(ExactProducerError::TemporaryFile)?;
-                temporary
-                    .write_all(&source)
-                    .and_then(|_| temporary.flush())
-                    .map_err(ExactProducerError::TemporaryFile)?;
-                let source_sha256 = ketchup_model::graph::sha256_hex(&source);
-                let actual = match receipt.format() {
-                    ImportFormat::Step => match spec.source_part_index {
-                        Some(index) => worker.inspect_step_xde_part_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            index,
-                            &worker_cancelled,
-                        ),
-                        None => worker.inspect_step_import_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            &worker_cancelled,
-                        ),
-                    },
-                    ImportFormat::Iges => match spec.source_part_index {
-                        Some(index) => worker.inspect_iges_xde_part_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            index,
-                            &worker_cancelled,
-                        ),
-                        None => worker
-                            .inspect_iges_import_with_cancellation(
-                                temporary.path(),
-                                &source_sha256,
-                                &worker_cancelled,
-                            )
-                            .map(|evidence| StepImportEvidence {
-                                source_sha256: evidence.source_sha256,
-                                source_byte_len: evidence.source_byte_len,
-                                source_unit: evidence.source_unit,
-                                result_fingerprint: evidence.result_fingerprint,
-                                body_kind: evidence.body_kind,
-                                solid_count: evidence.solid_count,
-                                topology_counts: evidence.topology_counts,
-                                area_mm2: evidence.area_mm2,
-                                volume_mm3: evidence.volume_mm3,
-                                bounds_mm: evidence.bounds_mm,
-                                backend: evidence.backend,
-                                tolerance: evidence.tolerance,
-                            }),
-                    },
-                    _ => unreachable!("receipt format was validated above"),
-                }
-                .map_err(ExactProducerError::Worker)?;
-                if spec.topology_counts.is_none() {
-                    expected.topology_counts = actual.topology_counts;
-                }
-                if spec.schema != ketchup_model::document::IMPORTED_EXACT_BODY_SCHEMA_V3 {
-                    expected.area_mm2 = actual.area_mm2;
-                }
-                // The body keeps the recorded identity even when this libm
-                // rounds its measures a few last bits away (ADR 0010); the
-                // worker labels the mesh with what it evaluated.
-                if !actual.is_same_body_as(&expected) {
-                    return Err(ExactProducerError::EvidenceMismatch {
-                        format: format_name,
-                        expected: Box::new(expected),
-                        actual: Box::new(actual),
-                    });
-                }
-                let mesh_target = tempfile::Builder::new()
-                    .prefix("ketchup-imported-step-mesh-")
-                    .suffix(".bin")
-                    .tempfile()
-                    .map_err(ExactProducerError::TemporaryFile)?;
-                let mesh = match receipt.format() {
-                    ImportFormat::Step => match spec.source_part_index {
-                        Some(index) => worker.tessellate_step_xde_part_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            &actual.result_fingerprint,
-                            mesh_target.path(),
-                            index,
-                            &worker_cancelled,
-                        ),
-                        None => worker.tessellate_step_import_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            &actual.result_fingerprint,
-                            mesh_target.path(),
-                            &worker_cancelled,
-                        ),
-                    },
-                    ImportFormat::Iges => match spec.source_part_index {
-                        Some(index) => worker.tessellate_iges_xde_part_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            &actual.result_fingerprint,
-                            mesh_target.path(),
-                            index,
-                            &worker_cancelled,
-                        ),
-                        None => worker.tessellate_iges_import_with_cancellation(
-                            temporary.path(),
-                            &source_sha256,
-                            &actual.result_fingerprint,
-                            mesh_target.path(),
-                            &worker_cancelled,
-                        ),
-                    },
-                    _ => unreachable!("receipt format was validated above"),
-                }
-                .map_err(ExactProducerError::Worker)?;
-                let package = ImportedExactPackage::from_snapshot(
-                    &snapshot,
-                    definition_id,
-                    source,
-                    &mesh,
-                )
-                .map(ExactBodyPackage::Imported)
-                .map_err(ExactProducerError::Package)?;
-                (package.clone(), Some(package))
+                let package = evaluate_imported(&snapshot, &mut worker, definition_id, source, &worker_cancelled)?;
+                (package.clone(), Some(package), None)
             }
         })
     })();
-                                let (package, topology_package) = match evaluated {
+                                let (package, topology_package, cosmetic) = match evaluated {
                                     Ok(products) => products,
                                     // Interrupted, not completed: it stays the active body.
                                     Err(error) if worker_cancelled.load(Ordering::Acquire) => {
@@ -1166,6 +1177,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                 if let Some(package) = topology_package {
                                     topology_packages.push(Arc::new(package));
                                 }
+                                cosmetic_packages.extend(cosmetic.map(Arc::new));
                                 worker_completed_producers.fetch_add(1, Ordering::AcqRel);
                             }
                             if worker_healthy && !worker_cancelled.load(Ordering::Acquire) {
@@ -1190,6 +1202,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
             source: worker_source,
             render_packages,
             topology_packages,
+            cosmetic_packages,
             report,
         };
         worker_finished.store(true, Ordering::Release);

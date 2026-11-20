@@ -46,11 +46,17 @@ pub(crate) struct LiveState {
     /// connection ends; another client's attach then takes the window over.
     pub(crate) launch_attached: bool,
     /// The name the attached AI gives itself (MCP `clientInfo`), shown in the
-    /// status line; cleared on each new attach.
+    /// status line; on each new attach the name it gave when it asked.
     pub(crate) client_name: Option<String>,
+    /// The AI the attached one took the window over from, as the status line
+    /// and the Connect tab name it (owner decision R2 of review 2026-11-19 og).
+    pub(crate) previous_client: Option<String>,
+    /// The files the window's AI wrote, listed in the Connect tab.
+    pub(crate) write_log: live_bridge::write_log::WriteLog,
     /// An export a client asked for is running: its loss report goes back to the
-    /// client instead of a lossy-conversion prompt, and it never replaces a file
-    /// but, with `client_overwrite`, one Kečup wrote there and nobody changed since.
+    /// client instead of a lossy-conversion prompt. It replaces an existing file only
+    /// with `client_overwrite`: unasked the pair Kečup wrote there and nobody changed
+    /// since, any other once the user agrees in the window.
     /// Holds the request's cancel flag, set once the client's connection ends.
     pub(crate) client_export: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) client_overwrite: bool,
@@ -198,9 +204,6 @@ pub(crate) struct WindowSettings {
     /// Where the drawing files each saved document wrote are kept between
     /// windows; `None` keeps them in memory (review 2026-11-06 SEC-182).
     pub(crate) written_drawings: Option<crate::recent_files::user_settings::SettingsFile>,
-    /// The system's temporary folder, canonical: a connected AI writes into it
-    /// unasked, as into the document's folder (review 2026-11-08 §5.4).
-    pub(crate) temporary_folder: Option<PathBuf>,
     /// How the File menu writes BTLx, a setting of the machine, not of the
     /// document.
     pub(crate) btlx: BtlxSettings,
@@ -231,6 +234,8 @@ pub(crate) struct Panes {
     pub(crate) manual_cad_tools_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) about_open: bool,
+    /// The right dock is folded to a strip of its tab icons.
+    pub(crate) dock_collapsed: bool,
 }
 
 /// The right dock's pages.
@@ -275,6 +280,7 @@ pub(crate) struct ReviewWorkflows {
     pub(crate) cam_reviews: CamReviewWorkflow,
     pub(crate) cam_export_dialog: Option<CamExportDialog>,
     pub(crate) fea_review_dialog: Option<FeaReviewDialog>,
+    pub(crate) thermal_review_dialog: Option<crate::app::ThermalReviewDialog>,
     pub(crate) pdm: LocalPdmWorkflow,
     pub(crate) pdm_review_dialog: Option<PdmReviewDialog>,
 }
@@ -341,9 +347,6 @@ pub(crate) struct DrawingsState {
     /// not kept with the user's settings, by canonical path, with the SHA-256
     /// of each (review 2026-11-06 SEC-182).
     pub(crate) written: BTreeMap<PathBuf, String>,
-    /// The folders the user let the AI write into for the document while they
-    /// are not kept with the user's settings, canonical (review 2026-11-08 §5.4).
-    pub(crate) write_targets: Vec<PathBuf>,
     /// The worker forgetting the document's written drawings that are gone
     /// (review 2026-11-06 r23 SEC-202).
     pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,

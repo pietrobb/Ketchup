@@ -149,6 +149,81 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
   });
 }
 
+// Cuts `target` by the axial tool swept along every motion, each sweep placed
+// by the rigid `matrix`, in a single Boolean. Only the final stock is checked
+// and measured.
+std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
+    const NativeOperationResult& target, rust::Slice<const NativeSegment> motions,
+    double radius, double axial_length, std::uint8_t tip_kind, double tip_length,
+    rust::Slice<const double> matrix) noexcept {
+  return guarded([&] {
+    if (!target.valid() || target.impl().shape.IsNull() || motions.empty() || matrix.size() != 16) {
+      return error_result(STATUS_INVALID_PARAMETER, "Axial sweep cut input is unavailable");
+    }
+    for (const double value : matrix) {
+      if (!std::isfinite(value)) {
+        return error_result(STATUS_NON_FINITE_PARAMETER, "Axial sweep cut transform is non-finite");
+      }
+    }
+    gp_Trsf transform;
+    transform.SetValues(
+        matrix[0], matrix[1], matrix[2], matrix[3],
+        matrix[4], matrix[5], matrix[6], matrix[7],
+        matrix[8], matrix[9], matrix[10], matrix[11]);
+    std::vector<TopoDS_Shape> sweeps;
+    sweeps.reserve(motions.size());
+    for (const NativeSegment& motion : motions) {
+      const std::unique_ptr<NativeOperationResult> sweep = tip_kind == 0
+          ? sweep_axial_tool_native(motion, radius, axial_length)
+          : sweep_tipped_axial_tool_native(motion, radius, axial_length, tip_kind, tip_length);
+      if (sweep == nullptr || !sweep->valid()) {
+        return error_result(
+            sweep == nullptr ? STATUS_NULL_RESULT : sweep->status_code(),
+            "Axial tool sweep of a cut failed");
+      }
+      BRepBuilderAPI_Transform placed(sweep->impl().shape, transform, true);
+      placed.Build();
+      if (!placed.IsDone()) {
+        return error_result(STATUS_INVALID_SHAPE, "OCCT axial sweep placement did not complete");
+      }
+      sweeps.push_back(placed.Shape());
+    }
+    // The sweeps are fused pairwise, neighbour with neighbour, and faces sharing a
+    // surface merged at every level, so each Boolean meets two small solids and the
+    // stock is cut once. Cutting motion by motion instead meets a stock that gains
+    // faces with every cut, and its cost grows with the square of the motions.
+    while (sweeps.size() > 1) {
+      std::vector<TopoDS_Shape> fused;
+      fused.reserve((sweeps.size() + 1) / 2);
+      for (std::size_t index = 0; index + 1 < sweeps.size(); index += 2) {
+        BRepAlgoAPI_Fuse fuse;
+        configure_boolean(fuse, sweeps[index], sweeps[index + 1]);
+        fuse.Build();
+        if (!fuse.IsDone() || fuse.HasErrors()) {
+          return error_result(STATUS_INVALID_SHAPE, "OCCT fuse of cutter sweeps did not complete");
+        }
+        fuse.SimplifyResult(true, true);
+        fused.push_back(fuse.Shape());
+      }
+      if (sweeps.size() % 2 == 1) {
+        fused.push_back(sweeps.back());
+      }
+      sweeps = std::move(fused);
+    }
+    BRepAlgoAPI_Cut operation;
+    configure_boolean(operation, target.impl().shape, sweeps.front());
+    operation.Build();
+    if (!operation.IsDone() || operation.HasErrors()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT body cut did not complete");
+    }
+    const TopoDS_Shape stock = operation.Shape();
+    if (stock.IsNull() || count_subshapes(stock, TopAbs_SOLID) == 0) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT body Boolean produced no solid result");
+    }
+    return success_result(stock, {}, count_subshapes(stock, TopAbs_SOLID) >= 2);
+  });
+}
+
 std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation_kind) noexcept {
@@ -392,6 +467,28 @@ bool common_solids(const TopoDS_Shape& shape, double& volume, double& thickness)
   return std::isfinite(volume) && std::isfinite(thickness);
 }
 
+double solid_volume(const TopoDS_Shape& shape) {
+  GProp_GProps properties;
+  BRepGProp::VolumeProperties(shape, properties);
+  return properties.Mass();
+}
+
+// Whether every solid of `common` encloses positive volume and all of them together
+// no more than the smaller of `left` and `right`: an inside-out shell would not.
+bool oriented_within(const TopoDS_Shape& common, const TopoDS_Shape& left, const TopoDS_Shape& right) {
+  double total = 0.0;
+  for (TopExp_Explorer solids(common, TopAbs_SOLID); solids.More(); solids.Next()) {
+    const double volume = solid_volume(solids.Current());
+    if (!std::isfinite(volume) || volume <= 0.0) {
+      return false;
+    }
+    total += volume;
+  }
+  const double bound = std::min(solid_volume(left), solid_volume(right));
+  return std::isfinite(bound)
+      && total <= bound + tolerances().rounding * std::max(bound, 1.0);
+}
+
 }  // namespace
 
 NativePairQuery query_body_pair_native(
@@ -496,23 +593,26 @@ NativePairQuery query_body_pair_native(
     if (slab_axis < 0) {
       // Non-destructive: the same native shapes are reused by subsequent pairs.
       BRepAlgoAPI_Common common;
-      NCollection_List<TopoDS_Shape> arguments, tools;
-      arguments.Append(left.impl().shape);
-      tools.Append(right.impl().shape);
-      common.SetArguments(arguments);
-      common.SetTools(tools);
-      common.SetNonDestructive(true);
+      configure_boolean(common, left.impl().shape, right.impl().shape);
       common.Build();
       // Helical faces cutting each other at a shallow angle can leave split-edge
-      // fragments in no face. That one warning is tolerated here because the
-      // result must still pass the analyzer below; every other warning rejects.
+      // fragments in no face, and a cone's apex resting on the other body's face
+      // (a drill's point on a hole's flat floor) leaves OCCT unable to orient the
+      // shell through that single point. Those two warnings are tolerated because
+      // the result must still pass the analyzer below, and after the second every
+      // solid must also enclose positive volume no larger than either body's;
+      // every other warning rejects (R1119og-MF-800).
       bool tolerated_warnings = true;
+      bool unoriented = false;
       for (const Handle(Message_Alert)& alert : common.GetReport()->GetAlerts(Message_Warning)) {
+        const bool orient = alert->IsInstance(STANDARD_TYPE(BOPAlgo_AlertUnableToOrientTheShape));
+        unoriented = unoriented || orient;
         tolerated_warnings = tolerated_warnings
-            && alert->IsInstance(STANDARD_TYPE(BOPAlgo_AlertFaceBuilderUnusedEdges));
+            && (orient || alert->IsInstance(STANDARD_TYPE(BOPAlgo_AlertFaceBuilderUnusedEdges)));
       }
       if (!common.IsDone() || common.HasErrors() || !tolerated_warnings || common.Shape().IsNull() ||
-          !BRepCheck_Analyzer(common.Shape(), true).IsValid()) {
+          !BRepCheck_Analyzer(common.Shape(), true).IsValid() ||
+          (unoriented && !oriented_within(common.Shape(), left.impl().shape, right.impl().shape))) {
         result.diagnostic = "OCCT pair common did not produce a verified result";
         return result;
       }

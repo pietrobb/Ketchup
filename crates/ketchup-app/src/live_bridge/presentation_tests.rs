@@ -38,7 +38,11 @@ pub(in crate::live_bridge) fn execute(
     };
     match answer.error {
         None => Ok(answer.result.unwrap_or(Value::Null)),
-        Some(code) => Err(code.leak()),
+        // The reply carried the cause; the tests read it as after any other refusal.
+        Some(code) => {
+            crate::live_bridge::restore_error_details(answer.result);
+            Err(code.leak())
+        }
     }
 }
 
@@ -73,14 +77,16 @@ fn window() -> (KetchupApp, LiveBridge, tempfile::TempDir) {
 }
 
 fn presentation(path: &Path, image: Value) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: "presentation_png".to_owned(),
         drawing_scale: None,
         image: Some(serde_json::from_value(image).unwrap()),
+        cam_dialect: None,
+        cam_operations: None,
         overwrite: false,
-    }
+    })
 }
 
 /// The pixels of a PNG file as RGBA rows from the top, and its size.
@@ -106,6 +112,10 @@ fn a_client_saves_a_presentation_image_with_its_background_size_and_see_through_
         .execute(&mut app, presentation(&opaque, image), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(answer["exported"], true, "{answer}");
+    // The answer says how smooth the edges were made, and only a smoothing below the one
+    // asked for comes with why (review 2026-11-13 r95 P3: it was lowered silently).
+    assert_eq!(answer["supersample"], 3, "{answer}");
+    assert!(answer.get("supersample_asked").is_none(), "{answer}");
     let (width, height, rgba) = pixels(&opaque);
     assert_eq!((width, height), (96, 64));
     assert_eq!(
@@ -350,7 +360,9 @@ fn a_client_image_with_overwrite_replaces_a_file_once_the_user_agrees() {
     let existing = directory.path().join("existing.png");
     std::fs::write(&existing, b"the user's picture").unwrap();
     let mut request = presentation(&existing, json!({"width": 32, "height": 24}));
-    if let Request::Export { overwrite, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest { overwrite, .. }) =
+        &mut request
+    {
         *overwrite = true;
     }
     assert_eq!(
@@ -435,8 +447,26 @@ fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
         );
         assert!(!target.exists());
     }
+    // Review 2026-11-13 r95 P3: a letter the image cannot draw got only the general advice
+    // about single-line texts; it gets the one the window gives.
+    let target = directory.path().join("script.png");
+    let mut image = small.clone();
+    image["labels"] = json!([{"text": "倉庫", "at_mm": [0, 0, 0]}]);
+    assert_eq!(
+        bridge.execute(&mut app, presentation(&target, image), false),
+        Err("invalid_params")
+    );
+    let cause = crate::live_bridge::take_error_details().unwrap();
+    assert!(
+        cause.to_string().contains("Latin, Greek or Cyrillic"),
+        "{cause}"
+    );
+    assert!(!target.exists());
     let mut not_an_image = presentation(&directory.path().join("model.glb"), small);
-    if let Request::Export { export_format, .. } = &mut not_an_image {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+        export_format, ..
+    }) = &mut not_an_image
+    {
         "glb".clone_into(export_format);
     }
     assert_eq!(

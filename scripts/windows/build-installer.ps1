@@ -23,6 +23,10 @@ param(
     # build-viewer-app.sh make them on a Mac; copied beside the others so
     # the release checksums name them too (the 0.3.3 sums had their lines added by hand).
     [string[]]$MacPackages = @(),
+    # The release's Linux package, Ketchup-<version>-Linux-x86_64.tar.gz as the Linux
+    # package workflow builds it on the release tag; copied beside the others so the
+    # release checksums name it too.
+    [string]$LinuxPackage,
     [switch]$Sign,
     [switch]$SkipBuild
 )
@@ -72,6 +76,14 @@ if ([string]::IsNullOrWhiteSpace($SigningMetadataPath)) {
 }
 . (Join-Path $PSScriptRoot "MacPackages.ps1")
 Assert-MacPackages $Version $MacPackages
+if (-not [string]::IsNullOrWhiteSpace($LinuxPackage)) {
+    if (-not (Test-Path -LiteralPath $LinuxPackage -PathType Leaf)) {
+        throw "The Linux package $LinuxPackage does not exist."
+    }
+    if ([IO.Path]::GetFileName($LinuxPackage) -cne "Ketchup-$Version-Linux-x86_64.tar.gz") {
+        throw "$LinuxPackage is not the Linux package of $Version; the release names it Ketchup-$Version-Linux-x86_64.tar.gz."
+    }
+}
 
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
 $BinaryDir = [IO.Path]::GetFullPath($BinaryDir)
@@ -186,7 +198,7 @@ if (-not $SkipBuild) {
         } finally {
             [Environment]::SetEnvironmentVariable("KETCHUP_BUILD_VERSION", $previousBuildVersion, "Process")
         }
-        & cargo build --locked --release -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
+        & cargo build --locked --release -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker -p ketchup-program --bin ketchup-program
         if ($LASTEXITCODE -ne 0) { throw "Worker release build failed." }
         # A clean Windows has no Visual C++ Redistributable; the portable Viewer
         # promises nothing to install (review 2026-10-31 VW-81).
@@ -209,6 +221,9 @@ Assert-Leaf $appSource "application"
 Assert-Leaf $workerSource "exact worker"
 $programWorkerSource = Join-Path $BinaryDir "ketchup-program-worker.exe"
 Assert-Leaf $programWorkerSource "program worker"
+# Rule programs and their static calculation from a terminal (review 2026-11-19 REL-800).
+$programToolSource = Join-Path $BinaryDir "ketchup-program.exe"
+Assert-Leaf $programToolSource "rule program checker"
 $viewerSource = Join-Path $ViewerBinaryDir "ketchup-viewer.exe"
 Assert-Leaf $viewerSource "Viewer"
 . (Join-Path $PSScriptRoot "PeImports.ps1")
@@ -228,6 +243,7 @@ foreach ($iconSource in @($appSource, $viewerSource)) {
 Copy-Item $appSource (Join-Path $payloadDir "Ketchup.exe")
 Copy-Item $workerSource (Join-Path $payloadDir "ketchup-exact-worker.exe")
 Copy-Item $programWorkerSource (Join-Path $payloadDir "ketchup-program-worker.exe")
+Copy-Item $programToolSource (Join-Path $payloadDir "ketchup-program.exe")
 Copy-Item $viewerSource (Join-Path $payloadDir "KetchupViewer.exe")
 
 $occtManifest = Get-Content $OcctManifestPath -Raw | ConvertFrom-Json
@@ -570,6 +586,11 @@ try {
     . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-program-worker.exe") "Installed program worker"
+    # It exits 1 or 3 for a structure that fails or is not verified, 2 when it cannot evaluate.
+    $calculation = (& (Join-Path $installedDir "ketchup-program.exe") check (Join-Path $repoRoot "examples\programs\tiny-house.star") --calculation sk | Out-String)
+    if ($LASTEXITCODE -eq 2 -or -not $calculation.Contains('<html lang="sk">')) {
+        throw "Installed ketchup-program wrote no static calculation (exit $LASTEXITCODE)."
+    }
 
     $persistenceSmokePath = Join-Path $tempRoot "install-persistence-smoke.ketchup"
     # Ketchup.exe is a windowed app: only a pipeline makes PowerShell wait for its output.
@@ -641,6 +662,13 @@ foreach ($package in $MacPackages) {
         Copy-Item -LiteralPath $package -Destination $macPath -Force
     }
     $releaseAssets += $macPath
+}
+if (-not [string]::IsNullOrWhiteSpace($LinuxPackage)) {
+    $linuxPath = Join-Path $OutputDir ([IO.Path]::GetFileName($LinuxPackage))
+    if ([IO.Path]::GetFullPath($LinuxPackage) -ne $linuxPath) {
+        Copy-Item -LiteralPath $LinuxPackage -Destination $linuxPath -Force
+    }
+    $releaseAssets += $linuxPath
 }
 & (Join-Path $PSScriptRoot "write-checksums.ps1") -OutputDir $OutputDir -Assets $releaseAssets
 

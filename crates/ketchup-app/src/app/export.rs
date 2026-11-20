@@ -597,36 +597,15 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let options = self.btlx_export_options();
-        let (selected_profile_request, intermediate_saw_cuts, selected_profile_contours) =
-            match options.profile_processing_request {
-                BtlxProfileProcessingRequest::PortableFreeContour => (
-                    "portable FreeContour",
-                    "not applicable".to_owned(),
-                    "closed simple line/arc contours",
-                ),
-                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
-                    intermediate_saw_cuts,
-                } => (
-                    "edge SawContour cuts, then MillContour",
-                    intermediate_saw_cuts.to_string(),
-                    "rectangles sawn on their edges then milled; contours with an arc milled whole",
-                ),
-            };
         let result = (|| -> Result<Written, ExportError> {
             let projection = self.current_general_fabrication_projection()?;
             let btlx = projection
                 .btlx_2_3_1_export_with_options(&snapshot, options)
                 .map_err(ExportError::failed)?;
-            let losses = projection
-                .btlx_loss_report(&snapshot)
+            let support_report = projection
+                .btlx_support_report(&snapshot, options)
                 .map_err(ExportError::failed)?;
             let lost = lost(projection.admit(&snapshot, ShopFormat::Btlx))?;
-            let support_report = format!(
-                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_removals=pocket, through-cut, extruded boolean-cut\nportable_profile_contours=closed simple line/arc contours\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=straight-edged non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n{}{}",
-                snapshot.canonical_digest(),
-                losses,
-                projection.btlx_drill_report(&snapshot, options.largest_drill_mm)
-            );
             let report_path = path.with_extension("btlx.support.txt");
             let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
             let mut evidence = btlx.clone();
@@ -677,122 +656,6 @@ impl KetchupApp {
         path: &Path,
     ) -> Result<Written, ExportError> {
         self.export_exchange_to(super::exchange_export::ExchangeFormat::Iges, path)
-    }
-
-    pub(crate) fn show_cam_export_window(&mut self, context: &egui::Context) {
-        let Some(mut pending) = self.reviews.cam_export_dialog.take() else {
-            return;
-        };
-        let mut open = true;
-        let mut preview = false;
-        let mut confirm = false;
-        let mut cancel = false;
-        egui::Window::new(self.catalog.text("cam-review-title"))
-            .id(egui::Id::new("cam-review-export"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .show(context, |ui| {
-                ui.label(format!(
-                    "{} {}",
-                    self.catalog.text("cam-review-plan"),
-                    pending.plan_id.0
-                ));
-                if let Some(review) = &pending.review {
-                    ui.label(format!("{}: {}", review.units, review.work_offset));
-                    ui.label(format!(
-                        "T{} · S{} · F{} mm/min",
-                        review.tool_number, review.spindle_rpm, review.cutting_feed_mm_per_min
-                    ));
-                    ui.label(format!(
-                        "{}: {:.6} mm³ · {}: {:.6} mm³",
-                        self.catalog.text("cam-review-removed"),
-                        review.removed_stock_mm3,
-                        self.catalog.text("cam-review-gouge"),
-                        review.gouge_mm3
-                    ));
-                    ui.monospace(format!("SHA-256 {}", review.content_digest));
-                } else {
-                    ui.label(self.catalog.text("cam-review-not-previewed"));
-                }
-                ui.horizontal(|ui| {
-                    if ui.button(self.catalog.text("cam-review-preview")).clicked() {
-                        preview = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            pending.review.is_some(),
-                            egui::Button::new(self.catalog.text("cam-review-confirm-export")),
-                        )
-                        .clicked()
-                    {
-                        confirm = true;
-                    }
-                    if ui.button(self.catalog.text("dialog-cancel")).clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        if preview {
-            let result = (|| {
-                let snapshot = self.document.current();
-                let mutation_epoch = self.document.mutation_epoch();
-                let plan = snapshot
-                    .cam_plan(pending.plan_id)
-                    .ok_or_else(|| self.catalog.refusal("cam-review-no-plan"))?;
-                let operation = plan
-                    .default_facing_operation(&snapshot, 1)
-                    .map_err(|error| failed("cam.operation", error))?;
-                let worker_path = self.exact_worker_executable()?;
-                self.reviews.cam_reviews.set_worker_path(worker_path);
-                self.reviews
-                    .cam_reviews
-                    .preview(
-                        &snapshot,
-                        mutation_epoch,
-                        CamReviewRequest {
-                            plan_id: pending.plan_id,
-                            operations: vec![operation],
-                            fixtures: Vec::new(),
-                            dialect: CamPostprocessorDialect::IsoMetricGCode,
-                        },
-                        &AtomicBool::new(false),
-                    )
-                    .map_err(|error| failed("cam.review", error))
-            })();
-            match result {
-                Ok(review) => {
-                    pending.review = Some(review);
-                    self.digest = self.catalog.text("cam-review-ready");
-                }
-                Err(error) => self.digest = error.reason_text().to_owned(),
-            }
-        }
-        if confirm
-            && let Some(review) = &pending.review
-            && let Some(path) = self.choose_export_path("nc")
-        {
-            let snapshot = self.document.current();
-            let mutation_epoch = self.document.mutation_epoch();
-            let result = self.reviews.cam_reviews.export(
-                &snapshot,
-                mutation_epoch,
-                &review.token,
-                &path,
-                true,
-                &AtomicBool::new(false),
-            );
-            match result {
-                Ok(_) => {
-                    self.digest = self.catalog.text("cam-review-exported");
-                    cancel = true;
-                }
-                Err(error) => self.digest = error.to_string(),
-            }
-        }
-        if open && !cancel {
-            self.reviews.cam_export_dialog = Some(pending);
-        }
     }
 }
 

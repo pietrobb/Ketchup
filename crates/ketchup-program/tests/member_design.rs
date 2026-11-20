@@ -975,10 +975,19 @@ box(\"wall\"",
         )),
         &[],
     );
-    // Capability review 761 of R1113-PG-600: so slender a rod is no anchorage
-    // at all, and the beam is no longer held there.
-    assert_eq!(braced_by(&rod), Vec::<(String, f64, f64)>::new());
+    // Capability review 761 of R1113-PG-600: so slender a rod holds the beam
+    // nowhere; it anchors the batten far too flexibly to hold it sideways
+    // (review 2026-11-13 r95 structural point 1).
     assert_ne!(member(&rod, "beam").status, "pass");
+    assert!(
+        member(&rod, "beam")
+            .missing
+            .iter()
+            .any(|reason| reason.contains("batten holds its")
+                && reason.contains("too flexible or too slender")),
+        "{:?}",
+        member(&rod, "beam")
+    );
 
     // Review 2026-11-07 P3: one turned 45° to the beam was measured by its
     // height alone, its sides at 45° left out, so a slab 300 mm square was
@@ -1010,13 +1019,18 @@ rotate(\"wall\", axis = (0, 0, 1), angle = {angle}, pivot = (525, 1005, 2390))"
             )),
             &[],
         );
-        // Capability review 761: so slender a rod is no anchorage at all.
-        assert_eq!(
-            braced_by(&rod),
-            Vec::<(String, f64, f64)>::new(),
-            "{angle}°"
-        );
+        // Capability review 761: so slender a rod holds the beam nowhere,
+        // anchoring the batten far too flexibly.
         assert_ne!(member(&rod, "beam").status, "pass", "{angle}°");
+        assert!(
+            member(&rod, "beam")
+                .missing
+                .iter()
+                .any(|reason| reason.contains("batten holds its")
+                    && reason.contains("too flexible or too slender")),
+            "{angle}°: {:?}",
+            member(&rod, "beam")
+        );
     }
 }
 
@@ -2685,4 +2699,38 @@ fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
     // The library's classes name theirs.
     let c24 = report(&beam("C24", 100.0, 200.0), &[]);
     assert_eq!(member(&c24, "beam").status, "pass");
+}
+
+/// R1119og-PG-800: the path of a brace's anchorage started at the anchor, the
+/// brace itself and its joints left out. Three timber strips 3 x 3 mm across the
+/// slender beam, screwed to it and to a grounded wall, passed it at 0.834,
+/// though each buckles at about 0.6 N against the 263 N it must hold (F_d =
+/// N_d / k_f, EN 1995-1-1 9.2.5.3); so did strips 10 x 10 mm (72 N). The path
+/// starts at the beam: the strip stretches and buckles over its own length.
+#[test]
+fn thin_strips_screwed_to_a_wall_buckle_and_do_not_brace_the_beam() {
+    for side in [3.0, 10.0] {
+        let mut source = slender_beam(&[]);
+        source.push_str(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+        );
+        for x in [1200.0, 2400.0, 4600.0] {
+            source.push_str(&format!(
+                "box(\"strip {x}\", ({side}, 1100, {side}), at = ({x}, 0, 2400), material = \"GL24h\")
+joint(\"strip {x}\", \"beam\", kind = \"screw\")
+joint(\"strip {x}\", \"wall\", kind = \"screw\")
+"
+            ));
+        }
+        let strips = report(&source, &[]);
+        let beam = member(&strips, "beam");
+        assert_ne!(beam.status, "pass", "{side} mm: {beam:?}");
+        assert!(
+            beam.missing.iter().any(|reason| reason.contains("strip")
+                && reason.contains("buckles at")
+                && reason.contains("too flexible or too slender")),
+            "{side} mm: {:?}",
+            beam.missing
+        );
+    }
 }

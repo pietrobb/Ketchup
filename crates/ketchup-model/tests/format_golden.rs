@@ -406,12 +406,7 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("drawn-fill", SAVED_109, 109, DIGEST_109),
         ("chosen-code-page", SAVED_110, 110, DIGEST_110),
         ("mesh-sheet", SAVED_111, 111, DIGEST_111),
-        (
-            "textured-mesh",
-            GOLDEN,
-            persistence::CURRENT_SCHEMA,
-            DIGEST_112,
-        ),
+        ("textured-mesh", GOLDEN, 112, DIGEST_112),
     ] {
         let (document, container) = opened(path, schema, digest);
         files.push((name.to_owned(), document, container, schema));
@@ -815,7 +810,7 @@ fn a_format_111_document_with_a_textured_mesh_saves_the_golden() {
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_112);
+    let (reopened, container) = opened(GOLDEN, 112, DIGEST_112);
     let current = reopened.current();
     let FeatureKind::MeshBody(mesh) = current.feature(FeatureId(9_002)).unwrap().kind() else {
         panic!("the textured sheet is a mesh body")
@@ -986,6 +981,7 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// with 108; a drawn fill is a new shape, not a field, and came with 109; an underlay's
 /// `code_page` with 110.
 const OPTIONAL_FIELDS: &[&str] = &[
+    "cam.rs: point_angle_deg", // Format 120.
     "document.rs: annotations",
     "document.rs: contact_joints",
     "document.rs: floor_z_mm",
@@ -996,20 +992,30 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: shaft_threads",
     "document.rs: tolerance",
     "document.rs: underlays",
+    "document/entities.rs: inner", // Format 117.
+    "document/entities.rs: keep",  // Format 119.
     "document/entities.rs: logical",
     "document/entities.rs: look",
     "document/entities.rs: modeled",
+    "document/entities.rs: rail", // Format 116.
+    "document/entities.rs: rail", // Format 116.
     "document/entities.rs: section",
     "document/entities.rs: up",
+    "document/entities.rs: weight", // Format 119.
     "document/revision.rs: variants",
+    "drawing.rs: generated_hole_callout", // Format 113.
     "exact_brep_graph.rs: chamfer_edge_sides",
     "exact_brep_graph.rs: crest_bits",
     "exact_brep_graph.rs: fillet_radius_stations",
     "exact_brep_graph.rs: guide",
     "exact_brep_graph.rs: guide",
+    "exact_brep_graph.rs: inner",
+    "exact_brep_graph.rs: keep",
     "exact_brep_graph.rs: name",
     "exact_brep_graph.rs: profile_edges",
     "exact_brep_graph.rs: profile_faces",
+    "exact_brep_graph.rs: rail",
+    "exact_brep_graph.rs: rail",
     "exact_brep_graph.rs: segment_entity_ids",
     "exact_brep_graph.rs: source_format",
     "exact_brep_graph.rs: source_part_index",
@@ -1019,6 +1025,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: tool_name",
     "exact_brep_graph.rs: trim_bits",
     "exact_brep_graph.rs: up_bits",
+    "exact_brep_graph.rs: weight_bits",
     // A refusal is sent to the AI and the window, never saved in the document.
     "import/dxf/rewrite/refusal.rs: written",
     // The comparison of two revisions answers the AI; it is never saved.
@@ -1093,5 +1100,144 @@ fn no_optional_field_is_added_without_a_new_format_number() {
         "the optional fields of the model changed. A field of the saved document left out \
          at its default still needs a new format number, because Kečup 0.1.0 would drop it \
          (see the snapshot_codec module comment); list a field outside the document here"
+    );
+}
+
+/// The format Save writes for a document with one sketch of `entities` and `constraints`.
+fn saved_format_of_a_sketch(
+    entities: Vec<ketchup_geometry::sketch::SketchEntity>,
+    constraints: Vec<ketchup_geometry::sketch::SketchConstraint>,
+) -> u16 {
+    use ketchup_geometry::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Sketch".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: FeatureId(1),
+                    entities,
+                    constraints,
+                }),
+            },
+        ]))
+        .unwrap();
+    let snapshot = persistence::save(&document.current());
+    u16::from_le_bytes([snapshot[10], snapshot[11]])
+}
+
+/// PR #109 CI (release reads): Kečup 0.3.3 and every release before it took a sketch
+/// for damaged when it had no constraints and more than 512 unknowns, or two arcs of
+/// one circle, both of which a standard part's profile now draws; it opened its older
+/// `.recovery` instead and overwrote the file at its next Save. Such a sketch makes the
+/// file 114, which they refuse as newer; one they read stays 103.
+#[test]
+fn a_sketch_released_versions_take_for_damaged_needs_format_114() {
+    use ketchup_geometry::sketch::{
+        SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
+    };
+    let lines = |count: u64| {
+        (1..=count)
+            .map(|index| SketchEntity::Line {
+                id: SketchEntityId(index),
+                start_mm: [0.0, index as f64],
+                end_mm: [10.0, index as f64],
+            })
+            .collect::<Vec<_>>()
+    };
+    // Four unknowns a line: 128 lines are 512, the most a released version solves.
+    assert_eq!(saved_format_of_a_sketch(lines(128), Vec::new()), 103);
+    assert_eq!(saved_format_of_a_sketch(lines(129), Vec::new()), 114);
+    let horizontal = |entity| SketchConstraint {
+        id: SketchConstraintId(1),
+        kind: SketchConstraintKind::Horizontal {
+            entity: SketchEntityId(entity),
+        },
+    };
+    assert_eq!(saved_format_of_a_sketch(lines(3), vec![horizontal(1)]), 103);
+
+    let arc = |id, start_mm, end_mm| SketchEntity::Arc {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    assert_eq!(
+        saved_format_of_a_sketch(vec![arc(1, [10.0, 0.0], [0.0, 10.0])], Vec::new()),
+        103
+    );
+    assert_eq!(
+        saved_format_of_a_sketch(
+            vec![
+                arc(1, [10.0, 0.0], [0.0, 10.0]),
+                arc(2, [-10.0, 0.0], [0.0, -10.0]),
+            ],
+            Vec::new()
+        ),
+        114
+    );
+    // Two halves of one circle follow each other, and a released version reads them
+    // (examples/wardrobe-chair-table.ketchup).
+    assert_eq!(
+        saved_format_of_a_sketch(
+            vec![
+                arc(1, [10.0, 0.0], [-10.0, 0.0]),
+                arc(2, [-10.0, 0.0], [10.0, 0.0]),
+            ],
+            Vec::new()
+        ),
+        103
+    );
+}
+
+/// No released Kečup knows a surface spanning boundary curves, so a document with one
+/// saves as 115, which they refuse as newer instead of taking it for damaged, and
+/// reopens as saved.
+#[test]
+fn a_boundary_surface_needs_format_115_and_reopens_as_saved() {
+    use ketchup_model::document::{SpatialPathSegment, SurfaceBodySpec};
+    let line = |start_mm, end_mm| SpatialPathSegment::Line { start_mm, end_mm };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Patch".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Boundary surface".into(),
+                kind: FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary {
+                    segments: vec![
+                        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+                        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+                        line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
+                        line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
+                    ],
+                    inner: Vec::new(),
+                }),
+            },
+        ]))
+        .unwrap();
+    let bytes = persistence::save(&document.current());
+    assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), 115);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(
+        reopened.canonical_digest(),
+        document.current().canonical_digest()
     );
 }

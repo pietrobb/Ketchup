@@ -4,7 +4,11 @@
 //! MCP-101).
 
 use crate::*;
-use ketchup_application::fea_workflow::FeaReviewError;
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_application::fea_workflow::{
+    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
+    FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
+};
 
 pub(crate) struct FeaReviewDialog {
     /// The document the dialog's ids are of; another closes it (review
@@ -155,6 +159,7 @@ impl KetchupApp {
                     youngs_modulus_mpa,
                     poisson_ratio,
                     yield_strength_mpa: Some(yield_strength_mpa),
+                    density_kg_per_m3: None,
                 },
                 constrained_face_ordinals,
                 face_tractions: vec![ExactFeaFaceTraction {
@@ -179,6 +184,7 @@ impl KetchupApp {
                 },
             ],
             solve_settings: FeaSolveSettings::default(),
+            mode_count: 0,
         };
         Ok(FeaStudy {
             workflow: FeaReviewWorkflow::new(Some(self.exact_worker_executable()?)),
@@ -246,7 +252,7 @@ fn verdict(catalog: &LocaleCatalog, review: &FeaReviewSummary) -> String {
     format!(
         "{}: {} · {}: {}",
         catalog.text("fea-review-converged"),
-        review.converged,
+        review.judgement.converged,
         catalog.text("fea-review-within-limits"),
         review.all_levels_within_declared_limits
     )
@@ -353,6 +359,7 @@ impl FeaReviewDialog {
 mod tests {
     use super::*;
     use crate::length_input::DecimalSeparator::{Comma, Point};
+    use ketchup_application::fea_workflow::FeaConvergenceJudgement;
 
     fn dialog(youngs_modulus_mpa: &str) -> FeaReviewDialog {
         FeaReviewDialog {
@@ -448,12 +455,17 @@ mod tests {
             units: "mm",
             solver_version: "test",
             levels: Vec::new(),
-            final_displacement_relative_change: 0.0,
-            final_energy_relative_change: 0.0,
+            judgement: FeaConvergenceJudgement {
+                final_displacement_relative_change: 0.0,
+                final_energy_relative_change: 0.0,
+                final_stress_relative_change: 0.0,
+                final_refinement_ratio: 2.0,
+                converged: true,
+            },
             required_relative_tolerance: 0.01,
-            converged: true,
             all_levels_within_declared_limits: true,
             excluded_physics: ["", "", "", "", ""],
+            modes: None,
         }
     }
 

@@ -11,16 +11,11 @@ pub(crate) use gesture::{
     ToolSession, ToolSessionPhase, TransformInputEvent, TransformInputInterpreter,
 };
 use gesture::{Gesture, MirrorPlane, PushPullAnchor, ZoomWindowDrag};
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection, assistant_rejection,
 };
 use ketchup_application::evaluation::{ExactEvaluationTask, ExactSource, exact_worker_candidates};
-use ketchup_application::fea_workflow::{
-    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewSummary,
-    FeaReviewWorkflow, FeaStudyRequest,
-};
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmSourceIdentity,
 };
@@ -73,10 +68,10 @@ use ketchup_model::document::{
     ClassificationCategoryId, ClassificationDimensionId, CloneDefinitionPlan, CommandBatch,
     ConvertGroupPlan, DefinitionId, Dimension, DocumentId, DocumentStore, EdgeFinishKind, EdgeRef,
     EvaluationIdentity, EvaluatorParameterEdit, FaceRef, FeatureId, FeatureKind, GroupId,
-    HighRiskClass, HighRiskScope, InstancePath, LoftContinuity, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
-    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalPrepareError,
-    ProposalPrincipal, SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
+    HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal,
+    ProposalCommitError, ProposalContext, ProposalPrepareError, ProposalPrincipal,
+    SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
     SideEffectAuthorizationReceipt, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
     TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
     ellipse_segments, polygon_segments, regular_polygon_points,
@@ -991,6 +986,7 @@ pub enum AppCommand {
     ExportHomagMpr,
     ReviewCamExport,
     ReviewStaticFea,
+    ReviewSteadyThermal,
     ReviewLocalPdm,
     ExportHundeggerBtlx,
     ExportWorkshopPackage,
@@ -2016,11 +2012,6 @@ struct MigrationReviewPlan {
 enum BtlxProfileStrategy {
     PortableFreeContour,
     EdgeSawCutsThenMillContour,
-}
-
-struct CamExportDialog {
-    plan_id: CamPlanId,
-    review: Option<CamReviewSummary>,
 }
 
 struct PdmReviewDialog {

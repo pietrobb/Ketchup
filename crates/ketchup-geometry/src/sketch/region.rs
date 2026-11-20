@@ -321,7 +321,11 @@ pub(super) fn arcs_intersect(left: RegionArc, right: RegionArc) -> bool {
     let center_distance = distance2(left_center, right_center);
     let tolerance = left_radius.max(right_radius).max(1.0) * ACCUMULATED_ROUNDING;
     if center_distance <= tolerance && (left_radius - right_radius).abs() <= tolerance {
-        return true;
+        // Arcs of one circle share a point only where one's end lies on the other.
+        return point_on_arc(right.start, left)
+            || point_on_arc(right.end, left)
+            || point_on_arc(left.start, right)
+            || point_on_arc(left.end, right);
     }
     if center_distance > left_radius + right_radius + tolerance
         || center_distance < (left_radius - right_radius).abs() - tolerance
@@ -598,4 +602,68 @@ pub(super) fn stable_region_id(entity_ids: &[SketchEntityId]) -> SketchRegionId 
         }
     }
     SketchRegionId(hash.max(1))
+}
+
+impl SketchSpec {
+    /// Whether Kečup 0.3.3 and every release before it take this sketch for damaged
+    /// on opening: they bounded the unknowns of a sketch without constraints as those
+    /// of one with constraints, and took any two arcs of one circle for crossing (see
+    /// [`arcs_intersect`]). A file holding such a sketch is written in a format they
+    /// refuse as newer.
+    #[must_use]
+    pub fn released_readers_refuse(&self) -> bool {
+        let unknowns = self
+            .entities
+            .iter()
+            .map(SketchEntity::degrees_of_freedom)
+            .fold(0usize, usize::saturating_add);
+        if self.constraints.is_empty() && unknowns > MAX_SKETCH_SOLVER_DOF {
+            return true;
+        }
+        /// Centre, radius and the ends of an arc (none for a whole circle).
+        type OnCircle = ([f64; 2], f64, Option<[[f64; 2]; 2]>);
+        let circles: Vec<OnCircle> = self
+            .entities
+            .iter()
+            .filter_map(|entity| match entity {
+                SketchEntity::Arc {
+                    start_mm,
+                    end_mm,
+                    center_mm,
+                    ..
+                } => Some((
+                    *center_mm,
+                    distance2(*start_mm, *center_mm),
+                    Some([*start_mm, *end_mm]),
+                )),
+                SketchEntity::Circle {
+                    center_mm,
+                    radius_mm,
+                    ..
+                } => Some((*center_mm, *radius_mm, None)),
+                _ => None,
+            })
+            .collect();
+        circles
+            .iter()
+            .enumerate()
+            .any(|(index, (center, radius, ends))| {
+                circles[index + 1..]
+                    .iter()
+                    .any(|(other, other_radius, other_ends)| {
+                        // Wider than the release's own test, so no arc it took for crossing is missed.
+                        let tolerance =
+                            radius.max(*other_radius).max(1.0) * ACCUMULATED_ROUNDING * 1.0e3;
+                        // Arcs joined end to end follow each other on a profile, and the
+                        // release never tests neighbours, as in two halves of one circle.
+                        let joined = matches!((ends, other_ends), (Some(ends), Some(other))
+                        if ends.iter().any(|end| {
+                            other.iter().any(|point| distance2(*end, *point) <= EPSILON_MM)
+                        }));
+                        distance2(*center, *other) <= tolerance
+                            && (radius - other_radius).abs() <= tolerance
+                            && !joined
+                    })
+            })
+    }
 }

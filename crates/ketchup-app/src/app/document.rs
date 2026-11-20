@@ -81,6 +81,7 @@ impl KetchupApp {
         // Its ids are of the document that goes; dropping its run stops it
         // (review 2026-11-04 r19 MCP-160).
         self.reviews.fea_review_dialog = None;
+        self.reviews.thermal_review_dialog = None;
         self.viewer_prep = crate::app_state::ViewerPrepState::default();
         self.push_pull.smart_proposal = None;
         self.push_pull.smart_planning = None;
@@ -150,6 +151,8 @@ impl KetchupApp {
         let live_consent_attached = self.live.consent_attached;
         let live_launch_attached = self.live.launch_attached;
         let live_client_name = self.live.client_name.take();
+        let live_previous_client = self.live.previous_client.take();
+        let live_write_log = std::mem::take(&mut self.live.write_log);
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let catalog = self.catalog.clone();
         let exact_worker_path = self.exact.worker_path.clone();
@@ -170,6 +173,8 @@ impl KetchupApp {
         self.live.consent_attached = live_consent_attached;
         self.live.launch_attached = live_launch_attached;
         self.live.client_name = live_client_name;
+        self.live.previous_client = live_previous_client;
+        self.live.write_log = live_write_log;
         self.render.wgpu_target_format = wgpu_target_format;
         self.render.wgpu_device = wgpu_device;
         self.render.wgpu_queue = wgpu_queue;
@@ -363,6 +368,7 @@ impl KetchupApp {
                 }
                 self.document = document;
                 self.file.container_data = container_data;
+                self.mark_kept_sheet_settings();
                 self.file.review_candidate = None;
                 self.file.migration_review_plan = None;
                 self.file.path = recovery_open.is_none().then(|| path.to_owned());
@@ -493,6 +499,13 @@ impl KetchupApp {
         path: &Path,
         payload: &[u8],
     ) -> Result<(), Rejection> {
+        // Owner decision R1 (review 2026-11-19 og): a connected AI writes every export, a
+        // release to manufacturing too, without a prompt; only replacing a file asks.
+        if self.live.client_export.is_some()
+            && class == HighRiskClass::ReleaseManufacturingExportWithWarnings
+        {
+            return Ok(());
+        }
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| failed("side_effect.scope", error))?;
         let proposal = self
@@ -1153,17 +1166,33 @@ impl KetchupApp {
                 }
             }
             AppCommand::ReviewCamExport => {
-                self.reviews.cam_export_dialog =
-                    self.document
-                        .current()
-                        .cam_plans()
-                        .next()
-                        .map(|plan| CamExportDialog {
-                            plan_id: plan.id(),
+                let plan_id = self
+                    .document
+                    .current()
+                    .cam_plans()
+                    .next()
+                    .map(|plan| plan.id());
+                match (plan_id, super::cam_export::cam_dialect_choices()) {
+                    (None, _) => {
+                        self.reviews.cam_export_dialog = None;
+                        self.digest = self.catalog.text("cam-review-no-plan");
+                    }
+                    (Some(_), Err(error)) => {
+                        self.reviews.cam_export_dialog = None;
+                        self.digest = error.to_string();
+                    }
+                    (Some(plan_id), Ok(dialect_choices)) => {
+                        self.reviews.cam_export_dialog = Some(CamExportDialog {
+                            plan_id,
+                            operation: Default::default(),
+                            face: None,
+                            dialect_id: dialect_choices
+                                .first()
+                                .map_or_else(String::new, |(id, _)| id.clone()),
+                            dialect_choices,
                             review: None,
                         });
-                if self.reviews.cam_export_dialog.is_none() {
-                    self.digest = self.catalog.text("cam-review-no-plan");
+                    }
                 }
             }
             AppCommand::ReviewStaticFea => {
@@ -1211,6 +1240,10 @@ impl KetchupApp {
                     Err(error) => self.digest = error.reason_text().to_owned(),
                 }
             }
+            AppCommand::ReviewSteadyThermal => match ThermalReviewDialog::for_selection(self) {
+                Ok(dialog) => self.reviews.thermal_review_dialog = Some(dialog),
+                Err(error) => self.digest = error.reason_text().to_owned(),
+            },
             AppCommand::ReviewLocalPdm => {
                 let snapshot = self.document.current();
                 let repository = self

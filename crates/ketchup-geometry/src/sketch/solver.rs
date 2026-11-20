@@ -404,6 +404,7 @@ impl VariableLayout {
 
 pub(super) fn variable_layouts(
     entities: &[SketchEntity],
+    constraints: &[SketchConstraint],
 ) -> Result<(BTreeMap<SketchEntityId, VariableLayout>, usize), SketchError> {
     let mut layouts = BTreeMap::new();
     let mut next = 0usize;
@@ -417,7 +418,7 @@ pub(super) fn variable_layouts(
         next = next
             .checked_add(entity.degrees_of_freedom())
             .ok_or(SketchError::ResourceLimit)?;
-        if next > MAX_SKETCH_SOLVER_DOF {
+        if !constraints.is_empty() && next > MAX_SKETCH_SOLVER_DOF {
             return Err(SketchError::ResourceLimit);
         }
         layouts.insert(entity.id(), layout);
@@ -665,7 +666,7 @@ pub(super) fn solve_constraints(
         return Ok(());
     }
 
-    let (layouts, variable_count) = variable_layouts(entities)?;
+    let (layouts, variable_count) = variable_layouts(entities, constraints)?;
     let equation_variables = constraints
         .iter()
         .map(|constraint| constraint_variable_equations(constraint, &layouts))

@@ -229,7 +229,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::Mass { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // A large document loads; imports and exports run the exact worker.
         Request::Import { path, .. } => ketchup_mcp::import_response_wait(path),
-        Request::Open { .. } | Request::Export { .. } | Request::DrawingExport { .. } => {
+        Request::Open { .. } | Request::Export(_) | Request::DrawingExport { .. } => {
             ketchup_mcp::OPEN_RESPONSE_WAIT
         }
         Request::ExportDrawings(_) => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
@@ -260,6 +260,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::MeasureFaces { .. }
         | Request::ValidateProgram { .. }
         | Request::SavedViews { .. }
+        | Request::DrawingSheet(_)
         | Request::UnderlaySnap { .. }
         | Request::UnderlayObjects { .. }
         | Request::UnderlayRegions { .. }
@@ -295,6 +296,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingDiscardRefused(_)
         | Request::DrawingDraw { .. }
         | Request::DrawingRooms(_)
+        | Request::DrawingAnnotate(_)
         | Request::DrawingMove { .. }
         | Request::DrawingTrim { .. }
         | Request::DrawingExtend { .. }
@@ -303,7 +305,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingExtrude { .. }
         | Request::DrawingView { .. }
         | Request::DrawingSolidFromViews { .. }
-        | Request::Export { .. }
+        | Request::Export(_)
         | Request::Selection { .. }
         | Request::View { .. }
         | Request::SaveView { .. }
@@ -1285,7 +1287,10 @@ mod tests {
             .map(|(read, sent)| read.saturating_duration_since(*sent))
             .collect();
         late.sort();
-        assert!(late[late.len() / 2] < Duration::from_millis(5), "{late:?}");
+        assert!(
+            late[late.len() / 2] < ketchup_test_env::perf_budget(Duration::from_millis(5)),
+            "{late:?}"
+        );
     }
 
     #[test]

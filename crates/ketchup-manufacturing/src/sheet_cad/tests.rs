@@ -234,6 +234,61 @@ fn a_plans_north_arrow_and_section_marks_go_with_it_and_the_revisions_stay_on_pa
     );
 }
 
+/// A cutting plane is drawn dash-dot as AutoCAD's `CENTER`, not dashed as hidden edges; the
+/// black arrows of the north and the section marks take their layer's colour, which draws
+/// black on paper and white on a dark screen, not RGB black that vanishes on one.
+#[test]
+fn a_section_line_is_dash_dot_and_black_marks_draw_in_their_layers_colour() {
+    let solids = room([12_000.0, 5_000.0], 6000.0, 3000.0);
+    let options = DrawingSetOptions {
+        north_deg: Some(90.0),
+        plans: vec![PlanSheet {
+            storey: Storey {
+                floor_mm: None,
+                cut_mm: 1200.0,
+            },
+            view_title: "Pôdorys prízemia".to_owned(),
+            sheet_title: "Pôdorys".to_owned(),
+        }],
+        ..DrawingSetOptions::default()
+    };
+    let set = drawing_set(&solids, &options).expect("the set is drawn");
+    let plan = &set.cad()[0];
+    let patterns = plan
+        .model
+        .iter()
+        .filter_map(|entity| match entity {
+            SheetEntity::Polyline { layer, pen, .. } if layer == MARK => pen.pattern,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !patterns.is_empty() && patterns.iter().all(|p| *p == LinePattern::DashDot),
+        "the section lines: {patterns:?}"
+    );
+    let mark_fills = plan
+        .model
+        .iter()
+        .filter_map(|entity| match entity {
+            SheetEntity::Fill { layer, color, .. } if layer == MARK => Some(*color),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        mark_fills.len() >= 3,
+        "the north arrow and two section arrows: {mark_fills:?}"
+    );
+    assert!(
+        mark_fills.iter().all(Option::is_none),
+        "black arrows draw ByLayer: {mark_fills:?}"
+    );
+    let text = String::from_utf8(set.dxf().expect("written")[0].clone()).expect("UTF-8");
+    assert!(
+        text.contains("\r\n  6\r\nCENTER\r\n"),
+        "an entity draws with CENTER"
+    );
+}
+
 #[test]
 fn a_plan_the_sheet_turns_lies_unturned_in_model_space_and_its_viewport_turns_it() {
     // Longer along y: the sheet draws its length to the right.

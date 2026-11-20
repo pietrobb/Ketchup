@@ -15,24 +15,22 @@ use crate::{
 };
 use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
 use ketchup_exact::{
-    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, BoxSpec, CircleExtrudeSpec,
-    EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel, ExactOpOutput,
-    ExactPairRelation, ExactVolumeMeshOptions, FramedLoftProfile, FramedLoftSection,
-    FramedLoftSpec, LoftSurfaceContinuity, PlanarProfileLoop, PlanarProfileSegment, Point3,
-    RectangleOffsetSpec, ShellDirection as NativeShellDirection, Size3, SpatialProfileSegment,
-    StepXdeExportNode, StepXdeExportPart, ThreadGrooveSpec,
+    AdvancedChamferMode, AxialToolMotion, AxialToolSweepSpec, AxialToolTip, BoxSpec,
+    CircleExtrudeSpec, EdgeFinish, ExactBackend, ExactBodyBooleanOperation, ExactKernel,
+    ExactOpOutput, ExactPairRelation, ExactVolumeMeshOptions, PlanarProfileLoop,
+    PlanarProfileSegment, Point3, RectangleOffsetSpec, ShellDirection as NativeShellDirection,
+    Size3, SpatialProfileSegment, StepXdeExportNode, StepXdeExportPart, ThreadGrooveSpec,
 };
 use ketchup_geometry::linalg::{self, Affine3, Vec3};
 use ketchup_model::cam::CAM_SIMULATION_SCHEMA_V1;
 use ketchup_model::document::Transform;
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepChamferMode, ExactBRepDraft, ExactBRepEdgeFinishKind,
-    ExactBRepGraph, ExactBRepImportedFormat, ExactBRepLinearInterval, ExactBRepLoftContinuity,
-    ExactBRepLoftSection, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment, ExactBRepProfile, ExactBRepProfileFaceReference,
-    ExactBRepShellDirection, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
-    ExactBRepThreadGroove, ExactBRepTopologyKind, ExactBRepTopologySelector,
-    ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
+    ExactBRepGraph, ExactBRepImportedFormat, ExactBRepLinearInterval, ExactBRepOperation,
+    ExactBRepPlanarGeometry, ExactBRepPlanarLoop, ExactBRepPlanarSegment, ExactBRepProfile,
+    ExactBRepProfileFaceReference, ExactBRepShellDirection, ExactBRepSpatialPath,
+    ExactBRepSpatialPathSegment, ExactBRepThreadGroove, ExactBRepTopologyKind,
+    ExactBRepTopologySelector, ExactBRepWeldmentJointPolicy, ExactBRepWeldmentJointPrimary,
     exact_brep_planar_rectangle_bounds, exact_sheet_metal_shape,
 };
 use ketchup_model::exact_product::{
@@ -53,14 +51,19 @@ use std::time::Duration;
 
 type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
+mod cam_simulation;
 mod failure;
+mod loft;
 mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
 mod source_document;
+mod surfaces;
 
 use failure::{backend_failure, geometry_failure};
+use loft::exact_brep_loft_node;
 use source_document::{SourceDocument, XdeFormat};
+use surfaces::{derived_surface, fill_boundary, planar_face};
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
@@ -129,7 +132,7 @@ fn handle_request(
             output,
         } => exact_brep_graph_step_response(backend, &input, &result_fingerprint, &output),
         WorkerRequest::SimulateCam { graph, request } => {
-            cam_simulation_response(backend, &graph, &request)
+            cam_simulation::cam_simulation_response(backend, &graph, &request)
         }
         WorkerRequest::InspectStepXde(source) => {
             m21_step_xde_inspection_response(backend, read, &source)
@@ -198,9 +201,8 @@ fn handle_request(
         // Ends without a reply like a crash, but without abort(): on Windows every abort
         // files a Windows Error Reporting report and holds the process ~1.5 s.
         WorkerRequest::Crash => std::process::exit(1),
-        WorkerRequest::Allocate { bytes } => {
-            let block = vec![0_u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
-            std::hint::black_box(&block);
+        WorkerRequest::Allocate { bytes, hold } => {
+            crate::child_process::hold_block(bytes, hold);
             Ok(WorkerReply::Done)
         }
     }
@@ -663,296 +665,6 @@ fn exact_brep_sheet_metal(
     Ok(output)
 }
 
-fn cam_simulation_response(
-    backend: &ExactBackend,
-    graph: &ExactBRepGraph,
-    request: &CamSimulationWireRequest,
-) -> WorkerResult {
-    validated_graph(graph)?;
-    let bounded_values = request
-        .stock_bounds_mm
-        .iter()
-        .flatten()
-        .chain(request.setup_to_world.iter())
-        .copied()
-        .chain([
-            request.cutter_radius_mm,
-            request.cutter_length_mm,
-            request.tool_length_mm,
-            request.holder_radius_mm,
-            request.holder_offset_mm,
-            request.holder_length_mm,
-        ])
-        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM);
-    let bounded_pairs = request
-        .motions
-        .len()
-        .checked_mul(request.fixtures.len().saturating_mul(2).saturating_add(2))
-        .is_some_and(|checks| checks <= crate::MAX_CAM_SIMULATION_PAIR_CHECKS);
-    if request.schema != CAM_SIMULATION_SCHEMA_V1
-        || request.target_exact_graph_digest != graph.graph_digest
-        || !is_sha256_hex(&request.plan_digest)
-        || !is_sha256_hex(&request.toolpath_digest)
-        || request.motions.is_empty()
-        || request.motions.len() > crate::MAX_CAM_SIMULATION_MOTIONS
-        || request.fixtures.len() > crate::MAX_CAM_SIMULATION_FIXTURES
-        || !bounded_pairs
-        || !bounded_values
-        || request.cutter_radius_mm <= 0.0
-        || request.cutter_length_mm <= 0.0
-        || request.tool_length_mm < request.cutter_length_mm
-        || request.holder_radius_mm <= 0.0
-        || request.holder_offset_mm < request.tool_length_mm
-        || request.holder_length_mm <= 0.0
-        || (0..3).any(|axis| request.stock_bounds_mm[0][axis] >= request.stock_bounds_mm[1][axis])
-        || request.motions.iter().any(|motion| {
-            motion.kind > 3
-                || motion.path_kind > 1
-                || motion
-                    .start_mm
-                    .into_iter()
-                    .chain(motion.end_mm)
-                    .chain(motion.center_mm)
-                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
-        })
-        || request.fixtures.iter().any(|fixture| {
-            fixture.id == 0
-                || (0..3).any(|axis| fixture.bounds_mm[0][axis] >= fixture.bounds_mm[1][axis])
-                || fixture
-                    .bounds_mm
-                    .iter()
-                    .flatten()
-                    .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
-        })
-        || request
-            .fixtures
-            .iter()
-            .map(|fixture| fixture.id)
-            .collect::<BTreeSet<_>>()
-            .len()
-            != request.fixtures.len()
-    {
-        return Err(WorkerFailure::invalid_request());
-    }
-    simulate_cam_geometry(backend, graph, request)
-        .map(WorkerReply::Cam)
-        .map_err(|error| geometry_failure(&error))
-}
-
-fn cam_axial_sweep(
-    backend: &ExactBackend,
-    motion: &crate::CamSimulationWireMotion,
-    radius_mm: f64,
-    axial_length_mm: f64,
-    axial_offset_mm: f64,
-) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let offset = |mut point: [f64; 3]| {
-        point[2] += axial_offset_mm;
-        point
-    };
-    backend.sweep_axial_tool(AxialToolSweepSpec {
-        motion: if motion.path_kind == 0 {
-            AxialToolMotion::Line {
-                start_mm: offset(motion.start_mm),
-                end_mm: offset(motion.end_mm),
-            }
-        } else {
-            AxialToolMotion::Arc {
-                start_mm: offset(motion.start_mm),
-                end_mm: offset(motion.end_mm),
-                center_mm: offset(motion.center_mm),
-                clockwise: motion.clockwise,
-            }
-        },
-        radius_mm,
-        axial_length_mm,
-    })
-}
-
-fn cam_world_sweep(
-    backend: &ExactBackend,
-    request: &CamSimulationWireRequest,
-    motion: &crate::CamSimulationWireMotion,
-    radius_mm: f64,
-    axial_length_mm: f64,
-    axial_offset_mm: f64,
-) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let local = cam_axial_sweep(backend, motion, radius_mm, axial_length_mm, axial_offset_mm)?;
-    backend.transform_body(&local.body, &request.setup_to_world)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_cam_collision(
-    collisions: &mut Vec<CamSimulationWireCollision>,
-    backend: &ExactBackend,
-    motion_index: usize,
-    motion_kind: u8,
-    participant: u8,
-    target: u8,
-    fixture_id: Option<u64>,
-    moving: &ketchup_exact::ExactBody,
-    obstacle: &ketchup_exact::ExactBody,
-    tolerance_mm: f64,
-) -> Result<(), ketchup_exact::GeometryError> {
-    let relation = backend.query_body_pair(moving, obstacle, tolerance_mm)?;
-    if relation.relation != ExactPairRelation::Separated {
-        collisions.push(CamSimulationWireCollision {
-            motion_index,
-            motion_kind,
-            participant,
-            target,
-            fixture_id,
-            common_volume_mm3: relation.common_volume_mm3,
-            contact_area_mm2: relation.common_contact_area_mm2,
-            distance_mm: relation.distance_mm,
-        });
-    }
-    Ok(())
-}
-
-fn simulate_cam_geometry(
-    backend: &ExactBackend,
-    graph: &ExactBRepGraph,
-    request: &CamSimulationWireRequest,
-) -> Result<CamSimulationWireEvidence, ketchup_exact::GeometryError> {
-    let target = evaluate_exact_brep_graph(backend, graph, &[])?;
-    let tolerance_mm = graph.tolerance.linear_mm();
-    let box_from_bounds = |bounds: [[f64; 3]; 2]| BoxSpec {
-        origin_mm: Point3 {
-            x: bounds[0][0],
-            y: bounds[0][1],
-            z: bounds[0][2],
-        },
-        size_mm: Size3 {
-            x: bounds[1][0] - bounds[0][0],
-            y: bounds[1][1] - bounds[0][1],
-            z: bounds[1][2] - bounds[0][2],
-        },
-    };
-    let mut stock = backend.make_box(box_from_bounds(request.stock_bounds_mm))?;
-    let stock_before_mm3 = stock.body.topology.volume_mm3;
-    let fixture_bodies = request
-        .fixtures
-        .iter()
-        .map(|fixture| {
-            backend
-                .make_box(box_from_bounds(fixture.bounds_mm))
-                .map(|body| (fixture.id, body))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut collisions = Vec::new();
-    let mut cutting_motion_count = 0;
-    for (motion_index, motion) in request.motions.iter().enumerate() {
-        let tool = cam_world_sweep(
-            backend,
-            request,
-            motion,
-            request.cutter_radius_mm,
-            request.tool_length_mm,
-            0.0,
-        )?;
-        let holder = cam_world_sweep(
-            backend,
-            request,
-            motion,
-            request.holder_radius_mm,
-            request.holder_length_mm,
-            request.holder_offset_mm,
-        )?;
-        if motion.kind == 0 {
-            append_cam_collision(
-                &mut collisions,
-                backend,
-                motion_index,
-                motion.kind,
-                0,
-                0,
-                None,
-                &tool.body,
-                &stock.body,
-                tolerance_mm,
-            )?;
-        }
-        append_cam_collision(
-            &mut collisions,
-            backend,
-            motion_index,
-            motion.kind,
-            1,
-            0,
-            None,
-            &holder.body,
-            &stock.body,
-            tolerance_mm,
-        )?;
-        for (fixture_id, fixture) in &fixture_bodies {
-            append_cam_collision(
-                &mut collisions,
-                backend,
-                motion_index,
-                motion.kind,
-                0,
-                1,
-                Some(*fixture_id),
-                &tool.body,
-                &fixture.body,
-                tolerance_mm,
-            )?;
-            append_cam_collision(
-                &mut collisions,
-                backend,
-                motion_index,
-                motion.kind,
-                1,
-                1,
-                Some(*fixture_id),
-                &holder.body,
-                &fixture.body,
-                tolerance_mm,
-            )?;
-        }
-        if matches!(motion.kind, 1 | 2) {
-            cutting_motion_count += 1;
-            let cutter = cam_world_sweep(
-                backend,
-                request,
-                motion,
-                request.cutter_radius_mm,
-                request.cutter_length_mm,
-                0.0,
-            )?;
-            stock = backend.boolean_bodies(
-                &stock.body,
-                &cutter.body,
-                ExactBodyBooleanOperation::Cut,
-            )?;
-        }
-    }
-    let stock_after_mm3 = stock.body.topology.volume_mm3;
-    let common = backend.query_body_pair(&stock.body, &target.body, tolerance_mm)?;
-    let residual_stock_mm3 = (stock_after_mm3 - common.common_volume_mm3).max(0.0);
-    let gouge_mm3 = (target.body.topology.volume_mm3 - common.common_volume_mm3).max(0.0);
-    let evidence = CamSimulationWireEvidence {
-        schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
-        plan_digest: request.plan_digest.clone(),
-        toolpath_digest: request.toolpath_digest.clone(),
-        target_exact_graph_digest: request.target_exact_graph_digest.clone(),
-        motion_count: request.motions.len(),
-        cutting_motion_count,
-        fixture_count: request.fixtures.len(),
-        stock_before_mm3,
-        stock_after_mm3,
-        removed_stock_mm3: (stock_before_mm3 - stock_after_mm3).max(0.0),
-        residual_stock_mm3,
-        gouge_mm3,
-        collisions,
-        backend: ketchup_exact::backend_fingerprint().to_owned(),
-        tolerance: ketchup_exact::tolerance_profile().to_owned(),
-        result_fingerprint: String::new(),
-    };
-    Ok(evidence)
-}
-
 // Terminal outputs of validated graphs, keyed by the recomputed graph digest
 // (which covers imported source hashes).
 thread_local! {
@@ -1163,9 +875,7 @@ fn evaluate_exact_brep_graph(
                 &graph.profiles[profile.0 as usize],
                 f64::from_bits(*distance_bits),
             )?,
-            ExactBRepOperation::PlanarSurface { profile } => {
-                exact_brep_planar_surface(backend, &graph.profiles[profile.0 as usize])?
-            }
+            ExactBRepOperation::PlanarSurface { profile } => planar_face(backend, graph, *profile)?,
             ExactBRepOperation::Sweep { profile, path } => exact_brep_sweep(
                 backend,
                 &graph.profiles[profile.0 as usize],
@@ -1195,34 +905,23 @@ fn evaluate_exact_brep_graph(
                 *policy,
                 *primary,
             )?,
-            ExactBRepOperation::Loft {
-                sections,
-                guide,
-                continuity,
-            } => {
-                let output =
-                    exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, true)?;
+            loft @ ExactBRepOperation::Loft { .. } => {
+                let output = exact_brep_loft_node(backend, graph, loft)?;
                 if needs_names[node_index] {
                     produced_face_names = Some(exact_brep_loft_face_names(graph, &output)?);
                 }
                 output
             }
-            ExactBRepOperation::LoftSurface {
-                sections,
-                guide,
-                continuity,
-            } => exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, false)?,
-            ExactBRepOperation::SurfaceTrim { target, cutter } => backend.trim_surface(
-                &outputs[target.0 as usize].body,
-                &outputs[cutter.0 as usize].body,
-            )?,
-            ExactBRepOperation::SurfaceExtend {
-                target,
-                distance_bits,
-            } => backend.extend_planar_surface(
-                &outputs[target.0 as usize].body,
-                f64::from_bits(*distance_bits),
-            )?,
+            loft @ ExactBRepOperation::LoftSurface { .. } => {
+                exact_brep_loft_node(backend, graph, loft)?
+            }
+            op @ ExactBRepOperation::BoundarySurface { .. } => fill_boundary(backend, graph, op)?,
+            op @ (ExactBRepOperation::SurfaceTrim { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceControlPoint { .. }
+            | ExactBRepOperation::SurfaceExtend { .. }) => {
+                derived_surface(backend, graph, &outputs, op)?
+            }
             ExactBRepOperation::SurfaceKnit {
                 surfaces,
                 tolerance_bits,
@@ -1899,124 +1598,6 @@ fn exact_brep_chamfer_ordinal_pairs(
     Ok(pairs.into_iter().unzip())
 }
 
-fn exact_brep_loft(
-    backend: &ExactBackend,
-    graph: &ExactBRepGraph,
-    sections: &[ExactBRepLoftSection],
-    guide: Option<&ExactBRepSpatialPath>,
-    continuity: ExactBRepLoftContinuity,
-    make_solid: bool,
-) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let guide_segments = guide.map(|guide| {
-        guide
-            .segments
-            .iter()
-            .map(exact_brep_spatial_path_segment)
-            .collect::<Vec<_>>()
-    });
-    let continuity = match continuity {
-        ExactBRepLoftContinuity::Position => LoftSurfaceContinuity::Position,
-        ExactBRepLoftContinuity::Tangent => LoftSurfaceContinuity::Tangent,
-        ExactBRepLoftContinuity::Curvature => LoftSurfaceContinuity::Curvature,
-    };
-    let mut outer_sections = Vec::with_capacity(sections.len());
-    let mut hole_sections: Option<Vec<Vec<FramedLoftSection>>> = None;
-    for section in sections {
-        let profile = &graph.profiles[section.profile.0 as usize];
-        let (outer, holes) = match &profile.geometry {
-            ExactBRepPlanarGeometry::Spline { control_point_bits } => (
-                FramedLoftProfile::Spline {
-                    control_points_mm: control_point_bits
-                        .iter()
-                        .map(|point| point.map(f64::from_bits))
-                        .collect(),
-                },
-                Vec::new(),
-            ),
-            ExactBRepPlanarGeometry::Circle { .. }
-            | ExactBRepPlanarGeometry::Boundary { closed: true, .. } => (
-                FramedLoftProfile::Planar(exact_brep_planar_offset_loop(profile)?),
-                Vec::new(),
-            ),
-            ExactBRepPlanarGeometry::Region { outer, holes } => (
-                FramedLoftProfile::Planar(exact_brep_planar_loop(outer)),
-                holes
-                    .iter()
-                    .map(|hole| FramedLoftProfile::Planar(exact_brep_planar_loop(hole)))
-                    .collect(),
-            ),
-            _ => {
-                return Err(exact_brep_profile_error(
-                    profile,
-                    "exact Loft requires closed line/arc/circle/cubic or spline sections",
-                ));
-            }
-        };
-        let elevation_mm = f64::from_bits(section.elevation_bits);
-        let frame = profile.frame();
-        let hole_groups = hole_sections.get_or_insert_with(|| {
-            (0..holes.len())
-                .map(|_| Vec::with_capacity(sections.len()))
-                .collect()
-        });
-        if hole_groups.len() != holes.len() {
-            return Err(exact_brep_profile_error(
-                profile,
-                "exact Loft requires the same hole count in every section",
-            ));
-        }
-        outer_sections.push(FramedLoftSection {
-            elevation_mm,
-            frame,
-            profile: outer,
-        });
-        for (group, hole) in hole_groups.iter_mut().zip(holes) {
-            group.push(FramedLoftSection {
-                elevation_mm,
-                frame,
-                profile: hole,
-            });
-        }
-    }
-    let mut output = if make_solid {
-        backend.loft_framed_profiles_with_controls(
-            &FramedLoftSpec {
-                sections: outer_sections,
-            },
-            guide_segments.as_deref(),
-            continuity,
-        )?
-    } else {
-        backend.loft_framed_surface(
-            &FramedLoftSpec {
-                sections: outer_sections,
-            },
-            guide_segments.as_deref(),
-            continuity,
-        )?
-    };
-    let hole_sections = hole_sections.unwrap_or_default();
-    if !make_solid && !hole_sections.is_empty() {
-        return Err(ketchup_exact::GeometryError {
-            code: ketchup_exact::GeometryErrorCode::InvalidProfile,
-            diagnostic: "Loft surface holes are not supported".to_owned(),
-            operation: "loft_framed_surface",
-            input_digest: graph.canonical_input_digest.clone(),
-            backend_fingerprint: ketchup_exact::backend_fingerprint(),
-        });
-    }
-    for sections in hole_sections {
-        let tool = backend.loft_framed_profiles_with_controls(
-            &FramedLoftSpec { sections },
-            guide_segments.as_deref(),
-            continuity,
-        )?;
-        output =
-            backend.boolean_bodies(&output.body, &tool.body, ExactBodyBooleanOperation::Cut)?;
-    }
-    Ok(output)
-}
-
 const fn body_boolean(operation: &ExactBRepBooleanOperation) -> ExactBodyBooleanOperation {
     match operation {
         ExactBRepBooleanOperation::Cut => ExactBodyBooleanOperation::Cut,
@@ -2464,57 +2045,6 @@ fn exact_brep_spatial_path_segment(segment: &ExactBRepSpatialPathSegment) -> Spa
             end_mm: end_bits.map(f64::from_bits),
         },
     }
-}
-
-fn exact_brep_planar_surface(
-    backend: &ExactBackend,
-    profile: &ExactBRepProfile,
-) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
-    let planar_loop = match &profile.geometry {
-        ExactBRepPlanarGeometry::Boundary { .. } => {
-            PlanarProfileLoop::Segments(exact_brep_boundary_segments(profile, true)?)
-        }
-        ExactBRepPlanarGeometry::Circle {
-            center_bits,
-            radius_bits,
-        } => {
-            let center_mm = center_bits.map(f64::from_bits);
-            let radius_mm = f64::from_bits(*radius_bits);
-            let positive = [center_mm[0] + radius_mm, center_mm[1]];
-            let negative = [center_mm[0] - radius_mm, center_mm[1]];
-            PlanarProfileLoop::Segments(vec![
-                PlanarProfileSegment::CircularArc {
-                    start_mm: positive,
-                    end_mm: negative,
-                    center_mm,
-                    clockwise: false,
-                },
-                PlanarProfileSegment::CircularArc {
-                    start_mm: negative,
-                    end_mm: positive,
-                    center_mm,
-                    clockwise: false,
-                },
-            ])
-        }
-        ExactBRepPlanarGeometry::Region { outer, holes } if holes.is_empty() => {
-            exact_brep_planar_loop(outer)
-        }
-        ExactBRepPlanarGeometry::Region { .. } => {
-            return Err(exact_brep_profile_error(
-                profile,
-                "exact planar surface does not yet support profile holes",
-            ));
-        }
-        ExactBRepPlanarGeometry::Spline { .. } => {
-            return Err(exact_brep_profile_error(
-                profile,
-                "exact planar surface requires a closed line/arc/circle/cubic profile",
-            ));
-        }
-    };
-    let local = backend.planar_surface_profile(&planar_loop)?;
-    transform_local_to_profile_frame(backend, profile, &local)
 }
 
 fn exact_brep_planar_offset(
@@ -4546,7 +4076,7 @@ mod tests {
         .unwrap();
         let collisions_at = |tolerance_mm: f64| {
             let mut collisions = Vec::new();
-            append_cam_collision(
+            cam_simulation::append_cam_collision(
                 &mut collisions,
                 &backend,
                 0,

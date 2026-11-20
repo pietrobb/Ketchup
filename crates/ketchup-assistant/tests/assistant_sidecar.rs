@@ -1089,6 +1089,7 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
             feature: AssistantCadBodyFeature::Loft {
                 sections,
                 guide_feature_id: None,
+                rail_feature_id: None,
                 continuity: AssistantCadLoftContinuity::Position,
             },
         }],

@@ -21,6 +21,17 @@ PROTOCOL = "ketchup.headless.v1"
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 64 * 1024
 MAX_TIMEOUT_MS = 300_000
+MAX_FEA_MODES = 64
+
+
+def _check_study(mesh_levels, mode_count, confirmed):
+    """Refuse an FEA study's levels, mode count or confirmation before sending it."""
+    if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
+        raise ValueError("mesh_levels must contain two to four refinement levels")
+    if type(mode_count) is not int or not 0 <= mode_count <= MAX_FEA_MODES:
+        raise ValueError(f"mode_count must be an integer from 0 to {MAX_FEA_MODES}")
+    if type(confirmed) is not bool:
+        raise ValueError("confirmed must be boolean")
 
 
 class HeadlessError(RuntimeError):
@@ -479,10 +490,58 @@ class Document:
         })
 
     def loft_surface(self, definition_id, name, sections, *, guide_feature_id=None,
-                     continuity="position"):
+                     continuity="position", rail_feature_id=None):
+        """Loft surface through sections; a rail (needs a guide) stretches them to it."""
         source = {"type": "loft", "sections": list(sections), "continuity": continuity}
         if guide_feature_id is not None:
             source["guide_feature_id"] = guide_feature_id
+        if rail_feature_id is not None:
+            source["rail_feature_id"] = rail_feature_id
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
+
+    def boundary_surface(self, definition_id, name, segments, inner=None):
+        """Fill one closed loop of spatial line/circular_arc/cubic_bezier segments.
+
+        ``inner`` lists curves of a network inside the loop, each on its own,
+        that the surface must also pass through (at most 64).
+        """
+        source = {"type": "boundary", "segments": list(segments)}
+        if inner:
+            source["inner"] = list(inner)
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
+
+    def blend_surfaces(self, definition_id, name, first_feature_id, second_feature_id, *,
+                       first_continuity="tangent", second_continuity="tangent"):
+        """Bridge the gap between the facing edges of two single-face surfaces.
+
+        Each continuity is "position", "tangent" or "curvature"; both surfaces stay.
+        """
+        return self.append_feature(definition_id, name, {"type": "surface_body", "source": {
+            "type": "blend",
+            "first_feature_id": first_feature_id, "first_continuity": first_continuity,
+            "second_feature_id": second_feature_id, "second_continuity": second_continuity,
+        }})
+
+    def move_surface_control_point(self, definition_id, name, target_feature_id, u_index, v_index,
+                                   offset_mm=(0.0, 0.0, 0.0), *, from_mm, weight=None, keep=()):
+        """Move one control point of a single-face surface's B-spline form.
+
+        `from_mm` is where the point lies now; a point of these indices elsewhere,
+        also after an earlier edit changes the net, is refused with where it lies.
+        `keep` lists (surface_feature_id, continuity) seams that must still hold
+        "position", "tangent" or "curvature" continuity, or the move is refused.
+        The earlier surface stays.
+        """
+        source = {
+            "type": "control_point", "target_feature_id": target_feature_id,
+            "u_index": u_index, "v_index": v_index, "from_mm": list(from_mm),
+            "offset_mm": list(offset_mm),
+        }
+        if weight is not None:
+            source["weight"] = weight
+        if keep:
+            source["keep"] = [{"surface_feature_id": surface, "continuity": continuity}
+                              for surface, continuity in keep]
         return self.append_feature(definition_id, name, {"type": "surface_body", "source": source})
 
     def trim_surface(self, definition_id, name, target_feature_id, cutter_feature_id):
@@ -556,9 +615,17 @@ class Document:
                   feed_mm_per_min, plunge_mm_per_min, work_offset="g54",
                   origin_mm=(0, 0, 0), x_axis=(1, 0, 0), y_axis=(0, 1, 0),
                   safe_height_mm, maximum_stepdown_mm, stepover_ratio,
-                  radial_allowance_mm=0, axial_allowance_mm=0):
-        """Commit one canonical, exact-target-bound CAM setup as one Undo step."""
+                  radial_allowance_mm=0, axial_allowance_mm=0,
+                  drill_point_angle_deg=None):
+        """Commit one canonical, exact-target-bound CAM setup as one Undo step.
+
+        drill_point_angle_deg is a drill's included point angle (default 118, 180
+        flat-bottom); only a drill has one.
+        """
+        point = ({} if drill_point_angle_deg is None
+                 else {"drill_point_angle_deg": drill_point_angle_deg})
         return self.apply([{
+            **point,
             "operation": "upsert_cam_plan", "plan_id": plan_id, "name": name,
             "target_definition_id": target_definition_id,
             "target_feature_id": target_feature_id,
@@ -581,15 +648,30 @@ class Document:
 
     def cam_preview(self, plan_id, operations, *, fixtures=(),
                     dialect="iso_metric_gcode"):
-        """Plan, exact-simulate and review a current CAM program without mutation."""
+        """Plan, exact-simulate and review a current CAM program without mutation.
+
+        ``dialect`` names a library postprocessor dialect: ``iso_metric_gcode``,
+        ``fanuc``, ``grbl``, ``linuxcnc`` or ``controller_neutral_json``; Ketchup
+        refuses any other.
+
+        An operation can name a face of the plan's target by the ``ordinal``
+        that ``query`` ``kind="faces"`` reports, and Ketchup reads the geometry
+        from the exact part: ``{"type": "face_pocket", "id", "face_ordinal"}``
+        clears the pocket whose floor that planar face is,
+        ``{"type": "face_contour", "id", "face_ordinal", "side": "outside" |
+        "inside"}`` follows its boundary one cutter radius off, and
+        ``{"type": "face_drill", "id", "face_ordinal"}`` drills the hole whose
+        cylindrical wall it is. Pockets and contours cut from the stock top
+        down to the face.
+        """
         if type(plan_id) is not int or plan_id <= 0:
             raise ValueError("plan_id must be a positive integer")
         if not isinstance(operations, (list, tuple)) or not operations:
             raise ValueError("operations must be a nonempty list or tuple")
         if not isinstance(fixtures, (list, tuple)):
             raise ValueError("fixtures must be a list or tuple")
-        if dialect not in {"iso_metric_gcode", "controller_neutral_json"}:
-            raise ValueError("unsupported CAM postprocessor dialect")
+        if not isinstance(dialect, str) or not dialect:
+            raise ValueError("dialect must be a library postprocessor dialect id")
         return self._call("cam_preview", {
             "plan_id": plan_id,
             "operations": [dict(operation) for operation in operations],
@@ -611,10 +693,14 @@ class Document:
 
     def fea_review(self, definition_id, feature_id, occurrence_id, case_id, *, material,
                    constrained_face_ordinals, face_tractions, mesh_levels,
-                   maximum_nodes=256, relative_pivot_tolerance=1.0e-12,
+                   maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
                    maximum_small_deformation_ratio=0.05,
-                   convergence_relative_tolerance=0.02, confirmed=False):
-        """Run a guarded exact-mesh linear-static convergence review without mutation."""
+                   convergence_relative_tolerance=0.02, mode_count=0, confirmed=False):
+        """Run a guarded exact-mesh linear-static convergence review without mutation.
+
+        With ``mode_count`` the review also gives that many of the lowest natural
+        frequencies of the finest mesh; the material then needs ``density_kg_per_m3``.
+        """
         for name, value in (("definition_id", definition_id), ("feature_id", feature_id),
                             ("occurrence_id", occurrence_id)):
             if type(value) is not int or value <= 0:
@@ -627,10 +713,7 @@ class Document:
             raise ValueError("constrained_face_ordinals must be a nonempty list or tuple")
         if not isinstance(face_tractions, (list, tuple)) or not face_tractions:
             raise ValueError("face_tractions must be a nonempty list or tuple")
-        if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
-            raise ValueError("mesh_levels must contain two to four refinement levels")
-        if type(confirmed) is not bool:
-            raise ValueError("confirmed must be boolean")
+        _check_study(mesh_levels, mode_count, confirmed)
         return self._call("fea_review", {
             "definition_id": definition_id,
             "feature_id": feature_id,
@@ -646,6 +729,98 @@ class Document:
                 "maximum_small_deformation_ratio": maximum_small_deformation_ratio,
                 "convergence_relative_tolerance": convergence_relative_tolerance,
             },
+            "mode_count": mode_count,
+            "confirmed": confirmed,
+        }, guarded=True)
+
+    def fea_assembly_review(self, case_id, *, parts, joints, mesh_levels, mate_joints=(),
+                            maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
+                            maximum_small_deformation_ratio=0.05,
+                            convergence_relative_tolerance=0.02, mode_count=0,
+                            confirmed=False):
+        """Review several occurrences joined face to face as one model, without mutation.
+
+        Each part is a dict with ``occurrence_id``, ``feature_id`` (the solid of its
+        definition), ``material``, ``constrained_face_ordinals`` and ``face_tractions``.
+        Each joint names two faces, ``{"part": index, "face_ordinal": n}``, of different
+        parts and a ``kind``: ``{"type": "rigid"}`` glues the faces where they lie on
+        each other and nowhere else (faces that do not touch are refused);
+        ``{"type": "rigid_connector"}`` holds both whole faces plane as one rigid body,
+        as a bolt; ``{"type": "spring", "translation_n_per_mm": [x, y, z],
+        "rotation_n_mm_per_rad": [x, y, z]}`` holds each face plane with springs between
+        them, also as a bolt.
+        Each mate joint, ``{"mate_id": id, "kind": kind}``, joins the two faces a
+        face-to-face (coincident planar) mate of the document names; both mated
+        occurrences must be parts of the study.
+        """
+        if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
+            raise ValueError("case_id must be a nonempty string of at most 128 characters")
+        if not isinstance(parts, (list, tuple)) or not parts:
+            raise ValueError("parts must be a nonempty list or tuple")
+        if any(not isinstance(part, dict) for part in parts):
+            raise ValueError("each part must be a dict")
+        if not isinstance(joints, (list, tuple)) or any(not isinstance(joint, dict) for joint in joints):
+            raise ValueError("joints must be a list or tuple of dicts")
+        if not isinstance(mate_joints, (list, tuple)) or any(
+                not isinstance(joint, dict) for joint in mate_joints):
+            raise ValueError("mate_joints must be a list or tuple of dicts")
+        _check_study(mesh_levels, mode_count, confirmed)
+        return self._call("fea_assembly_review", {
+            "case_id": case_id,
+            "parts": [dict(part) for part in parts],
+            "joints": [dict(joint) for joint in joints],
+            "mate_joints": [dict(joint) for joint in mate_joints],
+            "mesh_levels": [dict(level) for level in mesh_levels],
+            "solve_settings": {
+                "maximum_nodes": maximum_nodes,
+                "relative_pivot_tolerance": relative_pivot_tolerance,
+                "maximum_small_deformation_ratio": maximum_small_deformation_ratio,
+                "convergence_relative_tolerance": convergence_relative_tolerance,
+            },
+            "mode_count": mode_count,
+            "confirmed": confirmed,
+        }, guarded=True)
+
+    def thermal_review(self, definition_id, feature_id, occurrence_id, case_id, *,
+                       mesh_levels, held_faces=(), flux_faces=(), convection_faces=(),
+                       maximum_nodes=200_000, relative_pivot_tolerance=1.0e-12,
+                       convergence_relative_tolerance=0.02, confirmed=False):
+        """Run a guarded steady heat-conduction review of one exact part without mutation.
+
+        The conductivity comes from the part's material in the library rules.
+        Faces are held at a temperature (°C), take a heat flux (W/m²) or
+        exchange heat by convection (W/(m² K) to an ambient °C).
+        """
+        for name, value in (("definition_id", definition_id), ("feature_id", feature_id),
+                            ("occurrence_id", occurrence_id)):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if not isinstance(case_id, str) or not case_id.strip() or len(case_id) > 128:
+            raise ValueError("case_id must be a nonempty string of at most 128 characters")
+        for name, faces in (("held_faces", held_faces), ("flux_faces", flux_faces),
+                            ("convection_faces", convection_faces)):
+            if not isinstance(faces, (list, tuple)):
+                raise ValueError(f"{name} must be a list or tuple")
+        if not held_faces and not convection_faces:
+            raise ValueError("hold a face at a temperature or cool one by convection")
+        if not isinstance(mesh_levels, (list, tuple)) or not 2 <= len(mesh_levels) <= 4:
+            raise ValueError("mesh_levels must contain two to four refinement levels")
+        if type(confirmed) is not bool:
+            raise ValueError("confirmed must be boolean")
+        return self._call("thermal_review", {
+            "definition_id": definition_id,
+            "feature_id": feature_id,
+            "occurrence_id": occurrence_id,
+            "case_id": case_id,
+            "held_faces": [dict(face) for face in held_faces],
+            "flux_faces": [dict(face) for face in flux_faces],
+            "convection_faces": [dict(face) for face in convection_faces],
+            "mesh_levels": [dict(level) for level in mesh_levels],
+            "solve_settings": {
+                "maximum_nodes": maximum_nodes,
+                "relative_pivot_tolerance": relative_pivot_tolerance,
+            },
+            "convergence_relative_tolerance": convergence_relative_tolerance,
             "confirmed": confirmed,
         }, guarded=True)
 

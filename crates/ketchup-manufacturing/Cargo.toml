@@ -21,6 +21,8 @@ epaint_default_fonts = "0.32.3"
 png = "0.18"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+unicode-normalization = "0.1.24"
+unicode-segmentation = "1.13"
 zune-jpeg = "0.5"
 
 [dev-dependencies]

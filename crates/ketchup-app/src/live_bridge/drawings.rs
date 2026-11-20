@@ -176,7 +176,7 @@ impl LiveBridge {
         let Some(format) = format else {
             return Err(failure(
                 "invalid_path",
-                "A drawing sheet is written to a local absolute path ending in .dxf or .dwg (no network share, device or stream).",
+                "A drawing sheet is written to a local absolute path ending in .dxf, .dwg, .svg or .pdf (no network share, device or stream).",
                 json!({"path": path}),
             ));
         };
@@ -223,19 +223,6 @@ fn sheet_scale(scale: f64) -> Result<u32, &'static str> {
     })
 }
 
-/// Never replaces a file: no one confirms an overwrite on this path; the
-/// window's own export asks before replacing.
-pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
-    if std::fs::symlink_metadata(path).is_ok() {
-        return Err(failure(
-            "drawings_target_exists",
-            "A file already exists at this path; export the drawings to a new file name.",
-            json!({"path": path}),
-        ));
-    }
-    Ok(())
-}
-
 /// Whether the file at `path`, of SHA-256 `existing`, is kept: it is not the
 /// last one the document wrote there and the client did not say `replace`. No
 /// one confirms an overwrite for a client, as the window's Save dialog does for
@@ -262,7 +249,7 @@ fn not_its_own(path: &Path) -> &'static str {
 /// `path`, which the export did not write, unless the user agrees in the
 /// window (review 2026-11-08 SEC-182). Before, the schema told the AI to ask
 /// and the flag alone replaced the file.
-fn replace_declined(app: &mut KetchupApp, path: &Path) -> Option<&'static str> {
+pub(super) fn replace_declined(app: &mut KetchupApp, path: &Path) -> Option<&'static str> {
     app.authorize_overwrite(path, path.to_string_lossy().as_bytes())
         .map_err(|rejection| {
             failure(
@@ -627,6 +614,7 @@ fn storey_problem(problem: StoreyTableProblem) -> Value {
         StoreyTableProblem::OutsideModel => json!("outside_model"),
         StoreyTableProblem::ThickBuildUp => json!("thick_build_up"),
         StoreyTableProblem::NoFloorInModel => json!("no_floor_in_model"),
+        StoreyTableProblem::NotInTable => json!("not_in_table"),
     }
 }
 
@@ -927,7 +915,11 @@ pub(super) fn finish_export(
             "finished_floor_mm": issue.levels.finished_floor_mm,
             "structural_mm": issue.levels.structural_mm,
             "problem": storey_problem(issue.problem),
-            "message": format!("{issue}; the sheets mark the table's levels. Correct the row if the model is right."),
+            "message": if issue.problem == StoreyTableProblem::NotInTable {
+                format!("{issue}. Add a row for it, or pass storeys: auto, if the model is right.")
+            } else {
+                format!("{issue}; the sheets mark the table's levels. Correct the row if the model is right.")
+            },
         })).collect::<Vec<_>>(),
         "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
         "north_deg": settings.north_deg().map_or(json!("none"), |north| json!(north)),
@@ -1302,10 +1294,6 @@ mod tests {
         );
         assert_eq!(std::fs::read(&pdf).unwrap(), b"saved meanwhile");
         assert_eq!(std::fs::read(&dxf).unwrap(), b"saved meanwhile");
-        assert_eq!(
-            refuse_existing(pdf.to_str().unwrap()),
-            Err("drawings_target_exists")
-        );
     }
 
     /// Review 2026-10-17 MCP-2: a sheet that could not be drawn, or settings

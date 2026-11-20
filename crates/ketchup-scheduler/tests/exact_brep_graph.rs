@@ -356,6 +356,7 @@ fn cam_simulation_document() -> (DocumentStore, CamPlan) {
             spindle_rpm: 10_000,
             feed_mm_per_min: 600.0,
             plunge_mm_per_min: 200.0,
+            point_angle_deg: None,
         },
         CamSetup {
             work_offset: CamWorkOffset::G54,
@@ -491,7 +492,9 @@ fn generated_boolean_document(
     (document, definition, base, tool, operations)
 }
 
+mod cam_regions;
 mod exchange_booleans_and_lofts;
+mod fea_assembly;
 mod imported_parts;
 mod sketch_sweeps_and_drafts;
 mod surfaces_offsets_and_finishes;

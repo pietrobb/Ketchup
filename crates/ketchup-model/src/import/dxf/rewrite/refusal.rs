@@ -183,6 +183,7 @@ impl Difference {
             Self::Lines => "lines lie elsewhere or run otherwise",
             Self::Text => "text lies elsewhere, reads otherwise or is set otherwise",
             Self::Fill => "fill covers another area",
+            Self::Style => "color, linetype or lineweight is another",
         }
     }
 }

@@ -17,7 +17,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 /// What the thread making a presentation image sends back: its PNG, or why there is none.
-pub(crate) type MadePresentation = Result<Vec<u8>, ExportError>;
+pub(crate) type MadePresentation = Result<MadeImage, ExportError>;
+
+/// A presentation image and the pictures of textured faces it shows as plain colour, each
+/// with why (review 2026-11-19 og IMG-800: one picture too large failed the whole image).
+#[derive(Debug)]
+pub(crate) struct MadeImage {
+    pub(crate) png: Vec<u8>,
+    pub(crate) plain_pictures: Vec<String>,
+}
 
 /// How a presentation image looks: the render options, how opaque the parts of each named
 /// material are, in percent (100 = opaque; parts of other materials are opaque), and its labels:
@@ -61,7 +69,7 @@ pub(crate) struct PresentationTask {
 pub(crate) struct PresentationParts {
     snapshot: Snapshot,
     /// The document's blobs, for the pictures textured faces show.
-    blobs: ketchup_model::persistence::Blobs,
+    pub(crate) blobs: ketchup_model::persistence::Blobs,
     scene: Vec<CurrentVisibleMesh>,
     opacity: Vec<u8>,
     /// How the dimensions write a decimal, as the drawings do (review 2026-11-12 P3).
@@ -138,9 +146,17 @@ impl PresentationParts {
             decimal_mark: self.decimal_mark,
             ..request.options
         };
-        render_presentation_until(&scene, &options, cancelled)
+        let png = render_presentation_until(&scene, &options, cancelled)
             .and_then(|image| image.png())
-            .map_err(presentation_refused)
+            .map_err(presentation_refused)?;
+        Ok(MadeImage {
+            png,
+            plain_pictures: scene
+                .plain_pictures
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        })
     }
 }
 
@@ -169,7 +185,7 @@ pub(super) fn presentation_refused(error: PresentationError) -> ExportError {
             "Give each label text on one line, within the limit of characters."
         }
         PresentationError::LabelLetter { .. } => {
-            "Write the label in Latin, Greek or Cyrillic letters or emoji; other scripts cannot be drawn yet."
+            "Write the label in Latin, Greek or Cyrillic letters, common symbols or emoji; other scripts cannot be drawn yet."
         }
         PresentationError::TooManyLabels { .. } => {
             "Turn off the part labels or name fewer labels; part labels count with yours."
@@ -177,12 +193,11 @@ pub(super) fn presentation_refused(error: PresentationError) -> ExportError {
         PresentationError::TextureReference { .. } => {
             "Import the textured mesh again; it names a picture or texture coordinate it does not have."
         }
-        // Not the user's to change: the built-in font, a stored picture, the model's data
-        // or the PNG writer failed.
-        PresentationError::Font
-        | PresentationError::Texture { .. }
-        | PresentationError::Source(_)
-        | PresentationError::Png(_) => return ExportError::failed(error),
+        // Not the user's to change: the built-in font, the model's data or the PNG writer
+        // failed.
+        PresentationError::Font | PresentationError::Source(_) | PresentationError::Png(_) => {
+            return ExportError::failed(error);
+        }
     };
     Rejection::new("presentation.image", RejectionPhase::Validation)
         .reason(error.to_string())
@@ -291,10 +306,12 @@ impl KetchupApp {
     ) -> Result<Written, ExportError> {
         self.live.client_export = Some(Arc::clone(cancelled));
         self.live.client_overwrite = overwrite;
-        let result = made.and_then(|png| self.publish_presentation(path, &png));
+        let result = made.and_then(|made| self.publish_presentation(path, made));
         self.live.client_export = None;
         self.live.client_overwrite = false;
-        self.report_export_outcome("presentation", path, result)
+        let result = self.report_export_outcome("presentation", path, result);
+        self.show_plain_pictures(path, result.as_ref());
+        result
     }
 
     /// Starts making the image on a thread; [`Self::poll_presentation_export`] writes it. A
@@ -353,15 +370,37 @@ impl KetchupApp {
             }
             Err(error @ TryRecvError::Disconnected) => Err(ExportError::failed(error)),
         };
-        let result = made.and_then(|png| self.publish_presentation(&task.path, &png));
+        let result = made.and_then(|made| self.publish_presentation(&task.path, made));
         self.show_export_outcome("presentation", &task.path, result.as_ref());
+        self.show_plain_pictures(&task.path, result.as_ref());
         context.request_repaint();
     }
 
-    /// Writes the image. A picture loses nothing of the model, so only replacing a file asks
-    /// the user; a client's image replaces one only with `overwrite` and once the user agrees
-    /// (review 2026-11-12 P3: `overwrite` was ignored).
-    fn publish_presentation(&mut self, path: &Path, png: &[u8]) -> Result<Written, ExportError> {
+    /// Names the pictures a saved image shows as their part's colour.
+    fn show_plain_pictures(&mut self, path: &Path, result: Result<&Written, &ExportError>) {
+        if let Ok(written) = result
+            && !written.lost.is_empty()
+        {
+            self.digest = self.catalog.format(
+                "digest-exported-presentation-plain",
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    ("pictures", written.lost.join("; ")),
+                ]),
+            );
+        }
+    }
+
+    /// Writes the image; the pictures it shows as plain colour are what it lost. A picture
+    /// loses nothing of the model, so only replacing a file asks the user; a client's image
+    /// replaces one only with `overwrite` and once the user agrees (review 2026-11-12 P3:
+    /// `overwrite` was ignored).
+    fn publish_presentation(
+        &mut self,
+        path: &Path,
+        made: MadeImage,
+    ) -> Result<Written, ExportError> {
+        let png = made.png.as_slice();
         let existing = export_target_sha256(path)?;
         if existing.is_some() {
             if self.live.client_export.is_some() && !self.live.client_overwrite {
@@ -381,7 +420,10 @@ impl KetchupApp {
             )?;
         }
         write_export_artifact_if_unchanged(path, png, existing.as_deref())?;
-        Ok(Written::alone(path))
+        Ok(Written {
+            lost: made.plain_pictures,
+            ..Written::alone(path)
+        })
     }
 }
 

@@ -18,7 +18,8 @@ Counted as a budget:
 - anything held below a `Duration` or a budget (`< Duration::…`, `FRAME_BUDGET >`);
 - a wait shorter than `PATIENCE_FLOOR` whose result the test needs (`recv_timeout(250 ms)
   .expect(…)`), which fails when the machine is slow; polling it (`if let Ok`, `match`,
-  `while`) or asserting it timed out (`.is_err()`) is not;
+  `while`) or asserting it timed out (`.is_err()`, `.unwrap_err()`, `.expect_err(…)`,
+  `let Err(…) = … else`) is not;
 - a `match` on a wait whose `Timeout` arm fails the test, shorter than `HANG_FLOOR`: it
   limits the work it waits for (review 2026-10-24 TST-23), and so does a call giving
   a helper that time, when the helper waits as long as its `Duration` parameter (or
@@ -264,9 +265,10 @@ def top_level_items(inner: str) -> list[str]:
     return items + [tail] if tail else items
 
 
-def signatures(text: str) -> list[tuple[str, list[str], bool, str]]:
-    """Each function of `text`: its name, its parameters without `self`, whether it is a
-    method (called as `.name(`) and its body."""
+def signatures(text: str, closures: bool = True) -> list[tuple[str, list[str], bool, str]]:
+    """Each function of `text`, and each closure bound to a name if `closures`: its name,
+    its parameters without `self`, whether it is a method (called as `.name(`) and its
+    body."""
     found = []
     for signature in SIGNATURE.finditer(text):
         inner, close = parenthesized(text, signature.end() - 1)
@@ -274,7 +276,7 @@ def signatures(text: str) -> list[tuple[str, list[str], bool, str]]:
         method = bool(parameters) and bool(SELF.match(parameters[0]))
         found.append((signature.group(1), parameters[1:] if method else parameters, method,
                       arms(text, close)))
-    for closure in CLOSURE.finditer(text):
+    for closure in CLOSURE.finditer(text) if closures else ():
         # An untyped parameter is read as a `Duration`: it is a helper only if it is
         # waited on as one.
         parameters = [item if ":" in item else f"{item}: Duration"
@@ -336,13 +338,16 @@ def waits_on(parameter: str, body: str, helpers: dict[str, Helper]) -> float | N
     return False
 
 
-def failing_wait_helpers(texts: list[str]) -> dict[str, Helper]:
+def failing_wait_helpers(texts: list[str], known: dict[str, Helper] | None = None,
+                         closures: bool = False) -> dict[str, Helper]:
     """Functions of `texts` that wait as long as one of their parameters says and fail
-    the test when that time runs out, also by handing it on to such a function: name to
-    that parameter's position, whether the function is a method and the unit of a number
-    parameter (`None` for a `Duration`)."""
-    functions = [function for text in texts for function in signatures(text)]
-    helpers: dict[str, Helper] = {}
+    the test when that time runs out, also by handing it on to such a function or one of
+    `known`: name to that parameter's position, whether the function is a method and the
+    unit of a number parameter (`None` for a `Duration`). Closures only if `closures`: a
+    closure is called only where it is bound (review 2026-11-13 r95 P3: one in a file made
+    every call of its name in the repository a helper's)."""
+    functions = [function for text in texts for function in signatures(text, closures)]
+    helpers: dict[str, Helper] = dict(known or {})
     grown = True
     while grown:
         grown = False
@@ -399,7 +404,8 @@ def short_needed_waits(text: str) -> list[int]:
             continue
         if value >= PATIENCE_FLOOR_MS:
             continue
-        if re.match(r"\s*(?:if|while|match)\b", statement) or ".is_err()" in statement:
+        if re.match(r"\s*(?:if|while|match)\b", statement) or ".is_err()" in statement \
+                or EXPECTS_ERROR.search(statement):
             continue  # polling, or asserting that nothing arrived in time
         found.append(text.count("\n", 0, wait.start()) + 1)
     return found
@@ -455,14 +461,20 @@ def fails_after(text: str, all_deadlines: list[re.Match], index: int) -> bool:
     loop = arms(owned, poll.end() - 1) if poll else ""
     quiet = bool(poll) and not re.search(r"\b(?:break|return)\b", loop)
     before = text[:deadline.end() + poll.start()] if poll else ""
+    errors: list[str] = []
     for statement in owned.split(";"):
+        words = STRING.sub('""', statement)
+        expected = EXPECTS_ERROR.search(words)
+        if expected:
+            errors += [name for name in expected.groups() if name]
         if not FAILS_AFTER.search(statement):
             continue
-        words = STRING.sub('""', statement)
         if NOT_TIMED_OUT.search(words):
             return True
-        if TIMEOUT_EXPECTED.search(words):
+        if TIMEOUT_EXPECTED.search(words) or expected:
             continue
+        if errors and re.search(rf"\b(?:{'|'.join(map(re.escape, errors))})\b", words):
+            continue  # it reads the error the wait ran out with
         if PANICS.search(words):
             return True
         if TIMED_OUT.search(words) or (quiet and gathered_nothing(words, loop, before)):
@@ -500,6 +512,14 @@ TIMED_OUT = re.compile(r"Timeout|TimedOut|timed_out|\.is_err\(\)|\.is_none\(\)")
 NOT_TIMED_OUT = re.compile(
     r"(?<![\w!])!\s*[\w.()]*?(?:timed_out\b|\.is_err\(\)|\.is_none\(\))"
     r"|\btimed_out\s*,\s*false\b|\bfalse\s*,\s*[\w.()]*?timed_out\b")
+# A statement taking the error a wait answered, which checks that it ran out as
+# `.is_err()` does (review 2026-11-13 r95 P3): `.unwrap_err()`, `.expect_err(…)` and
+# `let Err(e) = … else { panic!(…) }`. Group 1 or 2 is the name the error is bound to,
+# which later statements may inspect.
+EXPECTS_ERROR = re.compile(
+    r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=[^;]*?\.(?:unwrap_err\(\)|expect_err\()"
+    r"|\blet\s+Err\s*\(\s*(?:mut\s+)?(\w+)?[^=;]*\)\s*=[^;]*?\belse\b"
+    r"|\.unwrap_err\(\)|\.expect_err\(")
 # A match whose timeout arm does nothing: it panics on any other outcome, so it checks
 # that the wait ran out (review 2026-11-13 P3).
 TIMEOUT_EXPECTED = re.compile(r"\b(?:Timeout|TimedOut)\b\)*\s*=>\s*(?:\{\s*\}|\(\s*\))")
@@ -564,8 +584,9 @@ def violations(root: Path = ROOT) -> list[str]:
     constants = {name: value for _, _, text in tests
                  for name, value in duration_constants(text).items() if value is not None}
     for relative, offset, text in tests:
+        local = failing_wait_helpers([text], helpers, closures=True)
         found += [f"{relative.as_posix()}:{offset + line}"
-                  for line in budgets(text, helpers, constants)]
+                  for line in budgets(text, local, constants)]
     return found
 
 

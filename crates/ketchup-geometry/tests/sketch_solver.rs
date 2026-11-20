@@ -57,6 +57,53 @@ fn sketch(entities: Vec<SketchEntity>, constraints: Vec<SketchConstraintKind>) -
     }
 }
 
+#[test]
+fn unconstrained_geometry_does_not_consume_the_numerical_solver_budget() {
+    let entities = (1..=136)
+        .map(|id| line(id, [id as f64, 0.0], [id as f64, 1.0]))
+        .collect::<Vec<_>>();
+    let input = sketch(entities.clone(), vec![]);
+    let solved = input.solve_geometry().unwrap();
+    assert_eq!(solved.entities, entities);
+    assert_eq!(
+        solved.report.status,
+        SketchSolveStatus::UnderConstrained { remaining_dof: 544 }
+    );
+    assert_eq!(solved.report.entity_count, 136);
+    assert_eq!(solved.report.constraint_count, 0);
+    assert_eq!(solved.report.equation_count, 0);
+    assert_eq!(
+        solved.report.unconstrained_entity_ids,
+        entities.iter().map(SketchEntity::id).collect::<Vec<_>>()
+    );
+    let constrained = sketch(
+        entities,
+        vec![SketchConstraintKind::Vertical {
+            entity: SketchEntityId(1),
+        }],
+    );
+    assert_eq!(
+        constrained.solve_geometry(),
+        Err(SketchError::ResourceLimit)
+    );
+    let mut invalid = input.clone();
+    invalid.entities[0] = line(1, [f64::NAN, 0.0], [1.0, 1.0]);
+    assert!(invalid.solve_geometry().is_err());
+    let mut duplicate = input;
+    duplicate.entities[1] = duplicate.entities[0].clone();
+    assert_eq!(
+        duplicate.solve_geometry(),
+        Err(SketchError::EntitiesNotCanonical)
+    );
+    let oversized = sketch(
+        (1..=4097)
+            .map(|id| line(id, [id as f64, 0.0], [id as f64, 1.0]))
+            .collect(),
+        vec![],
+    );
+    assert_eq!(oversized.solve_geometry(), Err(SketchError::ResourceLimit));
+}
+
 /// A 100 x 50 rectangle anchored at `origin`, drawn roughly: every corner is
 /// off by up to 2 mm, so the solver has to move all of it.
 fn rough_rectangle(origin: [f64; 2]) -> SketchSpec {
@@ -428,6 +475,32 @@ fn a_circle_level_with_a_rounded_corner_joint_is_a_hole_only_inside_the_board() 
     };
     assert_eq!(regions([-30.0, 10.0]), [0, 0], "circle beside the board");
     assert_eq!(regions([50.0, 10.0]), [1], "circle inside the board");
+}
+
+/// A round flange with two parallel flats: two arcs of one circle joined by two
+/// lines. Its region is one plain loop, with no hole and no self-crossing.
+#[test]
+fn a_circle_cut_by_two_flats_is_one_region() {
+    let y = (24.0_f64 * 24.0 - 20.0 * 20.0).sqrt();
+    let arc = |id: u64, start_mm: [f64; 2], end_mm: [f64; 2]| SketchEntity::Arc {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    let flange = sketch(
+        vec![
+            line(1, [20.0, -y], [20.0, y]),
+            arc(2, [20.0, y], [-20.0, y]),
+            line(3, [-20.0, y], [-20.0, -y]),
+            arc(4, [-20.0, -y], [20.0, -y]),
+        ],
+        Vec::new(),
+    );
+    let regions = flange.solved_regions().unwrap();
+    assert_eq!(regions.len(), 1);
+    assert!(regions[0].holes.is_empty());
 }
 
 /// A 10 m arch is flattened with a tolerance relative to its size, so its pieces

@@ -52,8 +52,9 @@ const MANUFACTURING: [(AppCommand, &str); 5] = [
     (AppCommand::ReviewCamExport, "file-short-cam"),
 ];
 
-const ANALYSIS: [(AppCommand, &str); 2] = [
+const ANALYSIS: [(AppCommand, &str); 3] = [
     (AppCommand::ReviewStaticFea, "file-short-static-fea"),
+    (AppCommand::ReviewSteadyThermal, "file-short-steady-thermal"),
     (AppCommand::ReviewLocalPdm, "file-short-local-pdm"),
 ];
 

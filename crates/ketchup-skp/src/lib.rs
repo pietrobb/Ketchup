@@ -351,6 +351,16 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
                 })
                 .count(),
         ),
+        // A texture SketchUp colours (Colorize, or a tint) comes as its picture only
+        // (review 2026-11-13 r95 P3: it came untinted and nothing said so).
+        (
+            "skp_texture_tints_dropped",
+            model
+                .materials
+                .iter()
+                .filter(|material| material.colorized && material.texture.is_some())
+                .count(),
+        ),
         // A part takes the tags of its component or group; a face's own tag has no part.
         (
             "skp_face_tags_dropped",

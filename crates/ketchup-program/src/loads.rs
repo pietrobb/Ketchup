@@ -17,7 +17,7 @@ use crate::continuous_span::{self, Piece};
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Joint, JointFastening, Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
-use anchorage::{Footing, across_beyond, beyond_side, reaches_beyond};
+use anchorage::{Anchorage, Footing, across_beyond, beyond_side, reaches_beyond, weaker};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,29 @@ pub struct Brace {
     pub edge: String,
     pub from_mm: f64,
     pub to_mm: f64,
+    /// How its path to the ground holds the member sideways, from the member
+    /// through the brace (a diaphragm's sheet through all its anchors), the
+    /// weakest of the stretch; none where no path reaches the ground.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchorage: Option<BraceAnchorage>,
+}
+
+/// How stiffly and up to what force a brace's path to the ground holds the
+/// member sideways (review 2026-11-13 r95 structural point 1), which the
+/// member's check holds against what EN 1995-1-1 9.2.5.3 asks of a brace.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct BraceAnchorage {
+    /// The part of the path, with the joint it leaves by, giving the most.
+    pub through: String,
+    /// The force across the member per millimetre it moves there, N/mm.
+    pub stiffness_n_mm: f64,
+    /// The largest force across the member before a part of the path
+    /// buckles, N; none where no part carries it along its length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity_n: Option<f64>,
+    /// The part of the path that buckles first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buckling_in: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -1256,6 +1279,10 @@ fn member_load(
         match merged.last_mut() {
             Some(last) if last.by == brace.by && last.top == brace.top && brace.from <= last.to => {
                 last.to = last.to.max(brace.to);
+                last.anchorage = match (last.anchorage, brace.anchorage) {
+                    (Some(a), Some(b)) => Some(weaker(a, b)),
+                    (a, b) => a.or(b),
+                };
             }
             _ => merged.push(brace),
         }
@@ -1287,6 +1314,7 @@ fn member_load(
                 edge: if brace.top { "top" } else { "bottom" }.to_owned(),
                 from_mm: round(brace.from),
                 to_mm: round(brace.to),
+                anchorage: brace.anchorage.map(|held| held.reported(parts)),
             })
             .collect(),
         missing: missing.into_iter().collect(),
@@ -1299,6 +1327,8 @@ struct Bracing {
     by: usize,
     /// The grounded part `by` ties the member to there.
     anchor: usize,
+    /// How the anchor holds the member there, where worked out.
+    anchorage: Option<Anchorage>,
     top: bool,
     from: f64,
     to: f64,
@@ -1424,13 +1454,14 @@ fn braced_stretches(
             braced[support.supporter].extend(
                 points
                     .into_iter()
-                    .filter_map(|point| held(point).map(|anchor| (frame.along(point), anchor)))
-                    .map(|(at, anchor)| Bracing {
+                    .filter_map(|point| held(point).map(|anchor| (point, anchor)))
+                    .map(|(point, anchor)| Bracing {
                         by: item,
                         anchor,
+                        anchorage: footing.through(item, anchor, member_at, point, &[item]),
                         top,
-                        from: at,
-                        to: at,
+                        from: frame.along(point),
+                        to: frame.along(point),
                     }),
             );
         }
@@ -1561,7 +1592,8 @@ fn braces<'a>(
         .map(|part| grounded.contains(&part.name))
         .collect();
     let mut stray = Vec::new();
-    let footing = Footing::of(model, member, frames);
+    let spanning = anchorage::spanning(parts, supports, |item| member[item] || anchorage[item]);
+    let footing = Footing::of(model, member, frames, spanning);
     let looked = std::cell::RefCell::new(BTreeSet::new());
     let mut braced = braced_stretches(
         supports,
@@ -2059,6 +2091,14 @@ fn declared_bracing<'a>(
             Bracing {
                 by,
                 anchor,
+                anchorage: match (sheet_anchor.get(&by), anchored.spots.get(&by)) {
+                    (Some(_), Some(spots)) => {
+                        let chain = anchored.chains.get(&by).into_iter().flatten().copied();
+                        let anchors = spots.iter().map(|(anchor, _)| *anchor);
+                        footing.diaphragm(by, anchors, held, *point, &chain.collect::<Vec<_>>())
+                    }
+                    _ => footing.through(by, anchor, held, *point, &[by]),
+                },
                 top,
                 from: along,
                 to: along,
@@ -2126,6 +2166,19 @@ fn declared_bracing<'a>(
                         names,
                         format!("{target} is not a load_path() member; it holds nothing"),
                         format!("Take {target} into load_path(), or leave it out of brace()."),
+                    );
+                    continue;
+                }
+                // A column buckles over its whole length; its check uses no
+                // bracing (review 2026-11-10 og PG-408).
+                let axis = frames[held].axis;
+                if axis[0].hypot(axis[1]) < crate::member_check::COLUMN_COS {
+                    ignore(
+                        names,
+                        format!(
+                            "{target} is a column, checked for buckling over its whole length; bracing a column is not used, so {brace} holds nothing"
+                        ),
+                        format!("Leave {target} out of brace()."),
                     );
                     continue;
                 }
@@ -2929,32 +2982,4 @@ fn not_verified_on_unknown_kinds(
 }
 
 #[cfg(test)]
-mod shared_contact_tests {
-    use super::*;
-    use crate::exact::ExactShapes;
-
-    /// The loads take the contacts the load path measured instead of
-    /// measuring every pair a second time, and come out the same.
-    #[test]
-    fn the_loads_reuse_the_contacts_the_load_path_measured() {
-        let source = "
-load_path(only = [\"frame\"])
-self_weight([\"frame\"])
-box(\"post a\", (100, 100, 2000), material = \"C24\", tags = [\"frame\"])
-box(\"post b\", (100, 100, 2000), at = (2900, 0, 0), material = \"C24\", tags = [\"frame\"])
-box(\"beam\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
-";
-        let model = crate::evaluate("shared.star", source, &BTreeMap::new())
-            .unwrap_or_else(|error| panic!("{error}"))
-            .model;
-        let mut faces = ContactFaces::default();
-        crate::validate::validate_with_faces(&model, &ExactShapes::default(), &mut faces);
-        let (measured, reused) = faces.measured_and_reused();
-        assert!(measured > 0);
-        let shared = loads_with(&model, &mut faces);
-        // Every pair the loads look at was already measured.
-        assert_eq!(faces.measured_and_reused(), (measured, reused + measured));
-        assert_eq!(shared.members.len(), 3);
-        assert_eq!(shared, loads(&model));
-    }
-}
+mod shared_contact_tests;

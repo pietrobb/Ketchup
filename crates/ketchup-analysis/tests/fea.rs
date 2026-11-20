@@ -1,7 +1,8 @@
 use ketchup_analysis::fea::{
     FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaConvergenceError, FeaElement, FeaElementKind, FeaError,
     FeaLoad, FeaMaterial, FeaModel, FeaNode, FeaSolveSettings, MAX_FEA_CONSTRAINTS,
-    MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, solve_convergence_study,
+    MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, MIN_FEA_REFINEMENT_RATIO,
+    solve_convergence_study,
 };
 
 const YOUNG_MPA: f64 = 200_000.0;
@@ -20,6 +21,7 @@ fn steel() -> FeaMaterial {
         youngs_modulus_mpa: YOUNG_MPA,
         poisson_ratio: POISSON,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     }
 }
 
@@ -44,6 +46,7 @@ fn axial_bar(element_count: usize, force_n: f64) -> FeaModel {
         .map(|node| FeaConstraint {
             node,
             displacement_mm: [(node == 0).then_some(0.0), Some(0.0), Some(0.0)],
+            rotation_rad: [None; 3],
         })
         .collect();
     FeaModel {
@@ -57,6 +60,7 @@ fn axial_bar(element_count: usize, force_n: f64) -> FeaModel {
             node: element_count,
             force_n: [force_n, 0.0, 0.0],
         }],
+        couplings: Vec::new(),
     }
 }
 
@@ -136,10 +140,40 @@ fn refined_axial_bar_produces_explicit_convergence_evidence() {
     let evidence = solve_convergence_study(&levels, FeaSolveSettings::default()).unwrap();
 
     assert_eq!(evidence.levels.len(), 3);
-    assert!(evidence.converged);
-    assert!(evidence.final_displacement_relative_change < 1.0e-12);
-    assert!(evidence.final_energy_relative_change < 1.0e-12);
+    assert!(evidence.judgement.converged);
+    assert!(evidence.judgement.final_displacement_relative_change < 1.0e-12);
+    assert!(evidence.judgement.final_energy_relative_change < 1.0e-12);
+    assert_eq!(evidence.judgement.final_refinement_ratio, 4.0);
     assert_eq!(evidence.levels[2].element_count, 8);
+}
+
+/// Review 2026-11-19 og FEA-803: from one level to one hardly finer the results barely
+/// change whatever their error, so a study whose last level is not at least twice as
+/// fine has not shown convergence, however small the change.
+#[test]
+fn a_barely_finer_last_level_does_not_show_convergence() {
+    let levels = [axial_bar(20, 10_000.0), axial_bar(21, 10_000.0)];
+    let evidence = solve_convergence_study(&levels, FeaSolveSettings::default()).unwrap();
+
+    assert!(evidence.judgement.final_displacement_relative_change < 1.0e-12);
+    assert!(evidence.judgement.final_refinement_ratio < MIN_FEA_REFINEMENT_RATIO);
+    assert!(!evidence.judgement.converged);
+}
+
+/// Review 2026-11-19 og FEA-806: a set cancellation flag stops the solve instead of
+/// letting it run to the end.
+#[test]
+fn a_set_cancellation_flag_stops_the_solve() {
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(
+        axial_bar(8, 10_000.0).solve_with_cancellation(FeaSolveSettings::default(), &cancelled),
+        Err(FeaError::Cancelled)
+    );
+    assert!(
+        axial_bar(8, 10_000.0)
+            .solve_with_cancellation(FeaSolveSettings::default(), &Default::default())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -189,24 +223,29 @@ fn tetrahedron_patch_matches_constant_uniaxial_stress() {
             FeaConstraint {
                 node: 0,
                 displacement_mm: [Some(0.0), Some(0.0), Some(0.0)],
+                rotation_rad: [None; 3],
             },
             FeaConstraint {
                 node: 1,
                 displacement_mm: [None, Some(0.0), Some(0.0)],
+                rotation_rad: [None; 3],
             },
             FeaConstraint {
                 node: 2,
                 displacement_mm: [Some(0.0), None, Some(0.0)],
+                rotation_rad: [None; 3],
             },
             FeaConstraint {
                 node: 3,
                 displacement_mm: [Some(0.0), Some(0.0), None],
+                rotation_rad: [None; 3],
             },
         ],
         loads: vec![FeaLoad::SurfaceTraction {
             nodes: [1, 2, 3],
             traction_n_per_mm2: [200.0 * face_normal_x, 0.0, 0.0],
         }],
+        couplings: Vec::new(),
     };
 
     let solution = model.solve(FeaSolveSettings::default()).unwrap();
@@ -272,6 +311,7 @@ fn incomplete_singular_and_out_of_scope_models_fail_closed() {
     singular.constraints = vec![FeaConstraint {
         node: 0,
         displacement_mm: [Some(0.0), None, None],
+        rotation_rad: [None; 3],
     }];
     assert_eq!(
         singular.solve(FeaSolveSettings::default()),
@@ -309,6 +349,7 @@ fn nonzero_dirichlet_displacement_produces_analytical_stress_and_reactions() {
     model.constraints.push(FeaConstraint {
         node: 1,
         displacement_mm: [Some(1.0), None, None],
+        rotation_rad: [None; 3],
     });
 
     let solution = model.solve(FeaSolveSettings::default()).unwrap();
@@ -362,11 +403,13 @@ fn traction_on_an_internal_tetrahedron_face_is_rejected() {
         constraints: vec![FeaConstraint {
             node: 0,
             displacement_mm: [Some(0.0), Some(0.0), Some(0.0)],
+            rotation_rad: [None; 3],
         }],
         loads: vec![FeaLoad::SurfaceTraction {
             nodes: [0, 1, 2],
             traction_n_per_mm2: [1.0, 0.0, 0.0],
         }],
+        couplings: Vec::new(),
     };
 
     assert_eq!(
@@ -417,6 +460,7 @@ fn convergence_refuses_changed_element_material_assignments() {
         youngs_modulus_mpa: 198_000.0,
         poisson_ratio: POISSON,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     };
     coarse.materials.push(alternate.clone());
     fine.materials.push(alternate);
@@ -442,6 +486,7 @@ fn convergence_refuses_spatially_swapped_equal_volume_materials() {
         youngs_modulus_mpa: 100_000.0,
         poisson_ratio: POISSON,
         yield_strength_mpa: Some(250.0),
+        density_kg_per_m3: None,
     };
     coarse.materials.push(alternate.clone());
     fine.materials.push(alternate);

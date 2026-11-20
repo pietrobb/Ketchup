@@ -278,8 +278,10 @@ pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
 pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::Result<()> {
     #[cfg(unix)]
     {
+        // The user the way to the file is held by, not the user of HOME
+        // (review 2026-11-13 r95 R1113r95-SEC-701).
         let user = if effective_user() == 0 {
-            configuration_user()?
+            Some(user_of_file(file)?)
         } else {
             None
         };
@@ -369,7 +371,7 @@ fn write_as_found(file: &Path, text: &str, backup: bool) -> io::Result<()> {
 /// The owner, user and group, of the nearest folder there that `file` is named
 /// in, as [`user_of_folder`] reads a link: whom root, writing as itself, holds
 /// the file and its folder to ([`root_writes_for`]). Which user writes is
-/// [`configuration_user`]'s, not this: it reads through links above the folder.
+/// [`user_of_file`]'s, not this: it reads every folder and link on the way.
 #[cfg(unix)]
 fn owner_named_in(file: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt;
@@ -403,7 +405,7 @@ fn user_of_folder(found: (u32, u32), resolved: Option<(u32, u32)>) -> (u32, u32)
 }
 
 #[cfg(unix)]
-use ketchup_user_files::{as_user, configuration_user, effective_user};
+use ketchup_user_files::{as_user, effective_user, user_of_file};
 
 /// Whether `writer` may write where it found `found`, each path with its
 /// owner, for the configuration of `owner` (review 2026-11-08 SEC-241: under
@@ -898,6 +900,35 @@ mod tests {
             assert_eq!(effective_user(), 0);
             std::fs::remove_file(&config).unwrap();
         }
+    }
+
+    /// Review 2026-11-13 r95 R1113r95-SEC-701: the configuration of the AI
+    /// clients was written as the user of HOME. With `sudo -E`, `HOME=/root` and
+    /// `CLAUDE_CONFIG_DIR` a folder of the user's, root wrote there as root, held
+    /// back only by checks of the path. The way to the file decides: it is
+    /// written as the user who holds it, or refused when HOME is another's.
+    #[cfg(unix)]
+    #[test]
+    fn under_sudo_the_clients_configuration_is_written_as_the_user_holding_it() {
+        use std::os::unix::fs::MetadataExt;
+        if effective_user() != 0 {
+            return;
+        }
+        let user = (65534, 65534);
+        let folder = tempfile::tempdir_in("/tmp").unwrap();
+        std::os::unix::fs::chown(folder.path(), Some(user.0), Some(user.1)).unwrap();
+        let file = folder.path().join(".claude.json");
+        match write_keeping_file(&file, "{}", false) {
+            Ok(()) => {
+                let written = std::fs::metadata(&file).unwrap();
+                assert_eq!((written.uid(), written.gid()), user);
+            }
+            Err(refused) => {
+                assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+                assert!(!file.exists());
+            }
+        }
+        assert_eq!(effective_user(), 0);
     }
 
     /// Review 2026-11-08 SEC-242: a dangling symlink in place of the backup

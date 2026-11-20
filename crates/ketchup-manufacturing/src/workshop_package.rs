@@ -3,7 +3,8 @@
 //! SHA-256 list, and the acceptance check the workshop runs on what it got.
 
 use crate::fabrication::{
-    BtlxExportOptions, GeneralFabricationError, GeneralFabricationProjection, WoodwopMprOptions,
+    BtlxExportOptions, GeneralFabricationError, GeneralFabricationProjection, ShopFormat, ShopLoss,
+    WoodwopMprOptions,
 };
 use ketchup_model::document::Snapshot;
 use ketchup_model::exact_product::ExactProductError;
@@ -11,6 +12,7 @@ use ketchup_model::graph::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::Utf8Error;
 use std::sync::Arc;
+use unicode_normalization::UnicodeNormalization;
 
 // not a tolerance: the length of a SHA-256 written in hex.
 const SHA256_HEX_LEN: usize = 64;
@@ -19,6 +21,10 @@ const SHA256_HEX_LEN: usize = 64;
 pub const WORKSHOP_SUMS: &str = "SHA256SUMS";
 /// What the package could not hold, and why.
 pub const WORKSHOP_REPORT: &str = "not_made.txt";
+/// What the files of the package are written without, or a machine may not
+/// make, one per line: `output,part,element,reason` (review 2026-11-10
+/// MF-400, MF-401).
+pub const WORKSHOP_LOSSES: &str = "losses.csv";
 
 /// A shop output the package does not hold, and why.
 #[derive(Clone, Debug)]
@@ -27,12 +33,24 @@ pub struct NotMade {
     pub reason: Arc<dyn std::error::Error + Send + Sync>,
 }
 
-/// The files to send, by their path in the package, and the outputs that
-/// could not be made.
+/// An element of a part a file of the package is written without, or that
+/// a machine may not make from it: a thread, a hole of a part the shop does
+/// not make, a round hole milled rather than drilled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lost {
+    pub output: String,
+    pub part: String,
+    pub element: String,
+    pub reason: String,
+}
+
+/// The files to send, by their path in the package, the outputs that could
+/// not be made and what the made ones lose.
 #[derive(Clone, Debug, Default)]
 pub struct WorkshopPackage {
     pub files: Vec<(String, Vec<u8>)>,
     pub not_made: Vec<NotMade>,
+    pub losses: Vec<Lost>,
 }
 
 /// What the workshop received: every file the list names, checked, and the
@@ -47,6 +65,9 @@ pub struct WorkshopAcceptance {
 pub enum WorkshopPackageError {
     /// There is no file to send.
     Empty,
+    /// No output could be made, each `<output>: <reason>` (review
+    /// 2026-11-10 MF-406).
+    NothingMade(Vec<String>),
     /// The path is not a plain relative path inside the package.
     BadName(String),
     DuplicateName(String),
@@ -65,12 +86,25 @@ pub enum WorkshopPackageError {
     Changed(String),
     /// The package has a file the list does not name.
     Unlisted(String),
+    /// The local header of the entry says something else than the central
+    /// directory; an unpacker reading the local headers gets another file.
+    LocalHeaderDiffers(String),
+    /// The archive holds bytes no central directory entry accounts for.
+    HiddenData,
+    /// A name that is not ASCII without the ZIP UTF-8 flag (bit 11): an
+    /// unpacker reads it in its own code page and writes another name.
+    NameNotMarkedUtf8(String),
 }
 
 impl std::fmt::Display for WorkshopPackageError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Empty => formatter.write_str("there is no shop file to send"),
+            Self::NothingMade(reasons) => write!(
+                formatter,
+                "no shop file could be made: {}",
+                reasons.join("; ")
+            ),
             Self::BadName(name) => write!(formatter, "`{name}` is not a path inside the package"),
             Self::DuplicateName(name) => write!(formatter, "the package has `{name}` twice"),
             Self::TooLarge(error) => write!(formatter, "the package cannot be one ZIP: {error}"),
@@ -82,6 +116,17 @@ impl std::fmt::Display for WorkshopPackageError {
             Self::Missing(name) => write!(formatter, "`{name}` is missing from the package"),
             Self::Changed(name) => write!(formatter, "`{name}` is not the file that was sent"),
             Self::Unlisted(name) => write!(formatter, "`{name}` was not sent with the package"),
+            Self::LocalHeaderDiffers(name) => write!(
+                formatter,
+                "the stored header of `{name}` differs from the file list of the package"
+            ),
+            Self::HiddenData => {
+                formatter.write_str("the package holds data its file list does not name")
+            }
+            Self::NameNotMarkedUtf8(name) => write!(
+                formatter,
+                "`{name}` is not marked as UTF-8 and unpacks under another name"
+            ),
         }
     }
 }
@@ -89,28 +134,45 @@ impl std::fmt::Display for WorkshopPackageError {
 impl std::error::Error for WorkshopPackageError {}
 
 impl WorkshopPackage {
-    /// The package as a stored ZIP: the files, [`WORKSHOP_REPORT`] and, last,
-    /// [`WORKSHOP_SUMS`] with the hash of each.
+    /// The package as a stored ZIP: the files, [`WORKSHOP_REPORT`],
+    /// [`WORKSHOP_LOSSES`] and, last, [`WORKSHOP_SUMS`] with the hash of each.
+    ///
+    /// # Errors
+    /// [`WorkshopPackageError::NothingMade`] with every reason when no output
+    /// could be made, and [`WorkshopPackageError::Empty`] when there was none.
     pub fn zip(&self) -> Result<Vec<u8>, WorkshopPackageError> {
         if self.files.is_empty() {
-            return Err(WorkshopPackageError::Empty);
+            return Err(if self.not_made.is_empty() {
+                WorkshopPackageError::Empty
+            } else {
+                WorkshopPackageError::NothingMade(
+                    self.not_made
+                        .iter()
+                        .map(|item| format!("{}: {}", item.output, item.reason))
+                        .collect(),
+                )
+            });
         }
-        let mut names = BTreeSet::new();
+        let mut names = BTreeSet::from([folded(WORKSHOP_SUMS), folded(WORKSHOP_REPORT)]);
         for (name, _) in &self.files {
-            if !is_inside(name) || name == WORKSHOP_SUMS || name == WORKSHOP_REPORT {
+            if !is_inside(name)
+                || [WORKSHOP_SUMS, WORKSHOP_REPORT, WORKSHOP_LOSSES].contains(&&**name)
+            {
                 return Err(WorkshopPackageError::BadName(name.clone()));
             }
-            if !names.insert(name.as_str()) {
+            if !names.insert(folded(name)) {
                 return Err(WorkshopPackageError::DuplicateName(name.clone()));
             }
         }
         let report = report_text(&self.not_made);
+        let losses = losses_csv(&self.losses);
         let mut entries = self
             .files
             .iter()
             .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
             .collect::<Vec<_>>();
         entries.push((WORKSHOP_REPORT, report.as_bytes()));
+        entries.push((WORKSHOP_LOSSES, losses.as_bytes()));
         let sums = entries
             .iter()
             .map(|(name, bytes)| format!("{}  {name}\n", sha256_hex(bytes)))
@@ -130,9 +192,10 @@ pub struct WorkshopPackageOptions {
 
 impl GeneralFabricationProjection {
     /// Every shop output of the model that can be made: the parts list, the
-    /// part drawings, BTLx and the woodWOP program and label of each piece.
-    /// An output that cannot be made is named with its reason instead, and
-    /// does not stop the others.
+    /// part drawings, BTLx with its support report and the woodWOP program
+    /// and label of each piece. An output that cannot be made is named with
+    /// its reason instead, and does not stop the others; what a made one
+    /// loses is listed in [`WorkshopPackage::losses`].
     pub fn workshop_package(
         &self,
         snapshot: &Snapshot,
@@ -159,11 +222,33 @@ impl GeneralFabricationProjection {
             self.drawing_svg(snapshot)
                 .map(|bytes| one("drawings.svg", bytes)),
         );
-        add(
-            "BTLx",
-            self.btlx_2_3_1_export_with_options(snapshot, options.btlx)
-                .map(|bytes| one("btlx/model.btlx", bytes)),
-        );
+        // BTLx with the support report its own export writes beside it, and
+        // its losses as rows of the package's list.
+        let btlx = self
+            .btlx_2_3_1_export_with_options(snapshot, options.btlx)
+            .and_then(|btlx| {
+                let support = self.btlx_support_report(snapshot, options.btlx)?;
+                Ok((btlx, support, btlx_losses(self, snapshot, options.btlx)?))
+            });
+        let mut losses = match btlx {
+            Ok((btlx, support, losses)) => {
+                add(
+                    "BTLx",
+                    Ok(vec![
+                        ("btlx/model.btlx".to_owned(), btlx),
+                        (
+                            "btlx/model.btlx.support.txt".to_owned(),
+                            support.into_bytes(),
+                        ),
+                    ]),
+                );
+                losses
+            }
+            Err(error) => {
+                add("BTLx", Err(error));
+                Vec::new()
+            }
+        };
         // A part the machine cannot take is named by itself; the other parts
         // keep their programs.
         let woodwop = self
@@ -189,11 +274,65 @@ impl GeneralFabricationProjection {
                         output: format!("woodWOP {}", part.part),
                         reason: Arc::new(part.reason),
                     }));
+                let woodwop = ShopFormat::Woodwop {
+                    vertical_pocket_tool: options.woodwop.vertical_pocket_tool_number.is_some(),
+                };
+                losses.extend(
+                    self.unmade_pin_holes(snapshot, woodwop)
+                        .into_iter()
+                        .map(|loss| shop_lost("woodWOP", loss)),
+                );
             }
             Err(error) => add("woodWOP", Err(error)),
         }
+        package.losses = losses;
         package
     }
+}
+
+fn shop_lost(output: &str, loss: ShopLoss) -> Lost {
+    Lost {
+        output: output.to_owned(),
+        part: loss.part,
+        element: loss.element.to_string(),
+        reason: loss.reason.to_owned(),
+    }
+}
+
+/// What BTLx written with `options` loses: the elements its gate passes at
+/// a loss, and each round hole it mills rather than drills (review
+/// 2026-11-10 MF-401).
+fn btlx_losses(
+    projection: &GeneralFabricationProjection,
+    snapshot: &Snapshot,
+    options: BtlxExportOptions,
+) -> Result<Vec<Lost>, GeneralFabricationError> {
+    let mut losses = projection
+        .admit(snapshot, ShopFormat::Btlx)?
+        .into_iter()
+        .map(|loss| shop_lost("BTLx", loss))
+        .collect::<Vec<_>>();
+    let largest = options.largest_drill_mm;
+    let reason = largest.map_or_else(
+        || {
+            "the largest drill of the machine is not set, so a round opening is milled along \
+             its outline"
+                .to_owned()
+        },
+        |largest| format!("it is larger than the largest drill, Ø{largest}, so it is milled"),
+    );
+    losses.extend(
+        projection
+            .btlx_milled_round_holes(snapshot, largest)
+            .into_iter()
+            .map(|(part, diameter_mm)| Lost {
+                output: "BTLx".to_owned(),
+                part,
+                element: format!("a round hole Ø{diameter_mm}"),
+                reason: reason.clone(),
+            }),
+    );
+    Ok(losses)
 }
 
 fn report_text(not_made: &[NotMade]) -> String {
@@ -212,15 +351,55 @@ fn report_text(not_made: &[NotMade]) -> String {
         .collect()
 }
 
+/// The losses as CSV with a header, every field quoted.
+fn losses_csv(losses: &[Lost]) -> String {
+    let field = |text: &str| format!("\"{}\"", text.replace('"', "\"\""));
+    std::iter::once("output,part,element,reason\n".to_owned())
+        .chain(losses.iter().map(|lost| {
+            [&lost.output, &lost.part, &lost.element, &lost.reason]
+                .map(|text| field(text))
+                .join(",")
+                + "\n"
+        }))
+        .collect()
+}
+
 /// A plain relative path that stays inside the folder the package is
-/// unpacked into, on every system.
+/// unpacked into and is written under this name on every system.
 fn is_inside(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains(['\\', ':'])
-        && !name.chars().any(char::is_control)
-        && name
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+    !name.is_empty() && !name.chars().any(char::is_control) && name.split('/').all(is_portable)
+}
+
+/// A file or folder name Windows writes as it is: not `.` or `..`, none of
+/// the characters it refuses, no trailing dot or space, not a device.
+fn is_portable(part: &str) -> bool {
+    !part.is_empty()
+        && !part.contains(['\\', ':', '<', '>', '"', '|', '?', '*'])
+        && !part.ends_with(['.', ' '])
+        && !is_device_name(part)
+}
+
+/// A name Windows keeps for a device, with any extension (`CON.dxf`).
+fn is_device_name(part: &str) -> bool {
+    let stem = part
+        .split_once('.')
+        .map_or(part, |(stem, _extension)| stem)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|port| {
+        stem.strip_prefix(port).is_some_and(|number| {
+            matches!(number.as_bytes(), [digit] if digit.is_ascii_digit())
+                || matches!(number, "\u{b9}" | "\u{b2}" | "\u{b3}")
+        })
+    })
+}
+
+/// The name as Windows and macOS compare names: one Unicode form, any case.
+fn folded(name: &str) -> String {
+    name.nfc().flat_map(char::to_lowercase).collect()
 }
 
 /// Checks a received package: every file its SHA-256 list names is there and
@@ -266,7 +445,10 @@ pub fn check_workshop_package(zip: &[u8]) -> Result<WorkshopAcceptance, Workshop
 }
 
 /// The entries of a stored ZIP, each read from where the central directory
-/// points and checked against its CRC.
+/// points and checked against its CRC. The local header of each must say
+/// what the central directory says, and every byte of the archive must
+/// belong to a listed entry, the central directory or the end record, so an
+/// unpacker that reads the archive another way gets the same files.
 fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPackageError> {
     const LOCAL: [u8; 4] = 0x0403_4b50_u32.to_le_bytes();
     const CENTRAL: [u8; 4] = 0x0201_4b50_u32.to_le_bytes();
@@ -296,13 +478,25 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         .find(|&at| zip[at..].starts_with(&END))
         .ok_or_else(not_a_package)?;
     let count = u16_at(end + 10)?;
-    let mut at = usize_at(end + 16)?;
+    if u16_at(end + 4)? != 0 || u16_at(end + 6)? != 0 || u16_at(end + 8)? != count {
+        return Err(not_a_package());
+    }
+    let central_start = usize_at(end + 16)?;
+    if central_start.checked_add(usize_at(end + 12)?) != Some(end)
+        || end + END_RECORD + u16_at(end + 20)? != zip.len()
+    {
+        return Err(WorkshopPackageError::HiddenData);
+    }
+    let mut at = central_start;
     let mut entries = BTreeMap::new();
+    let mut folded_names = BTreeSet::new();
+    let mut spans = Vec::with_capacity(count);
     for _ in 0..count {
         if bytes(at, 4)? != CENTRAL {
             return Err(not_a_package());
         }
-        let encrypted = u16_at(at + 8)? & 1 != 0;
+        let flags = u16_at(at + 8)?;
+        let encrypted = flags & 1 != 0;
         let stored = u16_at(at + 10)? == 0;
         let crc = u32_at(at + 16)?;
         let size = usize_at(at + 24)?;
@@ -310,7 +504,8 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
             return Err(not_a_package());
         }
         let name_len = u16_at(at + 28)?;
-        let name = std::str::from_utf8(bytes(at + 46, name_len)?)
+        let raw_name = bytes(at + 46, name_len)?;
+        let name = std::str::from_utf8(raw_name)
             .map_err(WorkshopPackageError::NameNotText)?
             .to_owned();
         let local = usize_at(at + 42)?;
@@ -318,7 +513,17 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         if bytes(local, 4)? != LOCAL {
             return Err(not_a_package());
         }
-        let start = local + 30 + u16_at(local + 26)? + u16_at(local + 28)?;
+        let same_header = u16_at(local + 6)? == flags
+            && u16_at(local + 8)? == 0
+            && u32_at(local + 14)? == crc
+            && usize_at(local + 18)? == size
+            && usize_at(local + 22)? == size
+            && u16_at(local + 26)? == name_len
+            && bytes(local + 30, name_len)? == raw_name;
+        if !same_header {
+            return Err(WorkshopPackageError::LocalHeaderDiffers(name));
+        }
+        let start = local + 30 + name_len + u16_at(local + 28)?;
         let data = bytes(start, size)?;
         if crate::three_mf_export::crc32(data) != crc {
             return Err(not_a_package());
@@ -326,10 +531,30 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         if !is_inside(&name) {
             return Err(WorkshopPackageError::BadName(name));
         }
-        if entries.contains_key(&name) {
+        if !name.is_ascii() && flags & usize::from(crate::three_mf_export::UTF8_NAME) == 0 {
+            return Err(WorkshopPackageError::NameNotMarkedUtf8(name));
+        }
+        if !folded_names.insert(folded(&name)) {
             return Err(WorkshopPackageError::DuplicateName(name));
         }
+        spans.push((local, start + size));
         entries.insert(name, data.to_vec());
+    }
+    if at != end {
+        return Err(WorkshopPackageError::HiddenData);
+    }
+    // The entries follow one another from the start of the archive to the
+    // central directory, with no gap a hidden entry could sit in.
+    spans.sort_unstable();
+    let mut covered = 0;
+    for (start, entry_end) in spans {
+        if start != covered {
+            return Err(WorkshopPackageError::HiddenData);
+        }
+        covered = entry_end;
+    }
+    if covered != central_start {
+        return Err(WorkshopPackageError::HiddenData);
     }
     Ok(entries)
 }

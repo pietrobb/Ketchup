@@ -182,6 +182,16 @@ fn a_client_writes_the_areas_of_rooms_into_the_drawing_and_exports_them_as_hatch
             "{expected} in the exported drawing"
         );
     }
+    // The fills lie under the architect's lines, the first entities drawn, in a light grey
+    // of their own (ACI 254), so the lines and the names over them show; DXF 2000 has no
+    // transparency.
+    let hatch = written.find("AcDbHatch").expect("a hatch");
+    let first_wall = written.find("LWPOLYLINE").expect("the walls");
+    assert!(hatch < first_wall, "the fills are drawn first");
+    assert!(written[..first_wall].contains("\n 62\n254\n"), "light grey");
+    // Only the two fills: the names and areas keep the colour of the layer of the rooms.
+    assert_eq!(written.matches("\n 62\n254\n").count(), 2, "texts not grey");
+    assert!(!written.contains("\n440\n"), "no transparency in DXF 2000");
     bridge.execute(&mut app, import(&output), false).unwrap();
     assert_eq!(hatch_areas(&mut bridge, &mut app, 2), [7.5, 11.75]);
 
@@ -198,6 +208,8 @@ fn a_client_writes_the_areas_of_rooms_into_the_drawing_and_exports_them_as_hatch
         ),
         (json!([room(at([-9000.0, -9000.0]), "A")]), "rooms[0]"),
         (json!([room(at([500.0, 2500.0]), "  ")]), "rooms[0]"),
+        // On the outline of the column: no room of its own, neither the column's nor A's.
+        (json!([room(at([1000.0, 1200.0]), "A")]), "rooms[0]"),
         (json!([]), "rooms"),
     ] {
         let arguments = json!({"underlay_id": 1, "layer": "areas", "rooms": rooms});
@@ -228,6 +240,42 @@ fn a_client_writes_the_areas_of_rooms_into_the_drawing_and_exports_them_as_hatch
             .unwrap();
     }
     assert_eq!(app.canonical_digest(), digest);
+}
+
+/// From DXF 2010 on, the first AutoCAD 2011 reads transparency of, the fills are also 60 %
+/// transparent (group 440), so what lies under them shows through a viewer that draws them
+/// over it.
+#[test]
+fn rooms_in_a_dxf_2010_drawing_are_transparent() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut app, mut bridge, offset) = imported(directory.path(), Some("AC1024"));
+    let at = [500.0 - offset[0], 2500.0 - offset[1]];
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_rooms",
+                json!({"layer": "areas", "rooms": [{"at_mm": at, "name": "Kitchen"}]}),
+            ),
+            false,
+        )
+        .unwrap();
+    let output = directory.path().join("areas.dxf");
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_export",
+                json!({"path": output.display().to_string()}),
+            ),
+            false,
+        )
+        .unwrap();
+    let written = std::fs::read_to_string(&output).unwrap();
+    // 0x02000000, a transparency by value, and 40 % of 255 opaque.
+    assert!(written.contains("\n440\n33554534\n"), "60 % transparent");
+    bridge.execute(&mut app, import(&output), false).unwrap();
+    assert_eq!(hatch_areas(&mut bridge, &mut app, 2), [11.75]);
 }
 
 /// A DXF 12 drawing has no HATCH: the export says so rather than leaving the fills out.

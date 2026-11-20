@@ -1,6 +1,6 @@
 #!/bin/bash
-# Builds "Kečup.app" (Apple Silicon) and a .dmg with it: the desktop app, the
-# exact and program workers beside it and the pinned OCCT libraries in Contents/Frameworks,
+# Builds "Ketchup.app" (Apple Silicon) and a .dmg with it: the desktop app, the
+# exact and program workers and `ketchup-program` beside it and the pinned OCCT libraries in Contents/Frameworks,
 # registered for .ketchup documents. Needs OCCT from scripts/macos/build-occt.sh.
 #
 #   scripts/macos/build-app.sh [--output DIR] [--sign IDENTITY]
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-name="Kečup"
+name="Ketchup"
 app="$output/$name.app"
 dmg="$output/Ketchup-$version-macOS.dmg"
 occt="$repo/third_party/occt-install-r0-v1"
@@ -32,13 +32,15 @@ occt_lib="$occt/lib"
 [ -d "$occt_lib" ] || { echo "missing OCCT: run scripts/macos/build-occt.sh" >&2; exit 1; }
 
 cd "$repo"
-cargo build --locked --release -p ketchup-app --bin ketchup-app -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
+cargo build --locked --release -p ketchup-app --bin ketchup-app -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker -p ketchup-program --bin ketchup-program
 
 rm -rf "$app" "$dmg"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
 workers=("$app/Contents/MacOS/ketchup-exact-worker" "$app/Contents/MacOS/ketchup-program-worker")
-binaries=("$app/Contents/MacOS/ketchup-app" "${workers[@]}")
-cp target/release/ketchup-app target/release/ketchup-exact-worker target/release/ketchup-program-worker "$app/Contents/MacOS/"
+# Rule programs and their static calculation from a terminal (review 2026-11-19 REL-800).
+tools=("$app/Contents/MacOS/ketchup-program")
+binaries=("$app/Contents/MacOS/ketchup-app" "${workers[@]}" "${tools[@]}")
+cp target/release/ketchup-app target/release/ketchup-exact-worker target/release/ketchup-program-worker target/release/ketchup-program "$app/Contents/MacOS/"
 
 # The OCCT libraries the binaries load, directly or through each other.
 occt_dependencies() { otool -L "$1" | awk -v lib="$occt_lib/" 'index($1, lib) == 1 { print substr($1, length(lib) + 1) }'; }
@@ -122,7 +124,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
-            <key>CFBundleTypeName</key><string>Kečup Document</string>
+            <key>CFBundleTypeName</key><string>Ketchup Document</string>
             <key>CFBundleTypeRole</key><string>Editor</string>
             <key>LSHandlerRank</key><string>Owner</string>
             <key>LSItemContentTypes</key><array><string>sk.ketchup.document</string></array>
@@ -132,7 +134,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <array>
         <dict>
             <key>UTTypeIdentifier</key><string>sk.ketchup.document</string>
-            <key>UTTypeDescription</key><string>Kečup Document</string>
+            <key>UTTypeDescription</key><string>Ketchup Document</string>
             <key>UTTypeConformsTo</key><array><string>public.data</string><string>public.content</string></array>
             <key>UTTypeTagSpecification</key>
             <dict><key>public.filename-extension</key><array><string>ketchup</string></array></dict>
@@ -152,7 +154,7 @@ sign() {
     fi
 }
 sign "${libraries[@]}"
-sign "${workers[@]}"
+sign "${workers[@]}" "${tools[@]}"
 sign "$app"
 codesign --verify --strict --deep "$app"
 
@@ -169,6 +171,13 @@ for worker in "${workers[@]}"; do
         exit 1
     fi
 done
+
+status=0
+"${tools[0]}" check examples/programs/tiny-house.star --calculation sk >"$work/calculation.html" || status=$?
+if [ "$status" -eq 2 ] || ! grep -q '<html lang="sk">' "$work/calculation.html"; then
+    echo "ketchup-program in the bundle wrote no static calculation (exit $status)" >&2
+    exit 1
+fi
 
 mkdir "$work/dmg"
 cp -R "$app" "$work/dmg/"

@@ -984,6 +984,7 @@ fn append_guided_loft_json_is_exact_persistent_and_one_step() {
                     },
                 ],
                 guide_feature_id: Some(3.into()),
+                rail_feature_id: None,
                 continuity: AssistantCadLoftContinuity::Tangent,
             },
         }],
@@ -1016,6 +1017,7 @@ fn append_guided_loft_json_is_exact_persistent_and_one_step() {
             sections,
             guide: Some(FeatureId(3)),
             continuity: ketchup_model::document::LoftContinuity::Tangent,
+            rail: None,
         } if sections == &vec![
             LoftSection { profile: FeatureId(1), elevation_mm: 0.0 },
             LoftSection { profile: FeatureId(2), elevation_mm: 35.0 },

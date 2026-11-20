@@ -4,6 +4,7 @@
 //! mirrors or scales objects or adds such copies of them; each is one Undo step, and
 //! everything that draws, snaps to or asks about the underlay then sees the edited drawing.
 
+pub(super) mod sheet_annotations;
 use super::*;
 use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::app::underlay_export::{ClientUnderlayExport, UnderlayExportError};
@@ -38,6 +39,8 @@ impl Request {
                 | Self::DrawingDiscardRefused(_)
                 | Self::DrawingDraw { .. }
                 | Self::DrawingRooms(_)
+                | Self::DrawingSheet(_)
+                | Self::DrawingAnnotate(_)
                 | Self::DrawingMove { .. }
                 | Self::DrawingTrim { .. }
                 | Self::DrawingExtend { .. }
@@ -96,6 +99,12 @@ impl LiveBridge {
                 ))
             }
             Request::DrawingDraw { .. } => self.drawing_draw(app, request, ui_busy, cancelled),
+            Request::DrawingSheet(request) => {
+                Self::drawing_sheet(app, request, ui_busy).map_err(sheet_annotations::record)
+            }
+            Request::DrawingAnnotate(request) => self
+                .drawing_annotate(app, request, ui_busy, cancelled)
+                .map_err(sheet_annotations::record),
             Request::DrawingRooms(rooms) => self
                 .drawing_rooms(app, rooms, ui_busy, cancelled)
                 .map_err(refused_area),
@@ -397,7 +406,7 @@ impl LiveBridge {
     /// `drawing_export`: what writing the drawing with its changes to the DXF or DWG file
     /// `path` takes, checked before the worker writes it.
     pub(super) fn drawing_export_target(
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
@@ -407,6 +416,7 @@ impl LiveBridge {
             underlay_id,
             path,
             source,
+            replace,
         } = request
         else {
             return Err("invalid_request");
@@ -426,8 +436,6 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        // No one confirms replacing a file a client names (SEC-60, as MCP-3).
-        super::drawings::refuse_existing(path)?;
         if let Some(source) = source
             && !super::drawings::local_absolute_path(source)
         {
@@ -447,11 +455,35 @@ impl LiveBridge {
             "stretched": edits.stretched_objects.len(),
             "added": edits.added.len(),
         });
+        let id = underlay.id;
+        // A file there is replaced once the user agrees in the window, as every export
+        // asks (owner decision R1.2, review 2026-11-19 og); `replacing` is its SHA-256.
+        // The file the drawing is read from is not asked about: the export refuses to
+        // write over it.
+        let target = Path::new(path);
+        let mut replacing = None;
+        if std::fs::symlink_metadata(target).is_ok()
+            && !app.underlay_export_reads(id, source.as_deref().map(Path::new), target)
+        {
+            if !replace {
+                return Err(failure(
+                    "drawings_target_exists",
+                    "A file already exists at this path. Export to another path, or export again with replace: true and the window asks the user whether to replace it.",
+                    json!({"path": path}),
+                ));
+            }
+            replacing = crate::export_bundle::export_target_sha256(target)
+                .map_err(|error| failed_because("drawings_write_failed", error))?;
+            if let Some(code) = super::drawings::replace_declined(app, target) {
+                return Err(code);
+            }
+        }
         Self::require_request_authority(cancelled)?;
         Ok(DrawingExportTarget {
-            id: underlay.id,
+            id,
             source: source.clone(),
             path: path.clone(),
+            replacing,
             changed,
         })
     }
@@ -462,6 +494,8 @@ pub(super) struct DrawingExportTarget {
     id: ketchup_model::underlay::UnderlayId,
     source: Option<String>,
     path: String,
+    /// The SHA-256 of the file at `path` the user agreed to replace.
+    replacing: Option<String>,
     changed: Value,
 }
 
@@ -476,6 +510,7 @@ impl DrawingExportTarget {
             self.id,
             self.source.as_deref().map(Path::new),
             Path::new(&self.path),
+            self.replacing.as_deref(),
             context,
         )
     }

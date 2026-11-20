@@ -208,6 +208,9 @@ class ClientTests(unittest.TestCase):
     def test_surface_helpers_emit_only_typed_append_feature_operations(self):
         process = FakeProcess()
         doc = self.session(process).new_document()
+        loop_line = {"type": "line", "start_mm": [0, 0, 0], "end_mm": [100, 0, 0]}
+        arch = {"type": "cubic_bezier", "start_mm": [0, 50, 0], "control_1_mm": [25, 50, 26],
+                "control_2_mm": [75, 50, 26], "end_mm": [100, 50, 0]}
         calls = [
             (lambda: doc.planar_surface(2, "Planar", 11), {
                 "type": "surface_body",
@@ -226,6 +229,51 @@ class ClientTests(unittest.TestCase):
                     "sections": [{"profile_feature_id": 11, "elevation_mm": 0},
                                  {"profile_feature_id": 12, "elevation_mm": 20}],
                     "continuity": "tangent",
+                },
+            }),
+            (lambda: doc.loft_surface(
+                2,
+                "Railed loft",
+                [{"profile_feature_id": 11, "elevation_mm": 0},
+                 {"profile_feature_id": 12, "elevation_mm": 20}],
+                guide_feature_id=13,
+                rail_feature_id=14,
+            ), {
+                "type": "surface_body",
+                "source": {
+                    "type": "loft",
+                    "sections": [{"profile_feature_id": 11, "elevation_mm": 0},
+                                 {"profile_feature_id": 12, "elevation_mm": 20}],
+                    "continuity": "position",
+                    "guide_feature_id": 13,
+                    "rail_feature_id": 14,
+                },
+            }),
+            (lambda: doc.boundary_surface(2, "Patch", [loop_line]), {
+                "type": "surface_body",
+                "source": {"type": "boundary", "segments": [loop_line]},
+            }),
+            (lambda: doc.boundary_surface(2, "Dome", [loop_line], inner=[arch]), {
+                "type": "surface_body",
+                "source": {"type": "boundary", "segments": [loop_line], "inner": [arch]},
+            }),
+            (lambda: doc.blend_surfaces(2, "Blend", 21, 22, first_continuity="curvature"), {
+                "type": "surface_body",
+                "source": {
+                    "type": "blend",
+                    "first_feature_id": 21, "first_continuity": "curvature",
+                    "second_feature_id": 22, "second_continuity": "tangent",
+                },
+            }),
+            (lambda: doc.move_surface_control_point(2, "Moved", 23, 2, 16, (0, 0, -5),
+                                                    from_mm=(60, 25, 1),
+                                                    keep=[(21, "tangent")]), {
+                "type": "surface_body",
+                "source": {
+                    "type": "control_point", "target_feature_id": 23,
+                    "u_index": 2, "v_index": 16, "from_mm": [60, 25, 1],
+                    "offset_mm": [0, 0, -5],
+                    "keep": [{"surface_feature_id": 21, "continuity": "tangent"}],
                 },
             }),
             (lambda: doc.trim_surface(2, "Trim", 21, 22), {
@@ -330,7 +378,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(request["method"], "fea_review")
         self.assertEqual(request["params"]["expected_revision"], 1)
         self.assertEqual(request["params"]["mesh_levels"], levels)
-        self.assertEqual(request["params"]["solve_settings"]["maximum_nodes"], 256)
+        self.assertEqual(request["params"]["solve_settings"]["maximum_nodes"], 200_000)
         self.assertTrue(request["params"]["confirmed"])
         with self.assertRaises(ValueError):
             doc.fea_review(
@@ -338,6 +386,86 @@ class ClientTests(unittest.TestCase):
                 constrained_face_ordinals=[0], face_tractions=[{}],
                 mesh_levels=levels[:1], confirmed=True,
             )
+
+    def test_thermal_review_helper_emits_guarded_faces_and_confirmation(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        levels = [
+            {"surface_deflection_mm": 0.5, "angular_deflection_rad": 0.5,
+             "max_tetrahedra": 128, "max_relative_volume_error": 0.05,
+             "min_tetrahedron_quality": 1.0e-5},
+            {"surface_deflection_mm": 0.2, "angular_deflection_rad": 0.2,
+             "max_tetrahedra": 256, "max_relative_volume_error": 0.02,
+             "min_tetrahedron_quality": 1.0e-5},
+        ]
+        doc.thermal_review(
+            2, 33, 7, "heated-pin",
+            held_faces=[{"face_ordinal": 0, "temperature_c": 20.0}],
+            convection_faces=[{"face_ordinal": 1, "film_coefficient_w_per_m2_k": 25.0,
+                               "ambient_c": 20.0}],
+            flux_faces=[{"face_ordinal": 2, "flux_w_per_m2": 5000.0}],
+            mesh_levels=levels, confirmed=True,
+        )
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "thermal_review")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        self.assertEqual(request["params"]["held_faces"][0]["temperature_c"], 20.0)
+        self.assertEqual(request["params"]["flux_faces"][0]["flux_w_per_m2"], 5000.0)
+        self.assertEqual(request["params"]["mesh_levels"], levels)
+        self.assertEqual(request["params"]["convergence_relative_tolerance"], 0.02)
+        self.assertTrue(request["params"]["confirmed"])
+        with self.assertRaises(ValueError):
+            doc.thermal_review(2, 33, 7, "heated-pin", mesh_levels=levels, confirmed=True)
+        with self.assertRaises(ValueError):
+            doc.thermal_review(
+                2, 33, 7, "heated-pin",
+                held_faces=[{"face_ordinal": 0, "temperature_c": 20.0}],
+                mesh_levels=levels[:1], confirmed=True,
+            )
+
+    def test_fea_assembly_review_helper_sends_parts_joints_and_mode_count(self):
+        process = FakeProcess()
+        doc = self.session(process).new_document()
+        levels = [
+            {"surface_deflection_mm": 0.5, "angular_deflection_rad": 0.5,
+             "max_tetrahedra": 128, "max_relative_volume_error": 0.05,
+             "min_tetrahedron_quality": 1.0e-5},
+            {"surface_deflection_mm": 0.2, "angular_deflection_rad": 0.2,
+             "max_tetrahedra": 256, "max_relative_volume_error": 0.02,
+             "min_tetrahedron_quality": 1.0e-5},
+        ]
+        steel = {"id": 1, "youngs_modulus_mpa": 200000, "poisson_ratio": 0.3,
+                 "yield_strength_mpa": 250, "density_kg_per_m3": 7850}
+        parts = [
+            {"occurrence_id": 7, "feature_id": 33, "material": steel,
+             "constrained_face_ordinals": [0], "face_tractions": []},
+            {"occurrence_id": 8, "feature_id": 33, "material": steel,
+             "constrained_face_ordinals": [],
+             "face_tractions": [{"face_ordinal": 1, "traction_local_n_per_mm2": [0, 0, -1]}]},
+        ]
+        joints = [{"faces": [{"part": 0, "face_ordinal": 1}, {"part": 1, "face_ordinal": 0}],
+                   "kind": {"type": "rigid"}}]
+        doc.fea_assembly_review("stack", parts=parts, joints=joints, mesh_levels=levels,
+                                mode_count=3, confirmed=True)
+        request = process.requests[-1]
+        self.assertEqual(request["method"], "fea_assembly_review")
+        self.assertEqual(request["params"]["expected_revision"], 1)
+        self.assertEqual(request["params"]["parts"], parts)
+        self.assertEqual(request["params"]["joints"], joints)
+        self.assertEqual(request["params"]["mate_joints"], [])
+        self.assertEqual(request["params"]["mode_count"], 3)
+        self.assertTrue(request["params"]["confirmed"])
+        mates = [{"mate_id": 12, "kind": {"type": "rigid"}}]
+        doc.fea_assembly_review("stack", parts=parts, joints=[], mate_joints=mates,
+                                mesh_levels=levels, confirmed=True)
+        self.assertEqual(process.requests[-1]["params"]["mate_joints"], mates)
+        for refused in ({"parts": []}, {"mode_count": 65}, {"mode_count": -1},
+                        {"joints": [1]}, {"mate_joints": [1]}, {"mate_joints": {}},
+                        {"mesh_levels": levels[:1]}):
+            arguments = {"parts": parts, "joints": joints, "mesh_levels": levels,
+                         "confirmed": True, **refused}
+            with self.assertRaises(ValueError):
+                doc.fea_assembly_review("stack", **arguments)
 
     def test_local_pdm_helpers_are_guarded_and_keep_confirmation_explicit(self):
         process = FakeProcess()

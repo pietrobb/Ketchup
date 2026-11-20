@@ -420,14 +420,16 @@ fn a_texture_shows_in_the_presentation_image() {
     let answer = bridge
         .execute(
             &mut app,
-            Request::Export {
+            Request::Export(crate::live_bridge::interchange::ExportRequest {
                 expected: None,
                 path: image.display().to_string(),
                 export_format: "presentation_png".to_owned(),
                 drawing_scale: None,
                 image: Some(serde_json::from_value(options).unwrap()),
+                cam_dialect: None,
+                cam_operations: None,
                 overwrite: false,
-            },
+            }),
             false,
         )
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
@@ -451,6 +453,76 @@ fn a_texture_shows_in_the_presentation_image() {
         "{red} red and {white} white of {} model pixels",
         ratios.len()
     );
+}
+
+/// A picture too large to read shows as its part's colour, as in the viewport, and the
+/// saved image names it (review 2026-11-19 og IMG-800). Before, one aerial photo of more
+/// than 64 MP failed the whole presentation image.
+#[test]
+fn a_picture_too_large_shows_as_colour_and_is_named() {
+    use crate::app::presentation_export::{PresentationRequest, PresentationSlot};
+    use std::sync::atomic::AtomicBool;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("textured.skp");
+    std::fs::write(&path, fixture("textured_box.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let hide = app
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| CanonicalCommand::SetOccurrenceVisibility {
+            id: occurrence.id(),
+            visible: false,
+        })
+        .collect();
+    app.document.apply_batch(&CommandBatch::new(hide)).unwrap();
+    bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    // A 9 000 × 9 000 PNG (81 MP): its header, then pixels that end at once.
+    let mut too_large = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut too_large, 9_000, 9_000);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_chunk(png::chunk::IDAT, &[0x78, 0x9C, 0x03, 0, 0, 0, 0, 1])
+            .unwrap();
+    }
+    let request = PresentationRequest::default();
+    let mut parts = app.presentation_parts(&request).unwrap();
+    let mut pictures = Vec::new();
+    for (blob, bytes) in &mut parts.blobs {
+        if bytes.starts_with(b"\x89PNG") {
+            pictures.push(blob.clone());
+            *bytes = Arc::new(too_large.clone());
+        }
+    }
+    assert!(!pictures.is_empty(), "the box keeps its picture");
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let made = parts
+        .spawn(
+            request,
+            Arc::clone(&cancelled),
+            egui::Context::default(),
+            &PresentationSlot::default(),
+        )
+        .unwrap()
+        .recv()
+        .unwrap();
+    assert!(made.is_ok(), "{:?}", made.err());
+    let image = directory.path().join("plain.png");
+    let written = app
+        .finish_client_presentation(&image, made, &cancelled, false)
+        .unwrap();
+    assert!(image.exists());
+    let named = written.lost.join("; ");
+    for picture in &pictures {
+        assert!(named.contains(picture.as_str()), "{named}");
+    }
+    assert!(named.contains("MP"), "says why: {named}");
+    assert!(app.digest.contains(&pictures[0]), "{}", app.digest);
 }
 
 /// The groups nested in each other in files of SketchUp 2013 and 2020 come in as that
@@ -503,14 +575,16 @@ fn imported_sheets_export_as_meshes_and_3mf_refuses_them() {
         let out = directory.path().join(format!("out.{format}"));
         let answer = bridge.execute(
             &mut app,
-            Request::Export {
+            Request::Export(crate::live_bridge::interchange::ExportRequest {
                 expected: None,
                 path: out.display().to_string(),
                 export_format: format.to_owned(),
                 drawing_scale: None,
                 image: None,
+                cam_dialect: None,
+                cam_operations: None,
                 overwrite: false,
-            },
+            }),
             false,
         );
         if format == "3mf" {

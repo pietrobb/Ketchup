@@ -25,15 +25,19 @@ pub(crate) enum SheetFileFormat {
     Dxf,
     /// The DXF converted to an AutoCAD 2018 DWG.
     Dwg,
+    Svg,
+    Pdf,
 }
 
 impl SheetFileFormat {
-    pub(crate) const ALL: [Self; 2] = [Self::Dxf, Self::Dwg];
+    pub(crate) const ALL: [Self; 4] = [Self::Dxf, Self::Dwg, Self::Svg, Self::Pdf];
 
     pub(crate) const fn extension(self) -> &'static str {
         match self {
             Self::Dxf => "dxf",
             Self::Dwg => "dwg",
+            Self::Svg => "svg",
+            Self::Pdf => "pdf",
         }
     }
 
@@ -114,13 +118,38 @@ pub(crate) fn drawing_sheet_bytes(
         .ok_or(DrawingSheetExportError::NotFound(id))?;
     let drawing = project_orthographic_drawing_in(snapshot, results, sheet, words)
         .map_err(DrawingSheetExportError::Projection)?;
-    // The DXF alone: the sheet is never written as SVG or PDF (review 2026-11-02 MF-125).
-    let bundle = export_drawing_dxf(snapshot, &drawing).map_err(DrawingSheetExportError::Export)?;
-    let dxf = bundle.dxf().to_vec();
-    let bytes = match format {
-        SheetFileFormat::Dxf => dxf,
-        SheetFileFormat::Dwg => {
-            ketchup_dwg::dxf_to_dwg(&dxf).map_err(DrawingSheetExportError::Dwg)?
+    let (bytes, curves, annotations) = match format {
+        SheetFileFormat::Dxf | SheetFileFormat::Dwg => {
+            // DXF/DWG still avoid rendering unused SVG/PDF (review 2026-11-02 MF-125).
+            let bundle =
+                export_drawing_dxf(snapshot, &drawing).map_err(DrawingSheetExportError::Export)?;
+            let bytes = if format == SheetFileFormat::Dwg {
+                ketchup_dwg::dxf_to_dwg(bundle.dxf()).map_err(DrawingSheetExportError::Dwg)?
+            } else {
+                bundle.dxf().to_vec()
+            };
+            (
+                bytes,
+                bundle.dxf_curves().clone(),
+                bundle.annotations().clone(),
+            )
+        }
+        SheetFileFormat::Svg | SheetFileFormat::Pdf => {
+            let bundle = ketchup_model::drawing_export::export_drawing(snapshot, &drawing)
+                .map_err(DrawingSheetExportError::Export)?;
+            let bytes = if format == SheetFileFormat::Pdf {
+                bundle
+                    .pdf()
+                    .map_err(DrawingSheetExportError::Export)?
+                    .to_vec()
+            } else {
+                bundle.svg().to_vec()
+            };
+            (
+                bytes,
+                bundle.dxf_curves().clone(),
+                bundle.annotations().clone(),
+            )
         }
     };
     let exported = ExportedDrawingSheet {
@@ -140,8 +169,8 @@ pub(crate) fn drawing_sheet_bytes(
             .iter()
             .map(|view| view.hidden_lines.len())
             .sum(),
-        curves: bundle.dxf_curves().clone(),
-        annotations: bundle.annotations().clone(),
+        curves,
+        annotations,
         bytes: bytes.len(),
         sha256: ketchup_model::graph::sha256_hex(&bytes),
     };
@@ -250,6 +279,8 @@ impl KetchupApp {
         let exported_key = match format {
             SheetFileFormat::Dxf => "digest-exported-drawing-sheet-dxf",
             SheetFileFormat::Dwg => "digest-exported-drawing-sheet-dwg",
+            SheetFileFormat::Svg => "digest-exported-drawing-sheet-svg",
+            SheetFileFormat::Pdf => "digest-exported-drawing-sheet-pdf",
         };
         self.digest = match result {
             Ok(sheet) => self.catalog.format(

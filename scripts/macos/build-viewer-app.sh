@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds "Kečup Viewer.app" (universal arm64 + x86_64) and a .dmg with it,
+# Builds "Ketchup Viewer.app" (universal arm64 + x86_64) and a .dmg with it,
 # registered for .ketchup-view and .ketchup-comments, and proves the bundled
 # Viewer opens the sample package.
 #
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-name="Kečup Viewer"
+name="Ketchup Viewer"
 app="$output/$name.app"
 dmg="$output/Ketchup-Viewer-$version-macOS.dmg"
 targets=(aarch64-apple-darwin x86_64-apple-darwin)
@@ -75,13 +75,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
-            <key>CFBundleTypeName</key><string>Kečup Viewer Package</string>
+            <key>CFBundleTypeName</key><string>Ketchup Viewer Package</string>
             <key>CFBundleTypeRole</key><string>Viewer</string>
             <key>LSHandlerRank</key><string>Owner</string>
             <key>LSItemContentTypes</key><array><string>sk.ketchup.view-package</string></array>
         </dict>
         <dict>
-            <key>CFBundleTypeName</key><string>Kečup Viewer Comments</string>
+            <key>CFBundleTypeName</key><string>Ketchup Viewer Comments</string>
             <key>CFBundleTypeRole</key><string>Viewer</string>
             <key>LSHandlerRank</key><string>Owner</string>
             <key>LSItemContentTypes</key><array><string>sk.ketchup.view-comments</string></array>
@@ -91,14 +91,14 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <array>
         <dict>
             <key>UTTypeIdentifier</key><string>sk.ketchup.view-package</string>
-            <key>UTTypeDescription</key><string>Kečup Viewer Package</string>
+            <key>UTTypeDescription</key><string>Ketchup Viewer Package</string>
             <key>UTTypeConformsTo</key><array><string>public.data</string><string>public.content</string></array>
             <key>UTTypeTagSpecification</key>
             <dict><key>public.filename-extension</key><array><string>ketchup-view</string></array></dict>
         </dict>
         <dict>
             <key>UTTypeIdentifier</key><string>sk.ketchup.view-comments</string>
-            <key>UTTypeDescription</key><string>Kečup Viewer Comments</string>
+            <key>UTTypeDescription</key><string>Ketchup Viewer Comments</string>
             <key>UTTypeConformsTo</key><array><string>public.data</string><string>public.content</string></array>
             <key>UTTypeTagSpecification</key>
             <dict><key>public.filename-extension</key><array><string>ketchup-comments</string></array></dict>

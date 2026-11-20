@@ -2,7 +2,7 @@
 //!
 //! Attach requires a random bootstrap from the OS-protected per-user registry.
 //! Only authenticated requests reach the UI. No manual token entry is needed;
-//! one replacing an AI still connected is asked about in the window.
+//! the last AI to attach takes the window over unasked (owner decision R2).
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
 use crate::delivery::Deliver;
@@ -89,9 +89,6 @@ enum ConsentDecision {
         token: String,
     },
     Reject,
-    /// The user kept the window with the AI connected to it (review
-    /// 2026-11-08 MCP-240); the credential itself was valid.
-    Declined,
     /// The user allowed it, but the window could not open its live bridge; the
     /// status line says why. Not a refusal of the client's credential (review
     /// 2026-11-02 of 70d56910).
@@ -111,8 +108,8 @@ struct AttachRequest {
     /// which itself never crosses the socket.
     #[serde(default)]
     proof: String,
-    /// The name the AI gives itself (review 2026-11-09 MCP-305), shown when it
-    /// asks to take over from another; unverified, like `hello`'s.
+    /// The name the AI gives itself (review 2026-11-09 MCP-305), shown in the
+    /// status line once it attached; unverified, like `hello`'s.
     #[serde(default)]
     client: Option<String>,
 }
@@ -230,52 +227,12 @@ impl KetchupApp {
         self.answer_live_consent(context, request);
     }
 
-    /// Whether the user keeps the window with the AI connected to it when
-    /// another client asks to attach (review 2026-11-08 MCP-240): before, any
-    /// client of the same user with the registry's bootstrap took it over
-    /// silently. A window no AI holds is not asked about.
-    fn takeover_declined(&mut self, asking: Option<&str>) -> bool {
-        if !self.live.consent_attached && !self.live.launch_attached {
-            return false;
-        }
-        let title = self.catalog.text("live-takeover-title");
-        let description = self.takeover_description(asking);
-        self.dialogs
-            .confirm_high_risk(crate::dialogs::HighRiskConfirmationRequest::new(
-                &title,
-                [description],
-            ))
-            .is_none()
-    }
-
-    /// The take-over question, naming the AI that asks and the one connected
-    /// (review 2026-11-09 MCP-305: only the connected one was named).
-    fn takeover_description(&self, asking: Option<&str>) -> String {
-        let named = |name: Option<&str>| {
-            name.map_or_else(|| self.catalog.text("live-takeover-unnamed"), str::to_owned)
-        };
-        self.catalog.format(
-            "live-takeover-description",
-            &std::collections::BTreeMap::from([
-                ("asking", named(asking)),
-                ("client", named(self.live.client_name.as_deref())),
-            ]),
-        )
-    }
-
+    /// The last AI to attach takes the window over, unasked (owner decision
+    /// R2 of review 2026-11-19 og): one user's AI clients on one computer, and
+    /// the question the window asked since review 2026-11-08 MCP-240 only got
+    /// in the way. The status line and the Connect tab name the AI the window
+    /// was taken from.
     fn answer_live_consent(&mut self, context: &egui::Context, request: PendingConsent) {
-        // Nobody to ask about for a requester already gone.
-        if request
-            .abandoned
-            .lock()
-            .map_or(true, |abandoned| *abandoned)
-        {
-            return;
-        }
-        if self.takeover_declined(request.client.as_deref()) {
-            request.decision.deliver(ConsentDecision::Declined);
-            return;
-        }
         let abandoned = Arc::clone(&request.abandoned);
         let Ok(abandoned) = abandoned.lock() else {
             return;
@@ -284,13 +241,26 @@ impl KetchupApp {
             // Nobody waits for this grant: the current client keeps the window.
             return;
         }
-        if self.live.consent_attached || self.live.launch_attached {
-            // The user let the new client take over: it gets a fresh credential.
+        let previous = if self.live.consent_attached || self.live.launch_attached {
+            // The new client gets a fresh credential; the old one's ends.
             self.live.consent_attached = false;
             self.live.launch_attached = false;
             self.supersede_live_bridge();
-        }
+            Some(
+                self.live
+                    .client_name
+                    .take()
+                    .unwrap_or_else(|| self.catalog.text("ai-previous-unnamed")),
+            )
+        } else {
+            None
+        };
+        let client = request.client.clone();
         self.allow_live_consent(context, request);
+        if self.live.consent_attached {
+            self.live.client_name = client;
+            self.live.previous_client = previous;
+        }
     }
 
     fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {
@@ -376,6 +346,7 @@ impl KetchupApp {
     pub(crate) fn disconnect_ai(&mut self) {
         self.live.launch_attached = false;
         self.live.client_name = None;
+        self.live.previous_client = None;
         self.revoke_live_consent();
     }
 }
@@ -462,6 +433,21 @@ fn publish_registry_entry(
 }
 
 fn publish_registry_entry_before_publish(
+    root: &Path,
+    instance_id: &str,
+    address: SocketAddr,
+    bootstrap: &str,
+    before_publish: impl FnOnce(),
+) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
+    // Under `sudo`, as the user whose runtime folder it is (review 2026-11-13
+    // r95 P3: root made and wrote the register there through the path).
+    let base = root.ancestors().nth(2).unwrap_or(root).to_owned();
+    ketchup_user_files::UserFolder::at(base, root.to_owned())
+        .as_owner(|| publish_as_found(root, instance_id, address, bootstrap, before_publish))
+}
+
+/// [`publish_registry_entry_before_publish`] as this process is.
+fn publish_as_found(
     root: &Path,
     instance_id: &str,
     address: SocketAddr,
@@ -869,7 +855,6 @@ fn write_response(
         }
         ConsentDecision::Busy => ("busy", None, None),
         ConsentDecision::Reject => ("rejected", None, None),
-        ConsentDecision::Declined => ("declined", None, None),
         ConsentDecision::Failed => ("failed", None, None),
     };
     let proof = ketchup_mcp::local_auth::window_attach_proof(
@@ -1324,34 +1309,31 @@ mod tests {
     }
 
     /// #2687 P1 (points 4, 9, 10): the window names the attached AI as it names
-    /// itself, forgets the name when the next one attaches, and Disconnect
-    /// ends the credential.
+    /// itself, and Disconnect ends the credential. Owner decision R2 of review
+    /// 2026-11-19 og: the next AI takes the window over without a question
+    /// (review 2026-11-08 MCP-240 had the window ask), and the window names
+    /// the one it was taken from.
     #[test]
-    fn the_window_names_the_attached_ai_until_the_next_attach_or_disconnect() {
+    fn the_next_ai_takes_the_window_over_unasked_and_the_window_names_both() {
         let context = egui::Context::default();
-        let dialogs = crate::dialogs::ScriptedFileDialogs::new()
-            .queue_refused_high_risk()
-            .queue_high_risk_approval(7);
+        let dialogs = crate::dialogs::ScriptedFileDialogs::new();
         let probe = dialogs.clone();
         let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
-        let answer = |app: &mut KetchupApp| {
+        let attach = |app: &mut KetchupApp, client: Option<&str>| {
             let (decision, receiver) = mpsc::sync_channel(1);
             let pending = PendingConsent {
                 decision,
                 abandoned: Arc::new(Mutex::new(false)),
-                client: None,
+                client: client.map(str::to_owned),
             };
             app.answer_live_consent(&context, pending);
-            receiver.try_recv().unwrap()
+            assert!(matches!(
+                receiver.try_recv().unwrap(),
+                ConsentDecision::Allow { .. }
+            ));
         };
-        let attach = |app: &mut KetchupApp| {
-            assert!(matches!(answer(app), ConsentDecision::Allow { .. }));
-        };
-        attach(&mut app);
-        assert!(
-            probe.high_risk_prompts().is_empty(),
-            "no AI held the window"
-        );
+        attach(&mut app, None);
+        assert_eq!(app.live.previous_client, None, "no AI held the window");
         let hello = |client: &str| super::super::Request::Hello {
             client: client.to_owned(),
         };
@@ -1363,28 +1345,24 @@ mod tests {
         app.live.bridge = Some(bridge);
         assert_eq!(app.live.client_name.as_deref(), Some("Claude Code"));
 
-        // Review 2026-11-08 MCP-240: another client of the user's takes the
-        // window from the connected AI only when the user lets it.
         let held = app.live_bridge_credentials().unwrap();
-        assert!(matches!(answer(&mut app), ConsentDecision::Declined));
-        let prompts = probe.high_risk_prompts();
-        assert!(prompts[0].contains("Claude Code"), "{prompts:?}");
-        let still = app.live_bridge_credentials().unwrap();
-        assert_eq!((still.address, still.token), (held.address, held.token));
-        assert_eq!(app.live.client_name.as_deref(), Some("Claude Code"));
-
-        attach(&mut app);
-        assert_eq!(probe.high_risk_prompts().len(), 2);
+        attach(&mut app, Some("Codex"));
+        assert!(probe.high_risk_prompts().is_empty(), "nothing is asked");
         assert!(app.ai_attached());
-        assert_eq!(
-            app.live.client_name, None,
-            "the next AI did not say its name"
-        );
+        let now = app.live_bridge_credentials().unwrap();
+        assert_ne!(now.token, held.token, "the old AI's credential ended");
+        assert_eq!(app.live.client_name.as_deref(), Some("Codex"));
+        assert_eq!(app.live.previous_client.as_deref(), Some("Claude Code"));
 
-        app.live.client_name = Some("Codex".to_owned());
+        // One that gives no name, taking over from Codex.
+        attach(&mut app, None);
+        assert_eq!(app.live.client_name, None);
+        assert_eq!(app.live.previous_client.as_deref(), Some("Codex"));
+
         app.disconnect_ai();
         assert!(!app.ai_attached());
         assert_eq!(app.live.client_name, None);
+        assert_eq!(app.live.previous_client, None);
         assert!(app.live_bridge_credentials().is_none());
     }
 
@@ -1456,10 +1434,10 @@ mod tests {
         );
     }
 
-    /// Review 2026-11-09 MCP-305: the take-over dialog named only the AI
-    /// connected now, so the user could not tell which one was asking.
+    /// The name an AI gives when it attaches reaches the window shown as it
+    /// is shown in the status line, and names it there once it took over.
     #[test]
-    fn the_take_over_dialog_names_the_asking_ai_and_the_connected_one() {
+    fn the_name_an_attaching_ai_gives_names_it_in_the_window() {
         let directory = private_tempdir();
         let context = egui::Context::default();
         let mut app = KetchupApp::new();
@@ -1480,20 +1458,9 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("attach was not received");
         assert_eq!(request.client.as_deref(), Some("Codex"));
-        let description = app.takeover_description(request.client.as_deref());
-        assert!(
-            description.contains("Asking to take over this window: Codex."),
-            "{description}"
-        );
-        assert!(
-            description.contains("Connected now: Claude Code."),
-            "{description}"
-        );
-        let unnamed = app.takeover_description(None);
-        assert!(
-            unnamed.contains("window: an AI that did not give its name."),
-            "{unnamed}"
-        );
+        app.answer_live_consent(&context, request);
+        assert!(app.live_consent_attached());
+        assert_eq!(app.live.client_name.as_deref(), Some("Codex"));
     }
 
     #[test]

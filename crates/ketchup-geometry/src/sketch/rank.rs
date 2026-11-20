@@ -13,6 +13,14 @@ pub(super) fn analyze(
     equation_ranges: &[(SketchConstraintId, std::ops::Range<usize>)],
     variable_count: usize,
 ) -> Result<(SketchSolveStatus, Vec<SketchEntityId>), SketchError> {
+    if constraints.is_empty() {
+        return Ok((
+            SketchSolveStatus::UnderConstrained {
+                remaining_dof: variable_count,
+            },
+            entities.iter().map(SketchEntity::id).collect(),
+        ));
+    }
     let indices = entities
         .iter()
         .enumerate()

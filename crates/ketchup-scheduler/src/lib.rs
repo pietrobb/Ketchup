@@ -1,13 +1,30 @@
 #![forbid(unsafe_code)]
 
 pub mod background;
+mod cam_simulation_wire;
+pub use cam_simulation_wire::{
+    CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireFixture,
+    CamSimulationWireMotion, CamSimulationWireRequest,
+};
 mod child_process;
 pub mod exact_worker;
+mod fea_assembly;
+mod fea_setup;
+pub use fea_assembly::{
+    AssemblyBoundFeaModel, AssemblyBoundFeaPart, ExactFeaAssemblyPart, ExactFeaAssemblySetup,
+    ExactFeaJoint, ExactFeaJointFace, ExactFeaJointKind, ExactFeaMateJoint, assembly_bound_model,
+};
+pub use fea_setup::{
+    ExactFeaFaceTraction, ExactFeaSetup, ExactFeaSetupError, OccurrenceBoundFeaModel,
+};
+pub mod memory_budget;
+pub use memory_budget::exact_worker_memory_bytes;
 pub mod pair_query;
 pub mod plugin;
 pub mod program_worker;
 pub mod protocol;
 mod request_budget;
+pub mod thermal_setup;
 pub mod underlay_reading;
 pub use pair_query::{
     ExactPairAnswer, ExactPairCandidate, ExactPairQueryResult, ExactPairRelation,
@@ -17,18 +34,14 @@ mod worker_client;
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
 use worker_client::{WorkerResponse, WorkerWriteRequest};
 
-use ketchup_analysis::fea::{
-    FEA_MODEL_SCHEMA_V1, FeaConstraint, FeaElement, FeaElementKind, FeaLoad, FeaMaterial, FeaModel,
-    FeaNode,
-};
 use ketchup_exact::GeometryErrorCode;
 use ketchup_model::cam::{
     CAM_SIMULATION_SCHEMA_V1, CamCollisionEvidence, CamCollisionParticipant, CamCollisionTarget,
     CamFixture, CamMotionKind, CamMotionPath, CamPlan, CamSimulationEvidence, CamToolpath,
 };
 use ketchup_model::document::{
-    BodyKind, GroupId, InstancePath, InstancePathStep, LocalGroupKey, LocalOccurrenceKey,
-    ScaledPlacement, SceneOccurrence, Snapshot, Transform,
+    BodyKind, GroupId, InstancePathStep, LocalGroupKey, LocalOccurrenceKey, ScaledPlacement,
+    SceneOccurrence, Snapshot, Transform,
 };
 use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
 use ketchup_model::exact_product::{
@@ -50,14 +63,13 @@ use process_wrap::std::{ChildWrapper, CommandWrap};
 use process_wrap::std::{CreationFlags, JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
+use std::{fmt, fs};
 #[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -161,237 +173,6 @@ impl ExactBRepVolumeMeshPackage {
             && self.mesh.graph_digest == self.source.graph.graph_digest
             && self.mesh.source_result_fingerprint == self.source.identity.result_fingerprint
     }
-
-    pub fn occurrence_bound_model(
-        &self,
-        snapshot: &Snapshot,
-        setup: &ExactFeaSetup,
-    ) -> Result<OccurrenceBoundFeaModel, ExactFeaSetupError> {
-        if !self.is_current(snapshot) {
-            return Err(ExactFeaSetupError::StaleGeometry);
-        }
-        if snapshot
-            .resolve_instance_path(&setup.instance_path)
-            .map_err(ExactFeaSetupError::InvalidInstancePath)?
-            .definition_id
-            != self.source.identity.definition_id
-        {
-            return Err(ExactFeaSetupError::OccurrenceMismatch);
-        }
-        if setup.case_id.trim().is_empty()
-            || setup.constrained_face_ordinals.is_empty()
-            || setup.face_tractions.is_empty()
-        {
-            return Err(ExactFeaSetupError::IncompleteSetup);
-        }
-        let boundary_face_ordinals = self
-            .mesh
-            .boundary_triangles
-            .iter()
-            .map(|triangle| triangle.face_ordinal)
-            .collect::<BTreeSet<_>>();
-        if setup
-            .constrained_face_ordinals
-            .iter()
-            .any(|ordinal| !boundary_face_ordinals.contains(ordinal))
-            || setup
-                .face_tractions
-                .iter()
-                .any(|traction| !boundary_face_ordinals.contains(&traction.face_ordinal))
-            || setup
-                .face_tractions
-                .iter()
-                .flat_map(|traction| traction.traction_local_n_per_mm2)
-                .any(|value| !value.is_finite())
-        {
-            return Err(ExactFeaSetupError::InvalidBoundarySelection);
-        }
-        let constrained_faces = setup
-            .constrained_face_ordinals
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if constrained_faces.len() != setup.constrained_face_ordinals.len() {
-            return Err(ExactFeaSetupError::InvalidBoundarySelection);
-        }
-        let traction_faces = setup
-            .face_tractions
-            .iter()
-            .map(|traction| traction.face_ordinal)
-            .collect::<BTreeSet<_>>();
-        if traction_faces.len() != setup.face_tractions.len() {
-            return Err(ExactFeaSetupError::InvalidBoundarySelection);
-        }
-
-        let constrained_nodes = self
-            .mesh
-            .boundary_triangles
-            .iter()
-            .filter(|triangle| constrained_faces.contains(&triangle.face_ordinal))
-            .flat_map(|triangle| triangle.vertex_indices)
-            .collect::<BTreeSet<_>>();
-        if constrained_nodes.is_empty() {
-            return Err(ExactFeaSetupError::InvalidBoundarySelection);
-        }
-        let loads = setup
-            .face_tractions
-            .iter()
-            .flat_map(|traction| {
-                self.mesh
-                    .boundary_triangles
-                    .iter()
-                    .filter(move |triangle| triangle.face_ordinal == traction.face_ordinal)
-                    .map(move |triangle| FeaLoad::SurfaceTraction {
-                        nodes: triangle.vertex_indices.map(|index| index as usize),
-                        traction_n_per_mm2: traction.traction_local_n_per_mm2,
-                    })
-            })
-            .collect::<Vec<_>>();
-        if loads.is_empty() {
-            return Err(ExactFeaSetupError::InvalidBoundarySelection);
-        }
-        let model = FeaModel {
-            schema: FEA_MODEL_SCHEMA_V1.to_owned(),
-            case_id: setup.case_id.clone(),
-            nodes: self
-                .mesh
-                .vertices_mm
-                .iter()
-                .copied()
-                .map(|position_mm| FeaNode { position_mm })
-                .collect(),
-            materials: vec![setup.material.clone()],
-            elements: self
-                .mesh
-                .tetrahedra
-                .iter()
-                .enumerate()
-                .map(|(index, nodes)| FeaElement {
-                    id: index as u64 + 1,
-                    kind: FeaElementKind::LinearTetrahedron4 {
-                        nodes: nodes.map(|node| node as usize),
-                        material_id: setup.material.id,
-                    },
-                })
-                .collect(),
-            constraints: constrained_nodes
-                .into_iter()
-                .map(|node| FeaConstraint {
-                    node: node as usize,
-                    displacement_mm: [Some(0.0); 3],
-                })
-                .collect(),
-            loads,
-        };
-        Ok(OccurrenceBoundFeaModel {
-            instance_path: setup.instance_path.clone(),
-            source_revision: self.source.identity.source_revision,
-            source_digest: self.source.identity.source_digest.clone(),
-            graph_digest: self.mesh.graph_digest.clone(),
-            mesh_fingerprint: self.mesh.mesh_fingerprint.clone(),
-            model,
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExactFeaFaceTraction {
-    pub face_ordinal: u32,
-    pub traction_local_n_per_mm2: [f64; 3],
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExactFeaSetup {
-    pub case_id: String,
-    pub instance_path: InstancePath,
-    pub material: FeaMaterial,
-    pub constrained_face_ordinals: Vec<u32>,
-    pub face_tractions: Vec<ExactFeaFaceTraction>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct OccurrenceBoundFeaModel {
-    pub instance_path: InstancePath,
-    pub source_revision: u64,
-    pub source_digest: String,
-    pub graph_digest: String,
-    pub mesh_fingerprint: String,
-    pub model: FeaModel,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ExactFeaSetupError {
-    StaleGeometry,
-    InvalidInstancePath(ketchup_model::document::CanonicalError),
-    OccurrenceMismatch,
-    IncompleteSetup,
-    InvalidBoundarySelection,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireRequest {
-    pub schema: String,
-    pub plan_digest: String,
-    pub toolpath_digest: String,
-    pub target_exact_graph_digest: String,
-    pub stock_bounds_mm: [[f64; 3]; 2],
-    pub setup_to_world: [f64; 16],
-    pub cutter_radius_mm: f64,
-    pub cutter_length_mm: f64,
-    pub tool_length_mm: f64,
-    pub holder_radius_mm: f64,
-    pub holder_offset_mm: f64,
-    pub holder_length_mm: f64,
-    pub motions: Vec<CamSimulationWireMotion>,
-    pub fixtures: Vec<CamSimulationWireFixture>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireMotion {
-    pub kind: u8,
-    pub path_kind: u8,
-    pub start_mm: [f64; 3],
-    pub end_mm: [f64; 3],
-    pub center_mm: [f64; 3],
-    pub clockwise: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireFixture {
-    pub id: u64,
-    pub bounds_mm: [[f64; 3]; 2],
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireEvidence {
-    pub schema: String,
-    pub plan_digest: String,
-    pub toolpath_digest: String,
-    pub target_exact_graph_digest: String,
-    pub motion_count: usize,
-    pub cutting_motion_count: usize,
-    pub fixture_count: usize,
-    pub stock_before_mm3: f64,
-    pub stock_after_mm3: f64,
-    pub removed_stock_mm3: f64,
-    pub residual_stock_mm3: f64,
-    pub gouge_mm3: f64,
-    pub collisions: Vec<CamSimulationWireCollision>,
-    pub backend: String,
-    pub tolerance: String,
-    pub result_fingerprint: String,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct CamSimulationWireCollision {
-    pub motion_index: usize,
-    pub motion_kind: u8,
-    pub participant: u8,
-    pub target: u8,
-    pub fixture_id: Option<u64>,
-    pub common_volume_mm3: f64,
-    pub contact_area_mm2: f64,
-    pub distance_mm: f64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -426,6 +207,9 @@ pub enum WorkerError {
     MemoryLimit {
         bytes: usize,
     },
+    /// The background jobs of the window together used more than its memory budget,
+    /// and the worker was stopped in the middle of the request.
+    MemoryBudget(memory_budget::BudgetStop),
 }
 
 impl fmt::Display for WorkerError {
@@ -475,6 +259,7 @@ impl fmt::Display for WorkerError {
                 "the worker needed more than {:.1} GiB of memory and was stopped",
                 f64::from(u32::try_from(bytes >> 20).unwrap_or(u32::MAX)) / 1024.0
             ),
+            Self::MemoryBudget(stop) => stop.fmt(formatter),
         }
     }
 }
@@ -925,20 +710,6 @@ fn verify_exact_worker_identity(
     Ok(guarded)
 }
 
-/// Memory the exact workers of one request may commit: half of this computer's, so a
-/// hostile or huge STEP or IGES file stops the worker instead of exhausting the system
-/// and the window with it. Workers running side by side share it
-/// ([`ExactWorkerSupervisor::spawn_sharing`]). 4 GiB when the system does not say how
-/// much it has.
-pub fn exact_worker_memory_bytes() -> usize {
-    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *BYTES.get_or_init(|| {
-        process_wrap::std::physical_memory_bytes()
-            .and_then(|bytes| usize::try_from(bytes / 2).ok())
-            .unwrap_or(4 << 30)
-    })
-}
-
 /// `memory_limit`: bytes each process of the worker's job may commit.
 fn spawn_limited_worker_command(
     command: Command,
@@ -986,6 +757,8 @@ pub struct ExactWorkerClient {
     /// the worker exits: a failed allocation names itself there before it aborts.
     memory_limit: usize,
     stderr_tail: Option<Receiver<Vec<u8>>>,
+    /// The worker in the window's memory budget, which may stop it.
+    budget: Option<memory_budget::Registration>,
     _temp_directory: tempfile::TempDir,
 }
 
@@ -1588,6 +1361,14 @@ impl ExactWorkerSupervisor {
             ],
             cutter_radius_mm: plan.tool().diameter_mm * 0.5,
             cutter_length_mm: plan.tool().flute_length_mm,
+            cutter_tip: match plan.tool().kind {
+                // A flat-bottom drill cuts as a flat end mill.
+                _ if plan.tool().tip_length_mm() == 0.0 => 0,
+                ketchup_model::cam::CamToolKind::Drill => 1,
+                ketchup_model::cam::CamToolKind::BallEndMill => 2,
+                ketchup_model::cam::CamToolKind::FlatEndMill => 0,
+            },
+            cutter_tip_length_mm: plan.tool().tip_length_mm(),
             tool_length_mm: plan.tool().overall_length_mm,
             holder_radius_mm: plan.tool().holder_diameter_mm * 0.5,
             holder_offset_mm: plan.tool().overall_length_mm,
@@ -3221,6 +3002,8 @@ mod tests {
             ],
             cutter_radius_mm: 0.5,
             cutter_length_mm: 1.0,
+            cutter_tip: 0,
+            cutter_tip_length_mm: 0.0,
             tool_length_mm: 2.0,
             holder_radius_mm: 1.0,
             holder_offset_mm: 2.0,

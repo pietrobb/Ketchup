@@ -6,6 +6,8 @@ use crate::dialogs::{
 use crate::slot::Slot;
 #[path = "busy_tests.rs"]
 mod busy_tests;
+#[path = "cam_export_tests.rs"]
+mod cam_export;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "interchange_tests.rs"]
@@ -68,6 +70,8 @@ mod program_edit;
 mod project_drawings_job;
 #[path = "room_areas_tests.rs"]
 mod room_areas;
+#[path = "sheet_annotations_tests.rs"]
+mod sheet_annotations;
 #[path = "skp_import_tests.rs"]
 mod skp_import;
 #[path = "skp_viewport_tests.rs"]
@@ -80,8 +84,8 @@ mod underlay_program;
 mod underlay_revision;
 #[path = "underlay_views_tests.rs"]
 mod underlay_views;
-#[path = "write_targets_tests.rs"]
-mod write_targets;
+#[path = "write_policy_tests.rs"]
+mod write_policy;
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();
@@ -396,9 +400,9 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
     assert!(app.is_dirty());
 }
 
-/// Review 2026-10-17 P3: a release to manufacturing asked for over the bridge
-/// waits for the user in the window. A client that disconnected meanwhile
-/// still got its file written once the user confirmed.
+/// Review 2026-10-17 P3: a client that disconnected while the user was asked
+/// still got its file written once the user confirmed. A release to
+/// manufacturing asks only to replace a file (owner decision R1).
 #[test]
 fn disconnect_during_a_release_confirmation_writes_no_file() {
     use ketchup_model::document::{
@@ -406,6 +410,8 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("released.btlx");
+    let original_bytes = b"the user's machine file";
+    std::fs::write(&path, original_bytes).unwrap();
     let stream_slot = Arc::new(Mutex::new(None));
     let prompted = Arc::new(AtomicBool::new(false));
     let dialogs = DisconnectOnHighRisk {
@@ -440,14 +446,16 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         version: 1,
         id: 1,
         token: credentials.token,
-        request: Request::Export {
+        request: Request::Export(crate::live_bridge::interchange::ExportRequest {
             expected: None,
             path: path.to_string_lossy().into_owned(),
             export_format: "btlx".to_owned(),
             drawing_scale: None,
             image: None,
+            cam_dialect: None,
+            cam_operations: None,
             overwrite: false,
-        },
+        }),
     })
     .unwrap();
     stream
@@ -463,7 +471,11 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    assert!(!path.exists(), "the departed client's release was written");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original_bytes,
+        "the departed client's release was written"
+    );
     assert!(!path.with_extension("btlx.support.txt").exists());
     assert!(
         app.action_digest().contains("disconnected"),
@@ -621,19 +633,14 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
 
 /// Review 2026-11-08 SEC-240: `save_as` wrote any name in any folder, such as
 /// a startup folder or `~/.ssh/authorized_keys`, and the next Ctrl+S wrote
-/// there again. It writes a `.ketchup` document only, never a hidden file, and
-/// in a folder neither the document's nor one of Open Recent only after the
-/// user agrees in the window.
+/// there again. It writes a `.ketchup` document only, never a hidden file, in
+/// any folder the user may write into, without asking about the folder.
 #[test]
-fn save_as_writes_a_ketchup_document_and_asks_before_a_new_folder() {
+fn save_as_writes_a_ketchup_document_into_any_folder() {
     let directory = tempfile::tempdir().unwrap();
-    let dialogs = ScriptedFileDialogs::new()
-        .queue_refused_high_risk()
-        .queue_high_risk_approval(9);
+    let dialogs = ScriptedFileDialogs::new();
     let probe = dialogs.clone();
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
-    // The test's folder is under the temporary folder, which is the project's.
-    app.window.temporary_folder = None;
     app.selection.clear();
     assert!(app.create_box());
     let mut bridge = transport::start(egui::Context::default()).unwrap();
@@ -663,20 +670,17 @@ fn save_as_writes_a_ketchup_document_and_asks_before_a_new_folder() {
         "refused before asking"
     );
 
+    // A folder neither the document's nor one of Open Recent is no reason to
+    // ask: the user saves wherever the system lets them write.
     let new_folder = directory.path().join("new").join("house.ketchup");
     std::fs::create_dir_all(new_folder.parent().unwrap()).unwrap();
-    assert_eq!(save_as(&mut app, &new_folder), Err("save_declined"));
-    assert!(!new_folder.exists());
-    assert!(app.file.path.is_none());
     save_as(&mut app, &new_folder).unwrap();
-    assert_eq!(probe.high_risk_prompts().len(), 2);
     assert_eq!(app.file.path.as_deref(), Some(new_folder.as_path()));
-
-    // Beside the document, or as another name in its folder, nobody is asked.
-    let beside = directory.path().join("new").join("HOUSE-v2.KETCHUP");
-    save_as(&mut app, &beside).unwrap();
-    assert_eq!(probe.high_risk_prompts().len(), 2);
-    assert!(beside.exists());
+    let elsewhere = directory.path().join("elsewhere").join("HOUSE-v2.KETCHUP");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    save_as(&mut app, &elsewhere).unwrap();
+    assert!(elsewhere.exists());
+    assert!(probe.high_risk_prompts().is_empty());
 }
 
 #[test]

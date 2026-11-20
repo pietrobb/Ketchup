@@ -74,7 +74,12 @@ impl<'a> GraphCompiler<'a> {
                 | FeatureKind::SurfaceTrim {
                     target,
                     cutter: tool,
-                } => {
+                }
+                | FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
+                    first: target,
+                    second: tool,
+                    ..
+                }) => {
                     pending.push((*tool, false));
                     pending.push((*target, false));
                 }
@@ -82,6 +87,14 @@ impl<'a> GraphCompiler<'a> {
                     for surface in surfaces.iter().rev() {
                         pending.push((*surface, false));
                     }
+                }
+                FeatureKind::SurfaceBody(SurfaceBodySpec::ControlPoint {
+                    target, keep, ..
+                }) => {
+                    for seam in keep.iter().rev() {
+                        pending.push((seam.surface, false));
+                    }
+                    pending.push((*target, false));
                 }
                 FeatureKind::WeldmentJoint(spec) => {
                     pending.push((spec.second_member, false));
@@ -344,27 +357,7 @@ impl<'a> GraphCompiler<'a> {
                 axis_end_mm,
                 angle_degrees,
             } => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 ExactBRepOperation::Revolve {
                     profile: compiled_profile,
                     axis_start_bits: axis_start_mm.map(f64::to_bits),
@@ -373,54 +366,14 @@ impl<'a> GraphCompiler<'a> {
                 }
             }
             FeatureKind::PlanarOffset { profile, distance } => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 ExactBRepOperation::PlanarOffset {
                     profile: compiled_profile,
                     distance_bits: planar_offset_distance(distance.millimetres())?,
                 }
             }
             FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 ExactBRepOperation::PlanarSurface {
                     profile: compiled_profile,
                 }
@@ -429,6 +382,9 @@ impl<'a> GraphCompiler<'a> {
                 target: self.body_id(*target)?,
                 cutter: self.body_id(*cutter)?,
             },
+            FeatureKind::SurfaceBody(
+                spec @ (SurfaceBodySpec::Blend { .. } | SurfaceBodySpec::ControlPoint { .. }),
+            ) => self.compile_derived_surface(spec)?,
             FeatureKind::SurfaceExtend { target, distance } => ExactBRepOperation::SurfaceExtend {
                 target: self.body_id(*target)?,
                 distance_bits: positive_distance(
@@ -461,27 +417,7 @@ impl<'a> GraphCompiler<'a> {
                 direction: (*direction).into(),
             },
             FeatureKind::Sweep { profile, path, up } => {
-                let compiled_profile = match self
-                    .snapshot
-                    .feature(*profile)
-                    .map(|feature| feature.kind())
-                {
-                    Some(FeatureKind::Sketch(sketch)) => {
-                        let regions = sketch.solved_regions().map_err(|error| {
-                            ExactBRepGraphError::UnsolvedProfile(*profile, error)
-                        })?;
-                        let [region] = regions.as_slice() else {
-                            return Err(ExactBRepGraphError::UnsupportedProfile(*profile));
-                        };
-                        self.compile_sketch_profile(
-                            *profile,
-                            region.id,
-                            FeatureDirection::AlongNormal,
-                        )?
-                        .0
-                    }
-                    _ => self.compile_profile(*profile, None, identity_frame())?,
-                };
+                let compiled_profile = self.compile_single_region_profile(*profile)?;
                 self.compile_sweep(compiled_profile, *path, *up)?
             }
             FeatureKind::WeldmentMember(spec) => {
@@ -597,38 +533,21 @@ impl<'a> GraphCompiler<'a> {
                 sections,
                 guide,
                 continuity,
-            } => ExactBRepOperation::Loft {
-                sections: self.compile_loft_sections(sections)?,
-                guide: guide
-                    .map(
-                        |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
-                            Some(FeatureKind::SpatialPath { segments }) => {
-                                spatial_path(guide, segments, self.snapshot.tolerance().linear_mm())
-                            }
-                            _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
-                        },
-                    )
-                    .transpose()?,
-                continuity: (*continuity).into(),
-            },
+                rail,
+            } => self.compile_loft(sections, [*guide, *rail], *continuity, true)?,
             FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
                 sections,
                 guide,
                 continuity,
-            }) => ExactBRepOperation::LoftSurface {
-                sections: self.compile_loft_sections(sections)?,
-                guide: guide
-                    .map(
-                        |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
-                            Some(FeatureKind::SpatialPath { segments }) => {
-                                spatial_path(guide, segments, self.snapshot.tolerance().linear_mm())
-                            }
-                            _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
-                        },
-                    )
-                    .transpose()?,
-                continuity: (*continuity).into(),
-            },
+                rail,
+            }) => self.compile_loft(sections, [*guide, *rail], *continuity, false)?,
+            FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments, inner }) => {
+                let tolerance_mm = self.snapshot.tolerance().linear_mm();
+                ExactBRepOperation::BoundarySurface {
+                    boundary: boundary_path(feature_id, segments, tolerance_mm)?,
+                    inner: network_curves(feature_id, inner, tolerance_mm)?,
+                }
+            }
             FeatureKind::SheetMetal(spec) => ExactBRepOperation::SheetMetal {
                 base_mm_bits: spec
                     .base_mm
@@ -697,6 +616,74 @@ impl<'a> GraphCompiler<'a> {
         self.threaded(feature_id, id)
     }
 
+    /// A sketch with exactly one solved region along its normal, or any other profile feature as is.
+    /// A surface made from earlier surfaces: a blend between two, or one with
+    /// a control point moved (and the neighbours whose seams it keeps).
+    fn compile_derived_surface(
+        &self,
+        spec: &SurfaceBodySpec,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        Ok(match spec {
+            SurfaceBodySpec::Blend {
+                first,
+                first_continuity,
+                second,
+                second_continuity,
+            } => ExactBRepOperation::SurfaceBlend {
+                first: self.body_id(*first)?,
+                first_continuity: (*first_continuity).into(),
+                second: self.body_id(*second)?,
+                second_continuity: (*second_continuity).into(),
+            },
+            SurfaceBodySpec::ControlPoint {
+                target,
+                u_index,
+                v_index,
+                from_mm,
+                offset_mm,
+                weight,
+                keep,
+            } => ExactBRepOperation::SurfaceControlPoint {
+                target: self.body_id(*target)?,
+                u_index: *u_index,
+                v_index: *v_index,
+                from_bits: from_mm.map(f64::to_bits),
+                offset_bits: offset_mm.map(f64::to_bits),
+                weight_bits: weight.map(f64::to_bits),
+                keep: keep
+                    .iter()
+                    .map(|seam| {
+                        Ok(ExactBRepSurfaceSeam {
+                            surface: self.body_id(seam.surface)?,
+                            continuity: seam.continuity.into(),
+                        })
+                    })
+                    .collect::<Result<_, ExactBRepGraphError>>()?,
+            },
+            _ => return Err(ExactBRepGraphError::InvalidGraph),
+        })
+    }
+
+    fn compile_single_region_profile(
+        &mut self,
+        profile: FeatureId,
+    ) -> Result<ExactBRepProfileId, ExactBRepGraphError> {
+        match self.snapshot.feature(profile).map(|feature| feature.kind()) {
+            Some(FeatureKind::Sketch(sketch)) => {
+                let regions = sketch
+                    .solved_regions()
+                    .map_err(|error| ExactBRepGraphError::UnsolvedProfile(profile, error))?;
+                let [region] = regions.as_slice() else {
+                    return Err(ExactBRepGraphError::UnsupportedProfile(profile));
+                };
+                Ok(self
+                    .compile_sketch_profile(profile, region.id, FeatureDirection::AlongNormal)?
+                    .0)
+            }
+            _ => self.compile_profile(profile, None, identity_frame()),
+        }
+    }
+
     fn face_offset(
         &self,
         target: FeatureId,
@@ -728,6 +715,51 @@ impl<'a> GraphCompiler<'a> {
             neutral: topology_selector(neutral, face, spec.target)?,
             angle_degrees_bits: spec.angle_degrees.to_bits(),
         }))
+    }
+
+    /// A solid or surface Loft through `sections` along its guide and rail.
+    fn compile_loft(
+        &mut self,
+        sections: &[LoftSection],
+        [guide, rail]: [Option<FeatureId>; 2],
+        continuity: LoftContinuity,
+        solid: bool,
+    ) -> Result<ExactBRepOperation, ExactBRepGraphError> {
+        let sections = self.compile_loft_sections(sections)?;
+        let guide = self.compile_loft_guide(guide)?;
+        let rail = self.compile_loft_guide(rail)?;
+        let continuity = continuity.into();
+        Ok(if solid {
+            ExactBRepOperation::Loft {
+                sections,
+                guide,
+                continuity,
+                rail,
+            }
+        } else {
+            ExactBRepOperation::LoftSurface {
+                sections,
+                guide,
+                continuity,
+                rail,
+            }
+        })
+    }
+
+    fn compile_loft_guide(
+        &self,
+        guide: Option<FeatureId>,
+    ) -> Result<Option<ExactBRepSpatialPath>, ExactBRepGraphError> {
+        guide
+            .map(
+                |guide| match self.snapshot.feature(guide).map(|feature| feature.kind()) {
+                    Some(FeatureKind::SpatialPath { segments }) => {
+                        spatial_path(guide, segments, self.snapshot.tolerance().linear_mm())
+                    }
+                    _ => Err(ExactBRepGraphError::UnsupportedFeature(guide)),
+                },
+            )
+            .transpose()
     }
 
     pub(super) fn compile_loft_sections(

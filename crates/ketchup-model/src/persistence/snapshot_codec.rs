@@ -20,7 +20,17 @@
 //! §5.3), 110 the code page the user chose to read an underlay's drawing in (review
 //! 2026-11-09 UL-303), 111 a mesh sheet, an open mesh such as a SketchUp face (U4c,
 //! [`crate::document::MESH_SHEET_SCHEMA_V1`]), 112 a mesh that shows a picture, an imported
-//! SketchUp texture (U4e, [`crate::document::MeshLook`]); an older
+//! SketchUp texture (U4e, [`crate::document::MeshLook`]); 113 adds source-bound
+//! hole callout notes; 114 a sketch every released Kečup takes for damaged
+//! ([`ketchup_geometry::sketch::SketchSpec::released_readers_refuse`]), such as the
+//! profile of a standard part; 115 a surface spanning a loop of boundary curves
+//! ([`crate::document::SurfaceBodySpec::Boundary`]); 116 a Loft stretched to a rail
+//! (`FeatureKind::Loft::rail`); 117 a boundary surface through a network of inner
+//! curves (`SurfaceBodySpec::Boundary::inner`); 118 a blend between two surfaces
+//! (`SurfaceBodySpec::Blend`); 119 a moved control point of a surface
+//! (`SurfaceBodySpec::ControlPoint`); 120 the point angle of a CAM plan's drill
+//! (`CamTool::point_angle_deg`). Older files have no generated ownership and need no
+//! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
@@ -37,7 +47,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 112;
+pub(super) const SNAPSHOT_FORMAT: u16 = 120;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -46,6 +56,15 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 112;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
+/// 120 with a drill point angle in a CAM plan, which a Kečup that writes 119
+/// would drop, else 119 with a moved control point of a surface, which a Kečup that writes 118
+/// does not know, else 118 with a blend between two surfaces, which a Kečup
+/// that writes 117 does not know, else 117 with a boundary surface through inner curves, which a
+/// Kečup that writes 116 does not know, else 116 with a Loft stretched to a rail, which a Kečup
+/// that writes 115 does not know, else 115 with a boundary surface, which no released Kečup
+/// knows, else 114 with a
+/// sketch every released Kečup takes for damaged, else 113 with a hole
+/// callout bound to its source, else
 /// 112 with a mesh that shows a picture, which a Kečup that writes 111 refuses as newer,
 /// else 111 with a mesh sheet, which Kečup 0.3.2 refuses as an invalid mesh
 /// body, else 110
@@ -83,8 +102,65 @@ fn format_of(product: &ProductModel) -> u16 {
                 _ => None,
             })
     };
-    if meshes().any(|mesh| mesh.look.is_some()) {
+    let surface_body = |is: fn(&crate::document::SurfaceBodySpec) -> bool| {
+        product.features.values().any(|feature| {
+            matches!(feature.kind(), crate::document::FeatureKind::SurfaceBody(spec) if is(spec))
+        })
+    };
+    if product
+        .cam_plans
+        .values()
+        .any(|plan| plan.tool().point_angle_deg.is_some())
+    {
         SNAPSHOT_FORMAT
+    } else if surface_body(|spec| {
+        matches!(spec, crate::document::SurfaceBodySpec::ControlPoint { .. })
+    }) {
+        119
+    } else if surface_body(|spec| matches!(spec, crate::document::SurfaceBodySpec::Blend { .. })) {
+        118
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
+            crate::document::FeatureKind::SurfaceBody(
+                crate::document::SurfaceBodySpec::Boundary { inner, .. }
+            ) if !inner.is_empty()
+        )
+    }) {
+        117
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
+            crate::document::FeatureKind::Loft { rail: Some(_), .. }
+                | crate::document::FeatureKind::SurfaceBody(
+                    crate::document::SurfaceBodySpec::Loft { rail: Some(_), .. }
+                )
+        )
+    }) {
+        116
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
+            crate::document::FeatureKind::SurfaceBody(
+                crate::document::SurfaceBodySpec::Boundary { .. }
+            )
+        )
+    }) {
+        115
+    } else if product.features.values().any(|feature| {
+        matches!(feature.kind(), crate::document::FeatureKind::Sketch(sketch)
+            if sketch.released_readers_refuse())
+    }) {
+        114
+    } else if product.drawing_sheets.values().any(|sheet| {
+        sheet
+            .notes()
+            .iter()
+            .any(|note| note.hole_callout_sources().is_some())
+    }) {
+        113
+    } else if meshes().any(|mesh| mesh.look.is_some()) {
+        112
     } else if meshes().any(crate::document::MeshBodySpec::is_sheet) {
         111
     } else if product
@@ -1066,7 +1142,10 @@ mod tests {
             let started = std::time::Instant::now();
             check();
             let elapsed = started.elapsed();
-            assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+            assert!(
+                elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(30)),
+                "{elapsed:?}"
+            );
         }
     }
 

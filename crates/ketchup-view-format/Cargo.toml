@@ -17,6 +17,7 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 sha2 = "0.10.9"
 
 [dev-dependencies]
+ketchup-test-env = { path = "../ketchup-test-env" }
 ketchup-manufacturing = { path = "../ketchup-manufacturing" }
 ketchup-model = { path = "../ketchup-model", features = ["testing"] }
 ketchup-rejection = { path = "../ketchup-rejection" }

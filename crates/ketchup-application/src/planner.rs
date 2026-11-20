@@ -18,11 +18,10 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
     AssistantCadFeatureReference, AssistantCadParameterValue, AssistantCadParameterValueType,
     AssistantCadPartFeature, AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference,
-    AssistantCadSurfaceBodySource, AssistantCamToolKind, AssistantCamWorkOffset,
-    AssistantInstancePath, AssistantInstancePathStep, AssistantInstanceReference,
-    AssistantPartHole, AssistantPartPocket, AssistantPinHoles, AssistantRejectionDiagnostic,
-    AssistantRejectionPhase, AssistantSketchEntity, AssistantWorkplaneSpec,
-    validated_spatial_path_segments,
+    AssistantCadSurfaceBodySource, AssistantInstancePath, AssistantInstancePathStep,
+    AssistantInstanceReference, AssistantPartHole, AssistantPartPocket, AssistantPinHoles,
+    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchEntity,
+    AssistantWorkplaneSpec, validated_spatial_path_segments,
 };
 use ketchup_geometry::linalg::cross;
 use ketchup_geometry::sketch::{
@@ -33,9 +32,7 @@ use ketchup_model::assembly_joint::{
     AssemblyJoint, AssemblyJointAxis, AssemblyJointId, AssemblyJointKind, AssemblyJointLimits,
     preview_assembly_joint_drag,
 };
-use ketchup_model::cam::{
-    CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool, CamToolKind, CamWorkOffset,
-};
+use ketchup_model::cam::{CamCutParameters, CamPlan, CamPlanId, CamSetup, CamStock, CamTool};
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
     CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension, DocumentStore,
@@ -63,6 +60,9 @@ use ketchup_model::topology::TopologicalElementKind;
 use ketchup_program::model::{Part as ProgramPart, ProgramPartBody};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+
+mod cam_kinds;
+mod surface_body_references;
 
 const MAX_AXIS_INSTANCE_OCCURRENCES: usize = 10_000;
 
@@ -1938,27 +1938,16 @@ fn resolve_staged_program_feature_references(
     if let AssistantCadBodyFeature::Loft {
         sections,
         guide_feature_id,
+        rail_feature_id,
         ..
     } = &mut feature
     {
-        for section in sections {
-            section.profile_feature_id = staged_planning
-                .resolve_program_feature(
-                    section.profile_feature_id,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                    operation,
-                )?
-                .into();
-        }
-        if let Some(guide) = guide_feature_id {
-            *guide = staged_planning
-                .resolve_program_feature(
-                    *guide,
-                    AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    operation,
-                )?
-                .into();
-        }
+        surface_body_references::resolve_loft(
+            sections,
+            [guide_feature_id, rail_feature_id],
+            staged_planning,
+            operation,
+        )?;
     }
     if let AssistantCadBodyFeature::Pocket {
         target_feature_id,
@@ -1982,41 +1971,9 @@ fn resolve_staged_program_feature_references(
             .into();
     }
     match &mut feature {
-        AssistantCadBodyFeature::SurfaceBody { source } => match source {
-            AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
-                *profile_feature_id = staged_planning
-                    .resolve_program_feature(
-                        *profile_feature_id,
-                        AssistantCadProgramFeatureOutput::SketchFeature,
-                        operation,
-                    )?
-                    .into();
-            }
-            AssistantCadSurfaceBodySource::Loft {
-                sections,
-                guide_feature_id,
-                ..
-            } => {
-                for section in sections {
-                    section.profile_feature_id = staged_planning
-                        .resolve_program_feature(
-                            section.profile_feature_id,
-                            AssistantCadProgramFeatureOutput::SketchFeature,
-                            operation,
-                        )?
-                        .into();
-                }
-                if let Some(guide) = guide_feature_id {
-                    *guide = staged_planning
-                        .resolve_program_feature(
-                            *guide,
-                            AssistantCadProgramFeatureOutput::ConstructionFeature,
-                            operation,
-                        )?
-                        .into();
-                }
-            }
-        },
+        AssistantCadBodyFeature::SurfaceBody { source } => {
+            surface_body_references::resolve(source, staged_planning, operation)?;
+        }
         AssistantCadBodyFeature::SurfaceTrim {
             target_feature_id,
             cutter_feature_id,
@@ -3524,6 +3481,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                 spindle_rpm,
                 feed_mm_per_min,
                 plunge_mm_per_min,
+                drill_point_angle_deg,
                 work_offset,
                 origin_mm,
                 x_axis,
@@ -3544,11 +3502,7 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                     },
                     CamTool {
                         number: *tool_number,
-                        kind: match tool_kind {
-                            AssistantCamToolKind::FlatEndMill => CamToolKind::FlatEndMill,
-                            AssistantCamToolKind::BallEndMill => CamToolKind::BallEndMill,
-                            AssistantCamToolKind::Drill => CamToolKind::Drill,
-                        },
+                        kind: cam_kinds::tool_kind(*tool_kind),
                         diameter_mm: *tool_diameter_mm,
                         flute_length_mm: *flute_length_mm,
                         overall_length_mm: *overall_length_mm,
@@ -3557,16 +3511,10 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         spindle_rpm: *spindle_rpm,
                         feed_mm_per_min: *feed_mm_per_min,
                         plunge_mm_per_min: *plunge_mm_per_min,
+                        point_angle_deg: *drill_point_angle_deg,
                     },
                     CamSetup {
-                        work_offset: match work_offset {
-                            AssistantCamWorkOffset::G54 => CamWorkOffset::G54,
-                            AssistantCamWorkOffset::G55 => CamWorkOffset::G55,
-                            AssistantCamWorkOffset::G56 => CamWorkOffset::G56,
-                            AssistantCamWorkOffset::G57 => CamWorkOffset::G57,
-                            AssistantCamWorkOffset::G58 => CamWorkOffset::G58,
-                            AssistantCamWorkOffset::G59 => CamWorkOffset::G59,
-                        },
+                        work_offset: cam_kinds::work_offset(*work_offset),
                         origin_mm: *origin_mm,
                         x_axis: *x_axis,
                         y_axis: *y_axis,

@@ -4,6 +4,14 @@ use super::*;
 use crate::model::ProgramAnnotation;
 use ketchup_model::annotation::{Annotation, AnnotationMark, first_problem};
 
+#[path = "sheets.rs"]
+mod sheets;
+
+pub(super) fn builtins(builder: &mut GlobalsBuilder) {
+    document_builtins(builder);
+    sheets::builtins(builder);
+}
+
 /// Text height on paper when a call gives none, in millimetres.
 pub(crate) const DEFAULT_TEXT_HEIGHT_MM: f64 = 2.5;
 
@@ -91,7 +99,7 @@ fn add<'v>(
 }
 
 #[starlark_module]
-pub(super) fn builtins(builder: &mut GlobalsBuilder) {
+fn document_builtins(builder: &mut GlobalsBuilder) {
     /// Writes `value` with its insertion point at `at`.
     fn text<'v>(
         #[starlark(require = pos)] name: &str,

@@ -509,6 +509,67 @@ mod tests {
         );
     }
 
+    /// The home of the user [`under_sudo_the_settings_are_written_as_their_user`]
+    /// runs in, set by the run of it that started this one.
+    #[cfg(unix)]
+    const USERS_HOME: &str = "KETCHUP_TEST_USERS_HOME";
+
+    /// Review 2026-11-13 r95 P3: that under root the settings and the files beside
+    /// them are written as their user, through no link to a folder of root's, had
+    /// no test as root. Under `sudo` `HOME` is `/root`, which refuses the user's
+    /// home as another's, so root runs this test again with `HOME` the user's, as
+    /// `sudo -E` keeps it.
+    #[cfg(unix)]
+    #[test]
+    fn under_sudo_the_settings_are_written_as_their_user() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if ketchup_user_files::effective_user() != 0 {
+            return;
+        }
+        let user = (65534, 65534);
+        let Some(home) = std::env::var_os(USERS_HOME).map(PathBuf::from) else {
+            let home = tempfile::tempdir().unwrap();
+            std::os::unix::fs::chown(home.path(), Some(user.0), Some(user.1)).unwrap();
+            let name = "recent_files::user_settings::tests::under_sudo_the_settings_are_written_as_their_user";
+            let run = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--test-threads", "1"])
+                .env("HOME", home.path())
+                .env(USERS_HOME, home.path())
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&run.stdout);
+            assert!(
+                run.status.success(),
+                "{said}{}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert!(said.contains("test result: ok. 1 passed"), "{said}");
+            return;
+        };
+        let in_folder = |folder: PathBuf| SettingsFile {
+            path: folder.join(FILE_NAME),
+            folder: Some(UserFolder::at(home.clone(), folder)),
+        };
+        let settings = in_folder(home.join("Ketchup"));
+        settings.save_language("sk").unwrap();
+        for written in [
+            settings.path.clone(),
+            settings.path.with_extension("txt.lock"),
+        ] {
+            let found = std::fs::metadata(&written).unwrap();
+            assert_eq!((found.uid(), found.gid()), user, "{}", written.display());
+        }
+        assert_eq!(settings.language().as_deref(), Some("sk"));
+
+        let roots = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(roots.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let linked = home.join("Linked");
+        std::os::unix::fs::symlink(roots.path(), &linked).unwrap();
+        std::os::unix::fs::lchown(&linked, Some(user.0), Some(user.1)).unwrap();
+        assert!(in_folder(linked).save_language("cs").is_err());
+        assert_eq!(std::fs::read_dir(roots.path()).unwrap().count(), 0);
+    }
+
     /// Review 2026-11-06 P3: `lock()` held the window without end behind a
     /// window that hung while saving, and a file system without locks (NFS
     /// without lockd) never let it save.

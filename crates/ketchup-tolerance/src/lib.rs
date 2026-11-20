@@ -58,6 +58,29 @@ pub const DRAFT_VERTICAL_TOLERANCE_DEGREES: f64 = 1.0e-6;
 /// against 6H), so a modelled bolt and its tapped hole stay clear of each other.
 pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 
+/// Deviation allowed between a Loft stretched to a rail and the rail, in mm. The Loft is
+/// fitted through stretched stations across the guide and gets more stations until the
+/// rail lies this close to it; ten nanometres sit far below any machined or printed surface.
+pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-5;
+
+/// Deviation allowed between a surface filled through a network of curves and each curve
+/// of the network, in mm. The kernel fits a smooth plate to points on every curve and
+/// measures every curve against the result; one micrometre is below the form tolerance of
+/// precision machining and far below printing.
+pub const NETWORK_SURFACE_APPROXIMATION_MM: f64 = 1.0e-3;
+
+/// Angle allowed between the normals of a blend surface and the surface it meets with
+/// tangent (G1) or curvature (G2) continuity, in radians, at every sampled point of the
+/// seam. A thousandth of a radian (0.06 degree) shows no crease in reflections and is
+/// several times finer than the 0.5 degree tangency check of class-A surfacing reviews.
+pub const SURFACE_BLEND_ANGLE_RAD: f64 = 1.0e-3;
+
+/// Difference allowed between the curvatures of a blend surface and the surface it meets
+/// with curvature (G2) continuity, across the seam, as a share of the larger of the
+/// meeting surface's curvature and one over the seam length. Five per cent keeps
+/// reflection lines visibly unbroken across the seam.
+pub const SURFACE_BLEND_CURVATURE_SHARE: f64 = 0.05;
+
 /// Contact and fit tolerance of rule programs, in mm: two parts at most this far apart
 /// touch, and a part may stick out of the face or the part it fits by this much. Not the
 /// document's [`TolerancePolicy`], which decides coincidence for the exact kernel: program
@@ -74,6 +97,11 @@ pub const PICK_MATCH_MM: f64 = 0.001;
 /// Distance within which a point load stands on a support of a continuous span, in mm:
 /// it then goes straight into that support instead of loading the span.
 pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
+
+/// Share of a sideways force running along a part on a path to the ground (the cosine
+/// between them) at or below which the part carries none of it along its axis and
+/// nothing buckles it (R1113r95-PG-702..704).
+pub const ALONG_AXIS_NEGLIGIBLE: f64 = 1.0e-3;
 
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
@@ -142,6 +170,17 @@ pub const NEGLIGIBLE: f64 = 1.0e-12;
 /// differences at this step leave truncation (step²) and cancellation (rounding / step)
 /// errors far below [`APPROXIMATION`].
 pub const FINITE_DIFFERENCE_STEP: f64 = 1.0e-6;
+
+/// A vector of the natural-frequency search keeping no more than this share of its mass
+/// norm once the vectors before it are taken out of it lies in their span: what is left is
+/// mostly rounding, and a scattered vector replaces it (og:R1119og-FEA-802).
+pub const MODE_VECTOR_DEPENDENT: f64 = 1.0e-6;
+
+/// How far above the highest natural frequency found the Sturm check of the modes puts
+/// its shift, as shares of that eigenvalue, tried in turn. The pivot of that mode is about
+/// this share of its stiffness, and one too small to tell its sign from rounding moves the
+/// shift further; all lie far above the [`ROUNDING`] an eigenvalue settles to.
+pub const STURM_SHIFT_GAPS: [f64; 3] = [1.0e-3, 1.0e-2, 1.0e-1];
 
 /// Starting Levenberg–Marquardt damping of the sketch solver, relative to unit-scaled
 /// equations; the solver adapts it every iteration.

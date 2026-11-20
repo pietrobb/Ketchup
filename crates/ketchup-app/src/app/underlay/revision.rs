@@ -8,7 +8,7 @@ use crate::*;
 use ketchup_model::import::{
     OverlayLayers, Revision, RevisionComparison, compare_revisions, revision_overlay,
 };
-use ketchup_model::underlay::{UnderlayId, UnderlayPlanError, plan_underlay_over};
+use ketchup_model::underlay::{UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay_over};
 
 /// Why a revision was not compared with an underlay.
 #[derive(Debug)]
@@ -17,8 +17,8 @@ pub(crate) enum RevisionOverlayError {
     NotFound(UnderlayId),
     /// The document holds no readable lines of the underlay.
     LinesUnreadable(UnderlayId),
-    /// Neither drawing has an entity with a handle, so nothing tells which entity of one is
-    /// which of the other.
+    /// One drawing, or both, has no entity with a handle, so nothing tells which entity of
+    /// one is which of the other.
     NoHandles,
     Plan(UnderlayPlanError),
     Import(ImportError),
@@ -36,7 +36,7 @@ impl std::fmt::Display for RevisionOverlayError {
                 id.0
             ),
             Self::NoHandles => formatter.write_str(
-                "neither drawing has entities with handles, so they cannot be compared entity by entity",
+                "one of the drawings has no entities with handles, so they cannot be compared entity by entity",
             ),
             Self::Plan(_) => formatter.write_str("the overlay of the changes was not planned"),
             Self::Import(_) => formatter.write_str("the overlay of the changes was not kept"),
@@ -56,7 +56,111 @@ impl std::error::Error for RevisionOverlayError {
     }
 }
 
+/// The underlay a drawing being read is a later revision of, handed to the thread that
+/// reads it: its lines as read, without edits, and the names of the overlay's layers.
+pub(crate) struct EarlierRevision {
+    lines: Arc<UnderlayLines>,
+    /// The blob the lines were decoded from, to tell whether the underlay still has them
+    /// when the revision is added.
+    lines_sha256: [u8; 32],
+    offset_mm: [f64; 2],
+    names: OverlayLayers,
+}
+
+/// What comparing a revision with an underlay makes, on the thread that read the revision
+/// (review 2026-11-10 og:R1110-UL-402: the overlay of a plan of 100 000 lines froze the
+/// window for 22.7 s): the comparison and, where anything changed, the overlay.
+pub(crate) struct RevisionWork {
+    comparison: RevisionComparison,
+    lines_sha256: [u8; 32],
+    overlay: Option<RevisionOverlay>,
+}
+
+/// The overlay of the changes as the document keeps it, with its snap index and GPU lines.
+struct RevisionOverlay {
+    layers: Vec<String>,
+    lines: UnderlayLines,
+    bytes: Vec<u8>,
+    snaps: Arc<UnderlaySnapIndex>,
+    geometry: Arc<UnderlayGeometry>,
+}
+
+/// Compares `later`, read, with `earlier` and makes the overlay of what changed.
+pub(crate) fn revision_work(
+    earlier: &EarlierRevision,
+    later: &ReadUnderlay,
+) -> Result<RevisionWork, RevisionOverlayError> {
+    let (earlier_revision, later_revision) = (
+        Revision {
+            lines: &earlier.lines,
+            offset_mm: earlier.offset_mm,
+        },
+        Revision {
+            lines: &later.lines,
+            offset_mm: later.read.offset_mm,
+        },
+    );
+    let comparison = compare_revisions(earlier_revision, later_revision);
+    if comparison.lacks_handles() {
+        return Err(RevisionOverlayError::NoHandles);
+    }
+    let changed = !(comparison.changed.is_empty()
+        && comparison.added.is_empty()
+        && comparison.removed.is_empty());
+    let overlay = changed
+        .then(|| {
+            let (layers, lines) = revision_overlay(
+                earlier_revision,
+                later_revision,
+                &comparison,
+                &earlier.names,
+            );
+            let bytes = lines
+                .encode_readable()
+                .map_err(RevisionOverlayError::TooLarge)?;
+            let snaps = Arc::new(UnderlaySnapIndex::new(&lines));
+            let geometry = Arc::new(UnderlayGeometry::new(sha256_bytes(&bytes), &lines));
+            Ok(RevisionOverlay {
+                layers,
+                lines,
+                bytes,
+                snaps,
+                geometry,
+            })
+        })
+        .transpose()?;
+    Ok(RevisionWork {
+        comparison,
+        lines_sha256: earlier.lines_sha256,
+        overlay,
+    })
+}
+
 impl KetchupApp {
+    /// Underlay `of` as the earlier revision of a drawing to be read.
+    pub(crate) fn earlier_revision(
+        &self,
+        of: UnderlayId,
+    ) -> Result<EarlierRevision, RevisionOverlayError> {
+        let snapshot = self.document.current();
+        let under = snapshot
+            .underlay(of)
+            .ok_or(RevisionOverlayError::NotFound(of))?;
+        let lines = self
+            .cached_decoded_underlay_lines(under)
+            .ok_or(RevisionOverlayError::LinesUnreadable(of))?;
+        Ok(EarlierRevision {
+            lines,
+            lines_sha256: under.lines_sha256,
+            offset_mm: under.offset_mm(),
+            names: OverlayLayers {
+                changed: self.catalog.text("underlay-revision-changed"),
+                added: self.catalog.text("underlay-revision-added"),
+                removed: self.catalog.text("underlay-revision-removed"),
+            },
+        })
+    }
+
     /// File ▸ Import ▸ revision of the underlay: the drawing chosen is compared with the
     /// underlay selected, or with the only one the document has.
     pub(crate) fn begin_underlay_revision(&mut self) {
@@ -81,55 +185,38 @@ impl KetchupApp {
 
     /// Compares `read`, the drawing at `path`, with underlay `of` as its later revision and,
     /// where anything changed, adds the overlay of the changes on `of` as one Undo step.
+    /// The comparison the reading thread made is taken while the underlay still has the
+    /// lines it compared; it is made here otherwise.
     pub(crate) fn add_revision_overlay(
         &mut self,
         path: &Path,
-        read: &ReadUnderlay,
+        mut read: ReadUnderlay,
         of: UnderlayId,
     ) -> Result<(Option<UnderlayId>, RevisionComparison), RevisionOverlayError> {
         let snapshot = self.document.current();
         let under = snapshot
             .underlay(of)
             .ok_or(RevisionOverlayError::NotFound(of))?;
-        let earlier_lines = self
-            .cached_decoded_underlay_lines(under)
-            .ok_or(RevisionOverlayError::LinesUnreadable(of))?;
-        let earlier = Revision {
-            lines: &earlier_lines,
-            offset_mm: under.offset_mm(),
+        let work = match read.revision.take() {
+            Some(Err(error)) => return Err(error),
+            Some(Ok(work)) if work.lines_sha256 == under.lines_sha256 => work,
+            _ => revision_work(&self.earlier_revision(of)?, &read)?,
         };
-        let later = Revision {
-            lines: &read.lines,
-            offset_mm: read.read.offset_mm,
-        };
-        let comparison = compare_revisions(earlier, later);
-        if comparison.compared_nothing() {
-            return Err(RevisionOverlayError::NoHandles);
-        }
+        let comparison = work.comparison;
+        // A renumbered entity draws alike, under the handle the later export gave it.
+        let alike = comparison.unchanged + comparison.renumbered;
         let counts = BTreeMap::from([
             ("changed", comparison.changed.len().to_string()),
             ("added", comparison.added.len().to_string()),
             ("removed", comparison.removed.len().to_string()),
-            ("unchanged", comparison.unchanged.to_string()),
+            ("unchanged", alike.to_string()),
         ]);
-        if comparison.changed.is_empty()
-            && comparison.added.is_empty()
-            && comparison.removed.is_empty()
-        {
+        let Some(overlay) = work.overlay else {
             self.digest = self
                 .catalog
                 .format("digest-underlay-revision-same", &counts);
             return Ok((None, comparison));
-        }
-        let names = OverlayLayers {
-            changed: self.catalog.text("underlay-revision-changed"),
-            added: self.catalog.text("underlay-revision-added"),
-            removed: self.catalog.text("underlay-revision-removed"),
         };
-        let (layers, lines) = revision_overlay(earlier, later, &comparison, &names);
-        let bytes = lines
-            .encode_readable()
-            .map_err(RevisionOverlayError::TooLarge)?;
         let revision = path
             .file_stem()
             .map_or_else(|| "revision".into(), |stem| stem.to_string_lossy());
@@ -140,12 +227,17 @@ impl KetchupApp {
                 ("revision", revision.into_owned()),
             ]),
         );
+        let RevisionOverlay {
+            layers,
+            lines,
+            bytes,
+            snaps,
+            geometry,
+        } = overlay;
         let key = sha256_bytes(&bytes);
         let (batch, id) =
             plan_underlay_over(&snapshot, of, &name, &layers, key, read.read.offset_mm)
                 .map_err(RevisionOverlayError::Plan)?;
-        let snaps = Arc::new(UnderlaySnapIndex::new(&lines));
-        let geometry = Arc::new(UnderlayGeometry::new(key, &lines));
         self.keep_underlay_lines(batch, bytes, &lines, snaps, geometry)
             .map_err(RevisionOverlayError::Import)?;
         self.digest = self.catalog.format("digest-underlay-revision", &counts);

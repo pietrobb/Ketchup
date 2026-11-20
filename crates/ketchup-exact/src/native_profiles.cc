@@ -1,5 +1,8 @@
 #include "native_common.hxx"
 
+#include <BRepOffsetAPI_MakeFilling.hxx>
+#include <BRepTools_WireExplorer.hxx>
+
 namespace ketchup::exact {
 
 std::unique_ptr<NativeOperationResult> make_box_native(
@@ -75,7 +78,7 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
 std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const NativeSegment> segments, double distance) noexcept {
   return guarded([&] {
-    if (segments.size() < 2 || segments.size() > 64
+    if (segments.size() < 2 || segments.size() > tolerances().planar_profile_segments
         || !std::isfinite(distance)
         || std::abs(distance) > 100000.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar offset payload is malformed");
@@ -207,6 +210,136 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
     rust::Slice<const NativeSegment> segments) noexcept {
   return offset_planar_profile_native(segments, 0.0);
+}
+
+namespace {
+
+// The largest distance between points spread along `edge` and `face`.
+double largest_distance_to_face(const TopoDS_Edge& edge, const TopoDS_Face& face) {
+  constexpr int samples = 33;
+  const BRepAdaptor_Curve curve(edge);
+  const double first = curve.FirstParameter();
+  const double last = curve.LastParameter();
+  double largest = 0.0;
+  for (int index = 0; index < samples; ++index) {
+    const double parameter = first + (last - first) * index / (samples - 1);
+    const TopoDS_Vertex point = BRepBuilderAPI_MakeVertex(curve.Value(parameter));
+    BRepExtrema_DistShapeShape distance(point, face);
+    if (!distance.IsDone()) {
+      return std::numeric_limits<double>::infinity();
+    }
+    largest = std::max(largest, distance.Value());
+  }
+  return largest;
+}
+
+}  // namespace
+
+std::unique_ptr<NativeOperationResult> fill_network_surface_native(
+    rust::Slice<const NativeSegment> boundary,
+    rust::Slice<const NativeSegment> inner) noexcept {
+  return guarded([&] {
+    const std::size_t count = boundary.size();
+    if (count < 2 || count > 64) {
+      return error_result(STATUS_INVALID_PARAMETER, "Boundary surface requires 2 to 64 boundary curves");
+    }
+    if (inner.size() > 64) {
+      return error_result(STATUS_INVALID_PARAMETER, "Network surface takes at most 64 inner curves");
+    }
+    std::vector<TopoDS_Edge> inner_edges;
+    for (const NativeSegment& segment : inner) {
+      if (!segment_bounded(segment, 1000000.0)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Network surface curve is not finite");
+      }
+      const TopoDS_Edge edge = spatial_segment_edge(segment);
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Network surface curve does not make an edge");
+      }
+      inner_edges.push_back(edge);
+    }
+    BRepBuilderAPI_MakeWire wire_builder;
+    for (std::size_t index = 0; index < count; ++index) {
+      const NativeSegment& segment = boundary[index];
+      if (!segment_bounded(segment, 1000000.0)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Boundary surface curve is not finite");
+      }
+      if (!same_point(segment.end, boundary[(index + 1) % count].start)) {
+        return error_result(STATUS_INVALID_PARAMETER, "Boundary surface curves are not one closed loop");
+      }
+      const TopoDS_Edge edge = spatial_segment_edge(segment);
+      if (edge.IsNull()) {
+        return error_result(STATUS_INVALID_SHAPE, "Boundary surface curve does not make an edge");
+      }
+      wire_builder.Add(edge);
+    }
+    if (!wire_builder.IsDone() || !wire_builder.Wire().Closed()
+        || !BRepCheck_Analyzer(wire_builder.Wire()).IsValid()) {
+      return error_result(STATUS_INVALID_SHAPE, "Boundary surface curves do not make one valid closed wire");
+    }
+    // Every boundary and inner curve is a position (G0) constraint; the
+    // filled surface is the smoothest plate that meets them. Inner curves
+    // constrain the surface without bounding it.
+    const bool network = !inner_edges.empty();
+    BRepOffsetAPI_MakeFilling filling;
+    if (network) {
+      // More fitting points on every curve when a network shapes the inside
+      // of the plate; OCCT's 3D fit target stays ten times below the
+      // network tolerance.
+      filling.SetResolParam(3, 33, 5);
+      filling.SetApproxParam(12, 30);
+    }
+    for (BRepTools_WireExplorer edges(wire_builder.Wire()); edges.More(); edges.Next()) {
+      filling.Add(edges.Current(), GeomAbs_C0);
+    }
+    for (const TopoDS_Edge& edge : inner_edges) {
+      filling.Add(edge, GeomAbs_C0, false);
+    }
+    filling.Build();
+    if (!filling.IsDone()) {
+      return error_result(STATUS_INVALID_SHAPE, "OCCT could not fill the boundary curves");
+    }
+    // A plate that does not reach its own boundary is a doubtful result: the
+    // face would sit on edges it does not actually meet.
+    // A network is fitted, so it is held to the fit tolerance; the same
+    // tolerance applies to the boundary of a networked plate.
+    const double allowed =
+        network ? tolerances().network_surface_approximation_mm : tolerances().linear_mm;
+    const double gap = filling.G0Error();
+    if (!std::isfinite(gap) || gap > allowed) {
+      std::ostringstream diagnostic;
+      diagnostic << "Boundary surface misses its curves by " << gap
+                 << " mm, more than the " << allowed << " mm tolerance";
+      return error_result(STATUS_INVALID_SHAPE, diagnostic.str());
+    }
+    const TopoDS_Shape result = filling.Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid()
+        || count_subshapes(result, TopAbs_FACE) != 1
+        || count_subshapes(result, TopAbs_WIRE) != 1) {
+      return error_result(STATUS_INVALID_SHAPE, "Boundary surface is not one valid bounded face");
+    }
+    // The kernel's own error is measured at its fitting points only; every
+    // inner curve is measured along its whole length as well.
+    const TopoDS_Face face = TopoDS::Face(TopExp_Explorer(result, TopAbs_FACE).Current());
+    for (std::size_t index = 0; index < inner_edges.size(); ++index) {
+      const double miss = largest_distance_to_face(inner_edges[index], face);
+      if (!std::isfinite(miss) || miss > allowed) {
+        std::ostringstream diagnostic;
+        diagnostic << "Network surface misses inner curve " << index + 1 << " by " << miss
+                   << " mm, more than the " << allowed << " mm tolerance";
+        return error_result(STATUS_INVALID_SHAPE, diagnostic.str());
+      }
+    }
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(result, properties);
+    if (!std::isfinite(properties.Mass()) || properties.Mass() <= tolerances().negligible) {
+      return error_result(STATUS_DEGENERATE_OPERATION, "Boundary surface has no area");
+    }
+    const ShapeIndex result_index(result);
+    std::vector<HistoryRecord> history;
+    history.push_back(history_record(
+        "boundary_surface.face", "filled", "boundary.wire", result_index, result));
+    return success_result(result, std::move(history), false, false, {}, true);
+  });
 }
 
 std::unique_ptr<NativeOperationResult> trim_surface_native(
@@ -533,7 +666,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
     }
     std::size_t declared_segments = 0;
     for (const std::uint32_t count : loop_segment_counts) {
-      if (count == 0 || count > 64) {
+      if (count == 0 || count > tolerances().planar_profile_segments) {
         return error_result(STATUS_INVALID_PARAMETER, "Planar region offset loop count is invalid");
       }
       declared_segments += count;
