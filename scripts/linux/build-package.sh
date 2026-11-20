@@ -33,7 +33,7 @@ package="$work/$name"
 mkdir -p "$package/lib"
 programs=(ketchup-app ketchup-viewer ketchup-exact-worker ketchup-program-worker ketchup-program)
 for program in "${programs[@]}"; do
-    cp "target/release/$program" "$package/"
+    cp "${CARGO_TARGET_DIR:-target}/release/$program" "$package/"
 done
 
 # The OCCT libraries the programs load, directly or through each other, by the

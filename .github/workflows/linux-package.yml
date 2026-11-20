@@ -3,10 +3,13 @@ name: Linux package
 # A release tag builds Ketchup-<version>-Linux-x86_64.tar.gz, checks that it starts in
 # a clean Ubuntu container and keeps it with its sums as the run's artifact; the
 # release script takes it from there (README, "Linux package"). A pull request
-# that changes how the package is made builds and checks it too.
+# that changes how the package is made builds and checks it too, and so does every
+# merge to main: a code change can break the package (a new system library, a
+# worker that no longer starts) without touching its scripts (review 2026-11-20 ac).
 on:
   push:
     tags: ["v*"]
+    branches: [main]
   pull_request:
     branches: [main]
     paths:
