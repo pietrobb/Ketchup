@@ -130,7 +130,7 @@ impl std::fmt::Display for ThermalReviewError {
                 "validation_rules.json gives material {material:?} no thermal conductivity: classify the part as a material that has one (ketchup.material.v1) or add thermal_conductivity with its source"
             ),
             Self::Meshing(cause) => write!(formatter, "thermal meshing rejected: {cause}"),
-            Self::Setup(cause) => write!(formatter, "thermal setup rejected: {cause:?}"),
+            Self::Setup(cause) => write!(formatter, "thermal setup rejected: {cause}"),
             Self::MeshNotRefined => {
                 formatter.write_str("thermal solve rejected: the mesh levels are not finer")
             }

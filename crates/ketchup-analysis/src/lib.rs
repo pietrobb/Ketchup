@@ -5,6 +5,7 @@
 
 pub mod fea;
 mod fea_coupling;
+mod fea_error_text;
 mod fea_frame;
 mod fea_modal;
 pub mod fea_thermal;

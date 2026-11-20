@@ -485,6 +485,18 @@ mod tests {
             assert!(warning.contains(timber), "{warning}");
             assert!(warning.contains("timber_design"), "{warning}");
         }
+        // Review 2026-11-20 ac P3: no self-weight, and edge stress may not settle.
+        for (catalog, weight, edge) in [
+            (LocaleCatalog::english(), "self-weight", "need not converge"),
+            (
+                LocaleCatalog::slovak(),
+                "vlastnej tiaže",
+                "nemusí konvergovať",
+            ),
+        ] {
+            let limits = catalog.text("fea-review-limits");
+            assert!(limits.contains(weight) && limits.contains(edge), "{limits}");
+        }
     }
 
     /// Review 2026-11-04 r19 MCP-160: the window paints while FEA runs, so the
