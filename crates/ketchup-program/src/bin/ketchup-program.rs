@@ -281,9 +281,19 @@ fn summary(model: &ketchup_program::ProgramModel, report: &ketchup_program::Repo
         "layers": layers,
         "issues": issues,
     });
-    if !report.design.is_empty() {
+    if !report.design.is_empty() || !report.joints.is_empty() {
         value["statics"] =
             serde_json::to_value(report.design.summary()).expect("summary serializes");
+        // The joints count in statics_verdict as the members do: a summary showed every
+        // member passing beside a verdict left not verified by its joints
+        // (review 2026-11-20 ac P3).
+        let joints = |status: &str| report.joints.iter().filter(|j| j.status == status).count();
+        value["statics"]["joints"] = json!({
+            "checked": report.joints.len(),
+            "pass": joints("pass"),
+            "fail": joints("fail"),
+            "not_verified": joints("not_verified"),
+        });
     }
     if !report.unused_overrides.is_empty() {
         value["unused_overrides"] = json!(report.unused_overrides);

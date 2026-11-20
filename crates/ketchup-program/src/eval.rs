@@ -320,7 +320,7 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
         .0;
     anyhow::ensure!(
         number.is_finite() && number.abs() <= MAX_COORDINATE_MM,
-        "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {}",
+        "{what} must be a finite number within ±{MAX_COORDINATE_MM}, got {}", // also λ, μ, r: no "mm"
         number_text(number)
     );
     Ok(number)

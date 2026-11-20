@@ -194,6 +194,15 @@ fn wrong_inputs_are_refused() {
         "thermal_check(\"a\", layers = [{\"name\": \"x\", \"thickness\": 10, \"mu\": 0.5}], element = \"wall\")".to_owned(),
         "mu is at least 1",
     );
+    // Review 2026-11-20 ac P3: r 9.0 on 20 mm of air gave U 0.108.
+    refused(
+        "thermal_check(\"a\", layers = [{\"name\": \"air\", \"thickness\": 20, \"r\": 9.0, \"mu\": 1}], element = \"wall\")".to_owned(),
+        "at most 0.23 m²K/W (EN ISO 6946 Table 8)",
+    );
+    refused(
+        "thermal_check(\"a\", layers = [{\"name\": \"x\", \"thickness\": 10, \"lambda\": 1e300}], element = \"wall\")".to_owned(),
+        "lambda must be a finite number within ±1000000, got",
+    );
     refused(
         format!("thermal_check(\"a\", layers = {one}, element = \"wall\", phi_i = 120)"),
         "phi_i must lie in",

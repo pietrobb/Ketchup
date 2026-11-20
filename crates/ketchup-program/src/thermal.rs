@@ -520,6 +520,9 @@ pub fn thermal_checks(model: &crate::ProgramModel) -> ThermalReport {
     }
 }
 
+/// The largest thermal resistance of an unventilated air layer, m²K/W.
+const MAX_AIR_LAYER_R: f64 = 0.23;
+
 /// One layer of `thermal_check(name)` from its dict: `read(key)` is the
 /// number under key, if given.
 pub(crate) fn layer(
@@ -549,6 +552,15 @@ pub(crate) fn layer(
                 "thermal_check({name:?}): layer {label:?} takes {key} or {other}, not both"
             );
         }
+    }
+    // r stands for an unventilated air layer; EN ISO 6946 Table 8 gives such
+    // a layer at most 0.23 m²K/W (300 mm, heat flowing down). Review 2026-11-20 ac P3.
+    if let Some(r) = positive("r")?.filter(|r| *r > MAX_AIR_LAYER_R) {
+        anyhow::bail!(
+            "thermal_check({name:?}): layer {label:?} r {r} is more than an unventilated air \
+             layer gives, at most {MAX_AIR_LAYER_R} m²K/W (EN ISO 6946 Table 8); give a \
+             material by its lambda"
+        );
     }
     for key in ["mu", "infill_mu"] {
         if positive(key)?.is_some_and(|mu| mu < 1.0) {
