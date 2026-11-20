@@ -35,6 +35,10 @@ pub(super) fn bake_stretches(
     // The own definition of a piece under a stretch, and where its origin moved.
     let mut baked = BTreeMap::<(usize, [u64; 9]), (usize, Vec3)>::new();
     let mut stretched_parts = 0_usize;
+    // What the copies alone hold: past what one import stores, [`check_stored`] refuses
+    // them anyway, so they stop here before they are made (R1120ac-SKP-900).
+    let mut copied_vertices = 0_usize;
+    let mut copied_triangles = 0_usize;
     for index in traversal.iter().copied() {
         let parent = parent_by_node[index];
         let placed = parent
@@ -65,7 +69,24 @@ pub(super) fn bake_stretches(
             let (own, origin) = match baked.get(&(*primitive, key_of_stretch)) {
                 Some(found) => *found,
                 None => {
-                    let mut piece = primitives[*primitive].clone();
+                    let source = &primitives[*primitive];
+                    copied_vertices = copied_vertices.saturating_add(source.vertices_mm.len());
+                    copied_triangles = copied_triangles.saturating_add(source.triangles.len());
+                    if copied_vertices > MAX_TOTAL_VERTICES {
+                        return Err(too_large(
+                            GlbMeasure::Vertices,
+                            copied_vertices,
+                            MAX_TOTAL_VERTICES,
+                        ));
+                    }
+                    if copied_triangles > MAX_TOTAL_TRIANGLES {
+                        return Err(too_large(
+                            GlbMeasure::Triangles,
+                            copied_triangles,
+                            MAX_TOTAL_TRIANGLES,
+                        ));
+                    }
+                    let mut piece = source.clone();
                     for point in &mut piece.vertices_mm {
                         let stretched = stretch.mul_vec(Vec3::from(*point));
                         *point = [stretched.x, stretched.y, stretched.z];

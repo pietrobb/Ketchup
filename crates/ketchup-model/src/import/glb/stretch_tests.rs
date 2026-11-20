@@ -184,6 +184,111 @@ fn a_component_stretched_with_scale_imports_rigid_with_its_own_stretched_definit
     }
 }
 
+/// A GLB of one mesh, a strip of `triangles` triangles, placed once under each of
+/// `stretches` along x.
+fn stretched_strips(triangles: u32, stretches: &[f64]) -> Vec<u8> {
+    let vertices = triangles + 2;
+    let mut binary = Vec::new();
+    for vertex in 0..vertices {
+        let point = [vertex as f32 * 0.001, (vertex % 2) as f32 * 0.001, 0.0];
+        for value in point {
+            binary.extend(value.to_le_bytes());
+        }
+    }
+    let positions = binary.len();
+    for triangle in 0..triangles {
+        let (first, second) = if triangle % 2 == 0 {
+            (triangle, triangle + 1)
+        } else {
+            (triangle + 1, triangle)
+        };
+        for index in [first, second, triangle + 2] {
+            binary.extend(index.to_le_bytes());
+        }
+    }
+    let length = binary.len();
+    let mut chunk = u32::try_from(length).unwrap().to_le_bytes().to_vec();
+    chunk.extend(b"BIN\0");
+    chunk.extend(binary);
+    let nodes = stretches
+        .iter()
+        .enumerate()
+        .map(|(index, along)| {
+            serde_json::json!({
+                "name": format!("Board {index}"),
+                "mesh": 0,
+                "scale": [along, 1.0, 1.0],
+                "translation": [0.0, index as f64, 0.0],
+            })
+        })
+        .collect::<Vec<_>>();
+    let json = serde_json::json!({
+        "asset": {"version": "2.0"},
+        "buffers": [{"byteLength": length}],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": positions},
+            {"buffer": 0, "byteOffset": positions, "byteLength": length - positions},
+        ],
+        "accessors": [
+            {"bufferView": 0, "componentType": FLOAT, "count": vertices, "type": "VEC3"},
+            {"bufferView": 1, "componentType": UNSIGNED_INT, "count": 3 * triangles, "type": "SCALAR"},
+        ],
+        "meshes": [{"name": "Board", "primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "nodes": nodes,
+        "scenes": [{"nodes": (0..stretches.len()).collect::<Vec<_>>()}],
+    });
+    packed(&json, &chunk)
+}
+
+/// R1120ac-SKP-900: many parts stretched each a little differently are refused by the
+/// placed triangles before any stretched copy is made. Each (mesh, stretch) copied the
+/// whole mesh first: 1 000 boards of 179 000 triangles ran the window out of memory,
+/// while the same boards unstretched were refused cleanly.
+#[test]
+fn many_parts_stretched_differently_are_refused_before_their_copies_are_made() {
+    let triangles = 60_000;
+    let boards = MAX_PLACED_TRIANGLES / triangles + 1;
+    let stretches = (1..=boards)
+        .map(|board| 1.0 + 0.01 * board as f64)
+        .collect::<Vec<_>>();
+    let source = stretched_strips(u32::try_from(triangles).unwrap(), &stretches);
+    assert_eq!(
+        inspect_glb(&source).unwrap_err(),
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::PlacedTriangles,
+            at_least: boards * triangles,
+            limit: MAX_PLACED_TRIANGLES,
+        })
+    );
+}
+
+/// Stretched copies that alone hold more than one import stores are refused while
+/// copying: the copies are made one by one only while they fit.
+#[test]
+fn stretched_copies_over_what_one_import_stores_are_refused() {
+    let triangles = 60_000;
+    let vertices = triangles + 2;
+    let boards = MAX_TOTAL_VERTICES / vertices + 1;
+    let stretches = (1..=boards)
+        .map(|board| 1.0 + 0.01 * board as f64)
+        .collect::<Vec<_>>();
+    let source = stretched_strips(u32::try_from(triangles).unwrap(), &stretches);
+    assert_eq!(
+        inspect_glb(&source).unwrap_err(),
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::Vertices,
+            at_least: boards * vertices,
+            limit: MAX_TOTAL_VERTICES,
+        })
+    );
+    // Fewer, they import, each its own definition and the unstretched mesh dropped.
+    let fit = stretched_strips(u32::try_from(triangles).unwrap(), &stretches[..boards - 1]);
+    assert_eq!(
+        inspect_glb(&fit).unwrap().mesh_primitive_count(),
+        boards - 1
+    );
+}
+
 /// Two parts stretched alike share their stretched definition; a scene without a
 /// stretch keeps one definition and notes nothing.
 #[test]

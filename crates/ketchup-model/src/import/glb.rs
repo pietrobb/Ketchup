@@ -361,6 +361,23 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         return Err(GlbImportError::EmptyScene);
     }
     let shift = place_nodes(&mut nodes, &traversal, &primitives)?;
+    // Before the stretches are baked: each stretched part gets a copy of its mesh, and
+    // a part shows as many triangles stretched as not (R1120ac-SKP-900).
+    let placed_triangles = traversal.iter().fold(0_usize, |count, node_index| {
+        nodes[*node_index]
+            .primitives
+            .iter()
+            .fold(count, |count, primitive| {
+                count.saturating_add(primitives[*primitive].triangles.len())
+            })
+    });
+    if placed_triangles > MAX_PLACED_TRIANGLES {
+        return Err(too_large(
+            GlbMeasure::PlacedTriangles,
+            placed_triangles,
+            MAX_PLACED_TRIANGLES,
+        ));
+    }
     let stretched_parts = stretch::bake_stretches(&mut nodes, &traversal, &mut primitives)?;
     let total_triangles = if stretched_parts == 0 {
         total_triangles
@@ -377,21 +394,6 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
                 },
             )?,
         )?;
-    }
-    let placed_triangles = traversal.iter().fold(0_usize, |count, node_index| {
-        nodes[*node_index]
-            .primitives
-            .iter()
-            .fold(count, |count, primitive| {
-                count.saturating_add(primitives[*primitive].triangles.len())
-            })
-    });
-    if placed_triangles > MAX_PLACED_TRIANGLES {
-        return Err(too_large(
-            GlbMeasure::PlacedTriangles,
-            placed_triangles,
-            MAX_PLACED_TRIANGLES,
-        ));
     }
     let output_count = primitives
         .len()
