@@ -742,6 +742,7 @@ mod tests {
     /// Reopening the window's own file after the user discarded its edits removes their
     /// checkpoint; the frames that ran while the file was read wrote it again, and a read
     /// that came after it (a loaded machine) opened the discarded edits instead of the file.
+    /// A late exact result published while the file was read did the same (idea #156).
     #[test]
     fn a_discarded_edit_is_not_checkpointed_again_while_its_file_is_reopened() {
         let directory = tempfile::tempdir().unwrap();
@@ -770,6 +771,16 @@ mod tests {
         assert!(
             !checkpoint.exists(),
             "the discarded edit was checkpointed again while its file was read"
+        );
+        // An exact result of the discarded edit that arrives while the file is read
+        // (the worker is late on a loaded machine) is published as a mutation.
+        harness
+            .state_mut()
+            .complete_mutation_and_exact_results_with_work_recovery(|_, _, _| Ok::<(), ()>(()))
+            .unwrap();
+        assert!(
+            !checkpoint.exists(),
+            "a late exact result checkpointed the discarded edit while its file was read"
         );
         wait_for_open(&mut harness);
         assert_eq!(
