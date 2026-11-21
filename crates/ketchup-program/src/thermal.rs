@@ -172,6 +172,12 @@ impl ThermalReport {
                         "Add insulation, use a material with a lower lambda, or move the vapour \
                          control layer to the warm side."
                             .to_owned()
+                    } else if !check.condenses_in.is_empty() {
+                        // Review 2026-11-21 ac P3: every input is given here.
+                        "Put a vapour control layer on the warm side or open the cold side to \
+                         vapour (lower s_d outside), or show by the annual moisture balance of \
+                         EN ISO 13788 that the condensate dries out."
+                            .to_owned()
                     } else {
                         "Give what is missing (lambda and mu of each layer, theta_e of the place, \
                          site(country))."
@@ -520,8 +526,32 @@ pub fn thermal_checks(model: &crate::ProgramModel) -> ThermalReport {
     }
 }
 
-/// The largest thermal resistance of an unventilated air layer, m²K/W.
-const MAX_AIR_LAYER_R: f64 = 0.23;
+/// EN ISO 6946 Table 8: thickness mm, thermal resistance m²K/W of an
+/// unventilated air layer with heat flowing down, the largest of the three
+/// directions.
+const AIR_LAYER_R: [(f64, f64); 9] = [
+    (0.0, 0.0),
+    (5.0, 0.11),
+    (7.0, 0.13),
+    (10.0, 0.15),
+    (15.0, 0.17),
+    (25.0, 0.19),
+    (50.0, 0.21),
+    (100.0, 0.22),
+    (300.0, 0.23),
+];
+
+/// The largest thermal resistance of an unventilated air layer of this
+/// thickness, interpolated linearly as Table 8 allows; 0.23 beyond 300 mm.
+fn max_air_layer_r(thickness_mm: f64) -> f64 {
+    AIR_LAYER_R
+        .windows(2)
+        .find(|pair| thickness_mm <= pair[1].0)
+        .map_or(0.23, |pair| {
+            let ((t0, r0), (t1, r1)) = (pair[0], pair[1]);
+            r0 + (r1 - r0) * (thickness_mm - t0) / (t1 - t0)
+        })
+}
 
 /// One layer of `thermal_check(name)` from its dict: `read(key)` is the
 /// number under key, if given.
@@ -553,13 +583,14 @@ pub(crate) fn layer(
             );
         }
     }
-    // r stands for an unventilated air layer; EN ISO 6946 Table 8 gives such
-    // a layer at most 0.23 m²K/W (300 mm, heat flowing down). Review 2026-11-20 ac P3.
-    if let Some(r) = positive("r")?.filter(|r| *r > MAX_AIR_LAYER_R) {
+    // r stands for an unventilated air layer; EN ISO 6946 Table 8 bounds it by
+    // the layer's thickness (review 2026-11-20 ac P3, 2026-11-21 ac P3).
+    let max_r = max_air_layer_r(thickness_mm);
+    if let Some(r) = positive("r")?.filter(|r| *r > max_r + 1e-9) {
         anyhow::bail!(
             "thermal_check({name:?}): layer {label:?} r {r} is more than an unventilated air \
-             layer gives, at most {MAX_AIR_LAYER_R} m²K/W (EN ISO 6946 Table 8); give a \
-             material by its lambda"
+             layer of {thickness_mm} mm gives, at most {max_r:.3} m²K/W (EN ISO 6946 Table 8); \
+             give a material by its lambda"
         );
     }
     for key in ["mu", "infill_mu"] {
