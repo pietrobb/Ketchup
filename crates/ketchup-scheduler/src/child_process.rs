@@ -68,7 +68,17 @@ pub(crate) fn hold_block(bytes: u64, hold: std::time::Duration) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The block before is given back first.
     *held = Vec::new();
-    *held = vec![1_u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
+    let length = usize::try_from(bytes).unwrap_or(usize::MAX);
+    if held.try_reserve_exact(length).is_err() {
+        // A refused block ends the worker as a failed allocation does, with the same
+        // message, but without abort(): on Windows that files an error report first
+        // and holds the process for seconds, past the request's deadline on a loaded
+        // machine (idea #170). A worker sets no log file, so the line goes to the
+        // standard error the client reads for that message.
+        ketchup_rejection::log!("memory allocation of {bytes} bytes failed");
+        std::process::exit(1);
+    }
+    held.resize(length, 1);
     std::hint::black_box(&*held);
     std::thread::sleep(hold);
 }
