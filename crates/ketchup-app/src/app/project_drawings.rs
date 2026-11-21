@@ -859,10 +859,7 @@ pub(crate) fn publish_project_drawings(
                 targets.get(target).map(String::as_str),
             )?;
         }
-        let stale = targets
-            .iter()
-            .filter(|(stale, _)| !paths.contains(stale) && Some(*stale) != list_path);
-        for (stale, sha256) in stale {
+        for (stale, sha256) in stale_sheets(targets, &paths, list_path) {
             let previous = std::fs::read(stale).map_err(ExportTransactionError::io(stale))?;
             if ketchup_model::graph::sha256_hex(&previous) != *sha256 {
                 return Err(ExportTransactionError::changed(stale));
@@ -884,6 +881,32 @@ pub(crate) fn publish_project_drawings(
         return Err(ProjectDrawingsError::Write(std::io::Error::other(error)));
     }
     Ok(paths)
+}
+
+/// The old sheets of `targets` a set written at `paths` removes, with the
+/// SHA-256 each must still hold: those beyond its new last, not its list.
+fn stale_sheets<'a>(
+    targets: &'a SetTargets,
+    paths: &'a [PathBuf],
+    list_path: Option<&'a PathBuf>,
+) -> impl Iterator<Item = (&'a PathBuf, &'a String)> {
+    targets
+        .iter()
+        .filter(move |(stale, _)| !paths.contains(stale) && Some(*stale) != list_path)
+}
+
+/// The old sheets a set of `format` for `path` written at `paths` removed, for
+/// the write log (review 2026-11-21 ac P3).
+pub(crate) fn removed_sheets(
+    path: &Path,
+    format: SetFileFormat,
+    targets: &SetTargets,
+    paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let list_path = (format != SetFileFormat::Pdf).then(|| set_list_path(path, format));
+    stale_sheets(targets, paths, list_path.as_ref())
+        .map(|(stale, _)| stale.clone())
+        .collect()
 }
 
 /// A file a set export wrote: where, its bytes and what it held before (none:

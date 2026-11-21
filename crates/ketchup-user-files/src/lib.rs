@@ -222,6 +222,16 @@ pub fn holder_of_way(path: &Path) -> io::Result<(u32, u32)> {
     holder(path, true)
 }
 
+/// Whether opening a folder read on the way failed as one replaced since:
+/// by a link (`ELOOP`, as no link is followed) or a file (`ENOTDIR`). The race
+/// was lost, HOME is right (review 2026-11-21 ac P3: it told the user to set
+/// HOME).
+#[cfg(unix)]
+fn replaced_since_read(errno: rustix::io::Errno) -> bool {
+    use rustix::io::Errno;
+    errno == Errno::LOOP || errno == Errno::NOTDIR
+}
+
 /// [`user_of_home`] of `path`, up to the part of it there now when `partial`.
 ///
 /// The way is walked through folders held open, each opened in the one before
@@ -331,7 +341,16 @@ fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
             }
             FileType::Directory => {
                 let opened = rustix::fs::openat(&folder.0, &part, folder_flags, Mode::empty())
-                    .map_err(failed)?;
+                    .map_err(|errno| {
+                        if replaced_since_read(errno) {
+                            HomeError::ChangedWhileRead {
+                                home: path.to_owned(),
+                                folder: at.join(&part),
+                            }
+                        } else {
+                            failed(errno)
+                        }
+                    })?;
                 let stat = rustix::fs::fstat(&opened).map_err(failed)?;
                 // Another folder or a link put in its place since it was read.
                 if (stat.st_dev, stat.st_ino) != (found.st_dev, found.st_ino) {

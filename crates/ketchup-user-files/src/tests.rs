@@ -456,3 +456,25 @@ fn a_folder_replaced_on_the_way_is_not_blamed_on_home() {
     assert!(text.contains("try again"), "{text}");
     assert!(!text.contains("set HOME"), "{text}");
 }
+
+/// A folder opened as the way opens one, without following a link, fails as
+/// one replaced since it was read when a link or a file is in its place, so
+/// the lost race is told as such (review 2026-11-21 ac P3: ELOOP and ENOTDIR
+/// told the user to set HOME).
+#[cfg(unix)]
+#[test]
+fn a_link_or_a_file_in_a_folders_place_is_the_race_lost() {
+    use rustix::fs::{Mode, OFlags};
+    let directory = tempfile::tempdir().unwrap();
+    let real = directory.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, directory.path().join("link")).unwrap();
+    std::fs::write(directory.path().join("file"), b"x").unwrap();
+    let parent = rustix::fs::open(directory.path(), OFlags::RDONLY, Mode::empty()).unwrap();
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    for name in ["link", "file"] {
+        let errno = rustix::fs::openat(&parent, name, flags, Mode::empty()).unwrap_err();
+        assert!(replaced_since_read(errno), "{name}: {errno}");
+    }
+    assert!(!replaced_since_read(rustix::io::Errno::ACCESS));
+}

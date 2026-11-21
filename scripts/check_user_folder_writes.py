@@ -10,8 +10,9 @@ reaches the user's folders through it (`UserFolder::as_owner`, `side_file`,
 
 A production source file that names a folder of the user's (`HOME`, an `XDG_*`
 folder, `TMPDIR`, `APPDATA`, `LOCALAPPDATA`, `USERPROFILE`, `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`, or a `UserFolder`) counts its direct writes: `fs::write`, `File::create`,
-`OpenOptions`, `DirBuilder`, `create_dir_all`, `fs::rename`, `persist`/`persist_noclobber`.
+`CODEX_HOME`, a `UserFolder` or a `dirs::` folder) counts its direct writes: `fs::write`,
+`File::create`, `OpenOptions`, `DirBuilder`, `create_dir`/`create_dir_all`, `fs::rename`,
+`persist`/`persist_noclobber`, links, `chown`, `set_permissions` and the like.
 Test code is not counted.
 
 The check is a ratchet: scripts/user_folder_writes_baseline.txt records the writes that
@@ -36,14 +37,17 @@ BASELINE_NAME = "user_folder_writes_baseline.txt"
 OWN_CRATE = "crates/ketchup-user-files/"
 USER_FOLDERS = re.compile(
     r'"(?:HOME|XDG_[A-Z_]+|TMPDIR|APPDATA|LOCALAPPDATA|USERPROFILE|CLAUDE_CONFIG_DIR|CODEX_HOME)"'
-    r"|\bUserFolder\b|\b(?:home_dir|temp_dir)\s*\(")
+    r"|\bUserFolder\b|\b(?:home_dir|temp_dir)\s*\(|\bdirs::\w+\s*\(")
 # Review 2026-11-20 ac P3 added `File::create_new`, `fs::copy`, `File::options()`, links,
-# tempfile's `*_in` constructors, a bare `write(` and folders from `home_dir()`/`temp_dir()`.
+# tempfile's `*_in` constructors, a bare `write(` and folders from `home_dir()`/`temp_dir()`;
+# review 2026-11-21 ac P3 `fs::create_dir`, tempfile's `Builder::make_in`, hard links, the
+# owner and the permissions changed, and folders from `dirs::config_dir()` and its kin.
 WRITES = re.compile(
     r"\bfs::write\s*\(|\bFile::create(?:_new)?\s*\(|\bOpenOptions\b|\bFile::options\s*\("
-    r"|\bDirBuilder\b|\bcreate_dir_all\s*\(|\bfs::rename\s*\(|\bfs::copy\s*\("
-    r"|\.persist(?:_noclobber)?\s*\(|\bsymlink(?:_file|_dir)?\s*\("
+    r"|\bDirBuilder\b|\bcreate_dir(?:_all)?\s*\(|\bfs::rename\s*\(|\bfs::copy\s*\("
+    r"|\.persist(?:_noclobber)?\s*\(|\bsymlink(?:_file|_dir)?\s*\(|\bhard_link\s*\("
     r"|\b(?:NamedTempFile|TempDir|tempfile)::\w*?new_in\s*\(|\b(?:tempfile|tempdir)_in\s*\("
+    r"|\.make_in\s*\(|\b[fl]?chown\s*\(|\bset_permissions\s*\("
     r"|(?<![.\w:])(?<!fn )write\s*\(")
 
 

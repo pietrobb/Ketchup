@@ -477,9 +477,11 @@ def hand_written_linear_algebra(counts, recorded=LINEAR_ALGEBRA):
 
 # Numeric `as` casts truncate, wrap or round without saying so, and `#[allow(` or
 # `#[expect(` switches a lint off; both are counted per crate in production source and may
-# only fall (review 2026-11-20 ac P3: `#[expect(` went uncounted).
+# only fall (review 2026-11-20 ac P3: `#[expect(` went uncounted; review 2026-11-21 ac P3:
+# so did `#[cfg_attr(…, allow(…))]`, on one line or broken over several).
 NUMERIC_CAST = re.compile(r"\bas\s+(?:[ui](?:8|16|32|64|128|size)|f32|f64)\b")
-LINT_ALLOW = re.compile(r"#!?\[(?:allow|expect)\(")
+LINT_ALLOW = re.compile(
+    r"#!?\[\s*(?:cfg_attr\s*\((?:[^\[\]()]|\((?:[^()]|\([^()]*\))*\))*?,\s*)?(?:allow|expect)\s*\(")
 # Each `unsafe` block, fn and impl is counted too: one allowance may cover any number of
 # them (review 2026-11-13 P3: four new blocks under one module-wide allow went uncounted).
 UNSAFE = re.compile(r"\bunsafe\b")
@@ -508,8 +510,9 @@ CASTS_AND_ALLOWS = {
     # casts are gone with the casts, its one on push_arc's seven SVG arc parameters stays,
     # so 18 -> 19, and 216 -> 208 casts. SHGetKnownFolderPath of live_bridge::write_policy
     # (review 2026-11-20 ac P3: the Startup folders where the shell keeps them, not as
-    # %APPDATA% names them), so 19 -> 20.
-    "ketchup-app allows": 20,
+    # %APPDATA% names them), so 19 -> 20. `#[cfg_attr(…, allow(…))]` counted too (review
+    # 2026-11-21 ac P3): ten on items used on some platforms only, so 20 -> 30.
+    "ketchup-app allows": 30,
     "ketchup-app casts": 208,
     # One `#[expect(` on the CAM review's export (review 2026-11-20 ac P3), so 9 -> 10.
     "ketchup-application allows": 10,
@@ -528,9 +531,11 @@ CASTS_AND_ALLOWS = {
     # presentation::raster's named conversions (#2806 presentation image): a clamped sample
     # coordinate to its index, a depth/colour to f32, a share to an 8-bit channel, so 41 -> 44.
     "ketchup-manufacturing casts": 44,
-    "ketchup-mcp allows": 2,
+    # Four `cfg_attr` allowances of path_policy counted since review 2026-11-21 ac P3.
+    "ketchup-mcp allows": 6,
     "ketchup-mcp casts": 10,
-    "ketchup-model allows": 16,
+    # One `cfg_attr` allowance of graph counted since review 2026-11-21 ac P3.
+    "ketchup-model allows": 17,
     "ketchup-model casts": 266,
     "ketchup-pdm casts": 5,
     "ketchup-program allows": 9,
@@ -538,8 +543,9 @@ CASTS_AND_ALLOWS = {
     "ketchup-scheduler allows": 3,
     "ketchup-scheduler casts": 70,
     # One on each item calling the system to read or change this thread's user and
-    # groups, on Linux and macOS (review 2026-11-13 P3: one on the module hid them).
-    "ketchup-user-files allows": 8,
+    # groups, on Linux and macOS (review 2026-11-13 P3: one on the module hid them), and
+    # one `cfg_attr` allowance counted since review 2026-11-21 ac P3.
+    "ketchup-user-files allows": 9,
     # The Viewer apps, counted since review 2026-10-31 TST-80; the allows are the
     # unsafe FFI entry points of Android.
     "ketchup-viewer-android allows": 3,
@@ -588,10 +594,15 @@ def cast_and_allow_counts(root):
         if is_test_module(relative):
             continue
         crate = package_of(root, path)
-        for line in production_lines(path):
+        lines = production_lines(path)
+        # An attribute may be broken over lines, so allowances are found in the whole text.
+        found = len(LINT_ALLOW.findall("\n".join(lines)))
+        if found:
+            counts[f"{crate} allows"] = counts.get(f"{crate} allows", 0) + found
+        for line in lines:
             code = line.split("//", 1)[0]
-            for kind, pattern in (("casts", NUMERIC_CAST), ("allows", LINT_ALLOW), ("unsafe", UNSAFE)):
-                searched = {"allows": line, "unsafe": STRING.sub('""', code)}.get(kind, code)
+            for kind, pattern in (("casts", NUMERIC_CAST), ("unsafe", UNSAFE)):
+                searched = STRING.sub('""', code) if kind == "unsafe" else code
                 found = len(pattern.findall(searched))
                 if found:
                     counts[f"{crate} {kind}"] = counts.get(f"{crate} {kind}", 0) + found

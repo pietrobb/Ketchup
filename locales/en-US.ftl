@@ -47,6 +47,7 @@ connect-ai-copy = Copy
 connect-ai-written = Files the AI wrote ({ $count })
 connect-ai-written-none = The AI has written no file yet.
 connect-ai-written-folder = folder
+connect-ai-written-removed = removed
 connect-ai-open-folder = Open folder
 connect-ai-claude-code = Claude Code
 connect-ai-codex = Codex

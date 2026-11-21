@@ -47,6 +47,7 @@ connect-ai-copy = Kopírovať
 connect-ai-written = Súbory, ktoré AI zapísala ({ $count })
 connect-ai-written-none = AI zatiaľ nezapísala žiadny súbor.
 connect-ai-written-folder = priečinok
+connect-ai-written-removed = zmazaný
 connect-ai-open-folder = Otvoriť priečinok
 connect-ai-claude-code = Claude Code
 connect-ai-codex = Codex

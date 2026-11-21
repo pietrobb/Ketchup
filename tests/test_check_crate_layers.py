@@ -360,6 +360,20 @@ def test_an_expect_switches_a_lint_off_and_counts_as_an_allow(tmp_path):
     assert checker.cast_and_allow_counts(tmp_path) == {"a allows": 2}
 
 
+def test_an_allow_under_cfg_attr_counts_on_one_line_or_several(tmp_path):
+    # Review 2026-11-21 ac P3: `#[cfg_attr(…, allow(` went uncounted.
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#[cfg_attr(windows, allow(dead_code))]\nfn f() {}\n"
+        "#[cfg_attr(all(unix, not(target_os = \"macos\")), expect(unused))]\nfn g() {}\n"
+        "#[cfg_attr(\n    test,\n    derive(Debug),\n    allow(clippy::large_enum_variant)\n)]\nenum E {}\n"
+        "#[cfg_attr(test, derive(Debug))]\nstruct S;\n",
+        encoding="utf-8",
+    )
+    assert checker.cast_and_allow_counts(tmp_path) == {"a allows": 3}
+
+
 def test_unsafe_under_an_allow_already_counted_is_counted_itself(tmp_path):
     # Review 2026-11-13 P3: four unsafe blocks under one module-wide allow left the
     # counts as they were.

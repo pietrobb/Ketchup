@@ -226,7 +226,9 @@ def ignored_fields(source: str, name: str, function: str) -> set[str]:
     """The fields of `name` that `function` does not bind: `field: _`, those `..` leaves
     out, and every one when it takes `self` apart nowhere (review 2026-11-20 ac P3:
     only `field: _,` with its comma was read, so the last field of a one-line pattern,
-    `..` and a function without the pattern passed)."""
+    `..` and a function without the pattern passed). A field bound to an unused `_name`
+    is not marked, and with several patterns one that leaves a field out is enough
+    (review 2026-11-21 ac P3: `b: _b` counted, and only the first pattern was read)."""
     match = re.search(rf"fn {function}\s*\([^)]*\)[^{{]*\{{", source)
     if not match:
         sys.exit(f"HEAD: no fn {function}")
@@ -234,15 +236,19 @@ def ignored_fields(source: str, name: str, function: str) -> set[str]:
     if fields is None:
         sys.exit(f"HEAD: no struct {name}")
     body = re.sub(r"//[^\n]*", "", enum_body(source, match.end()))
-    pattern = re.search(rf"\blet\s+(?:Self|{name})\s*\{{([^}}]*)\}}\s*=", body)
-    if not pattern:
+    patterns = list(re.finditer(rf"\blet\s+(?:Self|{name})\s*\{{([^}}]*)\}}\s*=", body))
+    if not patterns:
         return fields
-    bound = set()
-    for entry in pattern.group(1).split(","):
-        taken = re.fullmatch(r"\s*(?:ref\s+)?(?:mut\s+)?(\w+)\s*(?::\s*(.*?)\s*)?", entry, re.S)
-        if taken and taken.group(2) != "_":
-            bound.add(taken.group(1))
-    return fields - bound
+    ignored = set()
+    for pattern in patterns:
+        bound = set()
+        for entry in pattern.group(1).split(","):
+            taken = re.fullmatch(r"\s*(?:ref\s+)?(?:mut\s+)?(\w+)\s*(?::\s*(.*?)\s*)?", entry, re.S)
+            unused = taken and re.fullmatch(r"(?:ref\s+)?(?:mut\s+)?_\w*", taken.group(2) or "")
+            if taken and not unused:
+                bound.add(taken.group(1))
+        ignored |= fields - bound
+    return ignored
 
 
 def field_problems(name: str, function: str, head: str, old: str, release: str) -> list[str]:

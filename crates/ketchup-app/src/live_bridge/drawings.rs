@@ -12,7 +12,8 @@ use crate::app::drawing_sheet_export::{
 };
 use crate::app::project_drawings::{
     ExportedSet, ProjectDrawingsError, ProjectDrawingsJob, SetFileFormat, SetOwner, SetTargets,
-    SheetRequest, project_drawings_targets, publish_project_drawings, set_list_path, written_files,
+    SheetRequest, project_drawings_targets, publish_project_drawings, removed_sheets,
+    set_list_path, written_files,
 };
 use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
@@ -897,6 +898,11 @@ pub(super) fn finish_export(
         // A DXF or DWG set's list of its sheets, written beside them.
         "set_list": (file_format != SetFileFormat::Pdf)
             .then(|| set_list_path(Path::new(&path), file_format).display().to_string()),
+        // The old sheets beyond the new last, removed with the set.
+        "removed_files": removed_sheets(Path::new(&path), file_format, &started.targets, &exported.paths)
+            .iter()
+            .map(|file| file.display().to_string())
+            .collect::<Vec<_>>(),
         "scale": format!("1:{}", set.scale),
         "sheet_count": set.sheets.len(),
         "sheets": sheets,

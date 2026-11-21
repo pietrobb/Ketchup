@@ -605,6 +605,24 @@ def test_only_the_error_of_the_wait_itself_frees_it(tmp_path):
     ]
 
 
+def test_the_error_of_a_call_around_the_wait_does_not_free_it(tmp_path):
+    # Review 2026-11-21 ac P3: an error taken of a call the wait's answer is given to,
+    # not of the wait, freed the wait.
+    write(tmp_path, "crates/a/tests/around.rs", (
+        "fn around() {\n"
+        "    parse(replies.recv_timeout(Duration::from_millis(50)).unwrap()).unwrap_err();\n"
+        "    let Err(_) = parse(replies.recv_timeout(Duration::from_millis(50)).unwrap()) else { panic!() };\n"
+        "    let late = Instant::now() + Duration::from_millis(100);\n"
+        "    assert_eq!(check(wait(late).unwrap()).unwrap_err(), Fault::Bad);\n"
+        "    let gone = Instant::now() + Duration::from_millis(100);\n"
+        "    assert_eq!(receive_until(gone).unwrap_err(), Fault::Gone);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/around.rs:{line}" for line in (2, 3, 4)
+    ]
+
+
 def test_a_closure_is_a_helper_only_in_the_file_that_binds_it(tmp_path):
     # Review 2026-11-13 r95 P3: closures were counted by name in the whole repository.
     write(tmp_path, "crates/a/tests/bound.rs", (

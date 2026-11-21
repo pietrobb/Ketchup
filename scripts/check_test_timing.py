@@ -526,30 +526,38 @@ def taken_wait_errors(statement: str, deadline: str = "") -> list[str] | None:
     bound to, which later statements may inspect; None when it takes none. The error
     must be the wait's own: of a call to `recv_timeout`, `wait`, … or of one given
     `deadline` (review 2026-11-20 ac P3: `.unwrap_err()` on anything in the statement
-    freed the wait)."""
-    def of_a_wait(expression: str) -> bool:
-        return bool(WAIT.search(expression)) or bool(
-            deadline and re.search(rf"\b{re.escape(deadline)}\b", expression))
+    freed the wait). The error is that of the call itself, not of a call around the
+    wait, so `parse(rx.recv_timeout(d).unwrap()).unwrap_err()` frees nothing (review
+    2026-11-21 ac P3)."""
+    def of_a_wait(text: str, close: int) -> bool:
+        """Whether the call whose `)` is at `close` of `text` is a wait or is given the
+        deadline as an argument of its own, not of a call inside it."""
+        if close < 0 or text[close] != ")":
+            return False
+        depth, open_at = 0, close
+        while open_at >= 0:
+            depth += {")": 1, "(": -1}.get(text[open_at], 0)
+            if depth == 0:
+                break
+            open_at -= 1
+        callee = re.search(r"(\w+)\s*$", text[:max(open_at, 0)])
+        if callee and WAIT_NAME.search(callee.group(1)):
+            return True
+        own, depth = [], 0
+        for character in text[open_at + 1:close]:
+            depth += {"(": 1, ")": -1}.get(character, 0)
+            own.append(character if depth == 0 else " ")
+        return bool(deadline and re.search(rf"\b{re.escape(deadline)}\b", "".join(own)))
 
     names: list[str] = []
     taken = False
     for let in LET_ERR.finditer(statement):
-        if of_a_wait(let.group(2)):
+        expression = let.group(2).rstrip()
+        if of_a_wait(expression, len(expression) - 1):
             taken = True
             names += [let.group(1)] if let.group(1) else []
     for take in TAKES_ERROR.finditer(statement):
-        close = take.start() - 1
-        if close < 0 or statement[close] != ")":
-            continue
-        depth, open_at = 0, close
-        while open_at >= 0:
-            depth += {")": 1, "(": -1}.get(statement[open_at], 0)
-            if depth == 0:
-                break
-            open_at -= 1
-        callee = re.search(r"(\w+)\s*$", statement[:max(open_at, 0)])
-        arguments = statement[open_at + 1:close]
-        if (callee and WAIT_NAME.search(callee.group(1))) or of_a_wait(arguments):
+        if of_a_wait(statement, take.start() - 1):
             taken = True
             bound = BOUND.search(statement)
             names += [bound.group(1)] if bound and bound.end() <= take.start() else []
