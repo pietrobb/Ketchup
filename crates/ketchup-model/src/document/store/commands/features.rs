@@ -14,7 +14,8 @@ pub(super) fn apply(
         } => {
             ensure_product_id(id.0)?;
             ensure_name(name)?;
-            validate_feature_kind(kind, edit.product.tolerance.linear_mm())?;
+            validate_feature_kind(kind, edit.product.tolerance.linear_mm())
+                .map_err(|error| error.of_feature(*id))?;
             validate_topological_feature_context(edit.current.document_id(), *definition_id, kind)?;
             if let FeatureKind::Workplane(WorkplaneSpec {
                 support: WorkplaneSupport::PlanarFace { reference, .. },

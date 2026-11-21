@@ -897,6 +897,35 @@ fn parametric_sketch_outputs_build_a_complex_loft_graph_without_manual_points() 
         constraints.clear();
     }
     let input = holed;
+    // A section that sinks is refused naming the program's operation and the field,
+    // with that field's repair (R1121ac P3 of EXA-901).
+    let mut sinking = input.clone();
+    let AssistantCadEditOperation::AppendFeature {
+        feature: AssistantCadBodyFeature::Loft { sections, .. },
+        ..
+    } = &mut sinking.operations[4]
+    else {
+        unreachable!("operation 4 is the Loft")
+    };
+    sections[2].elevation_mm = 10.0;
+    let refused = plan(
+        &DocumentStore::new(),
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &sinking,
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused.target, "operation:4.sections[2].elevation_mm",
+        "{refused:?}"
+    );
+    assert!(
+        refused
+            .repair_hint
+            .starts_with("Change sections[2].elevation_mm: sections must rise")
+            && refused.failed_invariant.starts_with("operation 4: "),
+        "{refused:?}"
+    );
     let batch = plan(
         &document,
         &BTreeSet::new(),
