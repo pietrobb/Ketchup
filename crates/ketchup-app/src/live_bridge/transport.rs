@@ -922,14 +922,21 @@ mod tests {
 
     #[test]
     fn cumulative_partial_write_deadline_includes_header_and_body() {
-        let budget = Duration::from_millis(120);
+        let budget = Duration::from_secs(2);
         let mut budgets = Vec::new();
         let mut written = Vec::new();
         let error = write_frame_until(b"body", Instant::now() + budget, |bytes, remaining| {
             budgets.push(remaining);
-            // Header is one partial write, then successive one-byte body writes.
-            let count = if written.is_empty() { 4 } else { 1 };
-            std::thread::sleep(Duration::from_millis(45));
+            // The header is one write that leaves nearly all of the budget; the first
+            // one-byte body write then takes all that remains, so the deadline passes
+            // inside the body however loaded the machine is (idea #174: 45 ms writes
+            // against 120 ms ran out in the header under the full suite).
+            let (count, takes) = if written.is_empty() {
+                (4, Duration::from_millis(1))
+            } else {
+                (1, remaining)
+            };
+            std::thread::sleep(takes);
             written.extend_from_slice(&bytes[..count]);
             Ok(count)
         })
