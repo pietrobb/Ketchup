@@ -166,8 +166,8 @@ pub(super) fn brace_give(
 /// The largest force `sideways` the part of box `obb` takes before buckling
 /// where it carries it along its axis between `entry` and `exit`, N, by
 /// Euler's load at the fifth-percentile modulus `modulus_05` over the length
-/// `reach` the path has run from the point held to `exit`: short pieces end to
-/// end buckle as one rod (R1113r95-PG-700). Infinite where it carries none.
+/// `reach` of the rod it is a piece of: short pieces end to end buckle as one
+/// rod (R1113r95-PG-700, R1121ac-PG-1002). Infinite where it carries none.
 pub(super) fn part_capacity(
     obb: &Obb,
     modulus_05: f64,
@@ -177,20 +177,31 @@ pub(super) fn part_capacity(
     reach: f64,
 ) -> f64 {
     let run = sub(entry, exit);
-    let long = length(run);
-    if long <= f64::EPSILON || reach <= f64::EPSILON {
-        return f64::INFINITY;
+    match pushed_along(obb, entry, exit, sideways) {
+        Some(along) if reach > f64::EPSILON => euler_load(obb, modulus_05, run, reach) / along,
+        _ => f64::INFINITY,
     }
-    // The force along the part's axis, as [`part_give`] stretches it, not along the
-    // run: an upright hanger bent sideways runs a little across from where the member
-    // holds it to its anchor, and was given its Euler load over that share, in MN
-    // (review 2026-11-20 ac P3).
+}
+
+/// The share of a force `sideways` the part of box `obb` carries along its
+/// axis between `entry` and `exit`, where it carries any. Along the part's
+/// axis, as [`part_give`] stretches it, not along the run: an upright hanger
+/// bent sideways runs a little across from where the member holds it to its
+/// anchor, and was given its Euler load over that share, in MN (review
+/// 2026-11-20 ac P3).
+pub(super) fn pushed_along(
+    obb: &Obb,
+    entry: [f64; 3],
+    exit: [f64; 3],
+    sideways: [f64; 3],
+) -> Option<f64> {
+    let run = sub(entry, exit);
+    if length(run) <= f64::EPSILON {
+        return None;
+    }
     let (axis, _) = section(obb, run);
     let along = dot(sideways, obb.axes[axis]).abs();
-    if along <= ALONG_AXIS_NEGLIGIBLE {
-        return f64::INFINITY;
-    }
-    euler_load(obb, modulus_05, run, reach) / along
+    (along > ALONG_AXIS_NEGLIGIBLE).then_some(along)
 }
 
 /// Euler's load of the part of box `obb` pushed along its axis nearest `run`
