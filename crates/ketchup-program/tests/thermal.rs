@@ -197,8 +197,20 @@ fn wrong_inputs_are_refused() {
     // Review 2026-11-20 ac P3: r 9.0 on 20 mm of air gave U 0.108.
     refused(
         "thermal_check(\"a\", layers = [{\"name\": \"air\", \"thickness\": 20, \"r\": 9.0, \"mu\": 1}], element = \"wall\")".to_owned(),
-        "at most 0.23 m²K/W (EN ISO 6946 Table 8)",
+        "at most 0.180 m²K/W (EN ISO 6946 Table 8)",
     );
+    // Review 2026-11-21 ac P3: Table 8 gives 5 mm of air 0.11, not 0.23.
+    let air = |thickness: f64, r: f64| {
+        format!(
+            "thermal_check(\"a\", layers = [{{\"name\": \"air\", \"thickness\": {thickness}, \"r\": {r}, \"mu\": 1}}], element = \"wall\")"
+        )
+    };
+    refused(air(5.0, 0.2), "at most 0.110 m²K/W (EN ISO 6946 Table 8)");
+    refused(air(400.0, 0.24), "at most 0.230 m²K/W");
+    for (thickness, r) in [(5.0, 0.11), (8.5, 0.139), (300.0, 0.23), (400.0, 0.23)] {
+        let check = report_of(&air(thickness, r));
+        assert!(check.u_w_m2k.is_some(), "{thickness} mm, r {r}: {check:#?}");
+    }
     refused(
         "thermal_check(\"a\", layers = [{\"name\": \"x\", \"thickness\": 10, \"lambda\": 1e300}], element = \"wall\")".to_owned(),
         "lambda must be a finite number within ±1000000, got",
@@ -236,6 +248,12 @@ fn a_condensing_wall_is_not_verified_and_check_exits_3() {
     assert_eq!(check.status, "not_verified");
     assert!(condensing.ok, "{:#?}", condensing.issues);
     assert_eq!(condensing.exit_code(), 3);
+    // Review 2026-11-21 ac P3: nothing is missing here, so the advice is about
+    // the condensation, not "Give what is missing (lambda and mu …)".
+    let hint = &condensing.issues[0].hint;
+    assert!(!hint.contains("Give what is missing"), "{hint}");
+    assert!(hint.contains("vapour control layer"), "{hint}");
+    assert!(hint.contains("EN ISO 13788"), "{hint}");
 
     let directory = std::env::temp_dir().join(format!("ketchup-th900-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
@@ -249,6 +267,21 @@ fn a_condensing_wall_is_not_verified_and_check_exits_3() {
         .unwrap();
     std::fs::remove_dir_all(&directory).unwrap();
     assert_eq!(output.status.code(), Some(3), "{output:?}");
+    // Review 2026-11-21 ac P3: the summary showed "statics_verdict" none and
+    // "ok" true and nothing of the thermal check that made it exit 3.
+    let summary: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {output:?}"));
+    assert_eq!(
+        summary["thermal"],
+        serde_json::json!({
+            "verdict": "not_verified",
+            "checked": 1,
+            "pass": 0,
+            "fail": 0,
+            "not_verified": ["wall S"],
+        }),
+        "{summary:#}"
+    );
 
     let passing = report(&wall("site(\"SK\")", "WALL", ", theta_e = -15"));
     assert_eq!(passing.exit_code(), 0);
