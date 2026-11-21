@@ -2998,7 +2998,13 @@ fn pipelined_byte_and_disconnect_before_ui_poll_revoke_commit() {
         let steps = wire.app.undo_step_count();
         wire.send(commit, true);
         if disconnect {
-            wire.stream.shutdown(Shutdown::Write).unwrap();
+            // The extra byte makes the worker close the connection; with that
+            // byte unread the close can arrive as a reset first, and Linux then
+            // answers the shutdown with ENOTCONN. The client is disconnected
+            // either way, which is what this case tests.
+            if let Err(error) = wire.stream.shutdown(Shutdown::Write) {
+                assert_eq!(error.kind(), io::ErrorKind::NotConnected, "{error}");
+            }
         }
         // Deliberately DO NOT poll UI until the worker has cancelled and closed.
         wire.closed(Duration::from_secs(2));
