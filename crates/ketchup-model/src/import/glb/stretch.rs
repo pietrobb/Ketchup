@@ -74,14 +74,14 @@ pub(super) fn bake_stretches(
                     copied_triangles = copied_triangles.saturating_add(source.triangles.len());
                     if copied_vertices > MAX_TOTAL_VERTICES {
                         return Err(too_large(
-                            GlbMeasure::Vertices,
+                            GlbMeasure::StretchedVertices,
                             copied_vertices,
                             MAX_TOTAL_VERTICES,
                         ));
                     }
                     if copied_triangles > MAX_TOTAL_TRIANGLES {
                         return Err(too_large(
-                            GlbMeasure::Triangles,
+                            GlbMeasure::StretchedTriangles,
                             copied_triangles,
                             MAX_TOTAL_TRIANGLES,
                         ));

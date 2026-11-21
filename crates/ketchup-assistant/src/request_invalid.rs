@@ -15,6 +15,8 @@ pub struct AssistantRequestInvalid {
     item: Option<String>,
     problem: AssistantRequestProblem,
     cause: Option<Box<AssistantRequestCause>>,
+    /// The operation of a CAD edit program the refused part belongs to (R1121ac P3).
+    operation: Option<usize>,
 }
 
 /// What is wrong with the refused part.
@@ -52,7 +54,21 @@ impl AssistantRequestInvalid {
             item: None,
             problem,
             cause: None,
+            operation: None,
         }
+    }
+
+    /// Names operation `index` of the CAD edit program as the refused part's,
+    /// unless an operation is named already.
+    #[must_use]
+    pub fn at_operation(mut self, index: usize) -> Self {
+        self.operation.get_or_insert(index);
+        self
+    }
+
+    /// The operation of the CAD edit program the refused part belongs to.
+    pub const fn operation(&self) -> Option<usize> {
+        self.operation
     }
 
     /// The part breaks a schema rule of its kind.
@@ -101,6 +117,9 @@ impl From<AssistantRequestInvalid> for AssistantRequestCause {
 
 impl fmt::Display for AssistantRequestInvalid {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(index) = self.operation {
+            write!(formatter, "operation {index}: ")?;
+        }
         write!(formatter, "assistant {}", self.subject)?;
         if let Some(item) = &self.item {
             write!(formatter, " {item:?}")?;

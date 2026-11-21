@@ -2933,6 +2933,7 @@ fn worker_evaluates_persisted_guided_loft_v15_and_rejects_invalid_guides_atomica
             Some(guide),
             LoftContinuity::Curvature,
             CanonicalError::InvalidFeatureInput(ketchup_model::document::FeatureInputError {
+                feature: Some(FeatureId(202_106)),
                 field: ketchup_model::document::FeatureInputField::Continuity,
                 rule: "a loft along a guide curve is at most tangent-continuous; drop the guide or \
                        choose tangent",

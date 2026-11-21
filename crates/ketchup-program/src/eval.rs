@@ -1591,9 +1591,6 @@ fn apply_named_edge_finish(
     if edges.is_empty() {
         anyhow::bail!("{operation} on {part_name:?}: edges must not be empty");
     }
-    if amount_mm <= CONTACT_FIT_MM {
-        anyhow::bail!("{operation} on {part_name:?}: amount must be positive");
-    }
     with_part(state, part_name, |part| {
         crate::edge_finish_fit::check_edge_finish(part, operation, &edges, amount_mm)?;
         let count = part.finishes().count();

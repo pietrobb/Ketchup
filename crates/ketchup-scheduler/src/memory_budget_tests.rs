@@ -193,5 +193,37 @@ fn the_container_limit_bounds_the_budget() {
         ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "536870912\n"),
     ]);
     assert_eq!(cgroup_memory_limit(v1), Some(1 << 29));
+    // cgroup v1 seen from the host: the limit is the process's own group's, under an
+    // unlimited root (R1121ac P3).
+    let v1_group = files(&[
+        (
+            "/proc/self/cgroup",
+            "5:cpu,cpuacct:/docker/abc\n4:memory:/docker/abc\n",
+        ),
+        (
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "9223372036854771712\n",
+        ),
+        (
+            "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes",
+            "536870912\n",
+        ),
+    ]);
+    assert_eq!(cgroup_memory_limit(v1_group), Some(1 << 29));
+    let v1_listed = files(&[
+        (
+            "/proc/self/cgroup",
+            "7:blkio:/x\n3:cpuset,memory:/batch/job\n",
+        ),
+        (
+            "/sys/fs/cgroup/memory/batch/memory.limit_in_bytes",
+            "1073741824\n",
+        ),
+        (
+            "/sys/fs/cgroup/memory/batch/job/memory.limit_in_bytes",
+            "2147483648\n",
+        ),
+    ]);
+    assert_eq!(cgroup_memory_limit(v1_listed), Some(1 << 30));
     assert_eq!(cgroup_memory_limit(files(&[])), None);
 }

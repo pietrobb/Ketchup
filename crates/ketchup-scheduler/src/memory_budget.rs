@@ -123,31 +123,56 @@ pub fn exact_worker_memory_bytes() -> usize {
 }
 
 /// The memory limit of this process's Linux control group, the least of its own and
-/// its ancestors' (cgroup v2), else the v1 memory controller's: in a container the
-/// OOM killer acts at that limit, long before the host's memory is used (review
-/// 2026-11-20 ac P3). `None` where there is none, as on Windows and macOS.
+/// its ancestors': of cgroup v2, else of the v1 memory controller (R1121ac P3: not only
+/// the v1 root's). In a container the OOM killer acts at that limit, long before the
+/// host's memory is used (review 2026-11-20 ac P3). `None` where there is none, as on
+/// Windows and macOS.
 fn cgroup_memory_limit(read: impl Fn(&str) -> Option<String>) -> Option<u64> {
-    let number = |text: String| text.trim().parse::<u64>().ok();
-    let unified = read("/proc/self/cgroup").and_then(|groups| {
-        let path = groups
-            .lines()
-            .find_map(|line| line.strip_prefix("0::"))?
-            .to_owned();
-        let mut limit = None::<u64>;
-        let mut group = path.trim_end_matches('/');
-        loop {
-            if let Some(bytes) = read(&format!("/sys/fs/cgroup{group}/memory.max")).and_then(number)
-            {
-                limit = Some(limit.map_or(bytes, |limit| limit.min(bytes)));
-            }
-            match group.rfind('/') {
-                Some(parent) => group = &group[..parent],
-                None => break,
-            }
+    let groups = read("/proc/self/cgroup")?;
+    let unified = groups
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .and_then(|group| least_limit(&read, "/sys/fs/cgroup", group, "memory.max"));
+    unified.or_else(|| {
+        let group = groups.lines().find_map(|line| {
+            let mut fields = line.splitn(3, ':');
+            let controllers = fields.nth(1)?;
+            let group = fields.next()?;
+            controllers
+                .split(',')
+                .any(|controller| controller == "memory")
+                .then_some(group)
+        })?;
+        least_limit(
+            &read,
+            "/sys/fs/cgroup/memory",
+            group,
+            "memory.limit_in_bytes",
+        )
+    })
+}
+
+/// The least `file` limit of `group` under `root` and of its ancestors up to `root`.
+fn least_limit(
+    read: impl Fn(&str) -> Option<String>,
+    root: &str,
+    group: &str,
+    file: &str,
+) -> Option<u64> {
+    let mut limit = None::<u64>;
+    let mut group = group.trim_end_matches('/');
+    loop {
+        if let Some(bytes) =
+            read(&format!("{root}{group}/{file}")).and_then(|text| text.trim().parse::<u64>().ok())
+        {
+            limit = Some(limit.map_or(bytes, |limit| limit.min(bytes)));
         }
-        limit
-    });
-    unified.or_else(|| read("/sys/fs/cgroup/memory/memory.limit_in_bytes").and_then(number))
+        match group.rfind('/') {
+            Some(parent) => group = &group[..parent],
+            None => break,
+        }
+    }
+    limit
 }
 
 /// The budget of this window: [`exact_worker_memory_bytes`], half of this computer's

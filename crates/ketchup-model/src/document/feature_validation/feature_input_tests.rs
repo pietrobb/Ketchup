@@ -178,10 +178,22 @@ fn a_loft_names_the_section_guide_rail_or_continuity() {
     }
     assert_eq!(
         CanonicalError::InvalidFeatureInput(FeatureInputError {
+            feature: None,
             field: FeatureInputField::KeepSeam(3),
             rule: "this surface is already kept; name each neighbour once",
         })
         .to_string(),
         "feature input keep[3] is invalid: this surface is already kept; name each neighbour once"
+    );
+    // Once the feature is known, the refusal names it (R1121ac P3).
+    assert_eq!(
+        CanonicalError::InvalidFeatureInput(FeatureInputError {
+            feature: None,
+            field: FeatureInputField::Weight,
+            rule: "a weight must lie between 0.000001 and 1000000",
+        })
+        .of_feature(FeatureId(620))
+        .to_string(),
+        "feature 620 input weight is invalid: a weight must lie between 0.000001 and 1000000"
     );
 }
