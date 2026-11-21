@@ -295,6 +295,30 @@ fn summary(model: &ketchup_program::ProgramModel, report: &ketchup_program::Repo
             "not_verified": joints("not_verified"),
         });
     }
+    // The thermal checks count in the exit code as statics does, so the summary
+    // shows them too (review 2026-11-21 ac P3).
+    let buildups = &report.thermal.buildups;
+    if !buildups.is_empty() {
+        let count = |status: &str| buildups.iter().filter(|b| b.status == status).count();
+        let verdict = if count("fail") > 0 {
+            "fail"
+        } else if count("not_verified") > 0 {
+            "not_verified"
+        } else {
+            "pass"
+        };
+        value["thermal"] = json!({
+            "verdict": verdict,
+            "checked": buildups.len(),
+            "pass": count("pass"),
+            "fail": count("fail"),
+            "not_verified": buildups
+                .iter()
+                .filter(|b| b.status == "not_verified")
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+        });
+    }
     if !report.unused_overrides.is_empty() {
         value["unused_overrides"] = json!(report.unused_overrides);
     }
