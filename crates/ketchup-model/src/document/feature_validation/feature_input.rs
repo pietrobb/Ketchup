@@ -55,20 +55,48 @@ impl fmt::Display for FeatureInputField {
     }
 }
 
-/// A refused feature input: the field, and the rule it breaks with its repair.
+/// A refused feature input: the feature once known, the field, and the rule it
+/// breaks with its repair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeatureInputError {
+    /// The refused feature: `None` while only its kind is checked, set by the
+    /// command or document check that knows it (R1121ac P3).
+    pub feature: Option<FeatureId>,
     pub field: FeatureInputField,
     pub rule: &'static str,
 }
 
 impl fmt::Display for FeatureInputError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "feature input {} is invalid: {}",
-            self.field, self.rule
-        )
+        match self.feature {
+            Some(feature) => write!(
+                formatter,
+                "feature {} input {} is invalid: {}",
+                feature.0, self.field, self.rule
+            ),
+            None => write!(
+                formatter,
+                "feature input {} is invalid: {}",
+                self.field, self.rule
+            ),
+        }
+    }
+}
+
+impl CanonicalError {
+    /// This error with `feature` named as the refused feature, when it is a
+    /// feature input refused before the feature was known.
+    #[must_use]
+    pub(in crate::document) fn of_feature(self, feature: FeatureId) -> Self {
+        match self {
+            Self::InvalidFeatureInput(error @ FeatureInputError { feature: None, .. }) => {
+                Self::InvalidFeatureInput(FeatureInputError {
+                    feature: Some(feature),
+                    ..error
+                })
+            }
+            other => other,
+        }
     }
 }
 
@@ -82,6 +110,7 @@ const fn check(
         Ok(())
     } else {
         Err(CanonicalError::InvalidFeatureInput(FeatureInputError {
+            feature: None,
             field,
             rule,
         }))

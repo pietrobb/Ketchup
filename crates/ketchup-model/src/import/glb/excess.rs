@@ -16,6 +16,10 @@ pub enum GlbMeasure {
     Vertices,
     Triangles,
     PlacedTriangles,
+    /// Vertices and triangles of the copies stretched parts get of their geometry: the
+    /// file may hold few, the copies many (R1121ac P3).
+    StretchedVertices,
+    StretchedTriangles,
     Outputs,
     Commands,
     Tags,
@@ -36,6 +40,8 @@ impl GlbMeasure {
             Self::Vertices => "distinct vertices",
             Self::Triangles => "distinct triangles",
             Self::PlacedTriangles => "placed triangles",
+            Self::StretchedVertices => "vertices in the copies of its stretched parts",
+            Self::StretchedTriangles => "triangles in the copies of its stretched parts",
             Self::Outputs => "objects to create",
             Self::Commands => "edits to make in one Undo step",
             Self::Tags => "tags",
@@ -50,6 +56,11 @@ impl GlbMeasure {
             Self::Vertices | Self::Triangles | Self::PlacedTriangles => {
                 "Lower the segments of arcs and circles, or delete detailed parts such as \
                  plants and 3D text, then import again."
+            }
+            Self::StretchedVertices | Self::StretchedTriangles => {
+                "A part stretched with the Scale tool gets a copy of its geometry for each \
+                 different stretch. Stretch detailed components alike, reset the scale of some \
+                 or lower their segments of arcs and circles, then import again."
             }
             Self::Nesting => "Explode some of the nested groups or components, then import again.",
             _ => {

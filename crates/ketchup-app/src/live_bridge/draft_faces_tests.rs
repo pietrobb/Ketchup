@@ -351,7 +351,7 @@ fn the_draft_tool_drafts_the_selected_faces_about_the_clicked_one_in_one_undo_st
     app.finish_window_edit();
     assert!(
         app.digest
-            .starts_with("invalid_program: assistant CAD draft is invalid"),
+            .starts_with("invalid_program: operation 0: assistant CAD draft is invalid"),
         "{}",
         app.digest
     );

@@ -275,13 +275,20 @@ fn stretched_copies_over_what_one_import_stores_are_refused() {
         .map(|board| 1.0 + 0.01 * board as f64)
         .collect::<Vec<_>>();
     let source = stretched_strips(u32::try_from(triangles).unwrap(), &stretches);
+    let refusal = inspect_glb(&source).unwrap_err();
     assert_eq!(
-        inspect_glb(&source).unwrap_err(),
+        refusal,
         GlbImportError::TooLarge(GlbExcess {
-            measure: GlbMeasure::Vertices,
+            measure: GlbMeasure::StretchedVertices,
             at_least: boards * vertices,
             limit: MAX_TOTAL_VERTICES,
         })
+    );
+    // The file holds one board: the refusal names the copies, not its vertices.
+    let message = refusal.to_string();
+    assert!(
+        message.contains("copies of its stretched parts") && message.contains("Scale tool"),
+        "{message}"
     );
     // Fewer, they import, each its own definition and the unstretched mesh dropped.
     let fit = stretched_strips(u32::try_from(triangles).unwrap(), &stretches[..boards - 1]);

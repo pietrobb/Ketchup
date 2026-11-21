@@ -102,7 +102,8 @@ impl Machining {
         "cutting forces, tool deflection or breakage, and whether the feeds and speeds suit the tool and material",
         "the tool length and work offset values set on the controller; the program only calls them",
         "how the controller runs the program beyond the dialect's codes; run it in the controller's simulator or dry first",
-        "the rounding of the written coordinates to the dialect's step: the simulation runs the planned path, and the written one may differ from it by up to half a step",
+        // Review 2026-11-21 ac P3: an arc's rounded centre and ends move it further than a point.
+        "the rounding of the written coordinates to the dialect's step: the simulation runs the planned path; a written point may differ from it by up to half a step, and a written arc by up to four steps",
         // Review 2026-11-20 ac P3: neither was said.
         "coolant: the program switches none on (no M7 or M8); turn it on yourself where the tool or material needs it",
         "how the cutter enters: every plunge goes straight down, without a ramp or helix, so the cutter must cut at its centre",

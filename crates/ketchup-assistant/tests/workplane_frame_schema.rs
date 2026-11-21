@@ -97,10 +97,11 @@ fn a_refused_sketch_names_its_part_item_and_geometric_cause() {
         Err(
             AssistantRequestInvalid::new("sketch entity ID", AssistantRequestProblem::Duplicate)
                 .item(1)
+                .at_operation(0)
         )
     );
     assert_eq!(
         duplicate.validate().unwrap_err().to_string(),
-        "assistant sketch entity ID \"1\" is used twice"
+        "operation 0: assistant sketch entity ID \"1\" is used twice"
     );
 }

@@ -705,7 +705,10 @@ fn a_pointed_blind_hole_is_drilled_to_full_diameter_by_a_drill_of_its_point() {
         let other_plan = plan_with_drill_point(&document, &plan, other);
         assert_eq!(
             CamOperation::drill_hole(1, &hole, other_plan.tool()),
-            Err(CamPlannerError::DrillPointDoesNotFitFloor),
+            Err(CamPlannerError::DrillPointDoesNotFitFloor {
+                operation: 1,
+                center: ketchup_model::cam::place_mm(hole.center_mm),
+            }),
             "{other:?}"
         );
     }
@@ -756,10 +759,20 @@ fn drilling_reads_each_hole_from_its_exact_cylinder_and_refuses_what_the_drill_c
     // R1120ac-CAM-901: a pointed drill cannot make a flat floor; stopped at it, it
     // leaves its cone, and driven on until the full diameter reaches the floor, it
     // cuts below it. A flat-bottom drill makes it.
+    // The refusal names the operation and where the hole is (review 2026-11-21 ac P3).
+    let refused = CamOperation::drill_hole(2, blind, plan.tool()).unwrap_err();
     assert_eq!(
-        CamOperation::drill_hole(2, blind, plan.tool()),
-        Err(CamPlannerError::DrillPointDoesNotFitFloor)
+        refused,
+        CamPlannerError::DrillPointDoesNotFitFloor {
+            operation: 2,
+            center: ketchup_model::cam::place_mm(blind.center_mm),
+        }
     );
+    let place = format!(
+        "operation 2 at X {:.3} Y {:.3} mm",
+        blind.center_mm[0], blind.center_mm[1]
+    );
+    assert!(refused.to_string().contains(&place), "{refused}");
     let flat = plan_with_drill_point(&document, &plan, Some(180.0));
     let operations = [
         CamOperation::drill_hole(1, through, flat.tool()).unwrap(),
