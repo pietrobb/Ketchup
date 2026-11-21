@@ -320,6 +320,8 @@ struct Header {
     extra: Vec<u8>,
     made_by: u16,
     external: u32,
+    /// The comment of the entry in the central directory.
+    comment: Vec<u8>,
 }
 
 /// What Kečup writes for `name`.
@@ -333,6 +335,7 @@ fn plain(name: &str) -> Header {
         extra: Vec::new(),
         made_by: 20,
         external: 0,
+        comment: Vec::new(),
     }
 }
 
@@ -367,7 +370,8 @@ fn rezip(entries: &BTreeMap<String, Vec<u8>>, header: impl Fn(&str) -> Header) -
         for field in [crc, size, size] {
             central.extend(field.to_le_bytes());
         }
-        for field in [name_len, extra_len, 0, 0, 0] {
+        let comment_len = u16::try_from(header.comment.len()).unwrap();
+        for field in [name_len, extra_len, comment_len, 0, 0] {
             central.extend(field.to_le_bytes());
         }
         for field in [header.external, offset] {
@@ -375,6 +379,7 @@ fn rezip(entries: &BTreeMap<String, Vec<u8>>, header: impl Fn(&str) -> Header) -
         }
         central.extend(name.as_bytes());
         central.extend(&header.extra);
+        central.extend(&header.comment);
     }
     let central_offset = u32::try_from(zip.len()).unwrap();
     let central_size = u32::try_from(central.len()).unwrap();
@@ -436,27 +441,45 @@ fn an_extra_field_an_unpacker_may_take_the_name_from_is_refused() {
     }
 }
 
-/// R1120ac-ZIP-901: an entry made on Unix whose mode is not a plain file, such as a
-/// link `a.nc -> /etc/hostname`, is refused; a plain Unix file passes.
+/// R1120ac-ZIP-901, R1121ac-ZIP-1000: only the attributes Kečup writes pass, a
+/// DOS-made entry with none. A link `a.nc -> /etc/hostname` was refused only when
+/// made on Unix (host 3); Info-ZIP `unzip` also creates it from VMS (2), Atari (5),
+/// BeOS (16) or AtheOS (30). A folder, a device and even a plain Unix file, which
+/// Kečup does not write, are refused too.
 #[test]
 fn a_link_or_other_special_file_is_refused() {
     let entries = two_programs();
-    let unix = |mode: u32| {
+    let made_on = |host: u16, mode: u32| {
         move |name: &str| {
             let mut header = plain(name);
             if name == "a.nc" {
-                header.made_by = (3 << 8) | 20;
+                header.made_by = (host << 8) | 20;
                 header.external = mode << 16;
             }
             header
         }
     };
-    assert!(check_workshop_package(&rezip(&entries, unix(0o100_644))).is_ok());
-    for mode in [0o120_777, 0o040_755, 0o010_644] {
+    assert!(check_workshop_package(&rezip(&entries, made_on(0, 0))).is_ok());
+    for mode in [0o120_777, 0o040_755, 0o010_644, 0o100_644] {
+        for host in [3, 2, 5, 16, 30] {
+            assert_eq!(
+                check_workshop_package(&rezip(&entries, made_on(host, mode))),
+                Err(WorkshopPackageError::NotAPlainFile("a.nc".to_owned())),
+                "host {host}, mode {mode:o}"
+            );
+        }
+    }
+    // Kečup's version with another host, or the DOS read-only bit, is not what it writes.
+    for (host, mode) in [(3, 0), (19, 0), (0, 1)] {
+        let zip = rezip(&entries, |name| Header {
+            made_by: if name == "a.nc" { (host << 8) | 20 } else { 20 },
+            external: if name == "a.nc" { mode } else { 0 },
+            ..plain(name)
+        });
         assert_eq!(
-            check_workshop_package(&rezip(&entries, unix(mode))),
+            check_workshop_package(&zip),
             Err(WorkshopPackageError::NotAPlainFile("a.nc".to_owned())),
-            "{mode:o}"
+            "host {host}, attributes {mode:#x}"
         );
     }
     // A DOS directory or a device is no plain file either.
@@ -487,6 +510,34 @@ fn a_header_flag_other_than_utf8_is_refused() {
             "{flag:#x}"
         );
     }
+}
+
+/// Review 2026-11-21 ac P3: Kečup writes no comment; one on the archive, which
+/// `unzip` shows the operator, or on an entry is refused.
+#[test]
+fn a_comment_on_the_archive_or_an_entry_is_refused() {
+    let entries = two_programs();
+    let commented_entry = rezip(&entries, |name| Header {
+        comment: if name == "a.nc" {
+            b"run b.nc first".to_vec()
+        } else {
+            Vec::new()
+        },
+        ..plain(name)
+    });
+    assert_eq!(
+        check_workshop_package(&commented_entry),
+        Err(WorkshopPackageError::Comment(Some("a.nc".to_owned())))
+    );
+    let mut commented_archive = rezip(&entries, plain);
+    let comment = b"Checked, safe to run.";
+    let at = commented_archive.len() - 2;
+    commented_archive[at..].copy_from_slice(&u16::try_from(comment.len()).unwrap().to_le_bytes());
+    commented_archive.extend(comment);
+    assert_eq!(
+        check_workshop_package(&commented_archive),
+        Err(WorkshopPackageError::Comment(None))
+    );
 }
 
 /// Removes the central record of `name`, leaving its local entry in the
