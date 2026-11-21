@@ -22,7 +22,7 @@ use sheet::{Spring, on_springs};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give};
+use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give, pushed_along};
 
 /// The modulus of elasticity, mean and fifth percentile, N/mm², of a part of no
 /// wood strength class: softwood C24 (EN 338).
@@ -39,6 +39,9 @@ pub(super) struct Anchorage {
     pub(super) weakest: usize,
     /// The part buckling first.
     pub(super) buckling: usize,
+    /// How long the rod is the path starts with at the point held, mm: the
+    /// length a brace pushing it buckles over.
+    pub(super) over_mm: f64,
 }
 
 /// What each part touches face to face and where the floor lies: whether an
@@ -188,6 +191,7 @@ pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
     Anchorage {
         capacity_n: strong.capacity_n,
         buckling: strong.buckling,
+        over_mm: a.over_mm.max(b.over_mm),
         ..stiff
     }
 }
@@ -476,7 +480,14 @@ impl<'a> Footing<'a> {
                     let own = brace_give(&obb, self.moduli[by].0, point, at, sideways)
                         + to_member
                         + to_anchor;
-                    let capacity = part_capacity(&obb, self.moduli[by].1, point, at, sideways, run);
+                    let capacity = part_capacity(
+                        &obb,
+                        self.moduli[by].1,
+                        point,
+                        at,
+                        sideways,
+                        from_anchor.over_mm,
+                    );
                     Anchorage {
                         stiffness_n_mm: 1.0 / (own + anchor_give),
                         capacity_n: capacity.min(from_anchor.capacity_n),
@@ -490,18 +501,21 @@ impl<'a> Footing<'a> {
                         } else {
                             from_anchor.buckling
                         },
+                        over_mm: from_anchor.over_mm,
                     }
                 }
                 (to_member, to_anchor) => {
-                    let strut = Strut::of(&obb, self.moduli[by], (point, at), sideways, run);
+                    let ends = (point, at);
                     let probe = Probe {
                         held: at,
                         enter: at,
-                        along: strut.axis,
+                        along: Strut::of(&obb, self.moduli[by], ends, sideways, run).axis,
                     };
                     let (from_anchor, through) =
                         self.reached(anchor, member, apart, run, Some(probe))?;
                     route.extend(through);
+                    let strut =
+                        Strut::of(&obb, self.moduli[by], ends, sideways, from_anchor.over_mm);
                     let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
                     let slip = to_member.give() + to_anchor.give();
                     let (stiffness_n_mm, capacity_n) =
@@ -519,6 +533,7 @@ impl<'a> Footing<'a> {
                         } else {
                             from_anchor.buckling
                         },
+                        over_mm: from_anchor.over_mm,
                     }
                 }
             };
@@ -619,7 +634,7 @@ impl<'a> Footing<'a> {
 
     /// [`Self::reached`] by the force `probe`: the path giving least, found
     /// as the shortest by its give, what each part and joint gives adding up
-    /// along it, buckling over its length on from `start`; with the parts it
+    /// along it, buckling as [`Self::rods`] after `start`; with the parts it
     /// runs through, the anchor first.
     fn search(
         &self,
@@ -639,39 +654,27 @@ impl<'a> Footing<'a> {
         let deep = depth(&self.parts[member], frame);
         let mut give = vec![f64::INFINITY; count];
         let mut entry = vec![enter; count];
-        // How far the path has run to each part, and the force it takes
-        // before buckling up to there.
-        let mut reach = vec![start; count];
-        let mut capacity = vec![f64::INFINITY; count];
-        let mut buckling = vec![anchor; count];
         // Which part the path came from to each, and what that part gave.
         let mut came: Vec<Option<(usize, f64)>> = vec![None; count];
         give[anchor] = 0.0;
         let mut queue = BinaryHeap::from([Reverse((0_u64, anchor))]);
         let mut pivots = BTreeSet::new();
-        // The path's whole give, its capacity and the part buckling first,
-        // its last part and that part's give.
-        let mut best: Option<(f64, (f64, usize), usize, f64)> = None;
+        // The path's whole give, its last part, that part's give and where it
+        // stands on the floor.
+        let mut best: Option<(f64, usize, f64, [f64; 3])> = None;
         while let Some(Reverse((bits, item))) = queue.pop() {
             let so_far = f64::from_bits(bits);
             if so_far > give[item] || best.is_some_and(|(total, ..)| so_far >= total) {
                 continue;
             }
             let obb = self.parts[item].obb();
-            let (modulus, modulus_05) = self.moduli[item];
+            let modulus = self.moduli[item].0;
             let from = entry[item];
             if self.ends(item) {
                 let foot = foot(&obb, from, self.floor);
                 let own = part_give(&obb, modulus, from, foot, held, sideways);
-                let run = reach[item] + length(sub(from, foot));
-                let own_capacity = part_capacity(&obb, modulus_05, from, foot, sideways, run);
-                let holds = if own_capacity < capacity[item] {
-                    (own_capacity, item)
-                } else {
-                    (capacity[item], buckling[item])
-                };
                 if best.is_none_or(|(total, ..)| so_far + own < total) {
-                    best = Some((so_far + own, holds, item, own));
+                    best = Some((so_far + own, item, own, foot));
                 }
             }
             for &next in &self.touching[item] {
@@ -702,22 +705,14 @@ impl<'a> Footing<'a> {
                 let own = part_give(&obb, modulus, from, at, held, sideways) + joint;
                 let further = so_far + own;
                 if further < give[next] {
-                    let run = reach[item] + length(sub(from, at));
                     give[next] = further;
                     entry[next] = at;
-                    reach[next] = run;
-                    let own_capacity = part_capacity(&obb, modulus_05, from, at, sideways, run);
-                    (capacity[next], buckling[next]) = if own_capacity < capacity[item] {
-                        (own_capacity, item)
-                    } else {
-                        (capacity[item], buckling[item])
-                    };
                     came[next] = Some((item, own));
                     queue.push(Reverse((further.to_bits(), next)));
                 }
             }
         }
-        let Some((total, (holds, buckles), end, own)) = best else {
+        let Some((total, end, own, foot)) = best else {
             self.met_pivots
                 .borrow_mut()
                 .entry(anchor)
@@ -735,17 +730,78 @@ impl<'a> Footing<'a> {
             route.push(at);
         }
         route.reverse();
+        let exits = route
+            .iter()
+            .skip(1)
+            .map(|&next| entry[next])
+            .chain(std::iter::once(foot));
+        let pieces: Vec<(usize, [f64; 3], [f64; 3])> = route
+            .iter()
+            .zip(exits)
+            .map(|(&part, exit)| (part, entry[part], exit))
+            .collect();
+        let (capacity_n, buckling, over_mm) = self.rods(&pieces, sideways, start, anchor);
         let anchorage = Anchorage {
             stiffness_n_mm: if total > 0.0 {
                 1.0 / total
             } else {
                 f64::INFINITY
             },
-            capacity_n: holds,
+            capacity_n,
             weakest,
-            buckling: buckles,
+            buckling,
+            over_mm,
         };
         Some((anchorage, route))
+    }
+
+    /// How a path that has run `start` before its `pieces` (each part, where
+    /// the path enters it and where it leaves) buckles under the force
+    /// `sideways`. Pieces pushed along their axes end to end are one rod,
+    /// ending where the path enters a part bearing the force across, which
+    /// holds it; each piece buckles over the whole length of its rod, a stepped
+    /// rod taken at its weakest piece, on the safe side (review 2026-11-21
+    /// R1121ac-PG-1002: a brace 15 x 15 end to end with an anchor 30 x 30,
+    /// 1 200 each, held 277.6 N over the brace's own length, where the stepped
+    /// rod buckles at about 112). The force first buckling a piece, that part
+    /// (else `anchor`), and the length of the rod the path starts with, mm.
+    fn rods(
+        &self,
+        pieces: &[(usize, [f64; 3], [f64; 3])],
+        sideways: [f64; 3],
+        start: f64,
+        anchor: usize,
+    ) -> (f64, usize, f64) {
+        let mut rods: Vec<(Vec<usize>, f64)> = Vec::new();
+        let mut rod: (Vec<usize>, f64) = (Vec::new(), start);
+        for (index, &(part, entry, exit)) in pieces.iter().enumerate() {
+            let long = length(sub(entry, exit));
+            if pushed_along(&self.parts[part].obb(), entry, exit, sideways).is_some() {
+                rod.0.push(index);
+                rod.1 += long;
+            } else if long > f64::EPSILON {
+                rods.push(std::mem::replace(&mut rod, (Vec::new(), 0.0)));
+            }
+        }
+        rods.push(rod);
+        let mut least = (f64::INFINITY, anchor);
+        for (rod, long) in &rods {
+            for &index in rod {
+                let (part, entry, exit) = pieces[index];
+                let capacity = part_capacity(
+                    &self.parts[part].obb(),
+                    self.moduli[part].1,
+                    entry,
+                    exit,
+                    sideways,
+                    *long,
+                );
+                if capacity < least.0 {
+                    least = (capacity, part);
+                }
+            }
+        }
+        (least.0, least.1, rods[0].1)
     }
 
     /// How touching parts `a` and `b` hold each other: rigidly when both are

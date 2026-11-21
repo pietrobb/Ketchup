@@ -238,6 +238,56 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
     }
 }
 
+/// Review 2026-11-21 R1121ac-PG-1002: a brace 15 x 1 200 x 15 screwed end to
+/// end to a grounded anchor 30 x 1 200 x 30 held the beam at 277.6 N against
+/// 263 asked and passed: the brace buckled only over its own length, where the
+/// stepped rod pinned at both ends buckles at about 112 N (FE). Every part of
+/// a path buckles over the whole length of the path: the brace over 2 400 mm,
+/// 69.4 N, on the safe side.
+#[test]
+fn a_stepped_path_buckles_over_its_whole_length() {
+    let held = beam_with(
+        |x| {
+            format!(
+                "box(\"brace {x}\", (15, 1200, 15), at = ({x}, 80, 2385), material = \"GL24h\", tags = [\"brace\"])
+box(\"anchor {x}\", (30, 1200, 30), at = ({}, 1280, 2370), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\")
+joint(\"brace {x}\", \"anchor {x}\", kind = \"screw\")
+",
+                x - 5
+            )
+        },
+        "box(\"wall\", (5900, 100, 2400), at = (0, 2480, 0), material = \"GL24h\", grounded = True)
+brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+    );
+    let braces: Vec<_> = held
+        .loads
+        .members
+        .iter()
+        .flat_map(|load| &load.braced_by)
+        .filter(|brace| brace.part.starts_with("brace"))
+        .collect();
+    assert_eq!(braces.len(), PLACES.len(), "{braces:?}");
+    for brace in braces {
+        let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
+        let capacity = anchorage.capacity_n.expect("the path buckles");
+        assert!((capacity - 69.4).abs() < 0.5, "{brace:?}");
+        assert_eq!(
+            anchorage.buckling_in.as_deref(),
+            Some(brace.part.as_str()),
+            "{brace:?}"
+        );
+    }
+    assert_ne!(checked(&held, "beam").status, "pass");
+    assert!(
+        refused(&held)
+            .iter()
+            .any(|message| message.contains("too slender")),
+        "{:?}",
+        refused(&held)
+    );
+}
+
 /// The stiffness each brace tagged `prefix` holds the beam with, N/mm.
 fn stiffnesses(report: &Report, prefix: &str) -> Vec<f64> {
     report

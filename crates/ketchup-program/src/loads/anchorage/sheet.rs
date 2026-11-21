@@ -81,6 +81,10 @@ pub(super) fn on_springs(springs: &[Spring]) -> Option<Anchorage> {
         capacity_n: capacity,
         weakest: weakest.at_contact.weakest,
         buckling,
+        over_mm: springs
+            .iter()
+            .map(|spring| spring.at_contact.over_mm)
+            .fold(0.0, f64::max),
     })
 }
 
@@ -94,6 +98,7 @@ mod tests {
             capacity_n: 1_000.0,
             weakest: 0,
             buckling: 0,
+            over_mm: 0.0,
         };
         Spring {
             at_contact: anchorage(k),
