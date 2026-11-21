@@ -1097,7 +1097,8 @@ pub(super) fn apply_graph_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -1424,7 +1425,8 @@ pub(super) fn apply_mixed_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -1577,7 +1579,8 @@ pub(super) fn apply_imported_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]

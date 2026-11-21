@@ -616,7 +616,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     *feature = AssistantCadPartFeature::Extrusion { distance_mm: 0.0 };
     assert_eq!(
         invalid_feature.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD part feature"))
+        Err(AssistantRequestInvalid::invalid("CAD part feature").at_operation(0))
     );
 
     let mut invalid_revolve = program;
@@ -633,7 +633,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     };
     assert_eq!(
         invalid_revolve.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD part feature"))
+        Err(AssistantRequestInvalid::invalid("CAD part feature").at_operation(0))
     );
 }
 
@@ -848,7 +848,7 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
     };
     assert_eq!(
         self_boolean.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD body feature"))
+        Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
     );
 }
 
@@ -893,7 +893,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
         };
         assert_eq!(
             invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -910,7 +910,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
     };
     assert_eq!(
         same_input.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD body feature"))
+        Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
     );
 
     let injected_id = serde_json::json!({
@@ -976,7 +976,7 @@ fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned
     ] {
         assert_eq!(
             invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -1048,7 +1048,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
     };
     assert_eq!(
         same_input.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD body feature"))
+        Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
     );
     for (profile_feature_id, path_feature_id) in [(0, 12), (11, 0)] {
         let zero_input = AssistantCadEditProgram {
@@ -1063,7 +1063,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
         };
         assert_eq!(
             zero_input.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -1430,7 +1430,7 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
     ] {
         assert_eq!(
             invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -2046,7 +2046,7 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     assert_eq!(pattern(3, rows(2, [0.0, 40.0, 0.0])).validate(), Ok(()));
     assert_eq!(
         pattern(3, rows(2, [50.0, 0.0, 0.0])).validate(),
-        Err(AssistantRequestInvalid::invalid("CAD linear pattern")),
+        Err(AssistantRequestInvalid::invalid("CAD linear pattern").at_operation(0)),
         "rows parallel to the first direction would put copies on one line"
     );
 
@@ -2054,7 +2054,8 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     let copy_error = AssistantRequestInvalid::new(
         "CAD pattern copy count",
         AssistantRequestProblem::ExceedsLimit(512),
-    );
+    )
+    .at_operation(0);
     let copy_limit = Err(copy_error.clone());
     assert_eq!(pattern(513, None).validate(), Ok(()));
     assert_eq!(pattern(514, None).validate(), copy_limit);
@@ -2080,7 +2081,7 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     assert_eq!(circular(514).validate(), copy_limit);
     assert_eq!(
         copy_error.to_string(),
-        "assistant CAD pattern copy count exceeds its limit of 512"
+        "operation 0: assistant CAD pattern copy count exceeds its limit of 512"
     );
 }
 
@@ -2122,7 +2123,8 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         AssistantRequestProblem::Violates(
             "a hole is either depth_mm deep or through the part: give exactly one of them",
         ),
-    ));
+    )
+    .at_operation(0));
     assert_eq!(with(|op| op["through"] = true.into()), one_of);
     assert_eq!(
         with(|op| {
@@ -2143,7 +2145,8 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         AssistantRequestProblem::Violates(
             "a thread needs a size and a positive depth_mm no deeper than the hole",
         ),
-    ));
+    )
+    .at_operation(0));
     assert_eq!(
         with(|op| op["thread"] = serde_json::json!({"size": "M8", "depth_mm": 9.0})),
         thread
@@ -2157,7 +2160,8 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         Err(AssistantRequestInvalid::new(
             "part hole count",
             AssistantRequestProblem::ExceedsLimit(128),
-        ))
+        )
+        .at_operation(0))
     );
 }
 

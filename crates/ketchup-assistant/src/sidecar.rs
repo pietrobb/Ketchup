@@ -20,6 +20,7 @@ use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
 mod cam_kinds;
 mod feature_checks;
 mod loft;
+mod operation_checks;
 mod program_references;
 mod spatial_path;
 mod structure_change;
@@ -2780,20 +2781,10 @@ impl AssistantCadEditProgram {
         }
         let mut generated_occurrences = 0usize;
         let mut named_outputs = BTreeMap::<String, AssistantCadProgramFeatureOutput>::new();
-        for (operation_index, operation) in self.operations.iter().enumerate() {
-            let bounded_targets = Self::bounded_operation_targets(operation)?;
-            let generated_per_target =
-                self.validate_part_operation(operation_index, operation, max_part_cuts)?
-                    + self.validate_construction_operation(operation_index, operation)?
-                    + self.validate_feature_operation(
-                        operation_index,
-                        operation,
-                        &mut named_outputs,
-                    )?
-                    + self.validate_joint_operation(operation_index, operation)?
-                    + Self::validate_cam_operation(operation)?
-                    + Self::validate_metadata_operation(operation)?
-                    + self.validate_transform_operation(operation_index, operation)?;
+        for operation_index in 0..self.operations.len() {
+            let (bounded_targets, generated_per_target) = self
+                .validate_operation(operation_index, max_part_cuts, &mut named_outputs)
+                .map_err(|error| error.at_operation(operation_index))?;
             generated_occurrences = generated_occurrences
                 .checked_add(bounded_targets.checked_mul(generated_per_target).ok_or(
                     AssistantRequestInvalid::invalid("CAD generated occurrence count"),

@@ -676,6 +676,40 @@ fn is_planar_surface_profile(kind: &FeatureKind) -> bool {
     )
 }
 
+/// Each section of a Loft is one closed profile of its definition that comes
+/// before it; a refusal names the Loft (R1121ac P3).
+fn validate_loft_sections(
+    product: &ProductModel,
+    feature: &Feature,
+    feature_position: usize,
+    sections: &[LoftSection],
+) -> Result<(), CanonicalError> {
+    let definition = &product.definitions[&feature.definition_id];
+    for (index, section) in sections.iter().enumerate() {
+        let profile = product
+            .features
+            .get(&section.profile)
+            .ok_or(CanonicalError::FeatureNotFound(section.profile))?;
+        let source_precedes_loft = definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == section.profile)
+            .is_some_and(|position| position < feature_position);
+        let valid_profile = match &profile.kind {
+            FeatureKind::Sketch(sketch) => sketch
+                .solved_regions()
+                .is_ok_and(|regions| regions.len() == 1),
+            kind => kind
+                .closed_spline_points()
+                .is_some_and(|points| points.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS),
+        };
+        let ours = profile.definition_id == feature.definition_id;
+        feature_input::loft_profile(index, ours && valid_profile && source_precedes_loft)
+            .map_err(|error| error.of_feature(feature.id))?;
+    }
+    Ok(())
+}
+
 /// A Loft's guide and rail are spatial paths of its definition that come before
 /// it, and a curvature-continuous Loft has neither.
 fn validate_loft_paths(
@@ -710,7 +744,8 @@ fn validate_loft_paths(
             path_feature.definition_id == feature.definition_id
                 && matches!(path_feature.kind, FeatureKind::SpatialPath { .. })
                 && path_precedes_loft,
-        )?;
+        )
+        .map_err(|error| error.of_feature(feature.id))?;
     }
     Ok(())
 }
@@ -751,7 +786,8 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
         ensure_name(&feature.name)?;
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         let definition = product
             .definitions
             .get(&feature.definition_id)
@@ -1107,30 +1143,7 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     .iter()
                     .position(|candidate| *candidate == feature.id)
                     .expect("validated definition contains feature");
-                for (index, section) in sections.iter().enumerate() {
-                    let profile = product
-                        .features
-                        .get(&section.profile)
-                        .ok_or(CanonicalError::FeatureNotFound(section.profile))?;
-                    let source_precedes_loft = definition
-                        .feature_ids
-                        .iter()
-                        .position(|candidate| *candidate == section.profile)
-                        .is_some_and(|position| position < feature_position);
-                    let valid_profile = match &profile.kind {
-                        FeatureKind::Sketch(sketch) => sketch
-                            .solved_regions()
-                            .is_ok_and(|regions| regions.len() == 1),
-                        kind => kind.closed_spline_points().is_some_and(|points| {
-                            points.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
-                        }),
-                    };
-                    let ours = profile.definition_id == feature.definition_id;
-                    feature_input::loft_profile(
-                        index,
-                        ours && valid_profile && source_precedes_loft,
-                    )?;
-                }
+                validate_loft_sections(product, feature, feature_position, &sections)?;
                 validate_loft_paths(product, feature, feature_position, continuity, guide, rail)?;
             }
             FeatureKind::Boolean { target, tool, .. } => {

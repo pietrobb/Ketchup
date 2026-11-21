@@ -62,7 +62,9 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod cam_kinds;
+mod program_rejections;
 mod surface_body_references;
+use program_rejections::{batch_rejection, program_invalid_rejection};
 
 const MAX_AXIS_INSTANCE_OCCURRENCES: usize = 10_000;
 
@@ -137,7 +139,7 @@ impl StagedPlanningContext {
             .preview_batch(&CommandBatch::new(
                 self.commands[self.staged_command_count..].to_vec(),
             ))
-            .map_err(|error| assistant_canonical_rejection(error, operation, target))?;
+            .map_err(|error| self.refusal(error, operation, target))?;
         self.staged_command_count = self.commands.len();
         Ok(())
     }
@@ -2224,17 +2226,9 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
 ) -> Result<AssistantCadProgramPlan, Box<AssistantRejectionDiagnostic>> {
     let snapshot = document.current();
     let document_target = format!("document:{}", snapshot.document_id().0);
-    program.validate().map_err(|error| {
-        assistant_rejection(
-            AssistantRejectionPhase::IntentValidation,
-            "intent.cad_edit_program_invalid",
-            "cad_edit_program",
-            &document_target,
-            error.to_string(),
-            "Return a bounded CAD edit program that satisfies the Assistant schema invariants.",
-            true,
-        )
-    })?;
+    program
+        .validate()
+        .map_err(|error| program_invalid_rejection(&error, &document_target))?;
 
     let mut staged_planning = StagedPlanningContext::new(&snapshot);
     let mut appended_exact_features = Vec::new();
@@ -3918,10 +3912,11 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
         }
     }
     let outputs = staged_planning.resolved_named_outputs();
+    let made_by = staged_planning.feature_operations();
     let batch = staged_planning.into_final_batch();
     if !appended_exact_features.is_empty() || !appended_planar_offsets.is_empty() {
         let candidate = document.preview_batch(&batch).map_err(|error| {
-            assistant_canonical_rejection(error, "append_feature", &document_target)
+            batch_rejection(&made_by, error, "append_feature", &document_target)
         })?;
         for (definition_id, feature_id) in appended_exact_features {
             ExactBRepGraph::from_snapshot(&candidate, definition_id, feature_id).map_err(
