@@ -8,9 +8,9 @@
 //! pushing only along its length (R1120ac-PG-903: one pinned 45° across the
 //! force was four times too stiff and twice too strong).
 
-use super::stiffness::{SLIP_PER_FASTENER, Tie, euler_load, moment, section};
+use super::stiffness::{SLIP_PER_FASTENER, Tie, euler_load, moment, section, turning_about};
 use crate::frame::Obb;
-use ketchup_geometry::linalg::{dot, length, sub};
+use ketchup_geometry::linalg::{dot, length, scale, sub};
 use ketchup_model::tolerance::ALONG_AXIS_NEGLIGIBLE;
 
 /// How a joint holds a unit force sideways at the point a path holds.
@@ -36,24 +36,45 @@ impl Hold {
 /// turn about it freely under a moment beyond the thinner part's thickness
 /// `thin` there, which the parts bearing on each other carry no further
 /// (R1113r95-PG-702: a free post on one screw at its foot held the member).
+/// Fasteners slipping in their shear planes turn against their slip only
+/// about the contact's normal, by their distances across it; a moment about
+/// an axis in the contact would pull them out of it, and the parts turn
+/// freely about that axis (R1121ac-PG-1001: two screws along the axis of the
+/// moment fixed a hanger's top).
 pub(super) fn hold(tie: Tie, at: [f64; 3], held: [f64; 3], sideways: [f64; 3], thin: f64) -> Hold {
-    let lever = length(moment(held, at, sideways));
+    let moment = moment(held, at, sideways);
+    let lever = length(moment);
     let slip = |count: f64| 1.0 / (count * SLIP_PER_FASTENER);
     let short = lever <= thin;
     match tie {
         Tie::Rigid => Hold::Fixed(0.0),
         Tie::Pin if short => Hold::Fixed(slip(1.0)),
         Tie::Pin => Hold::Turning(slip(1.0)),
-        // Fasteners in one spot turn like one.
-        Tie::Fasteners { count, turning } if turning < thin * thin / 4.0 => {
-            if short {
-                Hold::Fixed(slip(count))
-            } else {
-                Hold::Turning(slip(count))
+        Tie::Fasteners {
+            count,
+            spread,
+            normal,
+        } => {
+            let (about, beside, turning) = normal.map_or((0.0, lever, 0.0), |normal| {
+                let about = dot(moment, normal);
+                (
+                    about,
+                    length(sub(moment, scale(normal, about))),
+                    turning_about(&spread, normal),
+                )
+            });
+            if beside > thin {
+                return Hold::Turning(slip(count));
             }
-        }
-        Tie::Fasteners { count, turning } => {
-            Hold::Fixed(slip(count) + lever * lever / (SLIP_PER_FASTENER * turning))
+            // Fasteners in one spot turn like one.
+            if turning < thin * thin / 4.0 {
+                return if short {
+                    Hold::Fixed(slip(count))
+                } else {
+                    Hold::Turning(slip(count))
+                };
+            }
+            Hold::Fixed(slip(count) + about * about / (SLIP_PER_FASTENER * turning))
         }
     }
 }
@@ -62,6 +83,8 @@ pub(super) fn hold(tie: Tie, at: [f64; 3], held: [f64; 3], sideways: [f64; 3], t
 /// it holds to its anchor: it pushes and pulls only along its axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Strut {
+    /// Its axis, the way the force it carries acts on its anchor.
+    pub(super) axis: [f64; 3],
     /// The cosine between its axis and the force.
     cosine: f64,
     /// How far it stretches under a unit force along it, mm per N.
@@ -84,6 +107,7 @@ impl Strut {
         let run = sub(entry, exit);
         let (along, [(_, wide_i), (_, wide_j)]) = section(obb, run);
         Self {
+            axis: obb.axes[along],
             cosine: dot(sideways, obb.axes[along]).abs(),
             give: length(run) / (modulus * wide_i * wide_j),
             capacity: euler_load(obb, modulus_05, run, reach),
@@ -133,15 +157,32 @@ mod tests {
             hold(Tie::Pin, [0.0, 0.0, 2390.0], held, sideways, 50.0),
             Hold::Fixed(slip)
         );
-        let two = Tie::Fasteners {
-            count: 2.0,
-            turning: 2.0 * 25.0 * 25.0,
-        };
+        // The moment turns about x: two fasteners 50 apart across it in a
+        // contact facing x turn against their slip.
+        let screws = [[0.0, -25.0, 10.0], [0.0, 25.0, 10.0]];
+        let two = Tie::fasteners(&screws, Some([1.0, 0.0, 0.0]));
         let Hold::Fixed(give) = hold(two, foot, held, sideways, 50.0) else {
             panic!("two fasteners apart turn freely");
         };
         let expected = slip / 2.0 + 2390.0_f64.powi(2) / (SLIP_PER_FASTENER * 1250.0);
         assert!((give - expected).abs() < 1e-9);
+        // R1121ac-PG-1001: in a contact facing z the same moment turns about
+        // an axis lying in it, pulling the fasteners out: a hinge.
+        let lying = Tie::fasteners(&screws, Some([0.0, 0.0, 1.0]));
+        assert_eq!(
+            hold(lying, foot, held, sideways, 50.0),
+            Hold::Turning(slip / 2.0)
+        );
+        // In a contact facing x, fasteners lying along the axis of the moment
+        // are in one spot about it.
+        let along = Tie::fasteners(
+            &[[-25.0, 0.0, 10.0], [25.0, 0.0, 10.0]],
+            Some([1.0, 0.0, 0.0]),
+        );
+        assert_eq!(
+            hold(along, foot, held, sideways, 50.0),
+            Hold::Turning(slip / 2.0)
+        );
         assert_eq!(
             hold(Tie::Rigid, foot, held, sideways, 50.0),
             Hold::Fixed(0.0)

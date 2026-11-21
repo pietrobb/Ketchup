@@ -193,12 +193,17 @@ joint(\"deck b\", \"beam 2\", kind = \"screw\")
     )
 }
 
-/// The deck screwed to both walls and declared a diaphragm anchored to them.
+/// The deck screwed down to grounded plates on its ends, against both walls,
+/// and declared a diaphragm anchored to them. Its boards only butting the
+/// walls, the moment about the joint, lying in the contact, would pull the
+/// screws out of it: a hinge (R1121ac-PG-1001).
 fn anchored_deck(end_wall_kind: &str) -> String {
     deck(&format!(
-        "joint(\"deck b\", \"end wall\", kind = \"{end_wall_kind}\")
-joint(\"deck a\", \"start wall\", kind = \"screw\")
-diaphragm([\"deck\"], anchored_to = [\"end wall\", \"start wall\"])
+        "box(\"end plate\", (100, 1080, 100), at = (5900, 0, 2422), material = \"GL24h\", grounded = True)
+box(\"start plate\", (100, 1080, 100), at = (0, 0, 2422), material = \"GL24h\", grounded = True)
+joint(\"deck b\", \"end plate\", kind = \"{end_wall_kind}\")
+joint(\"deck a\", \"start plate\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"end plate\", \"start plate\"])
 "
     ))
 }

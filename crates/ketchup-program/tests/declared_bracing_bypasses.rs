@@ -231,9 +231,11 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
     assert_eq!(checked(&held, "beam").status, "pass");
 }
 
-/// Deck strips 600 mm wide on [`BEAM`], screwed to it every 300 mm, butting
-/// two grounded boards 400 x `across` x 22 across its top in the gaps between
-/// them, which anchor the diaphragm; with `extra`.
+/// Deck strips 600 mm wide on [`BEAM`], screwed to it every 300 mm, two
+/// grounded boards 600 x `across` x 22 lying across the gaps between them on
+/// their ends and screwed down to them, which anchor the diaphragm; with
+/// `extra`. Boards only butting the strips would be hinges, the moment about
+/// the joint lying in the contact (R1121ac-PG-1001).
 fn gapped_deck(across: i32, extra: &str) -> Report {
     let screws = |from: i32, to: i32| {
         (from..=to)
@@ -257,10 +259,9 @@ joint(\"strip {name}\", \"beam\", kind = \"screw\", fasteners = [{}])
             screws(from + 150, to - 150)
         ));
     }
-    for (name, x) in [("plate 1", 1200), ("plate 2", 4300)] {
+    for (name, x) in [("plate 1", 1100), ("plate 2", 4200)] {
         source.push_str(&format!(
-            "box(\"{name}\", (400, {across}, 22), at = ({x}, -460, 2400), material = \"GL24h\", grounded = True, tags = [\"plate\"])
-joint(\"{name}\", \"beam\", kind = \"screw\")
+            "box(\"{name}\", (600, {across}, 22), at = ({x}, -460, 2422), material = \"GL24h\", grounded = True, tags = [\"plate\"])
 "
         ));
     }
@@ -295,8 +296,8 @@ fn a_diaphragm_anchored_to_boards_on_the_member_holds_nothing() {
     // holds them up no more than the beam does (capability review 751).
     let hung = gapped_deck(
         1000,
-        "box(\"hanger 1\", (50, 50, 300), at = (1300, 200, 2100), material = \"GL24h\")
-box(\"hanger 2\", (50, 50, 300), at = (4400, 200, 2100), material = \"GL24h\")
+        "box(\"hanger 1\", (50, 50, 300), at = (1300, 200, 2122), material = \"GL24h\")
+box(\"hanger 2\", (50, 50, 300), at = (4400, 200, 2122), material = \"GL24h\")
 ",
     );
     assert_ne!(checked(&hung, "beam").status, "pass");
@@ -308,7 +309,11 @@ box(\"hanger 2\", (50, 50, 300), at = (4400, 200, 2100), material = \"GL24h\")
         ignored(&hung)
     );
 
-    let on_wall = gapped_deck(1560, WALL);
+    // The wall reaches up to the boards on the strips.
+    let on_wall = gapped_deck(
+        1560,
+        "box(\"wall\", (5900, 100, 2422), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+    );
     assert_eq!(ignored(&on_wall), Vec::<&str>::new());
     assert_eq!(checked(&on_wall, "beam").status, "pass");
 }
@@ -382,7 +387,7 @@ fn deck(extra: &str) -> String {
 box(\"post d\", (100, 80, 2000), at = (5800, 1000, 0), material = \"GL24h\", grounded = True)
 box(\"beam 2\", (5900, 80, 400), at = (0, 1000, 2000), material = \"GL24h\", tags = [\"frame\"])
 box(\"deck a\", (2750, 1080, 22), at = (0, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
-box(\"deck b\", (2850, 1080, 22), at = (3150, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
+box(\"deck b\", (2950, 1080, 22), at = (3150, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
 box(\"deck tie\", (700, 880, 22), at = (2600, 200, 2422), material = \"GL24h\", tags = [\"deck\"])
 joint(\"deck tie\", \"deck a\", kind = \"screw\")
 joint(\"deck tie\", \"deck b\", kind = \"screw\")
@@ -423,10 +428,14 @@ diaphragm([\"deck\"], anchored_to = [\"nub\"])
         );
     }
 
+    // A wall under each end holds the deck's turn as a couple, where one wall
+    // alone is twisted by it (R1121ac-PG-1000).
     let wall = report(&deck(
-        "box(\"end wall\", (100, 1080, 2600), at = (6000, 0, 0), material = \"GL24h\", grounded = True)
+        "box(\"end wall\", (100, 1080, 2400), at = (6000, 0, 0), material = \"GL24h\", grounded = True)
 joint(\"deck b\", \"end wall\", kind = \"screw\")
-diaphragm([\"deck\"], anchored_to = [\"end wall\"])
+box(\"start wall\", (100, 840, 2400), at = (100, 120, 0), material = \"GL24h\", grounded = True)
+joint(\"deck a\", \"start wall\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"end wall\", \"start wall\"])
 ",
     ));
     assert_eq!(ignored(&wall), Vec::<&str>::new());
