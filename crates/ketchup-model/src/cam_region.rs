@@ -406,7 +406,10 @@ impl CamOperation {
                 };
                 let point = tool.tip_length_mm();
                 if (point - floor).abs() > LOOP_TOLERANCE_MM {
-                    return Err(CamPlannerError::DrillPointDoesNotFitFloor);
+                    return Err(CamPlannerError::DrillPointDoesNotFitFloor {
+                        operation: id,
+                        center: crate::cam::place_mm(hole.center_mm),
+                    });
                 }
                 hole.bottom_z_mm - point
             }

@@ -23,7 +23,9 @@ pub const WORKSHOP_SUMS: &str = "SHA256SUMS";
 pub const WORKSHOP_REPORT: &str = "not_made.txt";
 /// What the files of the package are written without, or a machine may not
 /// make, one per line: `output,part,element,reason` (review 2026-11-10
-/// MF-400, MF-401).
+/// MF-400, MF-401). Every field is quoted; one starting with `=`, `+`, `-`,
+/// `@`, a tab or a carriage return is written after an apostrophe, which a
+/// program reading the file drops (review 2026-11-21 ac P3).
 pub const WORKSHOP_LOSSES: &str = "losses.csv";
 
 /// A shop output the package does not hold, and why.
