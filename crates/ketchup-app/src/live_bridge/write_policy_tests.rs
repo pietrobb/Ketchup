@@ -151,6 +151,35 @@ fn the_startup_folders_the_shell_names_are_system_places() {
     }
 }
 
+/// An empty or relative `XDG_CONFIG_HOME` named the relative folder
+/// `autostart`, so `~/.config/autostart` was not refused (R1121ac P3); it is
+/// refused whatever `XDG_CONFIG_HOME` says, and a valid one is refused too.
+#[cfg(unix)]
+#[test]
+fn the_home_autostart_folder_is_refused_whatever_xdg_config_home_says() {
+    for xdg in ["", "relative/config", "/elsewhere/config"] {
+        let places = crate::live_bridge::write_policy::system_places_from(&|name| match name {
+            "HOME" => Some(PathBuf::from("/home/user")),
+            "XDG_CONFIG_HOME" => Some(PathBuf::from(xdg)),
+            _ => None,
+        });
+        let home_autostart = (
+            PathBuf::from("/home/user/.config/autostart"),
+            Place::Startup,
+        );
+        assert!(places.contains(&home_autostart), "{xdg:?}: {places:?}");
+        assert!(
+            places.iter().all(|(folder, _)| folder.is_absolute()),
+            "{xdg:?}: {places:?}"
+        );
+    }
+    let places = crate::live_bridge::write_policy::system_places_from(&|name| {
+        (name == "XDG_CONFIG_HOME").then(|| PathBuf::from("/elsewhere/config"))
+    });
+    let xdg_autostart = (PathBuf::from("/elsewhere/config/autostart"), Place::Startup);
+    assert!(places.contains(&xdg_autostart), "{places:?}");
+}
+
 /// A file named at the root of the system drive is refused before anything
 /// is written, saying which place and why.
 #[test]

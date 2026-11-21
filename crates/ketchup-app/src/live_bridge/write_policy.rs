@@ -188,7 +188,13 @@ impl Place {
 /// The system places of this computer, as named by its environment; a place
 /// the environment does not name is left out.
 pub(super) fn system_places() -> Vec<(PathBuf, Place)> {
-    let variable = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    system_places_from(&|name| std::env::var_os(name).map(PathBuf::from))
+}
+
+/// The system places named by the environment `variable` reads.
+pub(super) fn system_places_from(
+    variable: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Vec<(PathBuf, Place)> {
     let mut places = Vec::new();
     #[cfg(windows)]
     {
@@ -226,9 +232,16 @@ pub(super) fn system_places() -> Vec<(PathBuf, Place)> {
     #[cfg(unix)]
     {
         let home = variable("HOME");
-        let config =
-            variable("XDG_CONFIG_HOME").or_else(|| home.as_ref().map(|home| home.join(".config")));
-        places.extend(config.map(|config| (config.join("autostart"), Place::Startup)));
+        // An empty or relative `XDG_CONFIG_HOME` is ignored, as the XDG spec
+        // says, and `~/.config/autostart` stays refused beside it (R1121ac P3).
+        let config = variable("XDG_CONFIG_HOME").filter(|config| config.is_absolute());
+        let home_config = home.as_ref().map(|home| home.join(".config"));
+        places.extend(
+            config
+                .into_iter()
+                .chain(home_config)
+                .map(|config| (config.join("autostart"), Place::Startup)),
+        );
         places.push((PathBuf::from("/etc/xdg/autostart"), Place::Startup));
         if cfg!(target_os = "macos") {
             places.extend(home.map(|home| (home.join("Library/LaunchAgents"), Place::Startup)));

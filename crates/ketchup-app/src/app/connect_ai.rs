@@ -280,10 +280,14 @@ impl KetchupApp {
             }
             for file in &files {
                 ui.horizontal(|ui| {
-                    let size = file.bytes.map_or_else(
-                        || self.catalog.text("connect-ai-written-folder"),
-                        crate::live_bridge::write_log::shown_size,
-                    );
+                    let size = if file.removed {
+                        self.catalog.text("connect-ai-written-removed")
+                    } else {
+                        file.bytes.map_or_else(
+                            || self.catalog.text("connect-ai-written-folder"),
+                            crate::live_bridge::write_log::shown_size,
+                        )
+                    };
                     ui.label(egui::RichText::new(format!("{}  {size}", file.at)).small());
                     ui.add(
                         egui::Label::new(
