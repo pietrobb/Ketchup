@@ -155,6 +155,11 @@ fn a_declared_brace_holds_the_edge_it_names_when_fastened_and_anchored() {
     );
 }
 
+/// A grounded wall between the beams under the first board, screwed to it.
+const START_WALL: &str = "box(\"start wall\", (100, 840, 2400), at = (100, 120, 0), material = \"GL24h\", grounded = True)
+joint(\"deck a\", \"start wall\", kind = \"screw\")
+";
+
 /// The beam beside a second one on its own posts, a deck in two boards on
 /// both, either side of the load, screwed only to the beams every 300 mm,
 /// and a grounded wall past the beams' far ends that the second board butts.
@@ -221,11 +226,15 @@ fn a_deck_declared_a_diaphragm_anchored_to_a_wall_braces_the_joists() {
 
     // A board over the gap, clear of the pad, ties the first board to the
     // second: a board reaching no anchor holds nothing (review 2026-11-09 PG-301).
+    // A wall under each end holds the deck's turn as a couple; the end wall
+    // alone, twisted by the deck's length, holds it at 12 N/mm 2.7 m away
+    // (R1121ac-PG-1000).
     let anchored = report(&deck(&format!(
         "box(\"deck tie\", (700, 880, 22), at = (2600, 200, 2422), material = \"GL24h\", tags = [\"deck\"])
 joint(\"deck tie\", \"deck a\", kind = \"screw\")
 joint(\"deck tie\", \"deck b\", kind = \"screw\")
-joint(\"deck b\", \"end wall\", kind = \"screw\")\n{declared}"
+joint(\"deck b\", \"end wall\", kind = \"screw\")
+{START_WALL}diaphragm([\"deck\"], anchored_to = [\"end wall\", \"start wall\"])\n"
     )));
     let beam = load(&anchored, "beam");
     let held: Vec<f64> = beam

@@ -337,6 +337,43 @@ joint(\"brace {x}\", \"head {x}\", kind = \"screw\", fasteners = [({near_x}, {ne
     assert_ne!(checked(&held, "beam").status, "pass");
 }
 
+/// R1121ac-PG-1000, a diaphragm's way: a deck 700 x 600 x 22 screwed to the
+/// beam, its far end screwed to one grounded plate 300 x 300 x 100 on a column
+/// 20 (x) x 400 (y) x 2 300 standing 500 mm along the beam from the screws,
+/// was asked how the plate holds a force where the deck meets it: the column's
+/// strong way. The deck, fixed to its single anchor, turns the column by its
+/// 500 mm: twisting 500² L / (G J) ≈ 0.8 mm/N, the column lets the beam give
+/// about 1.2 N/mm. Anchors apart from each other would hold the turn as a
+/// couple instead.
+#[test]
+fn a_deck_on_one_anchor_twists_it_by_its_length() {
+    let held = beam_with(
+        |x| {
+            format!(
+                "box(\"deck {x}\", (750, 600, 22), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"deck {x}\"])
+box(\"plate {x}\", (400, 400, 100), at = ({}, 200, 2300), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (20, 400, 2300), at = ({}, 200, 0), material = \"GL24h\", grounded = True)
+joint(\"deck {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 20, 2400), ({x}, 60, 2400)])
+joint(\"deck {x}\", \"plate {x}\", kind = \"screw\", fasteners = [({}, 210, 2400), ({}, 590, 2400)])
+diaphragm([\"deck {x}\"], anchored_to = [\"plate {x}\"])
+",
+                x - 50,
+                x + 300,
+                x + 490,
+                x + 310,
+                x + 690,
+            )
+        },
+        "",
+    );
+    let found = stiffnesses(&held, "deck");
+    assert!(!found.is_empty(), "{:?}", refused(&held));
+    for stiffness in found {
+        assert!((0.6..=2.0).contains(&stiffness), "{stiffness}");
+    }
+    assert_ne!(checked(&held, "beam").status, "pass");
+}
+
 /// R1121ac-PG-1001: an upright hanger 300 x 100 x 600 on the beam's side, its
 /// top on a grounded block on a column 200 x 200, the joint naming no
 /// screws, was fixed there and held the beam at 85.2 N/mm: the two screws

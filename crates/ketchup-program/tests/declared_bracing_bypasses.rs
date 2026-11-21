@@ -428,10 +428,14 @@ diaphragm([\"deck\"], anchored_to = [\"nub\"])
         );
     }
 
+    // A wall under each end holds the deck's turn as a couple, where one wall
+    // alone is twisted by it (R1121ac-PG-1000).
     let wall = report(&deck(
         "box(\"end wall\", (100, 1080, 2400), at = (6000, 0, 0), material = \"GL24h\", grounded = True)
 joint(\"deck b\", \"end wall\", kind = \"screw\")
-diaphragm([\"deck\"], anchored_to = [\"end wall\"])
+box(\"start wall\", (100, 840, 2400), at = (100, 120, 0), material = \"GL24h\", grounded = True)
+joint(\"deck a\", \"start wall\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"end wall\", \"start wall\"])
 ",
     ));
     assert_eq!(ignored(&wall), Vec::<&str>::new());

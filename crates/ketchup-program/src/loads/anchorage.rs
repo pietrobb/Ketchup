@@ -440,7 +440,8 @@ impl<'a> Footing<'a> {
     /// [`Self::through`] with the parts the path runs through past `by`; a
     /// brace fixed at both ends turns its anchor about the point of the member
     /// it holds where `lever`, and passes the force on where it meets it
-    /// otherwise (a diaphragm's sheet, which its anchors hold together).
+    /// otherwise (a diaphragm's sheet, which anchors apart from each other
+    /// hold together).
     fn routed(
         &self,
         by: usize,
@@ -544,7 +545,11 @@ impl<'a> Footing<'a> {
     /// unchecked, though each post gives 0.8 N/mm against 58 asked). Paths
     /// sharing a part on their way to the ground are one path, the stiffest of
     /// them (R1120ac-PG-901: eight blocks on one lath on a single post held as
-    /// eight posts).
+    /// eight posts). Paths apart from each other hold the sheet's turn as a
+    /// couple; one path alone is turned by the sheet as a fixed brace turns its
+    /// anchor (R1121ac-PG-1000: a deck on one plate over a column 20 x 400 held
+    /// the member at 198.6 N/mm, the column's strong way, where its twist by the
+    /// deck's 500 mm lets it give about 1.2).
     pub(super) fn diaphragm(
         &self,
         by: usize,
@@ -553,24 +558,36 @@ impl<'a> Footing<'a> {
         point: [f64; 3],
         chain: &[usize],
     ) -> Option<Anchorage> {
-        let mut paths: Vec<(Anchorage, BTreeSet<usize>)> = anchors
+        let mut paths: Vec<(usize, Anchorage, BTreeSet<usize>)> = anchors
             .collect::<BTreeSet<usize>>()
             .into_iter()
-            .filter_map(|anchor| self.routed(by, anchor, member, point, chain, false))
+            .filter_map(|anchor| {
+                self.routed(by, anchor, member, point, chain, false)
+                    .map(|(anchorage, route)| (anchor, anchorage, route))
+            })
             .collect();
-        paths.sort_by(|a, b| b.0.stiffness_n_mm.total_cmp(&a.0.stiffness_n_mm));
+        paths.sort_by(|a, b| b.1.stiffness_n_mm.total_cmp(&a.1.stiffness_n_mm));
         let mut used = BTreeSet::new();
-        paths
+        let apart: Vec<(usize, Anchorage)> = paths
             .into_iter()
-            .filter(|(_, route)| {
+            .filter(|(_, _, route)| {
                 let alone = route.is_disjoint(&used);
                 if alone {
                     used.extend(route.iter().copied());
                 }
                 alone
             })
-            .map(|(anchorage, _)| anchorage)
-            .reduce(together)
+            .map(|(anchor, anchorage, _)| (anchor, anchorage))
+            .collect();
+        match apart.as_slice() {
+            [(anchor, _)] => self
+                .routed(by, *anchor, member, point, chain, true)
+                .map(|(anchorage, _)| anchorage),
+            _ => apart
+                .into_iter()
+                .map(|(_, anchorage)| anchorage)
+                .reduce(together),
+        }
     }
 
     /// Whether `item` ends a path: grounded, standing on the floor.
