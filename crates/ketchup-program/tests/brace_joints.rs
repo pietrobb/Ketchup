@@ -96,20 +96,23 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\"{})
 /// Review 2026-11-20 ac P3: a hanger screwed twice to the side of a grounded
 /// column bends, and so does the column; nothing on the path pushes along its
 /// axis, so it has no buckling force (the slanting run from the beam to the
-/// screws gave the hanger one in MN).
+/// screws gave the hanger one in MN). The column stands beside the hanger
+/// along the beam: the moment the force across the beam puts on the screws
+/// turns about the normal of their contact, against which they slip
+/// (R1121ac-PG-1001).
 #[test]
 fn a_hanger_bent_to_a_column_does_not_buckle() {
     let held = beam_with(
         |x| {
             format!(
                 "box(\"hanger {x}\", (50, 100, 600), at = ({x}, 80, 2300), material = \"GL24h\", tags = [\"hanger\"])
-box(\"column {x}\", (200, 200, 2900), at = ({}, 180, 0), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (200, 200, 2900), at = ({}, 100, 0), material = \"GL24h\", grounded = True)
 joint(\"hanger {x}\", \"beam\", kind = \"screw\")
-joint(\"hanger {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 180, 2850), ({}, 180, 2750)])
+joint(\"hanger {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 140, 2850), ({}, 140, 2750)])
 ",
-                x - 75,
-                x + 25,
-                x + 25
+                x + 50,
+                x + 50,
+                x + 50
             )
         },
         "brace([\"beam\"], by = [\"hanger\"], edge = \"top\")\n",
@@ -233,4 +236,133 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
             refused(&held)
         );
     }
+}
+
+/// The stiffness each brace tagged `prefix` holds the beam with, N/mm.
+fn stiffnesses(report: &Report, prefix: &str) -> Vec<f64> {
+    report
+        .loads
+        .members
+        .iter()
+        .flat_map(|load| &load.braced_by)
+        .filter(|brace| brace.part.starts_with(prefix))
+        .map(|brace| {
+            brace
+                .anchorage
+                .as_ref()
+                .map_or(0.0, |anchorage| anchorage.stiffness_n_mm)
+        })
+        .collect()
+}
+
+/// Review 2026-11-21 R1121ac-PG-1000: a rod 40 x 40 x 1 000 lying on the beam
+/// at 40° in plan, one screw at each end, its far end on a grounded column 20
+/// (x) x 400 (y) x 2 400, held the beam at 124.8 N/mm and passed: the column
+/// was asked how it holds a force across the beam (its strong way), though the
+/// rod, turning on its screws, pushes it along the rod, with sin 40° of it the
+/// column's weak way. Bending 3 E I / L³ = 0.666 N/mm that way, the column
+/// holds the rod's end 0.623 mm/N along it, and the rod the beam
+/// cos² 40° / 0.624 = 0.94 N/mm, against about 56 asked.
+#[test]
+fn a_strut_pushes_its_anchor_along_itself() {
+    let (sin, cos) = 40.0_f64.to_radians().sin_cos();
+    let held = beam_with(
+        |x| {
+            let end = |along: f64| (f64::from(x) - along * sin, 40.0 + along * cos);
+            let (column_x, column_y) = end(960.0);
+            let (screw_x, screw_y) = end(950.0);
+            format!(
+                "strut = box(\"strut {x}\", (40, 1000, 40), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"strut\"])
+rotate(strut, axis = (0, 0, 1), angle = 40, pivot = ({x}, 40, 2420))
+box(\"column {x}\", (20, 400, 2400), at = ({}, {}, 0), material = \"GL24h\", grounded = True)
+joint(\"strut {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 40, 2400)])
+joint(\"strut {x}\", \"column {x}\", kind = \"screw\", fasteners = [({screw_x}, {screw_y}, 2400)])
+",
+                x - 20,
+                column_x - 10.0,
+                column_y - 200.0,
+            )
+        },
+        "brace([\"beam\"], by = [\"strut\"], edge = \"top\")\n",
+    );
+    let found = stiffnesses(&held, "strut");
+    assert_eq!(found.len(), PLACES.len(), "{found:?}");
+    for stiffness in found {
+        assert!((0.85..=1.05).contains(&stiffness), "{stiffness}");
+    }
+    assert_ne!(checked(&held, "beam").status, "pass");
+}
+
+/// R1121ac-PG-1000: a brace 100 x 100 x 1 000 at 30° in plan, screwed twice at
+/// each end, fixed on a grounded head 400 x 400 x 400 standing on a column
+/// 20 x 400 x 2 000 under where it meets the brace, held the beam at about
+/// 100 N/mm: the head was asked how it holds a force where it meets the brace,
+/// and the brace's 425 mm across the beam's length, a lever twisting the column,
+/// was lost. Twisting 425² L / (G J) = 0.49 mm/N (G J = 7.4e8 N mm²), the
+/// column lets the beam give about 2 N/mm.
+#[test]
+fn a_fixed_brace_twists_its_anchor_by_its_length() {
+    let (sin, cos) = 30.0_f64.to_radians().sin_cos();
+    let held = beam_with(
+        |x| {
+            let at = |along: f64| (f64::from(x) - along * sin, 40.0 + along * cos);
+            let (head_x, head_y) = at(850.0);
+            let (near_x, near_y) = at(700.0);
+            let (far_x, far_y) = at(900.0);
+            format!(
+                "rod = box(\"brace {x}\", (100, 1000, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+rotate(rod, axis = (0, 0, 1), angle = 30, pivot = ({x}, 40, 2450))
+box(\"head {x}\", (400, 400, 400), at = ({}, {}, 2000), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (20, 400, 2000), at = ({}, {}, 0), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"head {x}\", kind = \"screw\", fasteners = [({near_x}, {near_y}, 2400), ({far_x}, {far_y}, 2400)])
+",
+                x - 50,
+                head_x - 200.0,
+                head_y - 200.0,
+                head_x - 10.0,
+                head_y - 200.0,
+                f64::from(x) + 15.0,
+                f64::from(x) - 15.0,
+            )
+        },
+        "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+    );
+    // Each brace holds the beam at both its screws.
+    let found = stiffnesses(&held, "brace");
+    assert_eq!(found.len(), 2 * PLACES.len(), "{found:?}");
+    for stiffness in found {
+        assert!((1.0..=3.0).contains(&stiffness), "{stiffness}");
+    }
+    assert_ne!(checked(&held, "beam").status, "pass");
+}
+
+/// R1121ac-PG-1001: an upright hanger 300 x 100 x 600 on the beam's side, its
+/// top on a grounded block on a column 200 x 200, the joint naming no
+/// screws, was fixed there and held the beam at 85.2 N/mm: the two screws
+/// taken at the ends of the contact run mostly along the axis of the moment,
+/// which lies in the contact and would pull them out of it. The joint is a
+/// hinge, and the upright hanger a pendulum across the force.
+#[test]
+fn screws_along_the_axis_of_the_moment_make_a_hinge() {
+    let held = beam_with(
+        |x| {
+            format!(
+                "box(\"hanger {x}\", (300, 100, 600), at = ({}, 80, 2300), material = \"GL24h\", tags = [\"hanger\"])
+box(\"block {x}\", (300, 400, 100), at = ({}, 80, 2900), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (200, 200, 2900), at = ({}, 230, 0), material = \"GL24h\", grounded = True)
+joint(\"hanger {x}\", \"beam\", kind = \"screw\")
+joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
+",
+                x - 150,
+                x - 150,
+                x - 100
+            )
+        },
+        "brace([\"beam\"], by = [\"hanger\"], edge = \"top\")\n",
+    );
+    for stiffness in stiffnesses(&held, "hanger") {
+        assert!(stiffness < 1.0, "{stiffness}");
+    }
+    assert_ne!(checked(&held, "beam").status, "pass");
 }

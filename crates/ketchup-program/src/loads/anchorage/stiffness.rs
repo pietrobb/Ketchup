@@ -29,9 +29,54 @@ pub(super) enum Tie {
     Rigid,
     /// One fastener: it slips, and the parts turn about it freely.
     Pin,
-    /// `count` fasteners `turning` = the sum of their squared distances from
-    /// their middle (mm²) apart: they slip, and turn against their slip.
-    Fasteners { count: f64, turning: f64 },
+    /// `count` fasteners spread about their middle by `spread` = the sum of
+    /// r rᵀ over their offsets r from it (mm²), in a contact facing `normal`
+    /// (None where the parts share no face): they slip, and turn against
+    /// their slip about the normal only (R1121ac-PG-1001).
+    Fasteners {
+        count: f64,
+        spread: [[f64; 3]; 3],
+        normal: Option<[f64; 3]>,
+    },
+}
+
+impl Tie {
+    /// `count` fasteners at `points` in a contact facing `normal`.
+    pub(super) fn fasteners(points: &[[f64; 3]], normal: Option<[f64; 3]>) -> Self {
+        let count = f64::from(u32::try_from(points.len()).unwrap_or(u32::MAX));
+        let middle: [f64; 3] = std::array::from_fn(|i| {
+            points.iter().map(|point| point[i]).sum::<f64>() / count.max(1.0)
+        });
+        let mut spread = [[0.0; 3]; 3];
+        for point in points {
+            let r = sub(*point, middle);
+            for (row, line) in spread.iter_mut().enumerate() {
+                for (column, cell) in line.iter_mut().enumerate() {
+                    *cell += r[row] * r[column];
+                }
+            }
+        }
+        Self::Fasteners {
+            count,
+            spread,
+            normal,
+        }
+    }
+}
+
+/// The sum of squared distances of fasteners spread by `spread` from the
+/// axis through their middle along `axis` (unit), mm²: what they turn
+/// against, slipping, about it.
+pub(super) fn turning_about(spread: &[[f64; 3]; 3], axis: [f64; 3]) -> f64 {
+    let trace = spread[0][0] + spread[1][1] + spread[2][2];
+    let along: f64 = (0..3)
+        .map(|row| {
+            (0..3)
+                .map(|column| axis[row] * spread[row][column] * axis[column])
+                .sum::<f64>()
+        })
+        .sum();
+    (trace - along).max(0.0)
 }
 
 /// The moment a unit force `sideways` at `held` puts on a section at `at`,

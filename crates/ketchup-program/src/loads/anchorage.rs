@@ -15,7 +15,7 @@ use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
 use joint::{Hold, Strut, hold};
-use ketchup_geometry::linalg::{self, cross, dot, length, sub};
+use ketchup_geometry::linalg::{self, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
 use std::cell::RefCell;
 use std::cmp::Reverse;
@@ -149,7 +149,31 @@ impl Anchorage {
     }
 }
 
-type Asked = (usize, usize, Vec<usize>, u64);
+/// The force a brace puts on its anchor for a unit force across the member at
+/// the point it holds: acting `along` (unit), entering the anchor at `enter`
+/// and turning it about `held`, through which it runs. A brace fixed at both
+/// ends passes the force across the member on at the point of the member, the
+/// brace's length a lever on the anchor; one turning about a joint passes on
+/// only the force along its axis, through the joint (review 2026-11-21
+/// R1121ac-PG-1000: the anchor was asked only how it holds a force across the
+/// member where it meets the brace, and a column bending its weak way under a
+/// strut at 40°, or twisting under a brace fixed 250 mm off its axis, held
+/// the member a hundred times too stiffly).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Probe {
+    held: [f64; 3],
+    enter: [f64; 3],
+    along: [f64; 3],
+}
+
+impl Probe {
+    fn bits(self) -> [u64; 9] {
+        let all = [self.held, self.enter, self.along];
+        std::array::from_fn(|i| all[i / 3][i % 3].to_bits())
+    }
+}
+
+type Asked = (usize, usize, Vec<usize>, u64, Option<[u64; 9]>);
 
 /// Of two ways a point is held, the less stiff with the sooner buckling.
 pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
@@ -312,43 +336,60 @@ impl<'a> Footing<'a> {
         member: usize,
         apart: &[usize],
     ) -> Option<Anchorage> {
-        self.reached(anchor, member, apart, 0.0)
+        self.reached(anchor, member, apart, 0.0, None)
             .map(|(anchorage, _)| anchorage)
     }
 
     /// [`Self::anchorage`] of a path that has run `reach` before the anchor,
     /// over which it buckles as well (R1120ac-PG-902: a brace 1 200 long end
     /// to end with an anchor 1 200 long held the member where one rod 2 400 long
-    /// buckled), with the parts the paths run through.
+    /// buckled), with the parts the paths run through; under the force
+    /// `probe` a brace puts on it, else a force across the member where the
+    /// anchor meets it.
     fn reached(
         &self,
         anchor: usize,
         member: usize,
         apart: &[usize],
         reach: f64,
+        probe: Option<Probe>,
     ) -> Option<(Anchorage, BTreeSet<usize>)> {
         let mut apart = apart.to_vec();
         apart.sort_unstable();
         apart.dedup();
-        let key = (anchor, member, apart, reach.to_bits());
+        let key = (
+            anchor,
+            member,
+            apart,
+            reach.to_bits(),
+            probe.map(Probe::bits),
+        );
         if let Some(known) = self.known.borrow().get(&key) {
             return known.clone();
         }
-        // Where the anchor holds: where it meets the member, else the brace
-        // it holds.
-        let obb = self.parts[anchor].obb();
-        let held = std::iter::once(member)
-            .chain(key.2.iter().copied())
-            .find_map(|other| meeting(&obb, &self.parts[other].obb()))
-            .unwrap_or(obb.centre);
-        let directions = match sideways_of(&self.frames[member], &self.parts[member]) {
-            Some((sideways, _)) => vec![sideways],
-            None => vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        };
+        let probes = probe.map_or_else(
+            || {
+                // Where the anchor holds: where it meets the member, else the
+                // parts kept apart.
+                let obb = self.parts[anchor].obb();
+                let held = std::iter::once(member)
+                    .chain(key.2.iter().copied())
+                    .find_map(|other| meeting(&obb, &self.parts[other].obb()))
+                    .unwrap_or(obb.centre);
+                self.sideways(member)
+                    .into_iter()
+                    .map(|along| Probe {
+                        held,
+                        enter: held,
+                        along,
+                    })
+                    .collect()
+            },
+            |probe| vec![probe],
+        );
         let mut found: Option<(Anchorage, BTreeSet<usize>)> = None;
-        for sideways in directions {
-            let Some((this, route)) = self.search(anchor, member, &key.2, held, sideways, reach)
-            else {
+        for probe in probes {
+            let Some((this, route)) = self.search(anchor, member, &key.2, probe, reach) else {
                 found = None;
                 break;
             };
@@ -383,11 +424,23 @@ impl<'a> Footing<'a> {
         point: [f64; 3],
         apart: &[usize],
     ) -> Option<Anchorage> {
-        self.routed(by, anchor, member, point, apart)
+        self.routed(by, anchor, member, point, apart, true)
             .map(|(anchorage, _)| anchorage)
     }
 
-    /// [`Self::through`] with the parts the path runs through past `by`.
+    /// The level directions across `member` a force holding it acts in: the
+    /// one across it, or both for an upright one.
+    fn sideways(&self, member: usize) -> Vec<[f64; 3]> {
+        match sideways_of(&self.frames[member], &self.parts[member]) {
+            Some((sideways, _)) => vec![sideways],
+            None => vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        }
+    }
+
+    /// [`Self::through`] with the parts the path runs through past `by`; a
+    /// brace fixed at both ends turns its anchor about the point of the member
+    /// it holds where `lever`, and passes the force on where it meets it
+    /// otherwise (a diaphragm's sheet, which its anchors hold together).
     fn routed(
         &self,
         by: usize,
@@ -395,9 +448,10 @@ impl<'a> Footing<'a> {
         member: usize,
         point: [f64; 3],
         apart: &[usize],
+        lever: bool,
     ) -> Option<(Anchorage, BTreeSet<usize>)> {
         if anchor == by {
-            return self.reached(anchor, member, apart, 0.0);
+            return self.reached(anchor, member, apart, 0.0, None);
         }
         let obb = self.parts[by].obb();
         let anchor_obb = self.parts[anchor].obb();
@@ -406,14 +460,9 @@ impl<'a> Footing<'a> {
             .find_map(|part| meeting(&anchor_obb, &self.parts[part].obb()))
             .unwrap_or(anchor_obb.centre);
         let run = length(sub(point, at));
-        let (from_anchor, route) = self.reached(anchor, member, apart, run)?;
-        let directions = match sideways_of(&self.frames[member], &self.parts[member]) {
-            Some((sideways, _)) => vec![sideways],
-            None => vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        };
-        let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
+        let mut route = BTreeSet::new();
         let mut found: Option<Anchorage> = None;
-        for sideways in directions {
+        for sideways in self.sideways(member) {
             // A part only bearing on another turns about it.
             let joint = |other: usize, at: [f64; 3]| {
                 let thin = least_side(&obb).min(least_side(&self.parts[other].obb()));
@@ -424,6 +473,14 @@ impl<'a> Footing<'a> {
             };
             let this = match (joint(member, point), joint(anchor, at)) {
                 (Hold::Fixed(to_member), Hold::Fixed(to_anchor)) => {
+                    let probe = lever.then_some(Probe {
+                        held: point,
+                        enter: at,
+                        along: sideways,
+                    });
+                    let (from_anchor, through) = self.reached(anchor, member, apart, run, probe)?;
+                    route.extend(through);
+                    let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
                     let own = brace_give(&obb, self.moduli[by].0, point, at, sideways)
                         + to_member
                         + to_anchor;
@@ -445,6 +502,15 @@ impl<'a> Footing<'a> {
                 }
                 (to_member, to_anchor) => {
                     let strut = Strut::of(&obb, self.moduli[by], (point, at), sideways, run);
+                    let probe = Probe {
+                        held: at,
+                        enter: at,
+                        along: strut.axis,
+                    };
+                    let (from_anchor, through) =
+                        self.reached(anchor, member, apart, run, Some(probe))?;
+                    route.extend(through);
+                    let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
                     let slip = to_member.give() + to_anchor.give();
                     let (stiffness_n_mm, capacity_n) =
                         strut.holds(slip, anchor_give, from_anchor.capacity_n);
@@ -490,7 +556,7 @@ impl<'a> Footing<'a> {
         let mut paths: Vec<(Anchorage, BTreeSet<usize>)> = anchors
             .collect::<BTreeSet<usize>>()
             .into_iter()
-            .filter_map(|anchor| self.routed(by, anchor, member, point, chain))
+            .filter_map(|anchor| self.routed(by, anchor, member, point, chain, false))
             .collect();
         paths.sort_by(|a, b| b.0.stiffness_n_mm.total_cmp(&a.0.stiffness_n_mm));
         let mut used = BTreeSet::new();
@@ -512,24 +578,28 @@ impl<'a> Footing<'a> {
         self.grounded[item] && on_floor(&self.parts[item], self.floor)
     }
 
-    /// [`Self::reached`] by a force `sideways` at `held`: the path giving
-    /// least, found as the shortest by its give, what each part and joint
-    /// gives adding up along it, buckling over its length on from `start`;
-    /// with the parts it runs through, the anchor first.
+    /// [`Self::reached`] by the force `probe`: the path giving least, found
+    /// as the shortest by its give, what each part and joint gives adding up
+    /// along it, buckling over its length on from `start`; with the parts it
+    /// runs through, the anchor first.
     fn search(
         &self,
         anchor: usize,
         member: usize,
         apart: &[usize],
-        held: [f64; 3],
-        sideways: [f64; 3],
+        probe: Probe,
         start: f64,
     ) -> Option<(Anchorage, Vec<usize>)> {
+        let Probe {
+            held,
+            enter,
+            along: sideways,
+        } = probe;
         let count = self.parts.len();
         let frame = &self.frames[member];
         let deep = depth(&self.parts[member], frame);
         let mut give = vec![f64::INFINITY; count];
-        let mut entry = vec![held; count];
+        let mut entry = vec![enter; count];
         // How far the path has run to each part, and the force it takes
         // before buckling up to there.
         let mut reach = vec![start; count];
@@ -653,40 +723,44 @@ impl<'a> Footing<'a> {
         Some(match listed.len() {
             0 => self.fitting(a, b),
             1 => Tie::Pin,
-            count => {
-                let count = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
-                let middle: [f64; 3] = std::array::from_fn(|i| {
-                    listed.iter().map(|point| point[i]).sum::<f64>() / count
-                });
-                Tie::Fasteners {
-                    count,
-                    turning: listed
-                        .iter()
-                        .map(|point| dot(sub(*point, middle), sub(*point, middle)))
-                        .sum(),
-                }
-            }
+            _ => Tie::fasteners(listed, self.contact_normal(a, b)),
         })
     }
 
+    /// The way the contact between `a` and `b` faces: across the region they
+    /// share, its thinnest way; None where they share none.
+    fn contact_normal(&self, a: usize, b: usize) -> Option<[f64; 3]> {
+        let (first, second) = (self.parts[a].obb(), self.parts[b].obb());
+        thinnest(
+            &shared(&first, &second),
+            first.axes.into_iter().chain(second.axes),
+        )
+    }
+
     /// The fasteners a joint naming none is taken to have between `a` and
-    /// `b`: two at the ends of their contact where it is three times as long
-    /// as the thinner part is thick, else one (as the sheets of a diaphragm,
-    /// review 2026-11-13 P3).
+    /// `b`: two at the ends of their contact, along its longest way, where it
+    /// is three times as long as the thinner part is thick, else one (as the
+    /// sheets of a diaphragm, review 2026-11-13 P3).
     fn fitting(&self, a: usize, b: usize) -> Tie {
         let (first, second) = (self.parts[a].obb(), self.parts[b].obb());
         let corners = shared(&first, &second);
-        let long = corners
+        let Some((p, q)) = corners
             .iter()
-            .flat_map(|p| corners.iter().map(move |q| length(sub(*p, *q))))
-            .fold(0.0, f64::max);
+            .flat_map(|p| corners.iter().map(move |q| (*p, *q)))
+            .max_by(|(p, q), (r, s)| length(sub(*p, *q)).total_cmp(&length(sub(*r, *s))))
+        else {
+            return Tie::Pin;
+        };
+        let long = length(sub(q, p));
         let thin = least_side(&first).min(least_side(&second));
         if long >= 3.0 * thin {
             let apart = (long - thin) / 2.0;
-            Tie::Fasteners {
-                count: 2.0,
-                turning: 2.0 * apart * apart,
-            }
+            let middle: [f64; 3] = std::array::from_fn(|i| (p[i] + q[i]) / 2.0);
+            let way = scale(sub(q, p), apart / long);
+            Tie::fasteners(
+                &[sub(middle, way), linalg::add(middle, way)],
+                self.contact_normal(a, b),
+            )
         } else {
             Tie::Pin
         }
@@ -772,9 +846,12 @@ fn face_to_face(a: &Obb, b: &Obb) -> bool {
     shared_area(&shared, a.axes.into_iter().chain(b.axes)) >= thinnest * thinnest / 2.0
 }
 
-/// The area of the convex region with corners `points`, seen along whichever
-/// of `directions` it is thinnest along.
-fn shared_area(points: &[[f64; 3]], directions: impl Iterator<Item = [f64; 3]>) -> f64 {
+/// Of `directions`, the one the region with corners `points` is thinnest
+/// along; None for no region.
+fn thinnest(points: &[[f64; 3]], directions: impl Iterator<Item = [f64; 3]>) -> Option<[f64; 3]> {
+    if points.is_empty() {
+        return None;
+    }
     let extent = |direction: [f64; 3]| {
         let (low, high) =
             points
@@ -785,7 +862,13 @@ fn shared_area(points: &[[f64; 3]], directions: impl Iterator<Item = [f64; 3]>) 
                 });
         high - low
     };
-    let Some(across) = directions.min_by(|a, b| extent(*a).total_cmp(&extent(*b))) else {
+    directions.min_by(|a, b| extent(*a).total_cmp(&extent(*b)))
+}
+
+/// The area of the convex region with corners `points`, seen along whichever
+/// of `directions` it is thinnest along.
+fn shared_area(points: &[[f64; 3]], directions: impl Iterator<Item = [f64; 3]>) -> f64 {
+    let Some(across) = thinnest(points, directions) else {
         return 0.0;
     };
     let other = if across[0].abs() < 0.9 {
