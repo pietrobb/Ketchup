@@ -416,6 +416,76 @@ fn a_corner_arc_shorter_than_a_step_is_never_written_as_a_full_circle() {
     }
 }
 
+/// Review 2026-11-21 ac P3: an arc no dialect's grid can write was refused without saying which;
+/// the refusal names the operation, the motion and where the arc starts.
+#[test]
+fn an_unwritable_arc_is_refused_with_its_place() {
+    use ketchup_model::cam::{CamMotionPath, CamOperation, CamPath2d, CamPathSegment2d};
+    let document = solid_document();
+    let snapshot = document.current();
+    let canonical = plan(&snapshot).unwrap();
+    let operations = vec![CamOperation::Contour {
+        id: 7,
+        center_path: CamPath2d {
+            start_mm: [25.0, 10.0],
+            segments: vec![
+                CamPathSegment2d::Arc {
+                    to_mm: [25.0, 10.004],
+                    center_mm: [25.0, 10.002],
+                    clockwise: false,
+                },
+                CamPathSegment2d::Line {
+                    to_mm: [40.0, 20.0],
+                },
+                CamPathSegment2d::Line {
+                    to_mm: [25.0, 10.0],
+                },
+            ],
+        },
+        top_z_mm: -2.0,
+        bottom_z_mm: -4.0,
+        applied_radial_allowance_mm: 0.2,
+    }];
+    let toolpath = CamToolpath::plan(&snapshot, &canonical, &operations).unwrap();
+    let simulation = successful_simulation(&canonical, &toolpath);
+    let mut refused = 0;
+    for id in CamPostprocessorDialect::library_ids().unwrap() {
+        let dialect = CamPostprocessorDialect::library(&id).unwrap();
+        let Err(error) = CamPostprocessorOutput::generate(
+            &snapshot,
+            &canonical,
+            &toolpath,
+            &simulation,
+            dialect,
+        ) else {
+            continue;
+        };
+        let CamPostprocessorError::UnwritableArc {
+            operation,
+            motion,
+            start,
+        } = &error
+        else {
+            panic!("{id}: {error}");
+        };
+        assert_eq!(*operation, 7, "{id}");
+        let CamMotionPath::Arc { start_mm, .. } = toolpath.motions[*motion].path else {
+            panic!("{id}: motion {motion} is not an arc");
+        };
+        assert_eq!(
+            start,
+            &ketchup_model::cam::place_mm([start_mm[0], start_mm[1]])
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains(&format!("operation 7 (motion {motion}, from X ")),
+            "{text}"
+        );
+        refused += 1;
+    }
+    assert!(refused > 0, "no dialect refused an arc of radius 0.002 mm");
+}
+
 #[test]
 fn no_controller_is_named_in_the_postprocessor_code() {
     for source in [
