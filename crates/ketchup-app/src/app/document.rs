@@ -1452,6 +1452,9 @@ impl KetchupApp {
         let container_data = &self.file.container_data;
         let work_recovery_identity = self.file.work_recovery_identity;
         let work_recovery_digest = self.file.work_recovery_digest.clone();
+        // As in `refresh_work_recovery_checkpoint`: while a file is read, a checkpoint
+        // (from a late exact result, say) would bring back edits the user discarded.
+        let reading = self.reading_document();
         let mut next_work_recovery_identity = work_recovery_identity;
         let mut publication_error = None;
         let result = self.document.try_canonical_transaction(
@@ -1472,6 +1475,7 @@ impl KetchupApp {
                 let Some((path, identity)) = checkpoint_target
                     .as_ref()
                     .map(|(path, identity)| (path.as_path(), *identity))
+                    .filter(|_| !reading)
                 else {
                     return Ok(());
                 };
@@ -1514,8 +1518,10 @@ impl KetchupApp {
         match result {
             Ok(value) => {
                 self.file.work_recovery_identity = next_work_recovery_identity;
-                self.file.work_recovery_digest = (self.is_dirty() && checkpoint_target.is_some())
-                    .then(|| self.document.history_digest());
+                // A skipped checkpoint stays due, for the frame after a cancelled open.
+                self.file.work_recovery_digest =
+                    (self.is_dirty() && checkpoint_target.is_some() && !reading)
+                        .then(|| self.document.history_digest());
                 if let Some(error) = &publication_error {
                     let path = checkpoint_target
                         .as_ref()
