@@ -24,9 +24,10 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give, pushed_along};
 
-/// The modulus of elasticity, mean and fifth percentile, N/mm², of a part of no
-/// wood strength class: softwood C24 (EN 338).
-const SOFTWOOD_MODULI: (f64, f64) = (11_000.0, 7_400.0);
+/// The modulus of elasticity, mean and fifth percentile, and the compressive
+/// strength f_c,0,k, N/mm², of a part of no wood strength class:
+/// softwood C24 (EN 338).
+const SOFTWOOD_MODULI: (f64, f64, f64) = (11_000.0, 7_400.0, 21.0);
 
 /// How a path to the ground holds a member at a point sideways.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,8 +57,9 @@ pub(super) struct Footing<'a> {
     /// load path was ground).
     spanning: Vec<Option<[f64; 3]>>,
     grounded: Vec<bool>,
-    /// Each part's modulus of elasticity, mean and fifth percentile, N/mm².
-    moduli: Vec<(f64, f64)>,
+    /// Each part's modulus of elasticity, mean and fifth percentile, and its
+    /// compressive strength f_c,0,k, N/mm².
+    moduli: Vec<(f64, f64, f64)>,
     floor: f64,
     touching: Vec<Vec<usize>>,
     /// The fasteners the fastening joint()s between each pair of parts, lesser
@@ -288,7 +290,9 @@ impl<'a> Footing<'a> {
                     part.material
                         .as_ref()
                         .and_then(|material| model.strength_classes.get(material))
-                        .map_or(SOFTWOOD_MODULI, |class| (class.e0_mean, class.e0_05))
+                        .map_or(SOFTWOOD_MODULI, |class| {
+                            (class.e0_mean, class.e0_05, class.fc0_k)
+                        })
                 })
                 .collect(),
             floor: model.floor_z_mm.unwrap_or(0.0),
@@ -482,7 +486,7 @@ impl<'a> Footing<'a> {
                         + to_anchor;
                     let capacity = part_capacity(
                         &obb,
-                        self.moduli[by].1,
+                        (self.moduli[by].1, self.moduli[by].2),
                         point,
                         at,
                         sideways,
@@ -790,7 +794,7 @@ impl<'a> Footing<'a> {
                 let (part, entry, exit) = pieces[index];
                 let capacity = part_capacity(
                     &self.parts[part].obb(),
-                    self.moduli[part].1,
+                    (self.moduli[part].1, self.moduli[part].2),
                     entry,
                     exit,
                     sideways,
