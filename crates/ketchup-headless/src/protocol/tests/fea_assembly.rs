@@ -162,6 +162,8 @@ fn an_assembly_of_joined_occurrences_is_reviewed_with_its_natural_frequencies() 
             level["maximum_free_dof_residual_n"].as_f64().unwrap() <= 1.0e-6,
             "{level}"
         );
+        // One bonded joint: every node on the other face is tied (R1121ac P3).
+        assert_eq!(level["untied_bonded_nodes"], 0, "{level}");
     }
     // Both cylinders' mass, up to how closely the mesh fills them.
     let modes = &result["modes"];
@@ -194,7 +196,7 @@ fn an_assembly_of_joined_occurrences_is_reviewed_with_its_natural_frequencies() 
         .unwrap();
     assert_eq!(modes["converged"], change <= tolerance, "{modes}");
     let not_checked = modes["not_checked"].as_array().unwrap();
-    assert_eq!(not_checked.len(), 4, "{modes}");
+    assert_eq!(not_checked.len(), 5, "{modes}");
     assert!(
         not_checked[0].as_str().unwrap().contains("too stiff"),
         "{modes}"

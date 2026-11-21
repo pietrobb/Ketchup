@@ -4,7 +4,9 @@
 //! W/m² and film coefficients in W/(m²·K), as engineers quote them.
 
 use crate::fea::{FeaNode, MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, MAX_FEA_NODES};
-use crate::sparse::{FactorError, SymmetricMatrix};
+use crate::sparse::{
+    ENTRY_BYTES, FactorError, MemoryBudget, SymmetricMatrix, distinct_positions, sort_entries,
+};
 use ketchup_geometry::linalg::{Mat3, Singular, cross, dot, length, sub};
 use ketchup_model::tolerance::NEGLIGIBLE;
 use sha2::{Digest, Sha256};
@@ -213,7 +215,28 @@ pub fn solve_steady_conduction_with_cancellation(
         .iter()
         .map(|material| (material.id, material.conductivity_w_per_m_k))
         .collect::<BTreeMap<_, _>>();
-    let mut entries = Vec::with_capacity(model.elements.len() * 16);
+    // The entries, both matrices and the factor are taken from the budget
+    // before each is allocated, as for stiffness (R1121ac P3: the entries and
+    // matrices were built whole before the factor's own check).
+    let too_large = |needed_bytes| ThermalError::FactorTooLarge {
+        needed_bytes,
+        budget_bytes: settings.maximum_factor_bytes,
+    };
+    let mut budget = MemoryBudget::new(settings.maximum_factor_bytes);
+    let films = model
+        .boundaries
+        .iter()
+        .filter(|boundary| matches!(boundary, ThermalBoundary::Convection { .. }))
+        .count();
+    let entry_count = model
+        .elements
+        .len()
+        .saturating_mul(16)
+        .saturating_add(films.saturating_mul(9));
+    budget
+        .take(entry_count.saturating_mul(ENTRY_BYTES))
+        .map_err(too_large)?;
+    let mut entries = Vec::with_capacity(entry_count);
     for (element, &(volume, gradients)) in model.elements.iter().zip(&geometry) {
         let scale = conductivity[&element.material_id] * PER_MM * volume;
         for (row, left) in gradients.iter().enumerate() {
@@ -255,7 +278,15 @@ pub fn solve_steady_conduction_with_cancellation(
         }
     }
 
-    let original = SymmetricMatrix::from_entries(count, entries);
+    sort_entries(&mut entries);
+    let matrix_bytes =
+        SymmetricMatrix::bytes_for(count, distinct_positions(entries.iter().copied()));
+    budget
+        .take(matrix_bytes.saturating_mul(2))
+        .map_err(too_large)?;
+    let original = SymmetricMatrix::from_sorted(count, entries.iter().copied());
+    budget.give(entries.capacity() * ENTRY_BYTES);
+    drop(entries);
     let mut matrix = original.clone();
     let mut rhs = heat.clone();
     let scale = original.largest_magnitude();
@@ -264,14 +295,13 @@ pub fn solve_steady_conduction_with_cancellation(
     }
     let threshold = scale * settings.relative_pivot_tolerance;
     let temperatures = matrix
-        .factor(threshold, settings.maximum_factor_bytes, cancelled)
+        .factor(threshold, budget.left(), cancelled)
         .map_err(|error| match error {
             FactorError::Singular => ThermalError::SingularSystem,
             FactorError::Cancelled => ThermalError::Cancelled,
-            FactorError::TooLarge { needed_bytes } => ThermalError::FactorTooLarge {
-                needed_bytes,
-                budget_bytes: settings.maximum_factor_bytes,
-            },
+            FactorError::TooLarge { needed_bytes } => {
+                too_large(needed_bytes.saturating_add(budget.held()))
+            }
         })?
         .solve(&rhs);
     if temperatures.iter().any(|value| !value.is_finite()) {

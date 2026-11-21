@@ -9,7 +9,11 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ketchup_analysis::fea::{FeaError, FeaModel, FeaSolveSettings};
+use ketchup_analysis::fea::{FeaElementKind, FeaError, FeaModel, FeaSolveSettings};
+use ketchup_analysis::fea_thermal::{
+    THERMAL_MODEL_SCHEMA_V1, ThermalElement, ThermalError, ThermalMaterial, ThermalModel,
+    ThermalSolveSettings, ThermalTemperature, solve_steady_conduction,
+};
 
 #[allow(dead_code)]
 mod fea_bar;
@@ -98,7 +102,12 @@ fn solve_and_modes_stay_within_the_memory_budget() {
             result = result.map(|_| ())
         );
     }
+    // R1121ac P3: the matrices reserved, and the budget counted, a place for
+    // each entry rather than each position, about six per position on Tet4;
+    // the bar then needed 32 MiB to solve and 68 MiB for modes, now 22 and 29.
+    assert!(budget <= 26 << 20, "solve needs {budget}");
     let budget = least_budget(|settings| dense.modes(settings, 1));
+    assert!(budget <= 36 << 20, "modes need {budget}");
     for budget in [budget, budget - budget / 16] {
         let (result, taken) = peak(|| dense.modes(settings(budget), 1));
         eprintln!("modes under {budget}: took {taken}");
@@ -117,4 +126,66 @@ fn solve_and_modes_stay_within_the_memory_budget() {
     let (modes, taken) = peak(|| dense.modes(settings(budget), 1));
     assert!(matches!(modes, Err(FeaError::FactorTooLarge { .. })));
     assert!(taken <= budget + vectors(&dense), "modes took {taken}");
+
+    // Checking the model is budgeted too (R1121ac P3): under a budget its
+    // checks do not fit it is refused before them, and under one of 256 bytes
+    // per element they take no more.
+    for budget in [64 << 10, model.elements.len() * 256] {
+        let (solved, taken) = peak(|| model.solve(settings(budget)));
+        assert!(
+            matches!(solved, Err(FeaError::FactorTooLarge { .. })),
+            "{solved:?}",
+            solved = solved.map(|_| ())
+        );
+        assert!(taken <= budget, "checking took {taken} under {budget}");
+    }
+
+    // So is heat conduction on the same mesh (R1121ac P3: it built its
+    // entries and matrix whole before the factor's own check).
+    let heat = thermal(&model);
+    let (conducted, taken) = peak(|| {
+        solve_steady_conduction(
+            &heat,
+            ThermalSolveSettings {
+                maximum_factor_bytes: budget,
+                ..ThermalSolveSettings::default()
+            },
+        )
+    });
+    assert!(
+        matches!(conducted, Err(ThermalError::FactorTooLarge { .. })),
+        "{conducted:?}"
+    );
+    assert!(taken <= budget + vectors(&model), "conduction took {taken}");
+}
+
+/// The mesh of `model` conducting heat, one end held.
+fn thermal(model: &FeaModel) -> ThermalModel {
+    let elements = model
+        .elements
+        .iter()
+        .filter_map(|element| match element.kind {
+            FeaElementKind::LinearTetrahedron4 { nodes, .. } => Some(ThermalElement {
+                id: element.id,
+                nodes,
+                material_id: 1,
+            }),
+            _ => None,
+        })
+        .collect();
+    ThermalModel {
+        schema: THERMAL_MODEL_SCHEMA_V1.into(),
+        case_id: "bar".into(),
+        nodes: model.nodes.clone(),
+        materials: vec![ThermalMaterial {
+            id: 1,
+            conductivity_w_per_m_k: 50.0,
+        }],
+        elements,
+        temperatures: vec![ThermalTemperature {
+            node: 0,
+            temperature_c: 20.0,
+        }],
+        boundaries: Vec::new(),
+    }
 }

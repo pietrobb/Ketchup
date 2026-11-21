@@ -92,6 +92,16 @@ pub(crate) fn sort_entries(entries: &mut [(usize, usize, f64)]) {
     entries.sort_unstable_by_key(|&(row, column, _)| (row, column));
 }
 
+/// The positions of the matrix that sorted `entries` fill: repeated entries
+/// sum into one (R1121ac P3: a Tet4 mesh gives about six to each position, and
+/// the matrix reserved, and its budget counted, a place for every one).
+pub(crate) fn distinct_positions(entries: impl Iterator<Item = (usize, usize, f64)>) -> usize {
+    let mut last = None;
+    entries
+        .filter(|&(row, column, _)| last.replace((row, column)) != Some((row, column)))
+        .count()
+}
+
 impl SymmetricMatrix {
     /// Builds the matrix from `(row, column, value)` entries of both
     /// triangles; repeated entries are summed.
@@ -100,9 +110,10 @@ impl SymmetricMatrix {
         Self::from_sorted(size, entries.iter().copied())
     }
 
-    /// The bytes [`Self::from_sorted`] takes for `entries` entries, at most.
-    pub(crate) const fn bytes_for(size: usize, entries: usize) -> usize {
-        (size + 1 + 2 * entries) * 8
+    /// The bytes [`Self::from_sorted`] takes for entries filling `positions`
+    /// [`distinct_positions`], at most.
+    pub(crate) const fn bytes_for(size: usize, positions: usize) -> usize {
+        (size + 1 + 2 * positions) * 8
     }
 
     /// The bytes the matrix holds.
@@ -117,7 +128,7 @@ impl SymmetricMatrix {
         size: usize,
         entries: impl Iterator<Item = (usize, usize, f64)> + Clone,
     ) -> Self {
-        let count = entries.clone().count();
+        let count = distinct_positions(entries.clone());
         let mut row_start = vec![0; size + 1];
         let mut columns = Vec::with_capacity(count);
         let mut values: Vec<f64> = Vec::with_capacity(count);
@@ -534,5 +545,22 @@ mod tests {
             matrix.factor(1.0e-12, usize::MAX, &cancelled).err(),
             Some(FactorError::Cancelled)
         );
+    }
+
+    /// R1121ac P3: a Tet4 mesh gives each position of the matrix about six
+    /// entries, one per element at the edge; the matrix holds the position once
+    /// and reserves no more, and its budget counts it once.
+    #[test]
+    fn repeated_entries_take_one_place() {
+        let entries = (0..6)
+            .flat_map(|_| [(0, 0, 1.0), (0, 1, -1.0), (1, 0, -1.0), (1, 1, 1.0)])
+            .collect::<Vec<_>>();
+        let matrix = SymmetricMatrix::from_entries(2, entries.clone());
+        let mut sorted = entries;
+        super::sort_entries(&mut sorted);
+        let positions = super::distinct_positions(sorted.iter().copied());
+        assert_eq!(positions, 4);
+        assert_eq!(matrix.bytes(), SymmetricMatrix::bytes_for(2, positions));
+        assert_eq!(matrix.multiply(&[1.0, 0.0]), [6.0, -6.0]);
     }
 }

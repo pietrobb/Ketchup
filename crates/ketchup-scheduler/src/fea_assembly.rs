@@ -105,6 +105,10 @@ pub struct AssemblyBoundFeaModel {
     /// The reference node of each connector's first face, after every part's
     /// nodes; none for a bonded joint.
     pub joint_nodes: Vec<Option<usize>>,
+    /// Nodes of a bonded face lying on the other face that no tie holds to it:
+    /// they lead a tie of another joint, or the other face's triangle under
+    /// them has a node that follows one.
+    pub untied_bonded_nodes: usize,
     pub model: FeaModel,
 }
 
@@ -255,12 +259,17 @@ pub fn assembly_bound_model(
             kind: mate.kind,
         });
     }
-    let (couplings, joint_nodes) = joints(&mut nodes, &placed, &held, &all_joints)?;
+    let Joined {
+        couplings,
+        references: joint_nodes,
+        untied,
+    } = joints(&mut nodes, &placed, &held, &all_joints)?;
     Ok(AssemblyBoundFeaModel {
         source_revision: snapshot.revision_id(),
         source_digest: snapshot.canonical_digest(),
         parts: bound,
         joint_nodes,
+        untied_bonded_nodes: untied,
         model: FeaModel {
             schema: FEA_MODEL_SCHEMA_V1.to_owned(),
             case_id: setup.case_id.clone(),
@@ -387,16 +396,24 @@ fn bond(
         .collect()
 }
 
-/// Adds each connector's reference nodes and returns the couplings with the
-/// reference node of each connector's first face.
+/// The couplings of all joints, the reference node of each connector's first
+/// face, and the bonded nodes no tie holds.
+struct Joined {
+    couplings: Vec<FeaCoupling>,
+    references: Vec<Option<usize>>,
+    untied: usize,
+}
+
+/// Adds each connector's reference nodes and joins the faces.
 fn joints(
     nodes: &mut Vec<FeaNode>,
     placed: &[PlacedPart],
     held: &BTreeSet<usize>,
     joints: &[ExactFeaJoint],
-) -> Result<(Vec<FeaCoupling>, Vec<Option<usize>>), ExactFeaSetupError> {
+) -> Result<Joined, ExactFeaSetupError> {
     let mut couplings = Vec::new();
     let mut references = Vec::with_capacity(joints.len());
+    let mut untied = 0;
     // Nodes that follow a joint, and nodes a tie follows: a node follows one
     // joint only, and a tie leads from nodes that follow nothing.
     let mut joined = BTreeSet::new();
@@ -452,14 +469,17 @@ fn joints(
                 };
                 let onto_first = bond(nodes, &may_lead(first_face), &may_follow(&second_free));
                 let onto_second = bond(nodes, &may_lead(second_face), &may_follow(&first_free));
-                let onto_first = (onto_first, first_face, second_face);
-                let onto_second = (onto_second, second_face, first_face);
-                let (ties, leader, follower) = match onto_first.0.len().cmp(&onto_second.0.len()) {
-                    Ordering::Greater => onto_first,
-                    Ordering::Less => onto_second,
-                    Ordering::Equal if bonds_of(second.part) > bonds_of(first.part) => onto_second,
-                    Ordering::Equal => onto_first,
-                };
+                let onto_first = (onto_first, first_face, second_face, &second_free);
+                let onto_second = (onto_second, second_face, first_face, &first_free);
+                let (ties, leader, follower, follower_free) =
+                    match onto_first.0.len().cmp(&onto_second.0.len()) {
+                        Ordering::Greater => onto_first,
+                        Ordering::Less => onto_second,
+                        Ordering::Equal if bonds_of(second.part) > bonds_of(first.part) => {
+                            onto_second
+                        }
+                        Ordering::Equal => onto_first,
+                    };
                 // Faces that touch only along an edge, side by side or at a
                 // right angle, would tie into a line that turns: some triangle of the
                 // follower must lie on the leader whole (review 2026-11-20 ac P3).
@@ -472,6 +492,15 @@ fn joints(
                 {
                     return Err(refused);
                 }
+                // A node on the other face that follows no joint, as it leads
+                // a tie of another or the triangle under it has a node that
+                // follows, moves apart from it (R1121ac P3: 3-5 such nodes,
+                // unsaid); the study reports how many.
+                untied += follower_free
+                    .iter()
+                    .filter(|node| !tied.contains(*node) && !joined.contains(*node))
+                    .filter(|node| lies_on(nodes, leader, nodes[**node].position_mm).is_some())
+                    .count();
                 let leaders = ties.iter().flat_map(|(_, triangle, _)| *triangle).collect();
                 let followers = ties.iter().map(|(node, ..)| *node).collect();
                 couplings.extend(ties.into_iter().map(
@@ -532,7 +561,11 @@ fn joints(
         }
         tie_leaders.extend(leaders);
     }
-    Ok((couplings, references))
+    Ok(Joined {
+        couplings,
+        references,
+        untied,
+    })
 }
 
 #[cfg(test)]

@@ -3,7 +3,10 @@
 
 use std::fmt;
 
-use crate::fea::{FeaCouplingProblem, FeaError, MAX_FEA_MODES};
+use crate::fea::{
+    FeaCouplingProblem, FeaError, MAX_FEA_CONSTRAINTS, MAX_FEA_COUPLINGS, MAX_FEA_ELEMENTS,
+    MAX_FEA_LOADS, MAX_FEA_MATERIALS, MAX_FEA_MODES, MAX_FEA_NODES,
+};
 
 impl fmt::Display for FeaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -11,8 +14,12 @@ impl fmt::Display for FeaError {
             Self::UnsupportedSchema => formatter.write_str("the FEA model has an unknown schema"),
             Self::EmptyCaseId => formatter.write_str("the FEA case has no name"),
             Self::EmptyMesh => formatter.write_str("the mesh has no nodes or no elements"),
-            Self::ModelTooLarge => formatter.write_str(
-                "the mesh has more nodes than a study allows; mesh it coarser or study a smaller part",
+            Self::ModelTooLarge => write!(
+                formatter,
+                "the model is larger than a study allows: at most {MAX_FEA_NODES} nodes (or the \
+                 study's own lower limit), {MAX_FEA_ELEMENTS} elements, {MAX_FEA_MATERIALS} \
+                 materials, {MAX_FEA_CONSTRAINTS} constraints, {MAX_FEA_LOADS} loads and \
+                 {MAX_FEA_COUPLINGS} couplings; mesh it coarser or study a smaller part"
             ),
             Self::InvalidNode => formatter.write_str("a mesh node is not a finite point"),
             Self::DuplicateMaterialId => formatter.write_str("two materials have the same id"),
@@ -74,7 +81,8 @@ impl fmt::Display for FeaError {
             ),
             Self::FactorTooLarge { needed_bytes, budget_bytes } => write!(
                 formatter,
-                "the solve would need {} MiB at once, more than the {} MiB it may use; mesh it coarser",
+                "the study would need at least {} MiB at once, more than the {} MiB it may use; \
+                 mesh it coarser or study a smaller part",
                 needed_bytes.div_ceil(1 << 20),
                 budget_bytes / (1 << 20)
             ),
