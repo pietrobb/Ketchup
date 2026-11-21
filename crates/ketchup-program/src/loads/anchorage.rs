@@ -772,17 +772,18 @@ impl<'a> Footing<'a> {
         start: f64,
         anchor: usize,
     ) -> (f64, usize, f64) {
-        let mut rods: Vec<(Vec<usize>, f64)> = vec![(Vec::new(), start)];
+        let mut rods: Vec<(Vec<usize>, f64)> = Vec::new();
+        let mut rod: (Vec<usize>, f64) = (Vec::new(), start);
         for (index, &(part, entry, exit)) in pieces.iter().enumerate() {
             let long = length(sub(entry, exit));
-            let rod = rods.last_mut().expect("a rod");
             if pushed_along(&self.parts[part].obb(), entry, exit, sideways).is_some() {
                 rod.0.push(index);
                 rod.1 += long;
             } else if long > f64::EPSILON {
-                rods.push((Vec::new(), 0.0));
+                rods.push(std::mem::replace(&mut rod, (Vec::new(), 0.0)));
             }
         }
+        rods.push(rod);
         let mut least = (f64::INFINITY, anchor);
         for (rod, long) in &rods {
             for &index in rod {
