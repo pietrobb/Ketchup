@@ -46,7 +46,15 @@ fn the_drawings_window_exports_a_document_sheet_as_dxf_and_dwg_and_the_project_s
     let mut harness = egui_kittest::Harness::builder()
         .with_size(Vec2::new(1600.0, 1200.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-    harness.run();
+    // The window finds the ±0 level on a worker and asks for frames until it has
+    // it, so `Harness::run` ran out of steps on a loaded machine (idea #168).
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(120),
+        "the drawings window never found the floors",
+        |app| app.found_zero(&app.document.current()).is_some(),
+    );
+    harness.run_steps(4);
     export_from_the_window(&mut harness, "drawings-export-sheet-dxf");
     assert_eq!(std::fs::read(&dxf).unwrap(), dxf_bytes);
     assert!(
