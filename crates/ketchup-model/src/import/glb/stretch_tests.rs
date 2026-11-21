@@ -263,13 +263,15 @@ fn many_parts_stretched_differently_are_refused_before_their_copies_are_made() {
 }
 
 /// Stretched copies that alone hold more than one import stores are refused while
-/// copying: the copies are made one by one only while they fit.
+/// copying: the copies are made one by one only while they fit, so the refusal counts
+/// the first copy past the limit. Twice as many boards as that make sure: copying all
+/// and refusing afterwards would count every board (R1121ac-TST-1000).
 #[test]
 fn stretched_copies_over_what_one_import_stores_are_refused() {
     let triangles = 60_000;
     let vertices = triangles + 2;
     let boards = MAX_TOTAL_VERTICES / vertices + 1;
-    let stretches = (1..=boards)
+    let stretches = (1..=2 * boards)
         .map(|board| 1.0 + 0.01 * board as f64)
         .collect::<Vec<_>>();
     let source = stretched_strips(u32::try_from(triangles).unwrap(), &stretches);
