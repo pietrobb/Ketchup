@@ -12,7 +12,7 @@ Stavy: **opravené** (zlúčené na `main`), **odložené** (s dôvodom), **na r
 
 | ID | Stav | PR | Oprava |
 |---|---|---|---|
-| R1121ac-PG-1000 | opravené | #175 | Ukotvenie sa skúša pod silou, ktorú spevnenie nesie: kĺbový prút tlačí pozdĺž svojej osi (stĺp 20 mm pri prúte pod 40° drží 0,94 N/mm, nie 124,8), votknuté spevnenie otáča ukotvenie okolo bodu prvku. Diafragma na ukotveniach ako tuhá doska na pružinách. |
+| R1121ac-PG-1000 | opravené | #175 | Ukotvenie sa skúša pod silou, ktorú spevnenie nesie: kĺbový prút tlačí pozdĺž svojej osi (stĺp 20 mm pri prúte pod 40° drží 0,94 N/mm, nie 124,8), votknuté spevnenie otáča ukotvenie okolo bodu prvku. Diafragma na ukotveniach ako tuhá doska na pružinách. Metóda je jednotková sila pozdĺž jednej cesty (`loads/anchorage/stiffness.rs`), nie rámová sústava, ktorú navrhuje §6 bod 1 — pozri nižšie. |
 | R1121ac-PG-1001 | opravené | #175 | Skupina skrutiek drží proti otočeniu len okolo normály dotyku; pri osi momentu v rovine dotyku je spoj kĺb (EN 1995-1-1 tab. 7.1 nedáva modul preklzu). Dve skrutky pozdĺž osi už nevotknú vešiak. |
 
 ## P2
@@ -35,6 +35,15 @@ Stavy: **opravené** (zlúčené na `main`), **odložené** (s dôvodom), **na r
 | Modelovanie a SketchUp | opravené | #184 | `check` sčíta zaoblenia a skosenia na každej ploche (r = 6 na dvoch hranách 10 mm plochy sa odmietne, rada 9,99); príliš malá veľkosť menuje parameter; EXA-901: odmietnutie menuje prvok, v pomocníkovi AI operáciu a pole, `fix_hint` je pravidlo poľa; SKP-900 hovorí o natiahnutých kópiách; cgroup v1 číta skupinu procesu. |
 | Bezpečnosť a CI | opravené | #185 | Prázdny alebo relatívny `XDG_CONFIG_HOME` sa ignoruje; denník zápisov drží 100 zápisov, nie súborov, a uvádza zmazané listy aj súbor, ktorý zlyhaný export nevrátil; hláška ELOOP/ENOTDIR radí skúsiť znova; `test_ci_root_tests.py`, `check_test_timing.py`, `check_user_folder_writes.py`, `release_reads.py` a `LINT_ALLOW` (aj `cfg_attr`) podľa review. Limity allow štyroch crate zvýšené o 16 existujúcich `cfg_attr`, baseline `user_folder_writes` +1 (`consent.rs`, existujúci zápis). |
 | Stav 11-20 | už riešené | #173 | `review-2026-11-20-ac-status.md` je na `main` (zlúčené po commite review). |
+
+## Štrukturálne návrhy (§6)
+
+| Bod | Stav | PR | Čo |
+|---|---|---|---|
+| 1. Cesta ukotvenia ako malá prútová sústava (`Frame2`) | na rozhodnutie vlastníka | #175, #179 | Nepostavené. Cesta sa naďalej počíta metódou jednotkovej sily diel po diele v sérii, teraz so silou, osou a dĺžkou, ktoré cesta skutočne nesie (PG-1000 až PG-1002); prahy a vzorce v `anchorage.rs` ostali. Sonda (capability review 991) porovnala dva kombinované prípady s nezávislým 3D rámovým riešením (priame tuhosti, rovnaké K_ser 2 245 N/mm na skrutku, otočenie skupiny len okolo normály dotyku, stĺp votknutý pri zemi, bod prvku voľný pozdĺž prvku): prút 40 × 40 × 1 000 pod 40° s dvoma skrutkami na každom konci na stĺpe 20 × 400 × 2 400 — `check` 0,469 / 0,500 N/mm, rám 0,484; spevnenie 100 × 100 × 1 000 pod 30°, skrutky 250 mm od seba na hlavici 300 × 300 × 400 nad stĺpom 20 × 400 × 2 000 — `check` 1,891 / 2,175 N/mm, rám 2,025. Oba do 7 % od rámu, oba `not_verified` (potrebných ~57 N/mm). Ak prvok drží bod aj pozdĺž seba, rám dá 1,42 a 3,98 N/mm, takže `check` je na strane bezpečnosti. Sústava by mala zmysel pre cesty s viacerými vetvami alebo uzavretým obrysom, ktoré metóda v sérii nevidí; či ju stavať, je rozhodnutie vlastníka. |
+| 2. FEA: pravidlo vedenia väzieb ako vlastnosť | opravené | #176 | Pravidlo je v dokumentácii modulu `ketchup-scheduler/src/fea_assembly.rs`; test „zostava ≈ monolit“ pre police 0,5 a 0,67 mm medzi bočnicami 1 a 2 mm (do 0,2 %). |
+| 3. Kontrola balíka podľa toho, čo zapisuje Kečup | opravené | #177 | Len `made_by = 20`, `external = 0`, bez komentára; každé extra pole sa odmieta (`ExtraField`). |
+| 4. Stavový súbor ku každému review | opravené | #173, tento súbor | Stav k 11-20 aj k 11-21. |
 
 ### Odložené a na rozhodnutie
 
