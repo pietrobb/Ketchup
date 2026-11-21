@@ -586,7 +586,7 @@ pub(crate) fn layer(
     // r stands for an unventilated air layer; EN ISO 6946 Table 8 bounds it by
     // the layer's thickness (review 2026-11-20 ac P3, 2026-11-21 ac P3).
     let max_r = max_air_layer_r(thickness_mm);
-    if let Some(r) = positive("r")?.filter(|r| *r > max_r + 1e-9) {
+    if let Some(r) = positive("r")?.filter(|r| *r > max_r + ketchup_tolerance::ROUNDING) {
         anyhow::bail!(
             "thermal_check({name:?}): layer {label:?} r {r} is more than an unventilated air \
              layer of {thickness_mm} mm gives, at most {max_r:.3} m²K/W (EN ISO 6946 Table 8); \
