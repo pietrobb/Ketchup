@@ -97,8 +97,12 @@ pub enum WorkshopPackageError {
     /// The entry carries an extra field; Kečup writes none, and an unpacker may take
     /// another name from one, as from the Unicode Path field (R1120ac-ZIP-900).
     ExtraField(String),
-    /// The entry is a link, folder or device, not a plain file (R1120ac-ZIP-901).
+    /// The entry is not marked as the plain file Kečup writes, so an unpacker may
+    /// create a link, folder or device (R1120ac-ZIP-901, R1121ac-ZIP-1000).
     NotAPlainFile(String),
+    /// The archive (`None`) or the named entry has a comment; Kečup writes none,
+    /// and `unzip` shows one to the operator as if it came with the package.
+    Comment(Option<String>),
     /// The entry has a header flag Kečup does not write: only UTF-8 (bit 11) is.
     UnknownFlags(String),
 }
@@ -140,8 +144,17 @@ impl std::fmt::Display for WorkshopPackageError {
             ),
             Self::NotAPlainFile(name) => write!(
                 formatter,
-                "`{name}` is a link, folder or device, not a plain file"
+                "`{name}` is not marked as a plain file and may unpack as a link, folder or device"
             ),
+            Self::Comment(None) => {
+                formatter.write_str("the package carries a comment it is not written with")
+            }
+            Self::Comment(Some(name)) => {
+                write!(
+                    formatter,
+                    "`{name}` carries a comment the package is not written with"
+                )
+            }
             Self::UnknownFlags(name) => write!(
                 formatter,
                 "`{name}` has ZIP header flags the workshop package is not written with"
@@ -509,9 +522,11 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
     if u16_at(end + 4)? != 0 || u16_at(end + 6)? != 0 || u16_at(end + 8)? != count {
         return Err(not_a_package());
     }
+    if u16_at(end + 20)? != 0 {
+        return Err(WorkshopPackageError::Comment(None));
+    }
     let central_start = usize_at(end + 16)?;
-    if central_start.checked_add(usize_at(end + 12)?) != Some(end)
-        || end + END_RECORD + u16_at(end + 20)? != zip.len()
+    if central_start.checked_add(usize_at(end + 12)?) != Some(end) || end + END_RECORD != zip.len()
     {
         return Err(WorkshopPackageError::HiddenData);
     }
@@ -540,7 +555,8 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         let central_extra = u16_at(at + 30)?;
         let external = u32_at(at + 38)?;
         let local = usize_at(at + 42)?;
-        at += 46 + name_len + central_extra + u16_at(at + 32)?;
+        let comment_len = u16_at(at + 32)?;
+        at += 46 + name_len + central_extra + comment_len;
         if bytes(local, 4)? != LOCAL {
             return Err(not_a_package());
         }
@@ -564,6 +580,9 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
         }
         if !is_plain_file(made_by, external) {
             return Err(WorkshopPackageError::NotAPlainFile(name));
+        }
+        if comment_len != 0 {
+            return Err(WorkshopPackageError::Comment(Some(name)));
         }
         let start = local + 30 + name_len + local_extra;
         let data = bytes(start, size)?;
@@ -601,20 +620,14 @@ fn stored_entries(zip: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, WorkshopPacka
     Ok(entries)
 }
 
-/// Whether the external attributes of an entry made on the system `made_by` names
-/// describe a plain file: no DOS folder or volume label, and on Unix the mode of a
-/// regular file, not of a link, folder or device an unpacker would create.
+/// Whether the entry is marked as Kečup writes a file: made on DOS by ZIP 2.0 with
+/// no attributes. Unpackers read a mode, so a link, folder or device, from the
+/// attributes of many hosts (Unix, VMS, Atari, BeOS, AtheOS, ...), so no other
+/// host or attribute is told apart and let through (R1121ac-ZIP-1000).
 fn is_plain_file(made_by: usize, external: u32) -> bool {
-    // not a tolerance: the ZIP host number of Unix and the file type bits of its mode.
-    const UNIX: usize = 3;
-    const FILE_TYPE: u32 = 0o170_000;
-    const REGULAR_FILE: u32 = 0o100_000;
-    // not a tolerance: the DOS attributes of a volume label and a folder.
-    const DOS_NOT_A_FILE: u32 = 0x08 | 0x10;
-    if external & DOS_NOT_A_FILE != 0 {
-        return false;
-    }
-    made_by >> 8 != UNIX || (external >> 16) & FILE_TYPE == REGULAR_FILE
+    // not a tolerance: the "made by" Kečup's writer puts in every central header.
+    const WRITTEN_MADE_BY: usize = 20;
+    made_by == WRITTEN_MADE_BY && external == 0
 }
 
 #[cfg(test)]
