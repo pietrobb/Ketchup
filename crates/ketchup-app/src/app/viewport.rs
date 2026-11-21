@@ -2794,9 +2794,7 @@ impl KetchupApp {
             let needs_cpu_overlay = !camera_dragging
                 && (self.selection.contains(&item.instance_path)
                     || self
-                        .hover
-                        .target
-                        .as_ref()
+                        .painted_hover_target()
                         .is_some_and(|hovered| hovered.instance_path == item.instance_path)
                     || proxy_preview
                     || out_of_context);
@@ -2882,7 +2880,7 @@ impl KetchupApp {
                         };
                         let front = point_depth(normal, forward) < -ROUNDING;
                         if !front
-                            && self.hover.target.as_ref() != Some(&selection)
+                            && self.painted_hover_target() != Some(&selection)
                             && !self.paints_back_faces()
                         {
                             continue;
@@ -2920,7 +2918,7 @@ impl KetchupApp {
             for face in box_faces() {
                 let front = face_is_visible(&face.element, forward);
                 let outlined = front
-                    || self.hover.target.as_ref().is_some_and(|hovered| {
+                    || self.painted_hover_target().is_some_and(|hovered| {
                         hovered.definition_id == item.definition_id
                             && hovered.instance_path == item.instance_path
                             && hovered.element == face.element
@@ -3053,13 +3051,12 @@ impl KetchupApp {
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay =
-                !camera_dragging
-                    && (self.selection.contains(&occurrence.instance_path)
-                        || self.hover.target.as_ref().is_some_and(|hovered| {
-                            hovered.instance_path == occurrence.instance_path
-                        })
-                        || out_of_context);
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&occurrence.instance_path)
+                    || self
+                        .painted_hover_target()
+                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                    || out_of_context);
             // The GPU scene paints draft analysis colors from its own geometry.
             let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
@@ -3170,7 +3167,7 @@ impl KetchupApp {
                     normal,
                 );
                 let hovered = !previewed
-                    && self.hover.target.as_ref().is_some_and(|hovered| {
+                    && self.painted_hover_target().is_some_and(|hovered| {
                         hovered.definition_id == occurrence.body.definition_id
                             && hovered.instance_path == occurrence.instance_path
                             && hovered.element == element
@@ -3265,13 +3262,12 @@ impl KetchupApp {
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay =
-                !camera_dragging
-                    && (self.selection.contains(&occurrence.instance_path)
-                        || self.hover.target.as_ref().is_some_and(|hovered| {
-                            hovered.instance_path == occurrence.instance_path
-                        })
-                        || out_of_context);
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&occurrence.instance_path)
+                    || self
+                        .painted_hover_target()
+                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                    || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;

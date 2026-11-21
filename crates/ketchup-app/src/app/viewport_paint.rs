@@ -406,7 +406,7 @@ impl KetchupApp {
                 Color32::from_rgb(194, 89, 48)
             } else if !face.previewed && self.selection.contains(&face.selection.instance_path) {
                 Color32::from_rgb(154, 91, 67)
-            } else if !face.previewed && self.hover.target.as_ref() == Some(&face.selection) {
+            } else if !face.previewed && self.painted_hover_target() == Some(&face.selection) {
                 Color32::from_rgb(76, 111, 158)
             } else if face.previewed {
                 Color32::from_rgb(58, 126, 174)
