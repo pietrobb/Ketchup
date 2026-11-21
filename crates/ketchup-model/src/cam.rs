@@ -499,8 +499,19 @@ pub enum CamPostprocessorError {
     DigestMismatch,
     RoundtripMismatch,
     /// An arc the dialect's grid cannot write so that a controller runs it as planned
-    /// (R1120ac-CAM-900).
-    UnwritableArc,
+    /// (R1120ac-CAM-900): the operation it is in, its index among the toolpath's motions and
+    /// where it starts ([`place_mm`]).
+    UnwritableArc {
+        operation: u64,
+        motion: usize,
+        start: String,
+    },
+}
+
+/// Where `xy` is, as an error names it: `X 12.345 Y -6.000 mm`.
+pub fn place_mm(xy: [f64; 2]) -> String {
+    let [x, y] = xy;
+    format!("X {x:.3} Y {y:.3} mm")
 }
 
 impl std::fmt::Display for CamPostprocessorError {
@@ -525,8 +536,14 @@ impl std::fmt::Display for CamPostprocessorError {
             Self::RoundtripMismatch => formatter.write_str(
                 "CAM postprocessor artifact does not roundtrip to the canonical motion program",
             ),
-            Self::UnwritableArc => formatter.write_str(
-                "an arc does not survive rounding to the step of the dialect: a controller would run it as a different arc or a full circle; choose a dialect with more decimals or a larger corner radius",
+            Self::UnwritableArc {
+                operation,
+                motion,
+                start,
+            } => write!(
+                formatter,
+                "the arc of operation {operation} (motion {motion}, from {}) does not survive rounding to the step of the dialect: a controller would run it as a different arc or a full circle; choose a dialect with more decimals or a larger corner radius",
+                start
             ),
         }
     }
@@ -551,8 +568,12 @@ pub enum CamPlannerError {
     UnsupportedTool,
     UnsupportedRegion,
     UnsupportedHole,
-    /// A blind hole's floor is the drill's point; this drill's is not the floor's.
-    DrillPointDoesNotFitFloor,
+    /// A blind hole's floor is the drill's point; this drill's is not the floor's: the
+    /// operation and the hole's centre ([`place_mm`]).
+    DrillPointDoesNotFitFloor {
+        operation: u64,
+        center: String,
+    },
     UnresolvedFace,
     StaleToolpath,
 }
@@ -587,10 +608,12 @@ impl std::fmt::Display for CamPlannerError {
                 "CAM hole is not a straight round hole along the setup Z axis, \
                  or the drill is not its diameter",
             ),
-            Self::DrillPointDoesNotFitFloor => formatter.write_str(
-                "the drill's point does not make the floor of this blind hole: a flat floor \
-                 needs a flat-bottom (180 degree) drill, a pointed floor a drill of its \
-                 point angle; or model the floor the drill leaves",
+            Self::DrillPointDoesNotFitFloor { operation, center } => write!(
+                formatter,
+                "the drill's point does not make the floor of the blind hole of operation \
+                 {operation} at {}: a flat floor needs a flat-bottom (180 degree) drill, a \
+                 pointed floor a drill of its point angle; or model the floor the drill leaves",
+                center
             ),
             Self::UnresolvedFace => formatter.write_str(
                 "CAM operation names a face that was not read from the evaluated target",
@@ -1453,7 +1476,8 @@ fn canonical_postprocessed_program(
     let motions = toolpath
         .motions
         .iter()
-        .map(|motion| match &motion.path {
+        .enumerate()
+        .map(|(index, motion)| match &motion.path {
             CamMotionPath::Line { end_mm, .. } => Ok(CamPostprocessedMotion {
                 kind: match motion.kind {
                     CamMotionKind::Rapid => CamPostprocessedMotionKind::Rapid,
@@ -1481,7 +1505,23 @@ fn canonical_postprocessed_program(
                     center_offset_mm,
                     clockwise: *clockwise,
                 };
-                let kind = match written.as_planned(start_mm, end_mm, center_mm, scale)? {
+                let unwritable = || CamPostprocessorError::UnwritableArc {
+                    operation: toolpath
+                        .operations
+                        .iter()
+                        .find(|operation| {
+                            (operation.first_motion
+                                ..operation.first_motion + operation.motion_count)
+                                .contains(&index)
+                        })
+                        .map_or(0, |operation| operation.id),
+                    motion: index,
+                    start: place_mm([start_mm[0], start_mm[1]]),
+                };
+                let kind = match written
+                    .as_planned(start_mm, end_mm, center_mm, scale)
+                    .ok_or_else(unwritable)?
+                {
                     crate::cam_arc_rounding::Written::Arc if *clockwise => {
                         CamPostprocessedMotionKind::ArcClockwise
                     }
