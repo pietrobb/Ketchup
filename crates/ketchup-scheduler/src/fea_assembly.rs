@@ -6,9 +6,11 @@
 //! node of one face that lies on the other moves with the point of the other
 //! face's mesh it lies at, so two parts glued over a face bend as one piece,
 //! and the parts of the faces off each other stay free (R1119og-FEA-800).
-//! Faces that do not touch anywhere are refused. A part bonded in more joints
-//! than the other leads the ties, so the nodes of an edge two of its bonded
-//! faces share follow nothing (R1120ac-FEA-901).
+//! Faces that do not touch anywhere are refused. The finer face follows the
+//! coarser, so none of its nodes stays free between the other's
+//! (R1121ac-FEA-1000); a node of an edge two bonded faces share follows one
+//! joint only (R1120ac-FEA-901), and when both faces tie as many nodes the
+//! part bonded in more joints leads.
 //!
 //! A connector, the way a bolt is often modelled, ties every node of each
 //! joined face rigidly to a reference node at the first face's area centroid,
@@ -421,12 +423,14 @@ fn joints(
             ExactFeaJointKind::Bonded => {
                 // A part bonded on two adjacent faces has the nodes of their
                 // common edge in both joints (review 2026-11-20 ac FEA-901).
-                // The part bonded in more joints leads, so its edge nodes
-                // never follow; else the finer face, with more nodes on the
-                // other, follows it. A node that already follows a joint or
-                // leads a tie does not follow this one, and a triangle with a
-                // node that follows does not lead; the joint is refused only
-                // when no node is left to tie.
+                // A node that already follows a joint or leads a tie does not
+                // follow this one, and a triangle with a node that follows
+                // does not lead; the joint is refused only when no node is
+                // left to tie. Of what is left, the finer face, with more
+                // nodes on the other, follows, so no node of it is left free
+                // between the coarse face's nodes (R1121ac-FEA-1000); only
+                // when both tie as many does the part bonded in more joints
+                // lead.
                 let may_follow = |free: &BTreeSet<usize>| -> BTreeSet<usize> {
                     free.iter()
                         .copied()
@@ -450,13 +454,12 @@ fn joints(
                 let onto_second = bond(nodes, &may_lead(second_face), &may_follow(&first_free));
                 let onto_first = (onto_first, first_face, second_face);
                 let onto_second = (onto_second, second_face, first_face);
-                let (ties, leader, follower) =
-                    match bonds_of(first.part).cmp(&bonds_of(second.part)) {
-                        Ordering::Greater if !onto_first.0.is_empty() => onto_first,
-                        Ordering::Less if !onto_second.0.is_empty() => onto_second,
-                        _ if onto_second.0.len() > onto_first.0.len() => onto_second,
-                        _ => onto_first,
-                    };
+                let (ties, leader, follower) = match onto_first.0.len().cmp(&onto_second.0.len()) {
+                    Ordering::Greater => onto_first,
+                    Ordering::Less => onto_second,
+                    Ordering::Equal if bonds_of(second.part) > bonds_of(first.part) => onto_second,
+                    Ordering::Equal => onto_first,
+                };
                 // Faces that touch only along an edge, side by side or at a
                 // right angle, would tie into a line that turns: some triangle of the
                 // follower must lie on the leader whole (review 2026-11-20 ac P3).
@@ -531,3 +534,6 @@ fn joints(
     }
     Ok((couplings, references))
 }
+
+#[cfg(test)]
+mod tests;
