@@ -460,12 +460,12 @@ mod tests {
         // The empty document's exact evaluation repaints the window and shows
         // its progress until it ends; wait for it so it neither exceeds a
         // `run` nor moves the tab's rows under a click.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while harness.state().exact.task.is_some() {
-            assert!(std::time::Instant::now() < deadline, "exact never ended");
-            harness.step();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        crate::tests::shell::step_until(
+            &mut harness,
+            std::time::Duration::from_secs(60),
+            "the empty document's exact evaluation never ended",
+            |app| app.exact.task.is_none(),
+        );
         harness.run();
         crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Ai);
         harness
