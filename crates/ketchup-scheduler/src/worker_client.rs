@@ -11,6 +11,10 @@ use crate::protocol::{
 };
 use ketchup_rejection::{Reason, dropped};
 
+// The handshake is a new worker's first request: its budget also covers starting the
+// process and loading the OCCT libraries, which on a loaded machine takes seconds.
+const WORKER_START_UP_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) struct WorkerWriteRequest {
     pub(crate) frame: Vec<u8>,
     pub(crate) acknowledgment: Sender<std::io::Result<()>>,
@@ -127,7 +131,8 @@ impl ExactWorkerClient {
         !self.terminated && matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Handshake: the worker must speak the protocol of this exact build.
+    /// Handshake: the worker must speak the protocol of this exact build. It is the
+    /// first request to a new worker, so its budget includes the worker's start-up.
     pub fn ping(&mut self) -> Result<(), WorkerError> {
         self.ping_with_cancellation(&NEVER_CANCELLED)
     }
@@ -136,11 +141,7 @@ impl ExactWorkerClient {
         &mut self,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
-        match self.call(
-            &WorkerRequest::Hello,
-            cancelled,
-            DEFAULT_WORKER_REQUEST_TIMEOUT,
-        )? {
+        match self.call(&WorkerRequest::Hello, cancelled, WORKER_START_UP_TIMEOUT)? {
             WorkerReply::Hello { protocol } if protocol == protocol_identity() => Ok(()),
             WorkerReply::Hello { protocol } => self.fail_protocol(format!(
                 "worker protocol {protocol} differs from scheduler protocol {}",

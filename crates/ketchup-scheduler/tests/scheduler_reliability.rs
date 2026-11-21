@@ -66,6 +66,7 @@ fn the_exact_worker_is_stopped_past_its_memory_limit() {
     let _turn = crate::integration_support::file_turn();
     let limit = ketchup_scheduler::exact_worker_memory_bytes();
     let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.ping().unwrap();
     worker.allocate_probe(64 << 20).unwrap();
     let past_limit = u64::try_from(limit).unwrap() + (256 << 20);
     assert_eq!(
@@ -160,6 +161,7 @@ fn exercise_crash_recovery() -> usize {
 
 fn exercise_exception_transport() -> usize {
     let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.ping().unwrap();
     let mut crossed = 0;
     for _ in 0..100 {
         match worker.exception_probe() {
