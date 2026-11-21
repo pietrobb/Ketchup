@@ -50,6 +50,19 @@ def test_every_way_of_writing_counts_and_folders_from_the_environment_too(tmp_pa
         "crates/app/src/copies.rs": 8, "crates/app/src/scratch.rs": 1}
 
 
+def test_folders_links_owners_and_permissions_count_and_dirs_folders_too(tmp_path):
+    # Review 2026-11-21 ac P3: these writes, and folders from dirs::config_dir(), were
+    # not seen.
+    write(tmp_path, "crates/app/src/setup.rs",
+          'fn f() {\n'
+          '    let config = dirs::config_dir();\n'
+          '    std::fs::create_dir(a); tempfile::Builder::new().make_in(a, |path| Ok(()));\n'
+          '    std::fs::hard_link(a, b); std::os::unix::fs::chown(a, None, None);\n'
+          '    std::os::unix::fs::lchown(a, None, None); std::fs::set_permissions(a, p);\n'
+          '}\n')
+    assert checker.current_counts(tmp_path) == {"crates/app/src/setup.rs": 6}
+
+
 def test_growth_fails_and_shrinking_passes(tmp_path):
     path = write(tmp_path, "crates/app/src/settings.rs",
                  "fn f(folder: UserFolder) { std::fs::write(a, b); }\n")

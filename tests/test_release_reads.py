@@ -98,6 +98,18 @@ impl SheetSettings {
               if function.startswith("self.") else []),
             "SheetSettings::scale: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers",
         ]
+    # Review 2026-11-21 ac P3: a field bound to an unused `_name` was read as marked, and
+    # of two patterns only the first was read.
+    for function, unmarked in (
+        ("let Self { north: _north, format: _, scale } = self;\n        scale.is_some()", "north"),
+        ("let Self { north, format: _, scale } = self;\n"
+         "        let Self { north, format: _, .. } = self;\n        north.is_some()", "scale"),
+    ):
+        changed = head.replace("let Self { format: _, scale: _, north } = self;\n        north.is_some()", function)
+        assert function in changed
+        assert checker.field_problems(
+            "SheetSettings", "lost_by_released_readers", changed, old, "0.3.2"
+        ) == [f"SheetSettings::{unmarked}: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"]
 
 
 def test_what_a_release_reads_is_a_product_of_integers():
