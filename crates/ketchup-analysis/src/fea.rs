@@ -9,7 +9,9 @@ use crate::fea_frame::{
 pub use crate::fea_modal::{
     FEA_MODAL_SOLVER_VERSION_V2, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
 };
-use crate::sparse::{ENTRY_BYTES, FactorError, MemoryBudget, SymmetricMatrix};
+use crate::sparse::{
+    ENTRY_BYTES, FactorError, MemoryBudget, SymmetricMatrix, distinct_positions, sort_entries,
+};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
@@ -25,6 +27,9 @@ pub const MAX_FEA_ELEMENTS: usize = 1_000_000;
 pub const MAX_FEA_CONSTRAINTS: usize = MAX_FEA_NODES;
 pub const MAX_FEA_LOADS: usize = 1_000_000;
 pub const MAX_FEA_COUPLINGS: usize = MAX_FEA_NODES;
+/// The memory checking a model's elements holds per element at most: its id,
+/// its sorted nodes and the faces of a tetrahedron, in ordered sets.
+const VALIDATION_BYTES_PER_ELEMENT: usize = 256;
 /// The default memory for the factored stiffness matrix: 512 MiB.
 pub const DEFAULT_FEA_FACTOR_BYTES: usize = 512 << 20;
 
@@ -278,8 +283,9 @@ pub enum FeaError {
     NonBoundaryTraction,
     InvalidSettings,
     SingularSystem,
-    /// The entries, matrices and factor held at once would need
-    /// `needed_bytes`, more than the `budget_bytes` the settings allow.
+    /// The entries, matrices and factor held at once would need at least
+    /// `needed_bytes`, more than the `budget_bytes` the settings allow: what was
+    /// held with the first piece past the budget, as later ones are not built.
     FactorTooLarge {
         needed_bytes: usize,
         budget_bytes: usize,
@@ -820,6 +826,16 @@ impl FeaModel {
             || settings.maximum_factor_bytes == 0
         {
             return Err(FeaError::InvalidSettings);
+        }
+        // The sets the checks below hold are taken from the same budget: they
+        // are freed before assembly, so they need not fit beside it
+        // (R1121ac P3: about 190 MiB for a million tetrahedra, unbudgeted).
+        let checking = self
+            .elements
+            .len()
+            .saturating_mul(VALIDATION_BYTES_PER_ELEMENT);
+        if checking > settings.maximum_factor_bytes {
+            return Err(FeaError::too_large(checking, settings));
         }
         if self
             .nodes
@@ -1933,16 +1949,18 @@ pub(crate) fn reduce_within(
 /// they are given back once it is built.
 pub(crate) fn matrix_within(
     size: usize,
-    entries: Vec<(usize, usize, f64)>,
+    mut entries: Vec<(usize, usize, f64)>,
     budget: &mut MemoryBudget,
     settings: FeaSolveSettings,
 ) -> Result<SymmetricMatrix, FeaError> {
-    let most = SymmetricMatrix::bytes_for(size, entries.len());
+    sort_entries(&mut entries);
+    let most = SymmetricMatrix::bytes_for(size, distinct_positions(entries.iter().copied()));
     budget
         .take(most)
         .map_err(|needed| FeaError::too_large(needed, settings))?;
     let entry_bytes = entries.capacity() * ENTRY_BYTES;
-    let matrix = SymmetricMatrix::from_entries(size, entries);
+    let matrix = SymmetricMatrix::from_sorted(size, entries.iter().copied());
+    drop(entries);
     budget.give((entry_bytes + most).saturating_sub(matrix.bytes()));
     Ok(matrix)
 }

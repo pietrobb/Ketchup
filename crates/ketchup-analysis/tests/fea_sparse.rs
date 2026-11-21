@@ -66,4 +66,16 @@ fn a_factor_past_the_memory_budget_is_refused_with_its_size() {
     };
     assert_eq!(budget_bytes, 1 << 20);
     assert!(needed_bytes > budget_bytes);
+    // R1121ac P3: the size is of what was held when the first piece past the
+    // budget was asked for, not of the whole study, and natural frequencies are
+    // refused with the same words as a solve.
+    let text = FeaError::FactorTooLarge {
+        needed_bytes,
+        budget_bytes,
+    }
+    .to_string();
+    assert!(
+        text.contains("at least") && !text.contains("the solve"),
+        "{text}"
+    );
 }
