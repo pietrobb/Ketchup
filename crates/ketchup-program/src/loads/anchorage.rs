@@ -8,6 +8,7 @@
 //! it).
 
 mod joint;
+mod sheet;
 mod stiffness;
 
 use super::{BraceAnchorage, Frame, Support, depth, middle};
@@ -17,6 +18,7 @@ use crate::model::{Part, ProgramModel, convex_hull};
 use joint::{Hold, Strut, hold};
 use ketchup_geometry::linalg::{self, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
+use sheet::{Spring, on_springs};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -187,22 +189,6 @@ pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
         capacity_n: strong.capacity_n,
         buckling: strong.buckling,
         ..stiff
-    }
-}
-
-/// Two paths sharing no part holding one point side by side, as a diaphragm's
-/// anchors: their stiffnesses and their forces before buckling add up, named
-/// by the one giving more (R1119og-PG-801).
-fn together(a: Anchorage, b: Anchorage) -> Anchorage {
-    let named = if b.stiffness_n_mm < a.stiffness_n_mm {
-        b
-    } else {
-        a
-    };
-    Anchorage {
-        stiffness_n_mm: a.stiffness_n_mm + b.stiffness_n_mm,
-        capacity_n: a.capacity_n + b.capacity_n,
-        ..named
     }
 }
 
@@ -428,6 +414,15 @@ impl<'a> Footing<'a> {
             .map(|(anchorage, _)| anchorage)
     }
 
+    /// Where `by`, or one of the parts `apart`, meets `anchor`.
+    fn meets(&self, by: usize, anchor: usize, apart: &[usize]) -> [f64; 3] {
+        let anchor_obb = self.parts[anchor].obb();
+        std::iter::once(by)
+            .chain(apart.iter().copied())
+            .find_map(|part| meeting(&anchor_obb, &self.parts[part].obb()))
+            .unwrap_or(anchor_obb.centre)
+    }
+
     /// The level directions across `member` a force holding it acts in: the
     /// one across it, or both for an upright one.
     fn sideways(&self, member: usize) -> Vec<[f64; 3]> {
@@ -455,11 +450,7 @@ impl<'a> Footing<'a> {
             return self.reached(anchor, member, apart, 0.0, None);
         }
         let obb = self.parts[by].obb();
-        let anchor_obb = self.parts[anchor].obb();
-        let at = std::iter::once(by)
-            .chain(apart.iter().copied())
-            .find_map(|part| meeting(&anchor_obb, &self.parts[part].obb()))
-            .unwrap_or(anchor_obb.centre);
+        let at = self.meets(by, anchor, apart);
         let run = length(sub(point, at));
         let mut route = BTreeSet::new();
         let mut found: Option<Anchorage> = None;
@@ -545,11 +536,14 @@ impl<'a> Footing<'a> {
     /// unchecked, though each post gives 0.8 N/mm against 58 asked). Paths
     /// sharing a part on their way to the ground are one path, the stiffest of
     /// them (R1120ac-PG-901: eight blocks on one lath on a single post held as
-    /// eight posts). Paths apart from each other hold the sheet's turn as a
-    /// couple; one path alone is turned by the sheet as a fixed brace turns its
-    /// anchor (R1121ac-PG-1000: a deck on one plate over a column 20 x 400 held
-    /// the member at 198.6 N/mm, the column's strong way, where its twist by the
-    /// deck's 500 mm lets it give about 1.2).
+    /// eight posts). One path alone is turned by the sheet as a fixed brace
+    /// turns its anchor (R1121ac-PG-1000: a deck on one plate over a column
+    /// 20 x 400 held the member at 198.6 N/mm, the column's strong way, where
+    /// its twist by the deck's 500 mm lets it give about 1.2). Paths apart from
+    /// each other hold the sheet as a rigid sheet on springs ([`on_springs`]):
+    /// on both sides of the point side by side, on one side by their spacing
+    /// (capability review 977: two plates 220 mm apart on one side held as
+    /// their strong ways added up).
     pub(super) fn diaphragm(
         &self,
         by: usize,
@@ -579,15 +573,43 @@ impl<'a> Footing<'a> {
             })
             .map(|(anchor, anchorage, _)| (anchor, anchorage))
             .collect();
-        match apart.as_slice() {
-            [(anchor, _)] => self
-                .routed(by, *anchor, member, point, chain, true)
-                .map(|(anchorage, _)| anchorage),
-            _ => apart
-                .into_iter()
-                .map(|(_, anchorage)| anchorage)
-                .reduce(together),
+        let turned = |anchor: usize| {
+            self.routed(by, anchor, member, point, chain, true)
+                .map(|(anchorage, _)| anchorage)
+        };
+        if let [(anchor, _)] = apart.as_slice() {
+            return turned(*anchor);
         }
+        // Each anchor turned alone, or holding no turn where it cannot be.
+        let held: Vec<(Anchorage, Anchorage, [f64; 3])> = apart
+            .into_iter()
+            .map(|(anchor, at_contact)| {
+                let turned = turned(anchor).unwrap_or(Anchorage {
+                    stiffness_n_mm: 0.0,
+                    ..at_contact
+                });
+                (
+                    at_contact,
+                    turned,
+                    sub(self.meets(by, anchor, chain), point),
+                )
+            })
+            .collect();
+        self.sideways(member)
+            .into_iter()
+            .filter_map(|sideways| {
+                let along = linalg::normalize(cross([0.0, 0.0, 1.0], sideways))?;
+                let springs: Vec<Spring> = held
+                    .iter()
+                    .map(|(at_contact, turned, offset)| Spring {
+                        at_contact: *at_contact,
+                        turned: *turned,
+                        arm_mm: dot(*offset, along),
+                    })
+                    .collect();
+                on_springs(&springs)
+            })
+            .reduce(weaker)
     }
 
     /// Whether `item` ends a path: grounded, standing on the floor.

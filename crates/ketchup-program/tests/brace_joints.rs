@@ -374,6 +374,66 @@ diaphragm([\"deck {x}\"], anchored_to = [\"plate {x}\"])
     assert_ne!(checked(&held, "beam").status, "pass");
 }
 
+/// R1121ac-PG-1000, a diaphragm on two anchors on the same side (capability
+/// review 977): a deck 800 x 600 x 22 screwed to the beam and to two grounded
+/// plates 200 mm long, 400 and 620 mm along the beam, each on a column 20 (x)
+/// x 2 300 as wide as its plate. Plates 200 x 200 from 120 mm across the beam,
+/// too far along it to rest the deck on as decking, were each asked for a force
+/// where the deck meets them, their strong ways added up: 30.5 + 27.9 = 58.4 N/mm
+/// against 56.2 asked. The plates 220 mm apart hold the deck's turn as a couple
+/// about 2.3 times the force on the beam, and the columns twist (G J / L about
+/// 1.4e5 N mm per radian): a rigid deck on the two lets the beam give about
+/// 3.6 N/mm. Plates 400 wide from 200 mm across hold it also as decking resting
+/// on one, the column twisted by its 400 mm, about 2 N/mm.
+#[test]
+fn a_deck_on_two_anchors_on_one_side_holds_its_turn_by_their_spacing() {
+    // The plates from `y` across the beam, `wide` across it.
+    let on_plates = |y: i32, wide: i32| {
+        beam_with(
+            |x| {
+                format!(
+                    "box(\"deck {x}\", (800, 600, 22), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"deck {x}\"])
+box(\"plate {x}\", (200, {wide}, 100), at = ({}, {y}, 2300), material = \"GL24h\", grounded = True)
+box(\"plate2 {x}\", (200, {wide}, 100), at = ({}, {y}, 2300), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (20, {wide}, 2300), at = ({}, {y}, 0), material = \"GL24h\", grounded = True)
+box(\"column2 {x}\", (20, {wide}, 2300), at = ({}, {y}, 0), material = \"GL24h\", grounded = True)
+joint(\"deck {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 20, 2400), ({x}, 60, 2400)])
+joint(\"deck {x}\", \"plate {x}\", kind = \"screw\", fasteners = [({}, {}, 2400), ({}, {}, 2400)])
+joint(\"deck {x}\", \"plate2 {x}\", kind = \"screw\", fasteners = [({}, {}, 2400), ({}, {}, 2400)])
+diaphragm([\"deck {x}\"], anchored_to = [\"plate {x}\", \"plate2 {x}\"])
+",
+                    x - 50,
+                    x + 300,
+                    x + 520,
+                    x + 390,
+                    x + 610,
+                    x + 310,
+                    y + 10,
+                    x + 490,
+                    y + wide - 10,
+                    x + 530,
+                    y + 10,
+                    x + 710,
+                    y + wide - 10,
+                )
+            },
+            "",
+        )
+    };
+    for (y, wide, expected) in [(120, 200, 2.5..=5.0), (200, 400, 1.5..=3.0)] {
+        let held = on_plates(y, wide);
+        let found = stiffnesses(&held, "deck");
+        assert!(!found.is_empty(), "{:?}", refused(&held));
+        for stiffness in found {
+            assert!(
+                expected.contains(&stiffness),
+                "plates at y {y}: {stiffness}"
+            );
+        }
+        assert_ne!(checked(&held, "beam").status, "pass", "plates at y {y}");
+    }
+}
+
 /// R1121ac-PG-1001: an upright hanger 300 x 100 x 600 on the beam's side, its
 /// top on a grounded block on a column 200 x 200, the joint naming no
 /// screws, was fixed there and held the beam at 85.2 N/mm: the two screws
