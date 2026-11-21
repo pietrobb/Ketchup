@@ -120,7 +120,7 @@ fn shelf_between_sides(side_mm: f64, shelf_mm: f64) -> (FeaModel, std::ops::Rang
         faces,
         kind: ExactFeaJointKind::Bonded,
     };
-    let (couplings, _) = joints(
+    let Joined { couplings, .. } = joints(
         &mut nodes,
         &placed,
         &held,
@@ -174,6 +174,37 @@ fn sag(side_mm: f64, shelf_mm: f64) -> (f64, usize) {
         .filter(|coupling| shelf.contains(&coupling.nodes[1]))
         .count();
     (sag, followers)
+}
+
+/// R1121ac P3: a block bonded on two faces that share an edge, to a finer
+/// part on one and a coarser on the other. The nodes of the edge lead the
+/// finer part's ties, so they follow nothing of the coarser one: they are
+/// counted, not left free unsaid.
+#[test]
+fn interface_nodes_no_tie_holds_are_counted() {
+    let mut nodes = Vec::new();
+    let (block, _) = grid_box(&mut nodes, [0.0; 3], [4.0, 4.0, 2.0], [8, 8, 4]);
+    let (finer, _) = grid_box(&mut nodes, [4.0, 0.0, 0.0], [4.0, 4.0, 2.0], [16, 16, 8]);
+    let (coarser, _) = grid_box(&mut nodes, [0.0, 4.0, 0.0], [4.0, 4.0, 2.0], [2, 2, 1]);
+    let placed = [block, finer, coarser];
+    let face = |part, face_ordinal| ExactFeaJointFace { part, face_ordinal };
+    let bonded = |faces| ExactFeaJoint {
+        faces,
+        kind: ExactFeaJointKind::Bonded,
+    };
+    let held = placed[1].face_nodes(1);
+    let bound = joints(
+        &mut nodes,
+        &placed,
+        &held,
+        &[
+            bonded([face(0, 1), face(1, 0)]),
+            bonded([face(0, 3), face(2, 2)]),
+        ],
+    )
+    .unwrap();
+    // The block's edge at x 4, y 4: five nodes along z.
+    assert_eq!(bound.untied, 5);
 }
 
 #[test]

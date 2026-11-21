@@ -344,6 +344,7 @@ pub(super) fn review_value(review: &FeaReviewSummary) -> Value {
             "relative_volume_error":level.relative_volume_error,
             "minimum_quality":level.minimum_quality,
             "maximum_edge_ratio":level.maximum_edge_ratio,
+            "untied_bonded_nodes":level.untied_bonded_nodes,
             "maximum_displacement_mm":level.maximum_displacement_mm,
             "maximum_von_mises_stress_mpa":level.maximum_von_mises_stress_mpa,
             "maximum_free_dof_residual_n":level.maximum_free_dof_residual_n,

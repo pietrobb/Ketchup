@@ -5,7 +5,9 @@
 use crate::fea::{DofLayout, FeaElementKind, FeaError, FeaModel, FeaSolveSettings, reduce_within};
 use crate::fea_coupling::Joints;
 use crate::fea_frame::{FRAME_DOFS, local_mass};
-use crate::sparse::{CholeskyFactor, ENTRY_BYTES, MemoryBudget, SymmetricMatrix, sort_entries};
+use crate::sparse::{
+    CholeskyFactor, ENTRY_BYTES, MemoryBudget, SymmetricMatrix, distinct_positions, sort_entries,
+};
 use ketchup_model::tolerance::{MODE_VECTOR_DEPENDENT, NEGLIGIBLE, ROUNDING, STURM_SHIFT_GAPS};
 use std::collections::BTreeSet;
 use std::f64::consts::PI;
@@ -97,7 +99,8 @@ impl FeaModel {
         let magnitude = |(row, column, value): (usize, usize, f64)| (row, column, value.abs());
         sort_entries(&mut mass_entries);
         let mass_diagonal = diagonal(size, &mass_entries);
-        let taken = 2 * SymmetricMatrix::bytes_for(size, mass_entries.len());
+        let positions = distinct_positions(mass_entries.iter().copied());
+        let taken = 2 * SymmetricMatrix::bytes_for(size, positions);
         budget.take(taken).map_err(too_large)?;
         let mass = SymmetricMatrix::from_sorted(size, mass_entries.iter().copied().filter(free));
         let mass_magnitudes = SymmetricMatrix::from_sorted(
@@ -114,7 +117,8 @@ impl FeaModel {
                 .map_err(too_large)?;
         sort_entries(&mut stiffness_entries);
         let stiffness_diagonal = diagonal(size, &stiffness_entries);
-        let taken = 3 * SymmetricMatrix::bytes_for(size, stiffness_entries.len());
+        let positions = distinct_positions(stiffness_entries.iter().copied());
+        let taken = 3 * SymmetricMatrix::bytes_for(size, positions);
         budget.take(taken).map_err(too_large)?;
         let free_stiffness =
             SymmetricMatrix::from_sorted(size, stiffness_entries.iter().copied().filter(free));

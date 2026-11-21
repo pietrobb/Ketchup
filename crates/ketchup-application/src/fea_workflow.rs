@@ -59,12 +59,13 @@ pub struct FeaModalSummary {
     /// Every frequency changed by at most the study's tolerance, and both
     /// levels found as many modes.
     pub converged: bool,
-    pub not_checked: [&'static str; 4],
+    pub not_checked: [&'static str; 5],
 }
 
 /// What natural frequencies leave out (R1120ac-FEA-900).
-pub const FEA_MODES_NOT_CHECKED: [&str; 4] = [
+pub const FEA_MODES_NOT_CHECKED: [&str; 5] = [
     "linear tetrahedra are too stiff: frequencies fall as the mesh is refined, so a coarse mesh overstates them",
+    "converged says only that the finest two meshes differ by at most the tolerance: the finest still overstates each frequency, by about as much again or more (a 2 % change left the first 2.5-4 % high)",
     "supports are rigid: a softer support lowers the frequencies",
     "no damping",
     "no prestress or stress stiffening from the static load",
@@ -78,6 +79,9 @@ pub struct FeaMeshLevelSummary {
     pub relative_volume_error: f64,
     pub minimum_quality: f64,
     pub maximum_edge_ratio: f64,
+    /// Nodes of a bonded face on the other face that no tie holds to it (an
+    /// assembly; R1121ac P3): they move apart from it.
+    pub untied_bonded_nodes: usize,
     pub maximum_displacement_mm: f64,
     pub maximum_von_mises_stress_mpa: f64,
     pub maximum_free_dof_residual_n: f64,
@@ -113,6 +117,7 @@ struct StudyLevel {
     relative_volume_error: f64,
     minimum_quality: f64,
     maximum_edge_ratio: f64,
+    untied_bonded_nodes: usize,
     model: FeaModel,
 }
 
@@ -190,6 +195,7 @@ impl FeaReviewWorkflow {
                 relative_volume_error: mesh.relative_volume_error,
                 minimum_quality: mesh.minimum_quality,
                 maximum_edge_ratio: mesh.maximum_edge_ratio,
+                untied_bonded_nodes: 0,
                 model: bound.model,
             });
         }
@@ -274,6 +280,7 @@ impl FeaReviewWorkflow {
                 maximum_edge_ratio: meshes()
                     .map(|mesh| mesh.maximum_edge_ratio)
                     .fold(0.0, f64::max),
+                untied_bonded_nodes: bound.untied_bonded_nodes,
                 model: bound.model,
             });
         }
@@ -384,6 +391,7 @@ fn conclude(
             relative_volume_error: level.relative_volume_error,
             minimum_quality: level.minimum_quality,
             maximum_edge_ratio: level.maximum_edge_ratio,
+            untied_bonded_nodes: level.untied_bonded_nodes,
             maximum_displacement_mm: solution.maximum_displacement_mm,
             maximum_von_mises_stress_mpa: solution.maximum_von_mises_stress_mpa,
             maximum_free_dof_residual_n: solution.maximum_free_dof_residual_n,
@@ -598,6 +606,16 @@ mod tests {
 
         let settled = modal_summary(&found(&[41.90, 118.2]), &found(&[41.78, 118.0]), 0.05);
         assert!(settled.converged, "{settled:?}");
+        // R1121ac P3: converged at a 2 % change left the first frequency 2.5-4 %
+        // high; what converged does not promise is said with it.
+        assert!(
+            settled
+                .not_checked
+                .iter()
+                .any(|line| line.starts_with("converged")),
+            "{:?}",
+            settled.not_checked
+        );
         // The level before found fewer modes: not converged.
         let fewer = modal_summary(&found(&[41.90]), &found(&[41.78, 118.0]), 0.05);
         assert!(!fewer.converged, "{fewer:?}");

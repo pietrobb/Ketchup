@@ -283,6 +283,16 @@ fn aggregate_model_collections_are_bounded_before_validation_work() {
         materials.solve(FeaSolveSettings::default()),
         Err(FeaError::ModelTooLarge)
     );
+    // R1121ac P3: the refusal spoke of nodes only, whichever collection was over.
+    let text = FeaError::ModelTooLarge.to_string();
+    for limit in [
+        format!("{MAX_FEA_ELEMENTS} elements"),
+        format!("{MAX_FEA_MATERIALS} materials"),
+        format!("{MAX_FEA_CONSTRAINTS} constraints"),
+        format!("{MAX_FEA_LOADS} loads"),
+    ] {
+        assert!(text.contains(&limit), "{text}");
+    }
 
     let mut elements = baseline.clone();
     elements
