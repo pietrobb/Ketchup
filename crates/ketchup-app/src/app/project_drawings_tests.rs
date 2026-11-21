@@ -1748,6 +1748,17 @@ fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
     assert!(!sheet(4).exists());
 
     let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
+    // The write log names the old sheets a set of two removes, not its list
+    // (review 2026-11-21 ac P3).
+    assert_eq!(
+        crate::app::project_drawings::removed_sheets(
+            &path,
+            SetFileFormat::Dxf,
+            &targets,
+            &[sheet(1), sheet(2)]
+        ),
+        [sheet(3)]
+    );
     std::fs::write(sheet(3), b"saved meanwhile").unwrap();
     let error = publish_project_drawings(
         &path,

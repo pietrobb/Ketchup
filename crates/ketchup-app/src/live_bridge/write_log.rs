@@ -11,33 +11,38 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::SystemTime;
 
-/// The most files the list keeps, the newest first.
+/// The most writes the list keeps, the newest first. A write is every file one
+/// answer named, so one set of more sheets than this does not push out every
+/// write before it (review 2026-11-21 ac P3).
 const KEPT: usize = 100;
 
-/// A file a client wrote.
+/// A file a client wrote or removed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WrittenFile {
     pub(crate) path: PathBuf,
     /// The local time it was written, `HH:MM:SS`.
     pub(crate) at: String,
-    /// Its size; none for a folder, such as a DXF set.
+    /// Its size; none for a folder, such as a DXF set, or a file removed.
     pub(crate) bytes: Option<u64>,
+    /// The write removed it, as an old sheet beyond a set's new last.
+    pub(crate) removed: bool,
 }
 
-/// The files the window's clients wrote, shared with the threads that see
-/// their requests answered.
+/// The files the window's clients wrote, one list per write, shared with the
+/// threads that see their requests answered.
 #[derive(Clone, Default)]
-pub(crate) struct WriteLog(Arc<Mutex<VecDeque<WrittenFile>>>);
+pub(crate) struct WriteLog(Arc<Mutex<VecDeque<Vec<WrittenFile>>>>);
 
 impl WriteLog {
-    /// The files written, the newest first.
+    /// The files written, the newest write first, each write's in the order
+    /// its answer named them.
     pub(crate) fn files(&self) -> Vec<WrittenFile> {
-        self.files_now().iter().cloned().collect()
+        self.files_now().iter().flatten().cloned().collect()
     }
 
     /// The list; a thread that panicked holding it left it whole, so it is
     /// read on.
-    fn files_now(&self) -> std::sync::MutexGuard<'_, VecDeque<WrittenFile>> {
+    fn files_now(&self) -> std::sync::MutexGuard<'_, VecDeque<Vec<WrittenFile>>> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -45,9 +50,11 @@ impl WriteLog {
 
     /// The sender a request writing `path` answers on in place of `reply`:
     /// the answer goes on to `reply` as it came, and when it is a success the
-    /// files it says it wrote are listed ([`answered_files`]), else `path` when
-    /// the answer says it was saved or the file there is another than before. A
-    /// request answered never drops its `reply` unanswered.
+    /// files it says it wrote or removed are listed ([`answered_files`]), else
+    /// `path` when the answer says it was saved or the file there is another
+    /// than before, a refusal's too: an export that failed and could not put
+    /// back what it wrote left that file. A request answered never drops its
+    /// `reply` unanswered.
     pub(super) fn watch(
         &self,
         path: PathBuf,
@@ -66,23 +73,18 @@ impl WriteLog {
                 let Some(answer) = answers.iter().next() else {
                     return;
                 };
-                if answer.ok {
-                    let result = answer.result.as_ref();
-                    let mut files = answered_files(result);
-                    // A save of the same size within the clock of a FAT disk
-                    // leaves the stamp as it was, so the answer is believed.
-                    let saved = result.is_some_and(|result| result["saved"] == true);
-                    if files.is_empty()
-                        && (saved || stamp(&path).is_some_and(|after| Some(after) != before))
-                    {
-                        files.push(path);
-                    }
-                    for file in files.iter().rev() {
-                        log.record(file);
-                    }
-                    if !files.is_empty() {
-                        context.request_repaint();
-                    }
+                let result = answer.result.as_ref().filter(|_| answer.ok);
+                let (mut files, removed) = answered_files(result);
+                // A save of the same size within the clock of a FAT disk
+                // leaves the stamp as it was, so the answer is believed.
+                let saved = result.is_some_and(|result| result["saved"] == true);
+                if files.is_empty()
+                    && (saved || stamp(&path).is_some_and(|after| Some(after) != before))
+                {
+                    files.push(path);
+                }
+                if log.record_write(&files, &removed) {
+                    context.request_repaint();
                 }
                 forward.deliver(answer);
             });
@@ -97,21 +99,39 @@ impl WriteLog {
     }
 
     /// Lists the file or folder at `path` as written now.
+    #[cfg(test)]
     pub(crate) fn record(&self, path: &Path) {
-        let bytes = std::fs::metadata(path)
-            .ok()
-            .and_then(|metadata| metadata.is_file().then_some(metadata.len()));
-        let file = WrittenFile {
-            path: path.to_path_buf(),
-            at: local_clock(
-                SystemTime::now(),
-                crate::app::local_time::utc_offset_seconds(),
-            ),
-            bytes,
+        self.record_write(&[path.to_path_buf()], &[]);
+    }
+
+    /// Lists one write: the files and folders it `wrote` and the files it
+    /// `removed`, as now; false when it named none.
+    fn record_write(&self, wrote: &[PathBuf], removed: &[PathBuf]) -> bool {
+        if wrote.is_empty() && removed.is_empty() {
+            return false;
+        }
+        let at = local_clock(
+            SystemTime::now(),
+            crate::app::local_time::utc_offset_seconds(),
+        );
+        let listed = |path: &PathBuf, removed: bool| WrittenFile {
+            path: path.clone(),
+            at: at.clone(),
+            bytes: std::fs::metadata(path)
+                .ok()
+                .and_then(|metadata| metadata.is_file().then_some(metadata.len()))
+                .filter(|_| !removed),
+            removed,
         };
-        let mut files = self.files_now();
-        files.push_front(file);
-        files.truncate(KEPT);
+        let write = wrote
+            .iter()
+            .map(|path| listed(path, false))
+            .chain(removed.iter().map(|path| listed(path, true)))
+            .collect();
+        let mut writes = self.files_now();
+        writes.push_front(write);
+        writes.truncate(KEPT);
+        true
     }
 }
 
@@ -129,10 +149,11 @@ fn stamp(path: &Path) -> Option<(Option<SystemTime>, u64)> {
 /// variant's takeoff went unlisted): a document saved where `save_path` says,
 /// and for an export its `files` (a set's sheets) or else its `path`, with
 /// `set_list`, `loss_report`, `support_report`, `companions`, `cut_list_path`
-/// and `takeoff_path`.
-fn answered_files(result: Option<&Value>) -> Vec<PathBuf> {
+/// and `takeoff_path`; then the files it says it removed, a set's
+/// `removed_files`.
+fn answered_files(result: Option<&Value>) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let Some(result) = result else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let named = |key: &str| result.get(key).and_then(Value::as_str).map(PathBuf::from);
     let listed = |key: &str| {
@@ -145,12 +166,14 @@ fn answered_files(result: Option<&Value>) -> Vec<PathBuf> {
             .map(PathBuf::from)
     };
     let mut files = Vec::new();
+    let mut removed = Vec::new();
     if result["saved"] == true {
         files.extend(named("save_path"));
     }
     // `exported` is true, or how many variants were.
     let exported = &result["exported"];
     if *exported == true || exported.as_u64().is_some_and(|count| count > 0) {
+        removed.extend(listed("removed_files"));
         if result.get("files").is_some() {
             files.extend(listed("files"));
         } else {
@@ -167,7 +190,7 @@ fn answered_files(result: Option<&Value>) -> Vec<PathBuf> {
         }
         files.extend(listed("companions"));
     }
-    files
+    (files, removed)
 }
 
 /// `time` on a clock `offset` seconds ahead of UTC, `HH:MM:SS`.
@@ -215,8 +238,8 @@ mod tests {
         assert_eq!(shown_size(3 * 1_048_576 / 2), "1.5 MB");
     }
 
-    /// The answer reaches the client as it came; only a success that left a
-    /// new file is listed, a refusal or a file untouched is not.
+    /// The answer reaches the client as it came; an answer that left a new
+    /// file is listed, a success or a refusal alike, a file untouched is not.
     #[test]
     fn a_request_answered_is_listed_only_when_it_wrote_its_file() {
         let directory = tempfile::tempdir().unwrap();
@@ -236,12 +259,20 @@ mod tests {
             assert_eq!((delivered.id, delivered.ok), (7, ok));
             log.files()
         };
-        assert!(answer(false, Some(b"refused")).is_empty(), "a refusal");
+        assert!(answer(false, None).is_empty(), "a refusal");
         let files = answer(true, Some(b"written 123"));
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, path);
         assert_eq!(files[0].bytes, Some(11));
         assert_eq!(answer(true, None).len(), 1, "the file untouched");
+        // A failed export that could not put back the file it changed is
+        // listed: the file there is not the one before.
+        let files = answer(false, Some(b"left half written"));
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            (files[0].path.as_path(), files[0].bytes),
+            (path.as_path(), Some(17))
+        );
     }
 
     /// Every file an answer says was written is listed, the first named
@@ -306,6 +337,42 @@ mod tests {
             .is_empty(),
             "no variant exported"
         );
+    }
+
+    /// The list keeps the last writes, not the last files: one set of more
+    /// sheets than it keeps does not push out every write before it, and the
+    /// old sheets the set removed are listed as removed (review 2026-11-21 ac
+    /// P3).
+    #[test]
+    fn a_large_set_keeps_the_writes_before_it_and_lists_what_it_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = WriteLog::default();
+        log.record(&directory.path().join("before.step"));
+        let sheets = (1..=KEPT + 20)
+            .map(|sheet| format!("plan-{sheet:03}.dxf"))
+            .collect::<Vec<_>>();
+        let (reply, client) = mpsc::sync_channel(1);
+        let watched = log.watch(
+            directory.path().join("plan.dxf"),
+            reply,
+            egui::Context::default(),
+        );
+        let mut response = Response::error(1, "unused");
+        response.ok = true;
+        response.result = Some(serde_json::json!({"exported": true, "path": "plan.dxf",
+            "files": sheets, "removed_files": ["plan-999.dxf"]}));
+        watched.deliver(response);
+        client.recv().unwrap();
+        let files = log.files();
+        assert_eq!(files.len(), KEPT + 20 + 2);
+        assert_eq!(files[0].path, Path::new("plan-001.dxf"));
+        let removed = &files[KEPT + 20];
+        assert_eq!(
+            (removed.path.as_path(), removed.removed),
+            (Path::new("plan-999.dxf"), true)
+        );
+        assert!(!files[0].removed);
+        assert_eq!(files[KEPT + 21].path, directory.path().join("before.step"));
     }
 
     /// A save the answer reports is listed even when the file's stamp did not
