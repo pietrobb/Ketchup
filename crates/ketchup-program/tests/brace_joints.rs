@@ -513,3 +513,40 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
     }
     assert_ne!(checked(&held, "beam").status, "pass");
 }
+
+/// Review 2026-11-21 ac P3: a hanger 50 x 100 x 600 screwed to the side of a
+/// grounded block 200 x 400 x 200 on a column bent the block, which was given
+/// Euler's load over the path as F_cap, some 29 000 kN (4 669 kN in the
+/// review). A piece that stocky crushes long before it buckles (EN 1995-1-1
+/// 6.3.2(3), relative slenderness at most 0.3): it holds without buckling.
+#[test]
+fn a_stocky_block_on_the_path_does_not_buckle() {
+    let held = beam_with(
+        |x| {
+            format!(
+                "box(\"hanger {x}\", (50, 100, 600), at = ({x}, 80, 2300), material = \"GL24h\", tags = [\"hanger\"])
+box(\"block {x}\", (200, 400, 200), at = ({}, 80, 2700), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (200, 200, 2700), at = ({}, 180, 0), material = \"GL24h\", grounded = True)
+joint(\"hanger {x}\", \"beam\", kind = \"screw\")
+joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
+",
+                x + 50,
+                x + 50
+            )
+        },
+        "brace([\"beam\"], by = [\"hanger\"], edge = \"top\")\n",
+    );
+    let braces: Vec<_> = held
+        .loads
+        .members
+        .iter()
+        .flat_map(|load| &load.braced_by)
+        .filter(|brace| brace.part.starts_with("hanger"))
+        .collect();
+    assert_eq!(braces.len(), PLACES.len(), "{braces:?}");
+    for brace in braces {
+        let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
+        assert!(anchorage.stiffness_n_mm > 0.0, "{brace:?}");
+        assert_eq!(anchorage.capacity_n, None, "{brace:?}");
+    }
+}

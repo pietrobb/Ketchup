@@ -163,14 +163,18 @@ pub(super) fn brace_give(
         + across.max(0.0) * long / (5.0 / 6.0 * modulus * SHEAR_PER_E * wide_i * wide_j)
 }
 
+/// The largest relative slenderness of a piece that does not buckle, EN
+/// 1995-1-1 6.3.2(3): at most this, k_c = 1 and it crushes first.
+const STOCKY_SLENDERNESS: f64 = 0.3;
+
 /// The largest force `sideways` the part of box `obb` takes before buckling
 /// where it carries it along its axis between `entry` and `exit`, N, by
-/// Euler's load at the fifth-percentile modulus `modulus_05` over the length
-/// `reach` of the rod it is a piece of: short pieces end to end buckle as one
-/// rod (R1113r95-PG-700, R1121ac-PG-1002). Infinite where it carries none.
+/// Euler's load at the fifth-percentile modulus over the length `reach` of
+/// the rod it is a piece of: short pieces end to end buckle as one rod
+/// (R1113r95-PG-700, R1121ac-PG-1002). Infinite where it carries none.
 pub(super) fn part_capacity(
     obb: &Obb,
-    modulus_05: f64,
+    strength: (f64, f64),
     entry: [f64; 3],
     exit: [f64; 3],
     sideways: [f64; 3],
@@ -178,8 +182,29 @@ pub(super) fn part_capacity(
 ) -> f64 {
     let run = sub(entry, exit);
     match pushed_along(obb, entry, exit, sideways) {
-        Some(along) if reach > f64::EPSILON => euler_load(obb, modulus_05, run, reach) / along,
+        Some(along) if reach > f64::EPSILON => buckling_load(obb, strength, run, reach) / along,
         _ => f64::INFINITY,
+    }
+}
+
+/// [`euler_load`] at the fifth-percentile modulus `modulus_05`, infinite
+/// where the piece is so stocky that it crushes at the compressive strength
+/// `fc0_k` (N/mm²) before it buckles: Euler's load at least f_c,0,k A over
+/// the relative slenderness 0.3 squared (review 2026-11-21 ac P3: a block
+/// 200 x 400 x 200 bent by a hanger was given 29 000 kN).
+pub(super) fn buckling_load(
+    obb: &Obb,
+    (modulus_05, fc0_k): (f64, f64),
+    run: [f64; 3],
+    reach: f64,
+) -> f64 {
+    let euler = euler_load(obb, modulus_05, run, reach);
+    let (_, [(_, wide_i), (_, wide_j)]) = section(obb, run);
+    let crushing = fc0_k * wide_i * wide_j;
+    if euler * STOCKY_SLENDERNESS * STOCKY_SLENDERNESS >= crushing {
+        f64::INFINITY
+    } else {
+        euler
     }
 }
 
@@ -207,7 +232,7 @@ pub(super) fn pushed_along(
 /// Euler's load of the part of box `obb` pushed along its axis nearest `run`
 /// over the length `reach`, about its weaker axis, at the modulus
 /// `modulus_05`, N; infinite over no length.
-pub(super) fn euler_load(obb: &Obb, modulus_05: f64, run: [f64; 3], reach: f64) -> f64 {
+fn euler_load(obb: &Obb, modulus_05: f64, run: [f64; 3], reach: f64) -> f64 {
     if reach <= f64::EPSILON {
         return f64::INFINITY;
     }
@@ -249,13 +274,13 @@ mod tests {
         let (entry, exit) = ([3.5, 0.0, 3.5], [3.5, 400.0, 3.5]);
         let give = part_give(&obb, 11_500.0, entry, exit, entry, [0.0, 1.0, 0.0]);
         assert!((give - 400.0 / (11_500.0 * 49.0)).abs() < 1e-12);
-        let capacity = part_capacity(&obb, 9_600.0, entry, exit, [0.0, 1.0, 0.0], 2400.0);
+        let capacity = part_capacity(&obb, (9_600.0, 24.0), entry, exit, [0.0, 1.0, 0.0], 2400.0);
         let euler =
             std::f64::consts::PI.powi(2) * 9_600.0 * 7.0_f64.powi(4) / 12.0 / 2400.0_f64.powi(2);
         assert!((capacity - euler).abs() < 1e-9, "{capacity}");
         let across = part_capacity(
             &obb,
-            9_600.0,
+            (9_600.0, 24.0),
             entry,
             [3.5, 0.0, -400.0],
             [0.0, 1.0, 0.0],
@@ -272,12 +297,28 @@ mod tests {
         let obb = post(50.0, 100.0, 600.0);
         let capacity = part_capacity(
             &obb,
-            7_400.0,
+            (7_400.0, 21.0),
             [25.0, 0.0, 550.0],
             [25.0, 100.0, 150.0],
             [0.0, 1.0, 0.0],
             412.0,
         );
         assert!(capacity.is_infinite(), "{capacity}");
+    }
+
+    /// A rod 50 x 50 pushed along it buckles at Euler's load while its
+    /// relative slenderness exceeds 0.3; over 200 mm (about 0.24) it crushes
+    /// first and does not buckle (review 2026-11-21 ac P3).
+    #[test]
+    fn a_stocky_rod_crushes_before_it_buckles() {
+        let obb = post(50.0, 1000.0, 50.0);
+        let run = [0.0, 1000.0, 0.0];
+        let euler = |reach: f64| {
+            std::f64::consts::PI.powi(2) * 7_400.0 * 50.0_f64.powi(4) / 12.0 / (reach * reach)
+        };
+        let slender = buckling_load(&obb, (7_400.0, 21.0), run, 300.0);
+        assert!((slender - euler(300.0)).abs() < 1e-9 * slender, "{slender}");
+        let stocky = buckling_load(&obb, (7_400.0, 21.0), run, 200.0);
+        assert!(stocky.is_infinite(), "{stocky}");
     }
 }

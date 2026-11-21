@@ -8,7 +8,7 @@
 //! pushing only along its length (R1120ac-PG-903: one pinned 45° across the
 //! force was four times too stiff and twice too strong).
 
-use super::stiffness::{SLIP_PER_FASTENER, Tie, euler_load, moment, section, turning_about};
+use super::stiffness::{SLIP_PER_FASTENER, Tie, buckling_load, moment, section, turning_about};
 use crate::frame::Obb;
 use ketchup_geometry::linalg::{dot, length, scale, sub};
 use ketchup_model::tolerance::ALONG_AXIS_NEGLIGIBLE;
@@ -94,12 +94,13 @@ pub(super) struct Strut {
 }
 
 impl Strut {
-    /// The strut of box `obb`, modulus `modulus` and fifth-percentile modulus
-    /// `modulus_05` (N/mm²) between `entry` and `exit`, buckling over the
-    /// length `reach`, held by a force `sideways`.
+    /// The strut of box `obb`, modulus `modulus`, fifth-percentile modulus
+    /// `modulus_05` and compressive strength `fc0_k` (N/mm²) between `entry`
+    /// and `exit`, buckling over the length `reach`, held by a force
+    /// `sideways`.
     pub(super) fn of(
         obb: &Obb,
-        (modulus, modulus_05): (f64, f64),
+        (modulus, modulus_05, fc0_k): (f64, f64, f64),
         (entry, exit): ([f64; 3], [f64; 3]),
         sideways: [f64; 3],
         reach: f64,
@@ -110,7 +111,7 @@ impl Strut {
             axis: obb.axes[along],
             cosine: dot(sideways, obb.axes[along]).abs(),
             give: length(run) / (modulus * wide_i * wide_j),
-            capacity: euler_load(obb, modulus_05, run, reach),
+            capacity: buckling_load(obb, (modulus_05, fc0_k), run, reach),
         }
     }
 
@@ -194,7 +195,7 @@ mod tests {
     /// the force with all of both; across it, a pendulum, with nothing.
     #[test]
     fn a_strut_holds_with_its_force_along_it() {
-        let moduli = (11_000.0, 7_400.0);
+        let moduli = (11_000.0, 7_400.0, 21.0);
         let rod = Obb::new([0.0; 3], &IDENTITY, [0.0; 3], [50.0, 1000.0, 50.0]);
         let ends = ([25.0, 1000.0, 25.0], [25.0, 0.0, 25.0]);
         let stretching = 11_000.0 * 2500.0 / 1000.0;
