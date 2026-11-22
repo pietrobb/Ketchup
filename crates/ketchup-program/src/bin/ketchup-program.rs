@@ -210,10 +210,16 @@ fn main() -> ExitCode {
     // The checks run on a thread of their own, so the command answers by the
     // window's deadline however long they take (review 2026-11-22
     // R1122ac-PG-1102: 5 000 overlapping parts ran past 300 s).
-    let checks = std::thread::Builder::new()
+    let checks = match std::thread::Builder::new()
         .stack_size(CHECK_STACK_BYTES)
         .spawn(move || check(&options, &source, saved))
-        .expect("the check thread starts");
+    {
+        Ok(checks) => checks,
+        Err(error) => {
+            eprintln!("the checks could not start: {error}");
+            return ExitCode::from(2);
+        }
+    };
     let deadline = std::time::Instant::now() + ketchup_program::CHECK_TIME;
     while !checks.is_finished() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -233,11 +239,7 @@ fn main() -> ExitCode {
             ),
             location: None,
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({"ok": false, "error": error}))
-                .expect("the error serializes")
-        );
+        println!("{:#}", json!({"ok": false, "error": error}));
         ExitCode::from(2)
     }
 }
