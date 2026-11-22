@@ -26,9 +26,9 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<Value<'v>> {
         let heap = eval.heap();
         check_part_name(name)?;
-        let file = text(Some(file), "file")?
-            .map(|file| file.trim().to_owned())
-            .unwrap_or_default();
+        let Some(file) = text(Some(file), "file")?.map(|file| file.trim().to_owned()) else {
+            anyhow::bail!("imported({name:?}): give the path of its .step or .stp file");
+        };
         let extension = std::path::Path::new(&file)
             .extension()
             .and_then(|extension| extension.to_str())

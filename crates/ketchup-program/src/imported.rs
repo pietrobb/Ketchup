@@ -98,7 +98,7 @@ pub fn check_inside_program_folder(name: &str, file: &str) -> anyhow::Result<()>
             Component::CurDir => {}
             Component::ParentDir if depth > 0 => depth -= 1,
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => anyhow::bail!(
-                "{name:?}: {file:?} is outside the folder of the program's file; copy the STEP file into that folder (or below it) and give its path from there, e.g. \"hettich/9073662.step\""
+                "{name:?}: {file:?} is outside the folder of the program's file; copy the STEP file into that folder (or below it) and give its path from there, e.g. \"supplier/article.step\""
             ),
         }
     }

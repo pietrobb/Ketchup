@@ -17,6 +17,7 @@ use ketchup_model::import::{
 use ketchup_program::ProgramModel;
 use ketchup_program::imported::ImportedBody;
 use ketchup_program::model::Part;
+use ketchup_rejection::{Rejection, RejectionPhase};
 use std::collections::BTreeMap;
 
 /// Where the host reads a program's STEP files from.
@@ -27,17 +28,27 @@ pub trait ImportFiles {
     ///
     /// # Errors
     /// Why the file could not be read: missing, outside the folder, not a
-    /// valid STEP body.
-    fn read(&mut self, file: &str, part: Option<&str>) -> Result<Option<ImportedBody>, String>;
+    /// valid STEP body; its reason says it, its cause keeps the error behind.
+    fn read(&mut self, file: &str, part: Option<&str>) -> Result<Option<ImportedBody>, Rejection>;
 }
 
 /// A host without the program's folder: only what the document already holds.
 pub struct NoFiles;
 
 impl ImportFiles for NoFiles {
-    fn read(&mut self, _file: &str, _part: Option<&str>) -> Result<Option<ImportedBody>, String> {
+    fn read(
+        &mut self,
+        _file: &str,
+        _part: Option<&str>,
+    ) -> Result<Option<ImportedBody>, Rejection> {
         Ok(None)
     }
+}
+
+/// Why a program's file cannot be read, said by `reason`.
+#[must_use]
+pub fn unreadable(reason: impl Into<String>) -> Rejection {
+    Rejection::new(IMPORT_FAILED, RejectionPhase::Io).reason(reason)
 }
 
 /// Records in every part of `model` read from a file what `files` read of
@@ -66,8 +77,8 @@ pub fn read_imports(
                 let body = match files.read(&key.0, key.1.as_deref()) {
                     Ok(Some(body)) => body,
                     Ok(None) => from_document(snapshot, &part.name, &key.0, key.1.as_deref())
-                        .ok_or_else(|| failed(part, &key.0, "this Kečup has no folder of the program's file to read it from; apply the program from its file".to_owned()))?,
-                    Err(reason) => return Err(failed(part, &key.0, reason)),
+                        .ok_or_else(|| failed(part, &key.0, &unreadable("this Kečup has no folder of the program's file to read it from; apply the program from its file")))?,
+                    Err(rejection) => return Err(failed(part, &key.0, &rejection)),
                 };
                 read.insert(key, body.clone());
                 body
@@ -81,10 +92,16 @@ pub fn read_imports(
 /// The code of a program whose bought part's file cannot be read.
 pub const IMPORT_FAILED: &str = "program_import_failed";
 
-fn failed(part: &Part, file: &str, reason: String) -> RuleProgramApplyError {
+fn failed(part: &Part, file: &str, rejection: &Rejection) -> RuleProgramApplyError {
+    let mut why = rejection.reason_text().to_owned();
+    for cause in rejection.causes() {
+        why.push_str(" (");
+        why.push_str(&cause);
+        why.push(')');
+    }
     RuleProgramApplyError::Program {
         code: IMPORT_FAILED.to_owned(),
-        message: format!("{:?}: cannot read {file:?}: {reason}", part.name),
+        message: format!("{:?}: cannot read {file:?}: {why}", part.name),
         location: None,
     }
 }

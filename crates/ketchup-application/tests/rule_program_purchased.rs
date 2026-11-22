@@ -49,10 +49,16 @@ fn hinge_evidence() -> StepImportEvidence {
 }
 
 impl ImportFiles for Folder {
-    fn read(&mut self, file: &str, _part: Option<&str>) -> Result<Option<ImportedBody>, String> {
+    fn read(
+        &mut self,
+        file: &str,
+        _part: Option<&str>,
+    ) -> Result<Option<ImportedBody>, ketchup_rejection::Rejection> {
         *self.reads.entry(file.to_owned()).or_default() += 1;
         if self.broken {
-            return Err("the exact kernel found no solid in it".to_owned());
+            return Err(ketchup_application::program_imports::unreadable(
+                "the exact kernel found no solid in it",
+            ));
         }
         assert_eq!(file, "hettich/9073662.step");
         Ok(Some(ImportedBody {

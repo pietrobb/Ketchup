@@ -2,11 +2,12 @@
 //! `imported()`) from the folder of the program's file, with the exact
 //! worker, and keeps their bytes for the document to seal.
 
-use ketchup_application::program_imports::ImportFiles;
+use ketchup_application::program_imports::{ImportFiles, unreadable};
 use ketchup_model::document::{FeatureKind, Snapshot};
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{ImportFormat, STEP_PARSER_VERSION, StepImportEvidence};
 use ketchup_program::imported::ImportedBody;
+use ketchup_rejection::Rejection;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -84,39 +85,45 @@ impl StepFiles {
 
     /// `file` in the folder, its real path inside the real folder: a link
     /// out of it is refused like a `..` (`check_inside_program_folder`).
-    fn path(folder: &Path, file: &str) -> Result<PathBuf, String> {
+    fn path(folder: &Path, file: &str) -> Result<PathBuf, Rejection> {
         let real_folder = std::fs::canonicalize(folder).map_err(|error| {
-            format!(
-                "the program's folder {} cannot be read: {error}",
+            unreadable(format!(
+                "the program's folder {} cannot be read",
                 folder.display()
-            )
+            ))
+            .caused_by(error)
         })?;
-        let path = std::fs::canonicalize(folder.join(file))
-            .map_err(|error| format!("there is no such file in {} ({error})", folder.display()))?;
+        let path = std::fs::canonicalize(folder.join(file)).map_err(|error| {
+            unreadable(format!("there is no such file in {}", folder.display())).caused_by(error)
+        })?;
         if !path.starts_with(&real_folder) {
-            return Err(format!(
+            return Err(unreadable(format!(
                 "it leads out of the program's folder {}; copy the file into it",
                 folder.display()
-            ));
+            )));
         }
         if !path.is_file() {
-            return Err("it is not a file".to_owned());
+            return Err(unreadable("it is not a file"));
         }
         Ok(path)
     }
 
-    fn worker(&mut self) -> Result<&mut ExactWorkerSupervisor, String> {
+    fn worker(&mut self) -> Result<&mut ExactWorkerSupervisor, Rejection> {
         if self.worker.is_none() {
-            let path = self
-                .worker_path
-                .clone()
-                .ok_or("the exact worker that reads STEP files is not installed next to Kečup")?;
+            let path = self.worker_path.clone().ok_or_else(|| {
+                unreadable("the exact worker that reads STEP files is not installed next to Kečup")
+            })?;
             let worker = ExactWorkerSupervisor::spawn_with_cancellation(&path, &self.cancelled)
-                .map_err(|error| format!("the exact worker did not start: {error}"))?;
+                .map_err(|error| unreadable("the exact worker did not start").caused_by(error))?;
             self.worker = Some(worker);
         }
         Ok(self.worker.as_mut().expect("started above"))
     }
+}
+
+/// The exact kernel could not read the file as a STEP body.
+fn not_step(error: ketchup_scheduler::WorkerError) -> Rejection {
+    unreadable("the exact kernel cannot read it as a STEP body").caused_by(error)
 }
 
 /// The distinct names of `parts`, quoted, the first few of a long list.
@@ -141,28 +148,29 @@ fn part_names(parts: &[ketchup_model::import::StepXdePartEvidence]) -> String {
 }
 
 impl ImportFiles for StepFiles {
-    fn read(&mut self, file: &str, part: Option<&str>) -> Result<Option<ImportedBody>, String> {
+    fn read(&mut self, file: &str, part: Option<&str>) -> Result<Option<ImportedBody>, Rejection> {
         let Some(folder) = self.folder.clone() else {
             return Ok(None);
         };
         let path = Self::path(&folder, file)?;
         let length = std::fs::metadata(&path)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| unreadable("its size cannot be read").caused_by(error))?
             .len();
         if length > MAX_STEP_BYTES {
-            return Err(format!(
+            return Err(unreadable(format!(
                 "it holds {length} bytes, more than the {MAX_STEP_BYTES} a bought part's file may"
-            ));
+            )));
         }
-        let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+        let bytes = std::fs::read(&path)
+            .map_err(|io| unreadable("its bytes cannot be read").caused_by(io))?;
         if bytes.is_empty() {
-            return Err("the file is empty".to_owned());
+            return Err(unreadable("the file is empty"));
         }
         let sha = sha256_bytes(&bytes);
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or("the file's name is not UTF-8")?
+            .ok_or_else(|| unreadable("the file's name is not UTF-8"))?
             .to_owned();
         if part.is_none()
             && let Some(evidence) = self.known.get(&sha).cloned()
@@ -184,15 +192,12 @@ impl ImportFiles for StepFiles {
             .prefix("ketchup-program-step-")
             .suffix(".step")
             .tempfile()
-            .map_err(|error| error.to_string())?;
+            .map_err(|io| unreadable("no copy of it could be made for the worker").caused_by(io))?;
         copy.write_all(&bytes)
             .and_then(|()| copy.flush())
-            .map_err(|error| error.to_string())?;
+            .map_err(|io| unreadable("no copy of it could be made for the worker").caused_by(io))?;
         let cancelled = Arc::clone(&self.cancelled);
         let worker = self.worker()?;
-        let not_step = |error: ketchup_scheduler::WorkerError| {
-            format!("the exact kernel cannot read it as a STEP body: {error}")
-        };
         let (part_index, evidence) = match part {
             None => {
                 match worker.inspect_step_import_with_cancellation(
@@ -201,27 +206,30 @@ impl ImportFiles for StepFiles {
                     &cancelled,
                 ) {
                     Ok(evidence) => (None, evidence),
-                    Err(error) => {
+                    Err(whole) => {
                         // An assembly whose parts are valid one by one, but
                         // not as one body: say which part to take.
-                        let whole = not_step(error);
-                        let parts = worker
+                        // The parts only name what to choose: when they cannot
+                        // be read either, the whole file's error says why.
+                        let Some(parts) = worker
                             .inspect_step_xde_import_with_cancellation(
                                 copy.path(),
                                 &sha_hex,
                                 &cancelled,
                             )
+                            .ok()
                             .map(|assembly| assembly.parts)
-                            .unwrap_or_default();
-                        if parts.len() < 2 {
-                            return Err(whole);
-                        }
-                        return Err(format!(
-                            "{whole}; it is an assembly of {} parts, so name the one to place \
-                             with part=, one of {}",
+                            .filter(|parts| parts.len() >= 2)
+                        else {
+                            return Err(not_step(whole));
+                        };
+                        return Err(unreadable(format!(
+                            "the exact kernel cannot read it as one STEP body; it is an assembly \
+                             of {} parts, so name the one to place with part=, one of {}",
                             parts.len(),
                             part_names(&parts)
-                        ));
+                        ))
+                        .caused_by(whole));
                     }
                 }
             }
@@ -234,18 +242,18 @@ impl ImportFiles for StepFiles {
                     .iter()
                     .filter(|candidate| candidate.name == name);
                 let Some(first) = found.next() else {
-                    return Err(format!(
+                    return Err(unreadable(format!(
                         "it has no part {name:?}; its parts are {}",
                         part_names(&assembly.parts)
-                    ));
+                    )));
                 };
                 let more = found.count();
                 if more > 0 {
-                    return Err(format!(
+                    return Err(unreadable(format!(
                         "{} of its parts are named {name:?}, so the name does not say which \
                          one; give the part its own name in the file, or export it alone",
                         more + 1
-                    ));
+                    )));
                 }
                 (Some(first.index), first.exact.clone())
             }

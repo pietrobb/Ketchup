@@ -174,7 +174,12 @@ pub fn bom(model: &ProgramModel) -> Bom {
                 .bought_item()
                 .is_none_or(|item| items.insert((designation.to_owned(), item.to_owned())));
             let row = bought(&mut hardware, designation, attributes);
-            let pieces = number("quantity").map_or(1, |quantity| quantity as usize);
+            // `purchased(qty=)` writes a whole number of at least 1.
+            let pieces = part
+                .attributes
+                .get("quantity")
+                .and_then(|quantity| quantity.parse::<usize>().ok())
+                .unwrap_or(1);
             row.count += pieces * usize::from(first_piece);
             row.parts.push(part.name.clone());
             continue;

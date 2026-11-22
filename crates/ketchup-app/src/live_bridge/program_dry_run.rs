@@ -188,7 +188,7 @@ impl LiveBridge {
             }
         };
         Self::program_source(app, request, ui_busy, cancelled)
-            .map(|(source, _, given)| (source, given))
+            .map(|(source, _, given, _)| (source, given))
     }
 
     fn check_context(app: &KetchupApp, source: &RuleProgramSource) -> CheckContext {

@@ -3,18 +3,19 @@
 #[cfg(test)]
 #[path = "program_check_failure_tests.rs"]
 mod failure_tests;
+mod step_files;
 #[cfg(test)]
 #[path = "program_plan_tests.rs"]
 mod tests;
 use super::*;
 use crate::delivery::Deliver;
 use crate::program_edit::ProgramEdit;
-use crate::program_step_files::StepFiles;
 use ketchup_application::program_imports::ImportFiles;
 use ketchup_application::program_isolation::{CheckDeadline, complete_pending_checks};
 use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
+use step_files::StepFiles;
 
 /// Plans the program and lists its report, both off the UI thread when queued.
 /// `deadline` is the request's: its exact check gets only what the report left,
@@ -52,6 +53,25 @@ fn plan_with_report(
 
 /// The code of a request whose own parameter value the program refuses.
 pub(super) const OVERRIDE_REFUSED: &str = "param_override_refused";
+
+/// An apply request's program, whether it replaces the document, the
+/// parameters it sets and the folder of its STEP files.
+pub(super) type ProgramRequest = (RuleProgramSource, bool, Vec<String>, Option<PathBuf>);
+
+/// What to do about a program refused with `code`.
+pub(super) fn fix_hint(code: &str) -> &'static str {
+    match code {
+        OVERRIDE_REFUSED => {
+            "Give the parameter a value it takes (inside its range, whole for a count), or leave it out of overrides to keep its default."
+        }
+        ketchup_application::program_imports::IMPORT_FAILED => {
+            "Put a STEP file the exact kernel reads at the path purchased() names, relative to the program's file, and apply the program from its file again."
+        }
+        _ => {
+            "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again."
+        }
+    }
+}
 
 /// A value `given` by the request that the program refuses (outside the
 /// parameter's range, or no whole number of a count) fails it, applied or only
@@ -340,7 +360,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<(RuleProgramSource, bool, Vec<String>), &'static str> {
+    ) -> Result<ProgramRequest, &'static str> {
         let request = Self::expand_program_patch(app, request)?;
         let Request::ApplyProgram {
             expected,
@@ -348,11 +368,19 @@ impl LiveBridge {
             overrides,
             file_name,
             replace_document,
-            source_folder: _,
+            source_folder,
         } = request
         else {
             return Err("invalid_params");
         };
+        // The folder of the program's STEP files: absolute and a folder.
+        let folder = source_folder.map(PathBuf::from);
+        if folder
+            .as_ref()
+            .is_some_and(|folder| !folder.is_absolute() || !folder.is_dir())
+        {
+            return Err("invalid_params");
+        }
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         Self::require_request_authority(cancelled)?;
@@ -392,6 +420,7 @@ impl LiveBridge {
             },
             replace_document,
             given,
+            folder,
         ))
     }
 
@@ -404,8 +433,8 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
-        let folder = Self::given_folder(&request)?;
-        let (source, replace, given) = Self::program_source(app, request, ui_busy, cancelled)?;
+        let (source, replace, given, folder) =
+            Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
         let mut files = self.step_files(app, folder, &source, Arc::new(AtomicBool::new(false)));
         // This path answers without an exact check.
@@ -421,23 +450,6 @@ impl LiveBridge {
         .map_err(program_failure)?;
         let planned = (plan, report, files.into_sources());
         self.publish_program(app, source, replace, planned, &before, cancelled)
-    }
-
-    /// The folder an apply `request` gives for its program's STEP files:
-    /// absolute and a folder, or the request is refused.
-    fn given_folder(request: &Request) -> Result<Option<PathBuf>, &'static str> {
-        let Request::ApplyProgram {
-            source_folder: Some(folder),
-            ..
-        } = request
-        else {
-            return Ok(None);
-        };
-        let folder = PathBuf::from(folder);
-        if !folder.is_absolute() || !folder.is_dir() {
-            return Err("invalid_params");
-        }
-        Ok(Some(folder))
     }
 
     /// The reader of `source`'s STEP files: from the folder the request gave,
@@ -483,7 +495,9 @@ impl LiveBridge {
             app.file
                 .container_data
                 .insert_import_blob(bytes)
-                .map_err(|_error| "not_published")?;
+                .map_err(|error| {
+                    super::rejection_records::failed_because("commit_rejected", error)
+                })?;
         }
         let before = app.document.current();
         let source_diff = super::program_access::source_diff(
@@ -543,16 +557,14 @@ impl LiveBridge {
             );
             return;
         }
-        let sourced = Self::given_folder(&request).and_then(|folder| {
-            Self::program_source(app, request, ui_busy, &cancelled).map(|sourced| (folder, sourced))
-        });
-        let (folder, (source, replace, given)) = match sourced {
-            Ok(sourced) => sourced,
-            Err(code) => {
-                Self::reply(app, id, &reply, Err(code));
-                return;
-            }
-        };
+        let (source, replace, given, folder) =
+            match Self::program_source(app, request, ui_busy, &cancelled) {
+                Ok(sourced) => sourced,
+                Err(code) => {
+                    Self::reply(app, id, &reply, Err(code));
+                    return;
+                }
+            };
         let mut files = self.step_files(app, folder, &source, Arc::clone(&cancelled));
         let document = app.document.fork_for_planning();
         let before = app.live_bridge_stamp();

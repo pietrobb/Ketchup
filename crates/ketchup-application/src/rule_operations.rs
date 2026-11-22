@@ -25,6 +25,11 @@ pub(crate) fn append_profiles(
     parts: &[&Part],
     commands: &mut Vec<CanonicalCommand>,
 ) -> Result<(), AssistantRejection> {
+    // A body read from a file is placed as it is (`crate::program_imports`).
+    let (imported, parts): (Vec<&Part>, Vec<&Part>) =
+        parts.iter().partition(|part| part.imported().is_some());
+    crate::program_imports::append_imported(document, &imported, commands)?;
+    let parts = parts.as_slice();
     let snapshot = document.current();
     let mut definition = snapshot
         .definitions()
