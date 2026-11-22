@@ -17,8 +17,16 @@ use std::{
 /// Protocol versions this server speaks, newest first.
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// The longest message read: a whole program of about 8 MB, JSON-escaped.
-const MAX_LINE_BYTES: usize = 32 * 1024 * 1024;
+/// The longest message read: the longest request the window accepts, a whole
+/// program JSON-escaped, and its envelope. A longer one could only be refused
+/// by the window after it was read and parsed (review 2026-11-22
+/// R1122ac-MCP-1101: lines of 32 MiB, parsed to 1 GB, for a window of 8 MiB).
+const MAX_LINE_BYTES: usize = crate::bridge::MAX_REQUEST_BYTES + (1 << 20);
+
+/// The bytes of the messages of the tool calls waiting for their turn at most,
+/// besides [`QUEUED_CALLS`]: a message parsed takes many times its bytes, so
+/// sixteen of the longest would fill the memory (R1122ac-MCP-1101).
+const QUEUED_BYTES: usize = 2 * MAX_LINE_BYTES;
 
 /// Serves MCP until stdin closes. `app_executable` starts new windows for `open_window`.
 pub fn serve_stdio(app_executable: Option<PathBuf>) -> io::Result<()> {
@@ -119,7 +127,8 @@ struct Queue {
 
 #[derive(Default)]
 struct QueueState {
-    waiting: VecDeque<(Turn, Waits)>,
+    /// Each call, whether it waits, and the bytes of its message.
+    waiting: VecDeque<(Turn, Waits, usize)>,
     /// No more calls come: the input has ended.
     closed: bool,
     /// The worker has ended.
@@ -138,16 +147,17 @@ impl Queue {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, turn: Turn, waits: Waits) -> Queued {
+    fn push(&self, turn: Turn, waits: Waits, bytes: usize) -> Queued {
         let mut state = self.state();
         if state.stopped {
             return Queued::WorkerStopped;
         }
-        state.waiting.retain(|(_, waits)| waits());
-        if state.waiting.len() >= QUEUED_CALLS {
+        state.waiting.retain(|(_, waits, _)| waits());
+        let queued: usize = state.waiting.iter().map(|(_, _, bytes)| bytes).sum();
+        if state.waiting.len() >= QUEUED_CALLS || queued + bytes > QUEUED_BYTES {
             return Queued::Full;
         }
-        state.waiting.push_back((turn, waits));
+        state.waiting.push_back((turn, waits, bytes));
         self.ready.notify_one();
         Queued::Waits
     }
@@ -156,7 +166,7 @@ impl Queue {
     fn next(&self) -> Option<Turn> {
         let mut state = self.state();
         loop {
-            if let Some((turn, _)) = state.waiting.pop_front() {
+            if let Some((turn, _, _)) = state.waiting.pop_front() {
                 return Some(turn);
             }
             if state.closed {
@@ -274,6 +284,7 @@ fn read_messages(
     route: impl Fn(Value) -> Routed,
 ) -> io::Result<()> {
     while let Some(line) = read_line(input)? {
+        let bytes = line.as_ref().map_or(0, Vec::len);
         let message = match line {
             None => Err(failure(
                 Value::Null,
@@ -284,10 +295,10 @@ fn read_messages(
             Some(bytes) => serde_json::from_slice::<Value>(&bytes)
                 .map_err(|error| failure(Value::Null, -32700, &error.to_string())),
         };
-        match message.map(&route) {
+        match message.map(|message| routed(message, &route)) {
             Ok(Routed::Now(Some(reply))) | Err(reply) => write_reply(output, &reply)?,
             Ok(Routed::Now(None)) => {}
-            Ok(Routed::InTurn(turn, refused, waits)) => match queue.push(turn, waits) {
+            Ok(Routed::InTurn(turn, refused, waits)) => match queue.push(turn, waits, bytes) {
                 Queued::Waits => {}
                 Queued::Full => write_reply(output, &refused())?,
                 Queued::WorkerStopped => {
@@ -297,6 +308,83 @@ fn read_messages(
         }
     }
     Ok(())
+}
+
+/// How `message` is answered: by `route` when it is a request or notification
+/// whose id can be answered, else at once as an invalid request; a batch (an
+/// array of them) as one array of their replies (review 2026-11-22
+/// R1122ac-MCP-1100: a batch, `5` or `"x"` got no reply at all).
+fn routed(message: Value, route: &impl Fn(Value) -> Routed) -> Routed {
+    match message {
+        Value::Array(items) if !items.is_empty() => batch(
+            items
+                .into_iter()
+                .map(|item| {
+                    invalid(&item).map_or_else(|| route(item), |reply| Routed::Now(Some(reply)))
+                })
+                .collect(),
+        ),
+        message => {
+            invalid(&message).map_or_else(|| route(message), |reply| Routed::Now(Some(reply)))
+        }
+    }
+}
+
+/// The reply refusing `message` when it is no JSON-RPC message, or its id is
+/// none a reply can carry back as it came: a string or a whole number. Read
+/// as a float, an id past `u64::MAX` came back as `1.8446744073709552e+19`
+/// (R1122ac-MCP-1100).
+fn invalid(message: &Value) -> Option<Value> {
+    let Value::Object(fields) = message else {
+        return Some(failure(
+            Value::Null,
+            -32600,
+            "a message is a JSON object, or a batch: a JSON array of them",
+        ));
+    };
+    match fields.get("id") {
+        None | Some(Value::Null | Value::String(_)) => None,
+        Some(Value::Number(number)) if number.is_i64() || number.is_u64() => None,
+        Some(_) => Some(failure(
+            Value::Null,
+            -32600,
+            "an id is a string or a whole number from -9223372036854775808 to 18446744073709551615",
+        )),
+    }
+}
+
+/// The messages of a batch as one: answered at once with the array of their
+/// replies, or, holding a tool call, in its turn, so its replies come
+/// together after its calls have run, as JSON-RPC asks; refused as busy, the
+/// array holds each call's refusal. A batch of notifications gets no reply.
+fn batch(parts: Vec<Routed>) -> Routed {
+    fn replies(parts: Vec<Routed>, call: impl Fn(Turn, Refusal) -> Option<Value>) -> Option<Value> {
+        let replies: Vec<Value> = parts
+            .into_iter()
+            .filter_map(|part| match part {
+                Routed::Now(reply) => reply,
+                Routed::InTurn(turn, refused, _) => call(turn, refused),
+            })
+            .collect();
+        (!replies.is_empty()).then_some(Value::Array(replies))
+    }
+    if parts.iter().all(|part| matches!(part, Routed::Now(_))) {
+        return Routed::Now(replies(parts, |_, _| None));
+    }
+    // Only one of the turn and the refusal runs, and takes the parts.
+    let parts = Arc::new(Mutex::new(parts));
+    let refused = Arc::clone(&parts);
+    let take = |parts: &Mutex<Vec<Routed>>| {
+        std::mem::take(&mut *parts.lock().unwrap_or_else(PoisonError::into_inner))
+    };
+    Routed::InTurn(
+        Box::new(move || replies(take(&parts), |turn, _| turn())),
+        Box::new(move || {
+            replies(take(&refused), |_, refused| Some(refused())).unwrap_or(Value::Null)
+        }),
+        // A call of it cancelled meanwhile is not run in its turn.
+        Box::new(|| true),
+    )
 }
 
 fn write_reply(output: &Mutex<impl Write>, reply: &Value) -> io::Result<()> {
@@ -637,6 +725,102 @@ mod tests {
         assert_eq!(replies[0]["error"]["code"], -32700);
         assert_eq!(replies[1]["error"]["code"], -32600);
         assert_eq!(replies[2]["id"], 2);
+    }
+
+    /// R1122ac-MCP-1100: a message that is no object got no reply, and an id
+    /// past `u64::MAX` came back as a float. Each is refused as an invalid
+    /// request, and the next message served.
+    #[test]
+    fn a_message_that_is_no_object_or_has_an_id_no_reply_can_carry_is_refused() {
+        let input = b"5\n\"x\"\n[]\n\
+            {\"jsonrpc\":\"2.0\",\"id\":18446744073709551616,\"method\":\"ping\"}\n\
+            {\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"ping\"}\n\
+            {\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"ping\"}\n\
+            {\"jsonrpc\":\"2.0\",\"id\":18446744073709551615,\"method\":\"ping\"}\n";
+        let replies = replies(input);
+        assert_eq!(replies.len(), 7, "{replies:?}");
+        for reply in &replies[..6] {
+            assert_eq!(reply["error"]["code"], -32600, "{reply}");
+            assert_eq!(reply["id"], Value::Null, "{reply}");
+        }
+        assert_eq!(replies[6]["id"], u64::MAX);
+    }
+
+    /// R1122ac-MCP-1100: a batch got no reply, though protocol 2025-03-26,
+    /// which the server speaks, has them. It gets one array of the replies of
+    /// its requests; a batch of notifications gets none.
+    #[test]
+    fn a_batch_is_answered_with_one_array_of_its_replies() {
+        let input = b"[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"},\
+            {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"},5]\n\
+            [{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}]\n\
+            {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n";
+        let replies = replies(input);
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        let batch = replies[0].as_array().expect("an array of replies");
+        assert_eq!(batch.len(), 2, "{batch:?}");
+        assert_eq!(batch[0]["id"], 1);
+        assert_eq!(batch[1]["error"]["code"], -32600);
+        assert_eq!(replies[1]["id"], 2);
+    }
+
+    /// A batch holding a tool call is answered once the call has had its
+    /// turn, with the replies of the call and of the rest together.
+    #[test]
+    fn a_batch_with_a_tool_call_is_answered_whole_after_its_turn() {
+        let (send_line, lines) = std::sync::mpsc::channel();
+        let (send_reply, replies) = std::sync::mpsc::channel();
+        let served = std::thread::spawn(move || {
+            let input = io::BufReader::new(Lines(lines, Vec::new()));
+            serve(
+                input,
+                Replies(send_reply, Vec::new()),
+                &Arc::default(),
+                |message| {
+                    if message["method"] != "tools/call" {
+                        return Routed::Now(answer(&message));
+                    }
+                    let refused = busy(&message);
+                    Routed::InTurn(Box::new(move || answer(&message)), refused, always_waits())
+                },
+            )
+        });
+        let ping = json!({"jsonrpc": "2.0", "id": 2, "method": "ping"});
+        let line = format!("{}\n", json!([tool_call(1), ping])).into_bytes();
+        send_line.send(line).expect("the server reads");
+        let reply = replies.recv_timeout(std::time::Duration::from_secs(5));
+        drop(send_line);
+        served
+            .join()
+            .expect("the server ends")
+            .expect("served to the end");
+        let reply = reply.expect("the batch is answered");
+        let ids: Vec<&Value> = reply
+            .as_array()
+            .expect("an array of replies")
+            .iter()
+            .map(|reply| &reply["id"])
+            .collect();
+        assert_eq!(ids, [1, 2]);
+    }
+
+    /// R1122ac-MCP-1101: sixteen waiting calls of the longest message, each
+    /// parsed to many times its bytes, would fill the memory. The waiting
+    /// messages have a budget of bytes besides their count.
+    #[test]
+    fn waiting_calls_are_refused_past_their_bytes_not_only_their_count() {
+        let queue = Queue::default();
+        let push = |bytes| queue.push(Box::new(|| None), always_waits(), bytes);
+        assert!(matches!(push(MAX_LINE_BYTES), Queued::Waits));
+        assert!(matches!(push(MAX_LINE_BYTES), Queued::Waits));
+        assert!(matches!(push(MAX_LINE_BYTES), Queued::Full));
+        assert!(matches!(push(0), Queued::Waits));
+        const {
+            assert!(
+                MAX_LINE_BYTES < 10 << 20,
+                "a line past the window's request"
+            );
+        }
     }
 
     /// Lines the test sends, read as stdin.
@@ -1091,18 +1275,19 @@ mod tests {
             let pushed = queue.push(
                 Box::new(move || Some(json!(Arc::strong_count(&message)))),
                 Box::new(move || flag.load(Ordering::Acquire)),
+                0,
             );
             assert!(matches!(pushed, Queued::Waits));
         }
         assert!(matches!(
-            queue.push(Box::new(|| None), always_waits()),
+            queue.push(Box::new(|| None), always_waits(), 0),
             Queued::Full
         ));
         for flag in &flags {
             flag.store(false, Ordering::Release);
         }
         assert!(matches!(
-            queue.push(Box::new(|| Some(json!("again"))), always_waits()),
+            queue.push(Box::new(|| Some(json!("again"))), always_waits(), 0),
             Queued::Waits
         ));
         assert_eq!(Arc::strong_count(&dropped), 1, "their messages are dropped");
