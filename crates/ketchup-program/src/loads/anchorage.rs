@@ -17,7 +17,7 @@ use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
 use joint::{Hold, Pivot, Strut, hold, strut_line};
 use ketchup_geometry::linalg::{self, cross, dot, length, scale, sub};
-use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
+use ketchup_model::tolerance::{ALONG_AXIS_NEGLIGIBLE, CONTACT_FIT_MM, ROUNDING};
 use sheet::{Spring, on_springs};
 use std::cell::RefCell;
 use std::cmp::Reverse;
@@ -946,11 +946,13 @@ impl<'a> Footing<'a> {
 
     /// Whether `a` pushes `b` under a force `along` on the path, where the two
     /// only bear on each other: both grounded, touching with no joint() between
-    /// them, facing each other along the force; None where they hold each
-    /// other either way, a joint fastening them or their contact lying along
-    /// the force. A bare contact only pushes (review 2026-11-22 R1122ac-PG-1101:
-    /// a column bearing on a grounded block held a brace pulling it away at
-    /// 247 N/mm, the column alone at 0.6).
+    /// them, the force having any part across their contact; None where they
+    /// hold each other either way, a joint fastening them or their contact
+    /// lying wholly along the force. A bare contact only pushes (review
+    /// 2026-11-22 R1122ac-PG-1101: a column bearing on a grounded block held a
+    /// brace pulling it away at 247 N/mm, the column alone at 0.6; capability
+    /// review 1023: turned 46° in plan, the pull half across the contact, the
+    /// block still held it at 235).
     fn bears(&self, a: usize, b: usize, along: [f64; 3]) -> Option<bool> {
         if !(self.grounded[a] && self.grounded[b])
             || self.joined.contains_key(&(a.min(b), a.max(b)))
@@ -959,7 +961,7 @@ impl<'a> Footing<'a> {
         }
         let normal = self.contact_normal(a, b)?;
         let facing = dot(normal, along);
-        if facing.abs() < std::f64::consts::FRAC_1_SQRT_2 {
+        if facing.abs() <= ALONG_AXIS_NEGLIGIBLE {
             return None;
         }
         let apart = sub(self.parts[b].obb().centre, self.parts[a].obb().centre);
