@@ -60,7 +60,8 @@ pub(crate) fn keep_memory_limit() {
 
 /// The worker's test hook for memory: one block of `bytes`, written so it counts in
 /// what the worker uses, held until the next one, and `hold` before the answer, so the
-/// worker holds it in the middle of a request.
+/// worker holds it in the middle of a request. A refused block is held `hold` too
+/// before the worker ends, as abort() holds it on Windows.
 pub(crate) fn hold_block(bytes: u64, hold: std::time::Duration) {
     static HELD: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
     let mut held = HELD
@@ -76,6 +77,7 @@ pub(crate) fn hold_block(bytes: u64, hold: std::time::Duration) {
         // machine (idea #170). A worker sets no log file, so the line goes to the
         // standard error the client reads for that message.
         ketchup_rejection::log!("memory allocation of {bytes} bytes failed");
+        std::thread::sleep(hold);
         std::process::exit(1);
     }
     held.resize(length, 1);

@@ -146,7 +146,9 @@ impl std::fmt::Display for WorkshopPackageError {
             ),
             Self::NotAPlainFile(name) => write!(
                 formatter,
-                "`{name}` is not marked as a plain file and may unpack as a link, folder or device"
+                "`{name}` is not marked as a plain file and may unpack as a link, folder or \
+                 device: another tool has packed the package again; send the package as \
+                 Kečup wrote it"
             ),
             Self::Comment(None) => {
                 formatter.write_str("the package carries a comment it is not written with")

@@ -18,6 +18,7 @@ use crate::protocol::{
 };
 pub use crate::protocol::{DwgRefusal, SkpRefusal};
 use crate::underlay_reading::{UnderlayReadError, read_underlay, write_underlay};
+use crate::worker_client::WORKER_START_UP_TIMEOUT;
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
 use ketchup_model::graph::sha256_hex;
@@ -39,10 +40,7 @@ pub const PROGRAM_WORKER_MEMORY_BYTES: usize = 2 * EVALUATION_HEAP_BYTES;
 /// can run far past it, so the parent stops the worker a little later.
 const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
-/// How long evaluating a program and every check of its model may take
-/// together: the checks of the largest example program (1 854 parts) take far
-/// longer than its evaluation, 1.5 s in a release build and 28 s in a debug build.
-pub const PROGRAM_CHECK_TIME: Duration = Duration::from_secs(60);
+pub use ketchup_program::CHECK_TIME as PROGRAM_CHECK_TIME;
 
 /// One deadline for evaluating a program, its report, the exact check and the
 /// refined report: each step gets only the time the earlier ones left, so a
@@ -294,10 +292,29 @@ impl ProgramWorker {
         deadline: CheckDeadline,
         cancel: &CancelToken,
     ) -> Result<Evaluated, ProgramError> {
-        let time = self
-            .deadline
-            .min(deadline.request_time().map_err(Stopped::program_error)?);
-        self.evaluate_within(file_name, source, overrides, time, cancel)
+        let own = self.deadline;
+        let input = program_input(file_name, source, overrides);
+        // Its own limit stays its own: only the shared deadline's stop is renamed.
+        let mut running = self
+            .worker(
+                cancel,
+                deadline
+                    .request_time()
+                    .map_err(Stopped::program_error)?
+                    .min(WORKER_START_UP_TIMEOUT),
+            )
+            .map_err(|stopped| deadline.stopped(stopped).program_error())?;
+        let left = match deadline.request_time() {
+            Ok(left) => left,
+            Err(stopped) => {
+                self.running = Some(running);
+                return Err(stopped.program_error());
+            }
+        };
+        let reply = running.evaluate_program(input, cancel.flag(), own.min(left));
+        self.answer(running, reply)
+            .map_err(Stopped::program_error)?
+            .into()
     }
 
     fn evaluate_within(
@@ -308,11 +325,7 @@ impl ProgramWorker {
         time: Duration,
         cancel: &CancelToken,
     ) -> Result<Evaluated, ProgramError> {
-        let input = ProgramInput {
-            file_name: file_name.to_owned(),
-            source: source.to_owned(),
-            overrides: overrides.clone(),
-        };
+        let input = program_input(file_name, source, overrides);
         self.call(cancel, |client| {
             client.evaluate_program(input, cancel.flag(), time)
         })
@@ -575,15 +588,28 @@ impl ProgramWorker {
         }
     }
 
-    /// [`Self::call`] with the time `deadline` has left.
+    /// [`Self::call`] with the time `deadline` has left: starting a worker takes only
+    /// what is left, and the request gets what the start left, so the check still
+    /// ends by its deadline (R1122ac, review §4 P3).
     fn call_by<T>(
         &mut self,
         deadline: CheckDeadline,
         cancel: &CancelToken,
         request: impl FnOnce(&mut ExactWorkerClient, Duration) -> Result<T, WorkerError>,
     ) -> Result<T, Stopped> {
-        let time = deadline.request_time()?;
-        self.call(cancel, |client| request(client, time))
+        let start = deadline.request_time()?.min(WORKER_START_UP_TIMEOUT);
+        let mut running = self
+            .worker(cancel, start)
+            .map_err(|stopped| deadline.stopped(stopped))?;
+        let time = match deadline.request_time() {
+            Ok(time) => time,
+            Err(stopped) => {
+                self.running = Some(running);
+                return Err(stopped);
+            }
+        };
+        let reply = request(&mut running, time);
+        self.answer(running, reply)
             .map_err(|stopped| deadline.stopped(stopped))
     }
 
@@ -593,6 +619,17 @@ impl ProgramWorker {
         cancel: &CancelToken,
         request: impl FnOnce(&mut ExactWorkerClient) -> Result<T, WorkerError>,
     ) -> Result<T, Stopped> {
+        let mut running = self.worker(cancel, WORKER_START_UP_TIMEOUT)?;
+        let reply = request(&mut running);
+        self.answer(running, reply)
+    }
+
+    /// The running worker, or a new one started within `start`.
+    fn worker(
+        &mut self,
+        cancel: &CancelToken,
+        start: Duration,
+    ) -> Result<ExactWorkerClient, Stopped> {
         if cancel.is_cancelled() {
             return Err(Stopped::Cancelled);
         }
@@ -600,29 +637,35 @@ impl ProgramWorker {
             .running
             .as_mut()
             .is_some_and(ExactWorkerClient::is_alive);
-        let mut running = match self.running.take() {
-            Some(running) if alive => running,
-            _ => self.spawn(cancel)?,
-        };
-        match request(&mut running) {
+        match self.running.take() {
+            Some(running) if alive => Ok(running),
+            _ => self.spawn(cancel, start),
+        }
+    }
+
+    /// Keeps the worker that answered; one that failed was killed by its client and is
+    /// dropped here.
+    fn answer<T>(
+        &mut self,
+        running: ExactWorkerClient,
+        reply: Result<T, WorkerError>,
+    ) -> Result<T, Stopped> {
+        match reply {
             Ok(reply) => {
                 self.running = Some(running);
                 Ok(reply)
             }
-            // The client has already killed the worker; it is dropped here.
             Err(error) => Err(stopped(error)),
         }
     }
 
-    fn spawn(&self, cancel: &CancelToken) -> Result<ExactWorkerClient, Stopped> {
+    fn spawn(&self, cancel: &CancelToken, start: Duration) -> Result<ExactWorkerClient, Stopped> {
         let executable = verify_exact_worker_identity(&self.executable, &self.executable_sha256)
             .map_err(Stopped::Failed)?;
         let mut client =
             ExactWorkerClient::spawn_guarded_with(executable, PROGRAM_WORKER_MEMORY_BYTES)
                 .map_err(Stopped::Failed)?;
-        client
-            .ping_with_cancellation(cancel.flag())
-            .map_err(stopped)?;
+        client.ping_within(cancel.flag(), start).map_err(stopped)?;
         Ok(client)
     }
 }
@@ -764,6 +807,14 @@ fn failed_too_large(reply: &WorkerReply) -> WorkerReply {
     }
 }
 
+fn program_input(file_name: &str, source: &str, overrides: &BTreeMap<String, f64>) -> ProgramInput {
+    ProgramInput {
+        file_name: file_name.to_owned(),
+        source: source.to_owned(),
+        overrides: overrides.clone(),
+    }
+}
+
 fn stopped(error: WorkerError) -> Stopped {
     match error {
         WorkerError::Cancelled => Stopped::Cancelled,
@@ -865,7 +916,7 @@ mod tests {
     use super::*;
     use ketchup_program::{Issue, REPORT_TRUNCATED, Severity};
 
-    /// Thirty boxes that all overlap: 435 collisions.
+    /// Thirty boxes that all overlap: 435 pairs, the first of them collisions.
     fn overlapping() -> Evaluated {
         let source =
             "for i in range(30):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n";
@@ -908,7 +959,11 @@ mod tests {
     /// its first issues and relations and says how many it leaves out (PRG-1).
     #[test]
     fn a_report_past_its_reply_lists_its_first_issues_and_names_the_rest() {
-        let whole = ketchup_program::report(&overlapping());
+        let mut whole = ketchup_program::report(&overlapping());
+        // The checks list the first collisions only: a report of more issues
+        // is made of copies of theirs.
+        let issues = whole.issues.iter().cycle().take(435).cloned().collect();
+        whole.set_issues(issues);
         assert!(
             !whole.ok && whole.issues.len() > 400,
             "{}",

@@ -33,6 +33,7 @@ mod member_orientation;
 mod motion;
 mod openings;
 mod opposing_holes;
+mod overlapping_parts;
 mod profile_arcs;
 mod program;
 mod quote;

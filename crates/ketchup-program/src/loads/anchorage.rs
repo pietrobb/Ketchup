@@ -15,13 +15,15 @@ use super::{BraceAnchorage, Frame, Support, depth, middle};
 use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
+use crate::near_pairs::near_pairs;
 use joint::{Hold, Pivot, Strut, hold, strut_line};
 use ketchup_geometry::linalg::{self, cross, dot, length, scale, sub};
-use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
+use ketchup_model::tolerance::{ALONG_AXIS_NEGLIGIBLE, CONTACT_FIT_MM, ROUNDING};
 use sheet::{Spring, on_springs};
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::ops::ControlFlow;
 use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give, pushed_along};
 
 /// The modulus of elasticity, mean and fifth percentile, and the compressive
@@ -280,23 +282,21 @@ impl<'a> Footing<'a> {
         let parts = &model.parts;
         let boxes: Vec<_> = parts.iter().map(Part::obb).collect();
         let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-        let mut order: Vec<usize> = (0..parts.len()).collect();
-        order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
         let mut touching = vec![Vec::new(); parts.len()];
-        for (position, &left) in order.iter().enumerate() {
-            for &right in &order[position + 1..] {
-                if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                    break;
-                }
-                if model.are_alternatives(&parts[left], &parts[right])
-                    || !face_to_face(&boxes[left], &boxes[right])
+        near_pairs(
+            &bounds,
+            (0..parts.len()).collect(),
+            CONTACT_FIT_MM,
+            |left, right| {
+                if !model.are_alternatives(&parts[left], &parts[right])
+                    && face_to_face(&boxes[left], &boxes[right])
                 {
-                    continue;
+                    touching[left].push(right);
+                    touching[right].push(left);
                 }
-                touching[left].push(right);
-                touching[right].push(left);
-            }
-        }
+                ControlFlow::Continue(())
+            },
+        );
         let index = |name: &str| parts.iter().position(|part| part.name == name);
         let mut joined: BTreeMap<(usize, usize), Vec<[f64; 3]>> = BTreeMap::new();
         for joint in model.joints.iter().filter(|joint| joint.fastens()) {
@@ -946,11 +946,13 @@ impl<'a> Footing<'a> {
 
     /// Whether `a` pushes `b` under a force `along` on the path, where the two
     /// only bear on each other: both grounded, touching with no joint() between
-    /// them, facing each other along the force; None where they hold each
-    /// other either way, a joint fastening them or their contact lying along
-    /// the force. A bare contact only pushes (review 2026-11-22 R1122ac-PG-1101:
-    /// a column bearing on a grounded block held a brace pulling it away at
-    /// 247 N/mm, the column alone at 0.6).
+    /// them, the force having any part across their contact; None where they
+    /// hold each other either way, a joint fastening them or their contact
+    /// lying wholly along the force. A bare contact only pushes (review
+    /// 2026-11-22 R1122ac-PG-1101: a column bearing on a grounded block held a
+    /// brace pulling it away at 247 N/mm, the column alone at 0.6; capability
+    /// review 1023: turned 46° in plan, the pull half across the contact, the
+    /// block still held it at 235).
     fn bears(&self, a: usize, b: usize, along: [f64; 3]) -> Option<bool> {
         if !(self.grounded[a] && self.grounded[b])
             || self.joined.contains_key(&(a.min(b), a.max(b)))
@@ -959,7 +961,7 @@ impl<'a> Footing<'a> {
         }
         let normal = self.contact_normal(a, b)?;
         let facing = dot(normal, along);
-        if facing.abs() < std::f64::consts::FRAC_1_SQRT_2 {
+        if facing.abs() <= ALONG_AXIS_NEGLIGIBLE {
             return None;
         }
         let apart = sub(self.parts[b].obb().centre, self.parts[a].obb().centre);

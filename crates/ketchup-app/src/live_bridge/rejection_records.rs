@@ -2,6 +2,26 @@
 
 use super::*;
 
+/// Records `rejection` with the request-specific `details` as the result of
+/// the next error response. A file another program changed, which is why it was
+/// refused, is named as `changed_by_another`: the Connect tab lists no write of
+/// the client's there (R1122ac, review §4 P3).
+pub(super) fn record_rejection(rejection: &Rejection, mut details: Value) {
+    if let (Some(path), Some(object)) = (
+        crate::export_bundle::changed_by_another(rejection),
+        details.as_object_mut(),
+    ) {
+        object.insert("changed_by_another".to_owned(), json!(path));
+    }
+    let mut value = serde_json::to_value(rejection).unwrap_or(Value::Null);
+    if let (Some(object), Some(details)) = (value.as_object_mut(), details.as_object())
+        && !details.is_empty()
+    {
+        object.insert("details".to_owned(), Value::Object(details.clone()));
+    }
+    ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
+}
+
 /// Records that `code` failed because of `cause` (kept as the rejection's
 /// cause chain under the catalog reason) and returns the code.
 pub(super) fn failed_because(

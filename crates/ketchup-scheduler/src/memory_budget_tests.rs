@@ -226,4 +226,10 @@ fn the_container_limit_bounds_the_budget() {
     ]);
     assert_eq!(cgroup_memory_limit(v1_listed), Some(1 << 30));
     assert_eq!(cgroup_memory_limit(files(&[])), None);
+    // R1122ac, review §4 P3: where /proc/self/cgroup cannot be read, the root's limit
+    // of v2, else of v1, not none.
+    let unread_v2 = files(&[("/sys/fs/cgroup/memory.max", "1073741824\n")]);
+    assert_eq!(cgroup_memory_limit(unread_v2), Some(1 << 30));
+    let unread_v1 = files(&[("/sys/fs/cgroup/memory/memory.limit_in_bytes", "536870912\n")]);
+    assert_eq!(cgroup_memory_limit(unread_v1), Some(1 << 29));
 }

@@ -98,7 +98,7 @@ mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
 mod rejection_records;
-use rejection_records::{failed_because, failure, planning_failure};
+use rejection_records::{failed_because, failure, planning_failure, record_rejection};
 mod room_areas;
 mod running_programs;
 mod saved_views;
@@ -826,18 +826,6 @@ thread_local! {
     /// Why the next error response failed. Set right before an error code is
     /// returned on the UI thread and attached to that response.
     static ERROR_DETAILS: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Records `rejection` with the request-specific `details` as the result of
-/// the next error response.
-fn record_rejection(rejection: &Rejection, details: Value) {
-    let mut value = serde_json::to_value(rejection).unwrap_or(Value::Null);
-    if let (Some(object), Some(details)) = (value.as_object_mut(), details.as_object())
-        && !details.is_empty()
-    {
-        object.insert("details".to_owned(), Value::Object(details.clone()));
-    }
-    ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
 }
 
 /// A typed edit the program cannot take, answered as the rejection it is: a

@@ -197,19 +197,43 @@ fn wrong_inputs_are_refused() {
     // Review 2026-11-20 ac P3: r 9.0 on 20 mm of air gave U 0.108.
     refused(
         "thermal_check(\"a\", layers = [{\"name\": \"air\", \"thickness\": 20, \"r\": 9.0, \"mu\": 1}], element = \"wall\")".to_owned(),
-        "at most 0.180 m²K/W (EN ISO 6946 Table 8)",
+        "at most 0.175 m²K/W (EN ISO 6946 Table 8)",
     );
     // Review 2026-11-21 ac P3: Table 8 gives 5 mm of air 0.11, not 0.23.
-    let air = |thickness: f64, r: f64| {
+    // R1122ac, review §4 P3: its column is the way heat flows through the
+    // element, sideways through a wall (0.18 from 25 mm), up through a roof
+    // (0.16 from 15 mm), down through a floor (up to 0.23).
+    let air = |element: &str, thickness: f64, r: f64| {
         format!(
-            "thermal_check(\"a\", layers = [{{\"name\": \"air\", \"thickness\": {thickness}, \"r\": {r}, \"mu\": 1}}], element = \"wall\")"
+            "thermal_check(\"a\", layers = [{{\"name\": \"air\", \"thickness\": {thickness}, \"r\": {r}, \"mu\": 1}}], element = \"{element}\")"
         )
     };
-    refused(air(5.0, 0.2), "at most 0.110 m²K/W (EN ISO 6946 Table 8)");
-    refused(air(400.0, 0.24), "at most 0.230 m²K/W");
-    for (thickness, r) in [(5.0, 0.11), (8.5, 0.139), (300.0, 0.23), (400.0, 0.23)] {
-        let check = report_of(&air(thickness, r));
-        assert!(check.u_w_m2k.is_some(), "{thickness} mm, r {r}: {check:#?}");
+    refused(
+        air("wall", 5.0, 0.2),
+        "at most 0.110 m²K/W (EN ISO 6946 Table 8)",
+    );
+    refused(air("wall", 25.0, 0.19), "at most 0.180 m²K/W");
+    refused(air("wall", 400.0, 0.23), "at most 0.180 m²K/W");
+    refused(air("roof", 15.0, 0.17), "at most 0.160 m²K/W");
+    refused(air("steep_roof", 300.0, 0.23), "at most 0.160 m²K/W");
+    refused(
+        air("floor_over_exterior", 400.0, 0.24),
+        "at most 0.230 m²K/W",
+    );
+    for (element, thickness, r) in [
+        ("wall", 5.0, 0.11),
+        ("wall", 8.5, 0.139),
+        ("wall", 300.0, 0.18),
+        ("wall", 400.0, 0.18),
+        ("roof", 100.0, 0.16),
+        ("floor_over_exterior", 300.0, 0.23),
+        ("floor_over_exterior", 400.0, 0.23),
+    ] {
+        let check = report_of(&air(element, thickness, r));
+        assert!(
+            check.u_w_m2k.is_some(),
+            "{element} {thickness} mm, r {r}: {check:#?}"
+        );
     }
     refused(
         "thermal_check(\"a\", layers = [{\"name\": \"x\", \"thickness\": 10, \"lambda\": 1e300}], element = \"wall\")".to_owned(),
@@ -254,6 +278,14 @@ fn a_condensing_wall_is_not_verified_and_check_exits_3() {
     assert!(!hint.contains("Give what is missing"), "{hint}");
     assert!(hint.contains("vapour control layer"), "{hint}");
     assert!(hint.contains("EN ISO 13788"), "{hint}");
+    // R1122ac, review §4 P3: condensing without a site, the advice names the
+    // site as well as the vapour control layer.
+    let no_site = report(&wall("", osb_outside, ", theta_e = -15"));
+    let check = only(&no_site);
+    assert!(!check.condenses_in.is_empty(), "{check:#?}");
+    let hint = &no_site.issues[0].hint;
+    assert!(hint.contains("vapour control layer"), "{hint}");
+    assert!(hint.contains("no site(country)"), "{hint}");
 
     let directory = std::env::temp_dir().join(format!("ketchup-th900-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

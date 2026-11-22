@@ -137,7 +137,8 @@ joint(\"hanger {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 140, 2
 /// gave C = 109 N/mm on a post of about 30 alone): anchorages sharing a part on
 /// their way to the ground were added up. Paths sharing a part hold as the
 /// stiffest of them; the same blocks each on a post of its own hold side by
-/// side.
+/// side. Each part is screwed to the one it stands on: the deck pulls a block
+/// a little up as well, which a bare contact does not hold (R1122ac-PG-1101).
 #[test]
 fn anchors_on_one_post_hold_as_one() {
     const BLOCKS: [i32; 4] = [1025, 1225, 1425, 1625];
@@ -156,6 +157,7 @@ diaphragm([\"deck b\"], anchored_to = [\"wall b\"])
             source.push_str(
                 "box(\"lath\", (800, 400, 400), at = (975, 1100, 1600), material = \"GL24h\", grounded = True)
 box(\"post\", (90, 90, 1600), at = (1330, 1255, 0), material = \"GL24h\", grounded = True)
+joint(\"lath\", \"post\", kind = \"screw\")
 ",
             );
         }
@@ -165,9 +167,15 @@ box(\"post\", (90, 90, 1600), at = (1330, 1255, 0), material = \"GL24h\", ground
 joint(\"deck a\", \"block {x}\", kind = \"screw\")
 "
             ));
-            if !shared {
+            if shared {
                 source.push_str(&format!(
-                    "box(\"post {x}\", (120, 120, 2000), at = ({}, 1240, 0), material = \"GL24h\", grounded = True)\n",
+                    "joint(\"block {x}\", \"lath\", kind = \"screw\")\n"
+                ));
+            } else {
+                source.push_str(&format!(
+                    "box(\"post {x}\", (120, 120, 2000), at = ({}, 1240, 0), material = \"GL24h\", grounded = True)
+joint(\"block {x}\", \"post {x}\", kind = \"screw\")
+",
                     x - 10
                 ));
             }
@@ -246,7 +254,8 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
 /// 263 asked and passed: the brace buckled only over its own length, where the
 /// stepped rod pinned at both ends buckles at about 112 N (FE). Every part of
 /// a path buckles over the whole length of the path: the brace over 2 400 mm,
-/// 69.4 N, on the safe side.
+/// Euler's 69.4 N, k_c f_c,0,k A 67.9 N (R1122ac, review §4 P3), on the safe
+/// side.
 #[test]
 fn a_stepped_path_buckles_over_its_whole_length() {
     let held = beam_with(
@@ -275,7 +284,7 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
     for brace in braces {
         let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
         let capacity = anchorage.capacity_n.expect("the path buckles");
-        assert!((capacity - 69.4).abs() < 0.5, "{brace:?}");
+        assert!((capacity - 67.9).abs() < 0.1, "{brace:?}");
         assert_eq!(
             anchorage.buckling_in.as_deref(),
             Some(brace.part.as_str()),
@@ -565,7 +574,8 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
 /// grounded block 200 x 400 x 200 on a column bent the block, which was given
 /// Euler's load over the path as F_cap, some 29 000 kN (4 669 kN in the
 /// review). A piece that stocky crushes long before it buckles (EN 1995-1-1
-/// 6.3.2(3), relative slenderness at most 0.3): it holds without buckling.
+/// 6.3.2(3), relative slenderness at most 0.3): it holds up to its crushing
+/// load f_c,0,k A, 24 x 200 x 200 = 960 kN (R1122ac, review §4 P3).
 #[test]
 fn a_stocky_block_on_the_path_does_not_buckle() {
     let held = beam_with(
@@ -594,7 +604,13 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
     for brace in braces {
         let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
         assert!(anchorage.stiffness_n_mm > 0.0, "{brace:?}");
-        assert_eq!(anchorage.capacity_n, None, "{brace:?}");
+        assert_eq!(anchorage.capacity_n, Some(960_000.0), "{brace:?}");
+        let block = brace.part.replace("hanger", "block");
+        assert_eq!(
+            anchorage.buckling_in.as_deref(),
+            Some(block.as_str()),
+            "{brace:?}"
+        );
     }
 }
 
@@ -646,6 +662,15 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 24
     let bearing = braced(block);
     assert_eq!(stiffnesses(&bearing, "brace"), alone);
     assert_ne!(checked(&bearing, "beam").status, "pass");
+    assert!(
+        bearing
+            .design
+            .basis
+            .iter()
+            .any(|line| line.contains("holding no pull unless a joint() fastens them")),
+        "{:?}",
+        bearing.design.basis
+    );
     let screwed = braced(|x| {
         format!(
             "{}joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 2300), ({}, 970, 2300)])\n",
@@ -657,4 +682,78 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 24
     for stiffness in stiffnesses(&screwed, "brace") {
         assert!(stiffness > 10.0, "{stiffness}");
     }
+}
+
+/// Capability review 1023 of R1122ac-PG-1101: the column, block and post of
+/// [`a_bare_contact_between_grounded_parts_only_pushes`] turned 46 degrees in
+/// plan about the column's head, the pull half across the bare contact, still
+/// held the brace through the block at 235.6 N/mm, the column alone at 1.4: a
+/// contact facing the force less than 45 degrees was taken to hold either
+/// way. Any pull across a bare contact opens it.
+#[test]
+fn a_slanted_bare_contact_only_pushes() {
+    let (sin, cos) = 46.0_f64.to_radians().sin_cos();
+    let braced = |block: bool, screwed: bool| {
+        beam_with(
+            |x| {
+                let turn = |part: &str| {
+                    format!(
+                        "rotate({part}, axis = (0, 0, 1), angle = 46, pivot = ({x}, 955, 2400))\n"
+                    )
+                };
+                let mut source = format!(
+                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+c = box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+{}joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 2400), ({}, 955, 2400)])
+",
+                    x - 50,
+                    x - 200,
+                    turn("c"),
+                    x + 15,
+                    x - 15,
+                    x - 5,
+                    x + 5,
+                );
+                if block {
+                    source.push_str(&format!(
+                        "b = box(\"block {x}\", (200, 400, 200), at = ({}, 970, 2200), material = \"GL24h\", grounded = True)
+{}p = box(\"post {x}\", (200, 200, 2200), at = ({}, 1170, 0), material = \"GL24h\", grounded = True)
+{}",
+                        x - 100,
+                        turn("b"),
+                        x - 100,
+                        turn("p"),
+                    ));
+                }
+                if screwed {
+                    let at = |along: f64| {
+                        (
+                            f64::from(x) + along * cos - 15.0 * sin,
+                            955.0 + along * sin + 15.0 * cos,
+                        )
+                    };
+                    let ((ax, ay), (bx, by)) = (at(-50.0), at(50.0));
+                    source.push_str(&format!(
+                        "joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({ax}, {ay}, 2300), ({bx}, {by}, 2300)])\n"
+                    ));
+                }
+                source
+            },
+            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+        )
+    };
+    let alone = stiffnesses(&braced(false, false), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    for stiffness in &alone {
+        assert!((1.0..=2.0).contains(stiffness), "{stiffness}");
+    }
+    let bearing = braced(true, false);
+    assert_eq!(stiffnesses(&bearing, "brace"), alone);
+    assert_ne!(checked(&bearing, "beam").status, "pass");
+    let screwed = stiffnesses(&braced(true, true), "brace");
+    assert!(
+        screwed.iter().any(|stiffness| *stiffness > 100.0),
+        "{screwed:?}"
+    );
 }

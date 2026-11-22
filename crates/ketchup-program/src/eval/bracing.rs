@@ -182,7 +182,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let buildup = crate::thermal::Buildup {
             name: name.to_owned(),
             element: element.to_owned(),
-            layers: thermal_layers(name, layers, heap)?,
+            layers: thermal_layers(name, element, layers, heap)?,
             theta_e: given(theta_e)
                 .map(|_| within(theta_e, "theta_e", 0.0, -40.0..=10.0))
                 .transpose()?,
@@ -207,6 +207,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
 /// The layers of `thermal_check()` from buildup()'s layer dicts.
 fn thermal_layers<'v>(
     name: &str,
+    element: &str,
     layers: Value<'v>,
     heap: &'v Heap,
 ) -> anyhow::Result<Vec<crate::thermal::Layer>> {
@@ -227,7 +228,7 @@ fn thermal_layers<'v>(
                 .unwrap_or_else(|| format!("{index}"));
             let read = |key: &str| given(dict.get_str(key)).map(|v| number(v, key)).transpose();
             let ventilated = given(dict.get_str("ventilated")).is_some_and(|v| v.to_bool());
-            crate::thermal::layer(name, label, ventilated, read)
+            crate::thermal::layer(name, element, label, ventilated, read)
         })
         .collect()
 }
