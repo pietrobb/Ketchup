@@ -3,7 +3,10 @@
 //! triangles. Lengths are in millimetres, conductivity in W/(m·K), flux in
 //! W/m² and film coefficients in W/(m²·K), as engineers quote them.
 
-use crate::fea::{FeaNode, MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, MAX_FEA_NODES};
+use crate::fea::{
+    FeaNode, MAX_FEA_ELEMENTS, MAX_FEA_LOADS, MAX_FEA_MATERIALS, MAX_FEA_NODES,
+    VALIDATION_BYTES_PER_ELEMENT,
+};
 use crate::sparse::{
     ENTRY_BYTES, FactorError, MemoryBudget, SymmetricMatrix, distinct_positions, sort_entries,
 };
@@ -223,6 +226,10 @@ pub fn solve_steady_conduction_with_cancellation(
         budget_bytes: settings.maximum_factor_bytes,
     };
     let mut budget = MemoryBudget::new(settings.maximum_factor_bytes);
+    // Each element's volume and gradients are held until the end.
+    budget
+        .take(std::mem::size_of_val(geometry.as_slice()))
+        .map_err(too_large)?;
     let films = model
         .boundaries
         .iter()
@@ -420,6 +427,19 @@ impl ThermalModel {
             || self.boundaries.len() > MAX_FEA_LOADS
         {
             return Err(ThermalError::ModelTooLarge);
+        }
+        // The sets the checks hold are taken from the budget, as for
+        // stiffness (R1122ac, review §4 P3: about 207 B per tetrahedron,
+        // unbudgeted).
+        let checking = self
+            .elements
+            .len()
+            .saturating_mul(VALIDATION_BYTES_PER_ELEMENT);
+        if checking > settings.maximum_factor_bytes {
+            return Err(ThermalError::FactorTooLarge {
+                needed_bytes: checking,
+                budget_bytes: settings.maximum_factor_bytes,
+            });
         }
         if self
             .nodes
