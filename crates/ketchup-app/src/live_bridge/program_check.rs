@@ -196,9 +196,11 @@ pub(super) struct ProgramPlanJob {
     replace: bool,
     before: Stamp,
     deadline: CheckDeadline,
-    receiver:
-        mpsc::Receiver<Result<(RuleProgramPlan, Report, Vec<Vec<u8>>), RuleProgramApplyError>>,
+    receiver: mpsc::Receiver<Result<PlannedProgram, RuleProgramApplyError>>,
 }
+
+/// A program's plan, its report, and the bytes of the STEP files it read.
+type PlannedProgram = (RuleProgramPlan, Report, Vec<Vec<u8>>);
 
 pub(super) struct ExactCheckJob {
     id: u64,
@@ -481,7 +483,7 @@ impl LiveBridge {
             app.file
                 .container_data
                 .insert_import_blob(bytes)
-                .map_err(|_| "not_published")?;
+                .map_err(|_error| "not_published")?;
         }
         let before = app.document.current();
         let source_diff = super::program_access::source_diff(

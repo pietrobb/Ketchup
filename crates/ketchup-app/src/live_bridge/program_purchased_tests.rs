@@ -97,6 +97,86 @@ fn bought_parts_from_the_programs_folder_move_with_its_parameters() {
     assert!(app.document.current_rule_program().is_some());
 }
 
+/// The program's error for `source` over `folder`, the document unchanged.
+fn refused(app: &mut KetchupApp, bridge: &mut LiveBridge, source: &str, folder: &Path) -> String {
+    let before = (app.live_bridge_stamp(), app.undo_step_count());
+    bridge
+        .execute(app, apply(source, Some(folder), 2000.0), false)
+        .unwrap_err();
+    assert_eq!((app.live_bridge_stamp(), app.undo_step_count()), before);
+    take_error_details().unwrap()["reason"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_part_of_an_assembly_file_is_named_and_a_name_two_parts_share_is_refused() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = tempfile::tempdir().unwrap();
+    let assembly = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step"),
+    )
+    .unwrap();
+    std::fs::write(folder.path().join("salvage.step"), &assembly).unwrap();
+    let program = |part: &str| {
+        format!(
+            "door_h = param('door_h', 2000)\n\
+             purchased('block', 'salvage.step', '1', 'Test'{part})\n\
+             board('door', (600, 18, door_h))\n"
+        )
+    };
+
+    // Not one valid body as a whole: the error names the parts to choose from.
+    let reason = refused(&mut app, &mut bridge, &program(""), folder.path());
+    assert!(
+        reason.contains("part=") && reason.contains("\"Sound block\""),
+        "{reason}"
+    );
+
+    bridge
+        .execute(
+            &mut app,
+            apply(
+                &program(", part = 'Sound block'"),
+                Some(folder.path()),
+                2000.0,
+            ),
+            false,
+        )
+        .unwrap();
+    let snapshot = app.document.current();
+    let placed = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "block")
+        .unwrap();
+    let definition = snapshot.definition(placed.definition_id()).unwrap();
+    let FeatureKind::ImportedExactBody(spec) = snapshot
+        .feature(definition.feature_ids()[0])
+        .unwrap()
+        .kind()
+    else {
+        panic!("not the file's body");
+    };
+    assert!(spec.source_part_index.is_some());
+    assert!(app.document.current_rule_program().is_some());
+
+    // Two parts of one name: the name does not say which one.
+    let twins = tempfile::tempdir().unwrap();
+    let renamed = assembly.replace("'Block and figure eight'", "'Sound block'");
+    assert_ne!(renamed, assembly);
+    std::fs::write(twins.path().join("salvage.step"), renamed).unwrap();
+    let reason = refused(
+        &mut app,
+        &mut bridge,
+        &program(", part = 'Sound block'"),
+        twins.path(),
+    );
+    assert!(reason.contains("are named \"Sound block\""), "{reason}");
+}
+
 #[test]
 fn a_broken_step_file_is_refused_with_its_part_and_name() {
     let (app, mut bridge) = setup();
@@ -125,6 +205,9 @@ fn a_broken_step_file_is_refused_with_its_part_and_name() {
     );
     assert_eq!((app.live_bridge_stamp(), app.undo_step_count()), before);
     assert!(app.document.current_rule_program().is_none());
+
+    // A file that is no STEP body at all names no parts.
+    assert!(!reason.contains("part="), "{details}");
 
     // A folder that is not absolute is refused before anything runs.
     let mut request = apply(WARDROBE, None, 2000.0);

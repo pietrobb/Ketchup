@@ -119,6 +119,27 @@ impl StepFiles {
     }
 }
 
+/// The distinct names of `parts`, quoted, the first few of a long list.
+fn part_names(parts: &[ketchup_model::import::StepXdePartEvidence]) -> String {
+    const SHOWN: usize = 20;
+    let mut names = Vec::<&str>::new();
+    for part in parts {
+        if !names.contains(&part.name.as_str()) {
+            names.push(&part.name);
+        }
+    }
+    let mut text = names
+        .iter()
+        .take(SHOWN)
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        text.push_str(&format!(" and {} more", names.len() - SHOWN));
+    }
+    text
+}
+
 impl ImportFiles for StepFiles {
     fn read(&mut self, file: &str, part: Option<&str>) -> Result<Option<ImportedBody>, String> {
         let Some(folder) = self.folder.clone() else {
@@ -173,32 +194,60 @@ impl ImportFiles for StepFiles {
             format!("the exact kernel cannot read it as a STEP body: {error}")
         };
         let (part_index, evidence) = match part {
-            None => (
-                None,
-                worker
-                    .inspect_step_import_with_cancellation(copy.path(), &sha_hex, &cancelled)
-                    .map_err(not_step)?,
-            ),
+            None => {
+                match worker.inspect_step_import_with_cancellation(
+                    copy.path(),
+                    &sha_hex,
+                    &cancelled,
+                ) {
+                    Ok(evidence) => (None, evidence),
+                    Err(error) => {
+                        // An assembly whose parts are valid one by one, but
+                        // not as one body: say which part to take.
+                        let whole = not_step(error);
+                        let parts = worker
+                            .inspect_step_xde_import_with_cancellation(
+                                copy.path(),
+                                &sha_hex,
+                                &cancelled,
+                            )
+                            .map(|assembly| assembly.parts)
+                            .unwrap_or_default();
+                        if parts.len() < 2 {
+                            return Err(whole);
+                        }
+                        return Err(format!(
+                            "{whole}; it is an assembly of {} parts, so name the one to place \
+                             with part=, one of {}",
+                            parts.len(),
+                            part_names(&parts)
+                        ));
+                    }
+                }
+            }
             Some(name) => {
                 let assembly = worker
                     .inspect_step_xde_import_with_cancellation(copy.path(), &sha_hex, &cancelled)
                     .map_err(not_step)?;
-                let found = assembly
+                let mut found = assembly
                     .parts
                     .iter()
-                    .find(|candidate| candidate.name == name)
-                    .ok_or_else(|| {
-                        let names = assembly
-                            .parts
-                            .iter()
-                            .map(|candidate| format!("{:?}", candidate.name))
-                            .collect::<Vec<_>>();
-                        format!(
-                            "it has no part {name:?}; its parts are {}",
-                            names.join(", ")
-                        )
-                    })?;
-                (Some(found.index), found.exact.clone())
+                    .filter(|candidate| candidate.name == name);
+                let Some(first) = found.next() else {
+                    return Err(format!(
+                        "it has no part {name:?}; its parts are {}",
+                        part_names(&assembly.parts)
+                    ));
+                };
+                let more = found.count();
+                if more > 0 {
+                    return Err(format!(
+                        "{} of its parts are named {name:?}, so the name does not say which \
+                         one; give the part its own name in the file, or export it alone",
+                        more + 1
+                    ));
+                }
+                (Some(first.index), first.exact.clone())
             }
         };
         self.sources.insert(sha, bytes);
