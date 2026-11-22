@@ -191,7 +191,7 @@ pub(super) fn part_capacity(
 /// 1995-1-1 6.3.2 (6.25)-(6.29)) at the compressive strength `fc0_k` (N/mm²),
 /// with the relative slenderness of [`euler_load`] at the fifth-percentile
 /// modulus `modulus_05`. A stocky piece crushes at f_c,0,k A; a slender one
-/// buckles below Euler's load. β_c is that of solid timber, 0.2, also for
+/// buckles below Euler's load. β_c is that of a sawn piece, 0.2, also for
 /// glulam (0.1), which it puts on the safe side. Euler's load alone gave a
 /// piece just past the relative slenderness 0.3 eleven times its crushing load
 /// (R1122ac, review §4 P3; before it, review 2026-11-21 ac P3).
@@ -213,13 +213,13 @@ fn buckling_factor(slenderness: f64) -> f64 {
     if slenderness <= STOCKY_SLENDERNESS {
         return 1.0;
     }
-    let k = 0.5 * (1.0 + SOLID_TIMBER_STRAIGHTNESS * (slenderness - STOCKY_SLENDERNESS))
+    let k = 0.5 * (1.0 + SAWN_STRAIGHTNESS * (slenderness - STOCKY_SLENDERNESS))
         + 0.5 * slenderness * slenderness;
     1.0 / (k + (k * k - slenderness * slenderness).sqrt())
 }
 
-/// β_c of solid timber (EN 1995-1-1 (6.29)).
-const SOLID_TIMBER_STRAIGHTNESS: f64 = 0.2;
+/// β_c of a sawn piece (EN 1995-1-1 (6.29)).
+const SAWN_STRAIGHTNESS: f64 = 0.2;
 
 /// The share of a force `sideways` the part of box `obb` carries along its
 /// axis between `entry` and `exit`, where it carries any. Along the part's
