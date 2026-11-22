@@ -44,6 +44,7 @@ mod payload_error;
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
 mod snapshot_encoding;
+mod staged;
 
 pub use legacy::LegacyError;
 pub use payload_error::{PayloadError, PayloadLocation, PayloadSection};
@@ -1272,6 +1273,7 @@ fn publish_bytes(
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
     verify_checksums(bytes).map_err(FilePersistenceError::Format)?;
+    let path = &staged::link_target(path);
     let _lock = lock_saves(path)?;
     let expected = match mode {
         Publish::Replace => None,
@@ -1296,7 +1298,7 @@ fn publish_bytes(
             return Err(FilePersistenceError::ExternalConflict);
         }
         Ok(previous) if verify_checksums(&previous).is_ok() => {
-            write_atomic(&recovery_path(path), &previous)?;
+            write_atomic(&recovery_path(path), &previous, path)?;
         }
         Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
             return Err(error);
@@ -1331,12 +1333,22 @@ fn publish_bytes(
     )
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    write_atomic_after_prepare(path, bytes, true, || Ok(()), sync_parent_directory)
+/// Writes a copy of the file at `like` with its permissions (a `.recovery`).
+fn write_atomic(path: &Path, bytes: &[u8], like: &Path) -> Result<(), FilePersistenceError> {
+    let like = fs::metadata(like).ok();
+    staged::write_staged(
+        path,
+        bytes,
+        true,
+        || Ok(()),
+        sync_parent_directory,
+        like.as_ref(),
+    )
 }
 
 /// Writes `bytes` to a temporary file beside `path` and moves it there, over an
-/// existing file only when `replace`; without it an existing `path` is a conflict.
+/// existing file (keeping its permissions) only when `replace`; without it an
+/// existing `path` is a conflict.
 fn write_atomic_after_prepare(
     path: &Path,
     bytes: &[u8],
@@ -1344,29 +1356,15 @@ fn write_atomic_after_prepare(
     before_persist: impl FnOnce() -> Result<(), FilePersistenceError>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file_mut().sync_all()?;
-    before_persist()?;
-    let persisted = if replace {
-        temporary.persist(path)
-    } else {
-        temporary.persist_noclobber(path)
-    };
-    persisted.map_err(|error| match error.error.kind() {
-        io::ErrorKind::AlreadyExists if !replace => FilePersistenceError::ExternalConflict,
-        _ => FilePersistenceError::Io(error.error),
-    })?;
-    sync_parent(parent).map_err(|error| FilePersistenceError::Published {
-        path: path.to_owned(),
-        identity: FileIdentity::from_bytes(bytes),
-        error,
-    })?;
-    Ok(())
+    let like = fs::metadata(path).ok();
+    staged::write_staged(
+        path,
+        bytes,
+        replace,
+        before_persist,
+        sync_parent,
+        like.as_ref(),
+    )
 }
 
 fn sync_parent_directory(parent: &Path) -> io::Result<()> {
@@ -1422,8 +1420,10 @@ fn clear_work_recovery_after_compare(
         .map_err(FilePersistenceError::Io)
 }
 
+/// The `.recovery` beside the file `path` is, through any links to it: where a
+/// save keeps the replaced file and an open looks for it.
 fn recovery_path(path: &Path) -> PathBuf {
-    let mut recovery = path.as_os_str().to_os_string();
+    let mut recovery = staged::link_target(path).into_os_string();
     recovery.push(".recovery");
     PathBuf::from(recovery)
 }
