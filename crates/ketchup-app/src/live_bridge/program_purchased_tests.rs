@@ -210,6 +210,114 @@ fn twenty_two_bought_parts_read_each_file_once_and_reapply_reads_none() {
     assert_eq!(bridge.program_folder.worker_reads(), 1);
 }
 
+/// A part named in an assembly file is taken from what the window holds while
+/// the file stays the same, and read again once its bytes change, in the same
+/// window and in one that has read nothing yet: the document's body of the old
+/// file is not the new file's.
+#[test]
+fn a_changed_assembly_file_is_read_again_for_its_named_part() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = folder();
+    let file = folder.path().join("parts/salvage.step");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step"),
+        &file,
+    )
+    .unwrap();
+    let source = "door_h = param('door_h', 2000)\n\
+        for i in range(5):\n\
+        \x20   purchased('hinge %d' % i, 'parts/salvage.step', '9073605', 'Hettich',\n\
+        \x20             part = 'Sound block', at = (18, 0, 100 + i * (door_h - 200) / 4))\n\
+        board('door', (600, 18, door_h))\n";
+    let apply_at = |app: &mut KetchupApp, bridge: &mut LiveBridge, door_h: f64| {
+        bridge
+            .execute(app, apply(source, Some(folder.path()), door_h), false)
+            .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
+        bridge.program_folder.worker_reads()
+    };
+    assert_eq!(apply_at(&mut app, &mut bridge, 2000.0), 1);
+    assert_eq!(apply_at(&mut app, &mut bridge, 2400.0), 1);
+    let first = hinges(&app)["hinge 4"].1;
+
+    let mut changed = std::fs::read_to_string(&file).unwrap();
+    changed.push('\n');
+    std::fs::write(&file, &changed).unwrap();
+    assert_eq!(apply_at(&mut app, &mut bridge, 2200.0), 2);
+    let second = hinges(&app)["hinge 4"];
+    assert_eq!(second.0, 2100.0);
+    assert_ne!(second.1, first, "the body of the old file stayed");
+    assert_eq!(apply_at(&mut app, &mut bridge, 2300.0), 2);
+
+    changed.push('\n');
+    std::fs::write(&file, &changed).unwrap();
+    bridge.program_folder = Default::default();
+    assert_eq!(apply_at(&mut app, &mut bridge, 2000.0), 1);
+    let third = hinges(&app)["hinge 4"];
+    assert_eq!(third.0, 1900.0);
+    assert_ne!(
+        third.1, second.1,
+        "the document's body of the old file stayed"
+    );
+}
+
+/// 22 bought parts of one file, the self-authored box and a part `part=` names
+/// in the self-authored assembly: a changed parameter re-applies in under a
+/// second and parses neither file again; changed bytes parse it once more and
+/// place the new body.
+#[test]
+fn twenty_two_parts_of_one_file_reapply_under_a_second_without_parsing() {
+    let corpora = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/r0/step");
+    for (file, part) in [
+        ("self-authored-box.step", ""),
+        (
+            "self-authored-partly-invalid-assembly.step",
+            ", part = 'Sound block'",
+        ),
+    ] {
+        let (app, mut bridge) = setup();
+        let mut app = with_exact_worker(app);
+        let folder = tempfile::tempdir().unwrap();
+        let copy = folder.path().join("part.step");
+        std::fs::copy(corpora.join(file), &copy).unwrap();
+        let source = format!(
+            "door_h = param('door_h', 2000)\n\
+             for i in range(22):\n\
+             \x20   purchased('hinge %d' % i, 'part.step', '9073605', 'Hettich'{part},\n\
+             \x20             at = (700 + 40 * i, 0, door_h / 2))\n\
+             board('door', (600, 18, door_h))\n"
+        );
+        let mut apply_at = |app: &mut KetchupApp, door_h: f64| {
+            let reads = bridge.program_folder.worker_reads();
+            let started = Instant::now();
+            bridge
+                .execute(app, apply(&source, Some(folder.path()), door_h), false)
+                .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
+            let elapsed = started.elapsed();
+            eprintln!("{file} door_h={door_h}: {elapsed:?}");
+            (bridge.program_folder.worker_reads() - reads, elapsed)
+        };
+        assert_eq!(apply_at(&mut app, 2000.0).0, 1, "{file}");
+        assert_eq!(hinges(&app).len(), 22, "{file}");
+        let first = hinges(&app)["hinge 21"].1;
+        for door_h in [2400.0, 2100.0] {
+            let (parsed, elapsed) = apply_at(&mut app, door_h);
+            assert_eq!(parsed, 0, "{file} parsed again at door_h={door_h}");
+            assert!(elapsed < Duration::from_secs(1), "{file}: {elapsed:?}");
+            assert_eq!(hinges(&app)["hinge 21"].0, door_h / 2.0, "{file}");
+        }
+
+        let mut changed = std::fs::read_to_string(&copy).unwrap();
+        changed.push('\n');
+        std::fs::write(&copy, changed).unwrap();
+        assert_eq!(apply_at(&mut app, 2200.0).0, 1, "{file}");
+        let placed = hinges(&app);
+        assert_eq!(placed.len(), 22, "{file}");
+        assert_ne!(placed["hinge 21"].1, first, "{file}: the old body stayed");
+    }
+}
+
 /// The pairs of parts the apply answer reports as colliding, sorted.
 fn collisions(applied: &Value) -> Vec<Vec<String>> {
     let mut pairs = applied["report"]["issues"]
