@@ -97,6 +97,98 @@ fn bought_parts_from_the_programs_folder_move_with_its_parameters() {
     assert!(app.document.current_rule_program().is_some());
 }
 
+/// The pairs of parts the apply answer reports as colliding, sorted.
+fn collisions(applied: &Value) -> Vec<Vec<String>> {
+    let mut pairs = applied["report"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|issue| issue["kind"] == "collision")
+        .map(|issue| {
+            let mut pair = issue["parts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|part| part.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            pair.sort();
+            pair
+        })
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+/// A bought part that overlaps a board is a collision of the two, and one that
+/// clears it is none; the exact body goes out to STEP and GLB with the boards.
+#[test]
+fn bought_parts_collide_with_boards_and_export_with_them() {
+    let mut app = with_exact_worker(KetchupApp::new());
+    app.selection.clear();
+    let mut wire = Wire::connect(app);
+    let folder = folder();
+    let mut applied = |source: &str| {
+        wire.call_within(
+            apply(source, Some(folder.path()), 2000.0),
+            Duration::from_secs(120),
+        )
+        .result
+        .unwrap()
+    };
+    // The box is 10 x 20 x 30 mm, its 30 mm along -x from x = 18: 18 x 18 x
+    // 10 mm of it lie in the door.
+    let first = applied(WARDROBE);
+    assert_eq!(first["exact_collisions"]["collisions"], 2, "{first}");
+    assert_eq!(
+        collisions(&first),
+        [
+            vec!["door".to_owned(), "hinge 0".to_owned()],
+            vec!["door".to_owned(), "hinge 1".to_owned()],
+        ],
+        "{first}"
+    );
+
+    // In front of the door, 12 mm off its face: clear.
+    let clear = applied(&WARDROBE.replace("at = (18, 0, z)", "at = (18, 30, z)"));
+    assert_eq!(collisions(&clear), Vec::<Vec<String>>::new(), "{clear}");
+
+    // The Viewer package needs a laid-out 3D view and a scene to share.
+    wire.app.camera.viewport_rect = Some(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(800.0, 600.0),
+    ));
+    wire.call(Request::SaveView {
+        expected: None,
+        name: "Front".into(),
+        viewer: None,
+    });
+    // The window makes every body exact, the bought ones from their stored file.
+    crate::drawn_shape::tests::evaluate_exact(&mut wire.app);
+    let out = tempfile::tempdir().unwrap();
+    for (format, extension) in [("step", "step"), ("glb", "glb"), ("viewer", "ketchup-view")] {
+        let target = out.path().join(format!("wardrobe.{extension}"));
+        let exported = wire.answer_within(
+            Request::Export(crate::live_bridge::interchange::ExportRequest {
+                expected: None,
+                path: target.display().to_string(),
+                export_format: format.to_owned(),
+                drawing_scale: None,
+                image: None,
+                cam_dialect: None,
+                cam_operations: None,
+                overwrite: false,
+            }),
+            Duration::from_secs(120),
+        );
+        assert!(exported.ok, "{format}: {exported:?}");
+        let bytes = std::fs::read(&target).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        for part in ["hinge 0", "hinge 1", "door"] {
+            assert!(text.contains(part), "{format} has no {part}");
+        }
+    }
+}
+
 /// The program's error for `source` over `folder`, the document unchanged.
 fn refused(app: &mut KetchupApp, bridge: &mut LiveBridge, source: &str, folder: &Path) -> String {
     let before = (app.live_bridge_stamp(), app.undo_step_count());
