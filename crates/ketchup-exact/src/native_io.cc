@@ -2,11 +2,7 @@
 
 #include <BRepCheck.hxx>
 #include <BRepCheck_Result.hxx>
-#include <BRepBuilderAPI_Copy.hxx>
-#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <Interface_InterfaceModel.hxx>
-#include <Poly_Triangulation.hxx>
-#include <ShapeFix_Shape.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Iterator.hxx>
@@ -829,97 +825,6 @@ std::string shape_defect(const TopoDS_Shape& shape) {
   }
 }
 
-// Chord and angle the faceted repair meshes a solid with.
-constexpr double kFacetDeflectionMm = 0.05;
-constexpr double kFacetAngleRad = 0.35;
-
-// `solid` rebuilt from its mesh: one plane face per triangle, sewn into
-// closed shells, or null when a face does not mesh or a shell stays open.
-TopoDS_Shape faceted(const TopoDS_Shape& solid) {
-  const TopoDS_Shape copy = BRepBuilderAPI_Copy(solid, true, false).Shape();
-  BRepMesh_IncrementalMesh mesh(copy, kFacetDeflectionMm, false, kFacetAngleRad, false);
-  BRepBuilderAPI_Sewing sewing(tolerances().linear_mm);
-  for (TopExp_Explorer faces(copy, TopAbs_FACE); faces.More(); faces.Next()) {
-    const TopoDS_Face& face = TopoDS::Face(faces.Current());
-    TopLoc_Location location;
-    const occ::handle<Poly_Triangulation> triangles = BRep_Tool::Triangulation(face, location);
-    if (triangles.IsNull() || triangles->NbTriangles() == 0) return {};
-    const gp_Trsf placement = location.Transformation();
-    const bool reversed = face.Orientation() == TopAbs_REVERSED;
-    for (int index = 1; index <= triangles->NbTriangles(); ++index) {
-      int a = 0, b = 0, c = 0;
-      triangles->Triangle(index).Get(a, b, c);
-      if (reversed) std::swap(b, c);
-      const gp_Pnt pa = triangles->Node(a).Transformed(placement);
-      const gp_Pnt pb = triangles->Node(b).Transformed(placement);
-      const gp_Pnt pc = triangles->Node(c).Transformed(placement);
-      const double linear = tolerances().linear_mm;
-      if (pa.Distance(pb) <= linear || pb.Distance(pc) <= linear || pc.Distance(pa) <= linear
-          || gp_Vec(pa, pb).Crossed(gp_Vec(pa, pc)).Magnitude() <= linear * linear) {
-        continue;
-      }
-      BRepBuilderAPI_MakePolygon polygon(pa, pb, pc, true);
-      if (!polygon.IsDone()) continue;
-      BRepBuilderAPI_MakeFace plane(polygon.Wire(), true);
-      if (plane.IsDone()) sewing.Add(plane.Face());
-    }
-  }
-  sewing.Perform();
-  TopoDS_Compound solids;
-  BRep_Builder builder;
-  builder.MakeCompound(solids);
-  int count = 0;
-  for (TopExp_Explorer shells(sewing.SewedShape(), TopAbs_SHELL); shells.More(); shells.Next()) {
-    const TopoDS_Shell& shell = TopoDS::Shell(shells.Current());
-    if (!BRep_Tool::IsClosed(shell)) return {};
-    BRepBuilderAPI_MakeSolid made(shell);
-    if (!made.IsDone()) return {};
-    TopoDS_Solid built = made.Solid();
-    BRepLib::OrientClosedSolid(built);
-    builder.Add(solids, built);
-    ++count;
-  }
-  if (count == 0) return {};
-  if (count == 1) {
-    TopoDS_Iterator only(solids);
-    return only.Value();
-  }
-  return solids;
-}
-
-// `shape` repaired so it can be kept, or null when it cannot be: first OCCT's
-// shape healing (ShapeFix_Shape), which keeps the exact surfaces; then each
-// solid that still fails rebuilt from its mesh (`faceted`), the sound ones
-// kept as read. Only a shape refused as read is repaired, so a sound one stays
-// exactly as its file wrote it and earlier documents read the same body.
-TopoDS_Shape repaired(const TopoDS_Shape& shape) {
-  try {
-    const occ::handle<ShapeFix_Shape> fix = new ShapeFix_Shape(shape);
-    fix->Perform();
-    const TopoDS_Shape fixed = fix->Shape();
-    if (!fixed.IsNull() && shape_defect(fixed).empty()) return fixed;
-    // Only a shape of solids alone: a shell, face or wire beside them has no
-    // mesh to stand for it, and would be lost.
-    std::vector<TopoDS_Shape> solids;
-    collect_part_shapes(shape, solids);
-    TopoDS_Compound parts;
-    BRep_Builder builder;
-    builder.MakeCompound(parts);
-    TopoDS_Shape last;
-    for (const TopoDS_Shape& solid : solids) {
-      if (solid.ShapeType() != TopAbs_SOLID) return {};
-      last = shape_defect(solid).empty() ? solid : faceted(solid);
-      if (last.IsNull()) return {};
-      builder.Add(parts, last);
-    }
-    if (solids.empty()) return {};
-    const TopoDS_Shape result = solids.size() == 1 ? last : TopoDS_Shape(parts);
-    return shape_defect(result).empty() ? result : TopoDS_Shape();
-  } catch (...) {
-    return {};
-  }
-}
-
 std::string describe_rejected(
     const StepXdeData& data, const std::vector<RejectedShapeRecord>& rejected) {
   // An entity as its format writes it: "#720" in STEP, "D720" in IGES
@@ -982,17 +887,6 @@ std::unique_ptr<NativeOperationResult> xde_part_result(
     if (result != nullptr && result->status_code() != STATUS_OK) result.reset();
     return result;
   };
-  // A part none of whose shapes can be kept as read is repaired as a whole
-  // and kept if it then passes. A part that read could keep is never
-  // repaired, so its body stays as earlier documents hold it.
-  const auto repair_or_refuse = [&](const std::vector<RejectedShapeRecord>& rejected) {
-    const TopoDS_Shape fixed = repaired(shape);
-    std::string ignored;
-    if (!fixed.IsNull()) {
-      if (auto result = checked(fixed, ignored)) return result;
-    }
-    return refuse_part(rejected);
-  };
   // The whole part first: a part sound as a whole is kept as it is, so a
   // document that holds it reads the same body again, and its shapes cost no
   // check apart (review 2026-11-01 EX-102, EX-103).
@@ -1000,8 +894,7 @@ std::unique_ptr<NativeOperationResult> xde_part_result(
   if (auto whole = checked(shape, failure)) return whole;
   if (shapes.size() == 1) {
     std::string defect = failure.empty() ? shape_defect(shape) : failure;
-    return repair_or_refuse(
-        {refused(0, defect.empty() ? "fails the exact-shape validity check" : defect)});
+    return refuse_part({refused(0, defect.empty() ? "fails the exact-shape validity check" : defect)});
   }
   // A part of several shapes that fails as a whole keeps those that pass apart.
   std::vector<TopoDS_Shape> kept;
@@ -1015,7 +908,7 @@ std::unique_ptr<NativeOperationResult> xde_part_result(
       rejected.push_back(refused(index, std::move(defect)));
     }
   }
-  if (kept.empty() && !rejected.empty()) return repair_or_refuse(rejected);
+  if (kept.empty() && !rejected.empty()) return refuse_part(rejected);
   if (!rejected.empty()) {
     TopoDS_Compound salvaged;
     BRep_Builder builder;
@@ -1299,16 +1192,7 @@ std::unique_ptr<NativeOperationResult> import_step_native(rust::Str path) noexce
     }
     const TopoDS_Shape shape = reader.OneShape();
     const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
-    auto result = success_result(shape, {}, solids >= 2, false, {}, solids == 0);
-    if (result->status_code() != STATUS_INVALID_SHAPE) return result;
-    // Refused as read: kept if repairing makes it sound.
-    const TopoDS_Shape fixed = repaired(shape);
-    if (fixed.IsNull()) return result;
-    const std::uint32_t fixed_solids = count_subshapes(fixed, TopAbs_SOLID);
-    auto repaired_result =
-        success_result(fixed, {}, fixed_solids >= 2, false, {}, fixed_solids == 0);
-    return repaired_result->status_code() == STATUS_OK ? std::move(repaired_result)
-                                                        : std::move(result);
+    return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
   });
 }
 

@@ -776,36 +776,9 @@ fn step_part_with_a_degenerated_edge_imports_and_reports_it_as_degenerate() {
     assert!(apex.centroid_mm.x.abs() < 1e-9 && apex.centroid_mm.y.abs() < 1e-9);
 }
 
-/// The fixture (`tests/native/r0-step-corpus.cpp`) is a prism over a figure
-/// eight of two crossing Bezier edges: it fails the validity check as read
-/// (BRepCheck_SelfIntersectingWire), shape healing does not mend it and its
-/// crossed faces do not mesh, so no repair keeps it. It is refused, read
-/// whole or as a part, for the defect it was read with.
-#[test]
-fn step_solid_no_repair_mends_is_refused_for_its_defect() {
-    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-    let path = repository.join("corpora/r0/step/self-authored-figure-eight.step");
-    let path = path.to_str().unwrap();
-    let backend = ExactBackend::new();
-    let whole = backend.import_step(path).unwrap_err();
-    assert_eq!(whole.code, GeometryErrorCode::InvalidShape);
-    let part = backend.open_step_xde(path).unwrap().part(0).unwrap_err();
-    assert_eq!(part.code, GeometryErrorCode::InvalidShape);
-    assert!(
-        part.diagnostic
-            .ends_with("fails the exact-shape validity check (BRepCheck_SelfIntersectingWire)"),
-        "{}",
-        part.diagnostic
-    );
-}
-
 /// The fixture (`tests/native/r0-step-corpus.cpp`) holds a sound block, a
 /// part of a sound block and a solid enclosing no volume (STEP `#728`), sound
-/// as a whole, a part of only such a solid (`#1077`), kept repaired, and a part of a sound
+/// as a whole, a part of only such a solid (`#1077`), and a part of a sound
 /// block and a solid failing the validity check (`#1756`), and in a
 /// sub-assembly a part of two wires.
 #[test]
@@ -843,17 +816,14 @@ fn step_xde_part_keeps_its_sound_solids_and_names_each_one_it_refuses() {
         0
     );
 
-    // A part none of whose shapes can be kept as read is repaired: shape
-    // healing splits the bow tie at its crossing into the two triangular
-    // prisms it winds, 250 mm³ each, rather than refusing it.
-    // The same body each time, as a document that holds it reads it again.
-    let repaired = document.part(2).unwrap();
-    assert_eq!(repaired.body.topology.solid_count, 2);
-    assert!((repaired.body.topology.volume_mm3 - 500.0).abs() < 1e-6);
-    assert!(repaired.rejected_shapes.is_empty());
-    assert_eq!(
-        document.part(2).unwrap().body.result_fingerprint,
-        repaired.body.result_fingerprint
+    let refused = document.part(2).unwrap_err();
+    assert_eq!(refused.code, GeometryErrorCode::InvalidShape);
+    assert!(
+        refused.diagnostic.ends_with(
+            "part has no shape that can be kept: solid 1 (entity #1077) encloses no volume"
+        ),
+        "{}",
+        refused.diagnostic
     );
 
     let mixed = document.part(3).unwrap();

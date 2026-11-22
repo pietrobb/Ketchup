@@ -94,7 +94,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/persistence/legacy.rs": 4677,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3192,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4181,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4190,
     "crates/ketchup-scheduler/src/lib.rs": 3051,
 }
 

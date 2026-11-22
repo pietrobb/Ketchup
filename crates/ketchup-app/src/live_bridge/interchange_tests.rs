@@ -140,33 +140,32 @@ fn an_imported_step_names_the_parts_and_solids_it_left_out() {
         .execute(&mut app, import(&source, None), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let review = &imported["review"];
-    // The crossed prism, refused as read, is imported repaired as the two
-    // prisms it winds.
-    assert_eq!(review["refused_total"], 2, "{review}");
+    assert_eq!(review["refused_total"], 3, "{review}");
     let refused = review["refused"]
         .as_array()
         .unwrap()
         .iter()
         .map(|line| line.as_str().unwrap())
         .collect::<Vec<_>>();
-    assert!(refused[0].starts_with("Wire frame: "), "{}", refused[0]);
+    assert!(refused[0].starts_with("Crossed prism: ") && refused[0].contains("#1077"));
+    assert!(refused[1].starts_with("Wire frame: "), "{}", refused[1]);
     assert!(
-        refused[1].starts_with("Block and figure eight: solid 2 (entity #1756) fails"),
+        refused[2].starts_with("Block and figure eight: solid 2 (entity #1756) fails"),
         "{}",
-        refused[1]
+        refused[2]
     );
-    assert_eq!(review["solids"], 6);
+    assert_eq!(review["solids"], 4);
     // Review 2026-11-01 EX-100: the answer and the window's status line say
     // the import is partial, not only the review a client may not read.
     assert_eq!(review["complete"], false, "{review}");
     assert_eq!(
         review["left_out"],
-        json!({"parts": 1, "solids": 1, "placements": 2}),
+        json!({"parts": 2, "solids": 1, "placements": 3}),
         "{review}"
     );
     let status = app.action_digest();
     assert!(
-        status.contains("1 parts and 1 solids") && status.contains("2 placements"),
+        status.contains("2 parts and 1 solids") && status.contains("3 placements"),
         "{status}"
     );
     // ... and the model summary keeps saying it after the answer is gone.
@@ -178,7 +177,7 @@ fn an_imported_step_names_the_parts_and_solids_it_left_out() {
         partial[0]["source"]["text"],
         "self-authored-partly-invalid-assembly.step"
     );
-    assert_eq!(partial[0]["refused_total"], 2);
+    assert_eq!(partial[0]["refused_total"], 3);
     let summarized = partial[0]["refused"].as_array().unwrap();
     assert_eq!(summarized.len(), refused.len());
     for (row, line) in summarized.iter().zip(&refused) {
@@ -187,7 +186,7 @@ fn an_imported_step_names_the_parts_and_solids_it_left_out() {
     }
     assert_eq!(
         app.document.current().definitions().count(),
-        definitions + 4
+        definitions + 3
     );
 }
 
