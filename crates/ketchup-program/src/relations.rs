@@ -370,6 +370,19 @@ pub fn relations_with(
     relations_by_bounds(model, issues, exact, true)
 }
 
+/// How many pairs whose bounds overlap [`relations_by_bounds`] relates, the
+/// jointed besides: each costs the volume they share, and parts a loop placed
+/// at one spot overlap each with every other (review 2026-11-22
+/// R1122ac-PG-1102: 1 000 parts at the origin, 499 500 overlaps measured).
+/// Far more than a model's sockets and pockets; past them the model's
+/// collisions are its news ([`crate::validate`] lists the first of them).
+const MAX_OVERLAPPING_PAIRS: usize = 2_000;
+
+/// Whether bounds `a` and `b` overlap by more than the contact fit every way.
+fn boxes_overlap(a: &Bounds, b: &Bounds) -> bool {
+    (0..3).all(|axis| a.1[axis].min(b.1[axis]) - a.0[axis].max(b.0[axis]) > CONTACT_FIT_MM)
+}
+
 /// [`relations_with`]; without `skip_by_bounds` every candidate pair apart
 /// is measured on its boxes, as a reference for tests.
 fn relations_by_bounds(
@@ -390,10 +403,17 @@ fn relations_by_bounds(
             .map(|joint| joint.name.as_str())
     };
     let mut pairs = Vec::new();
+    let mut overlapping = 0_usize;
     for (position, &left) in order.iter().enumerate() {
         for &right in &order[position + 1..] {
             if bounds[right].0[0] > bounds[left].1[0] + GAP_LIMIT_MM {
                 break;
+            }
+            if boxes_overlap(&bounds[left], &bounds[right]) {
+                if overlapping == MAX_OVERLAPPING_PAIRS {
+                    continue;
+                }
+                overlapping += 1;
             }
             pairs.push((left.min(right), left.max(right)));
         }

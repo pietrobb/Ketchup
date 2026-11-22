@@ -1,6 +1,7 @@
 //! Generic checks over an evaluated model. They report issues; they never
 //! reject the model. Production export decides whether issues block.
 
+use crate::connectivity::{join, root};
 use crate::contact::ContactFaces;
 use crate::exact::ExactShapes;
 use crate::faces::FaceKind;
@@ -415,7 +416,31 @@ fn round(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0 + 0.0
 }
 
+/// How many overlapping pairs of parts [`collisions`] lists before it stops
+/// looking: a loop placing every part at the same spot overlaps each with
+/// every other, and checking each pair took minutes (review 2026-11-22
+/// R1122ac-PG-1102: 1 000 parts at the origin, 28 s and 499 500 issues).
+const MAX_COLLISIONS: usize = 100;
+
+fn too_many_collisions() -> Issue {
+    Issue {
+        source_lines: Vec::new(),
+        severity: Severity::Error,
+        kind: "collision",
+        parts: Vec::new(),
+        message: format!(
+            "more than {MAX_COLLISIONS} pairs of parts overlap; the first {MAX_COLLISIONS} are \
+             listed and the rest not checked"
+        ),
+        where_mm: None,
+        hint: "Parts placed in a loop that does not move them lie on top of each other: give \
+               each its own place, then check again."
+            .to_owned(),
+    }
+}
+
 fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
+    let before = issues.len();
     let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..model.parts.len())
         .filter(|i| model.parts[*i].is_solid())
@@ -427,6 +452,10 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             let b = &model.parts[right];
             if bounds[right].0[0] >= bounds[left].1[0] - CONTACT_FIT_MM {
                 break;
+            }
+            if issues.len() - before >= MAX_COLLISIONS {
+                issues.push(too_many_collisions());
+                return;
             }
             if model.are_alternatives(a, b) {
                 continue;
@@ -779,7 +808,7 @@ fn support<'a>(
     let count = model.parts.len();
     let floor = model.floor_z_mm.unwrap_or(0.0);
     let grounded = model.grounded_parts();
-    let mut supported: Vec<bool> = model
+    let supported: Vec<bool> = model
         .parts
         .iter()
         .map(|part| grounded.contains(&part.name) || crate::load_path::on_floor(part, floor))
@@ -787,9 +816,11 @@ fn support<'a>(
     if model.floor_z_mm.is_none() && !supported.iter().any(|value| *value) {
         return;
     }
-    // Who touches or is joined to whom, decided once per pair; support then
-    // spreads through it from the parts that stand.
-    let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); count];
+    // Which parts touch or are joined, through each other, as groups; a part
+    // is supported where its group holds one that stands. A pair already in
+    // one group is not measured (review 2026-11-22 R1122ac-PG-1102: 1 000
+    // parts at one spot measured 499 500 contacts).
+    let mut groups: Vec<usize> = (0..count).collect();
     let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
     let mut order: Vec<usize> = (0..count).filter(|i| model.parts[*i].is_solid()).collect();
     order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
@@ -801,7 +832,8 @@ fn support<'a>(
             if (0..3).any(|axis| {
                 bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
                     || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
-            }) {
+            }) || root(&groups, left) == root(&groups, right)
+            {
                 continue;
             }
             let (part, other) = (&model.parts[left], &model.parts[right]);
@@ -815,8 +847,7 @@ fn support<'a>(
                 }
             };
             if touching {
-                neighbours[left].push(right);
-                neighbours[right].push(left);
+                join(&mut groups, left, right);
             }
         }
     }
@@ -840,21 +871,15 @@ fn support<'a>(
                 .decides(part, other)
                 .is_none_or(|pair| pair.gap_mm().is_some_and(|gap| gap <= reach))
         {
-            neighbours[left].push(right);
-            neighbours[right].push(left);
+            join(&mut groups, left, right);
         }
     }
-    let mut pending: Vec<usize> = (0..count).filter(|item| supported[*item]).collect();
-    while let Some(item) = pending.pop() {
-        for &next in &neighbours[item] {
-            if !supported[next] {
-                supported[next] = true;
-                pending.push(next);
-            }
-        }
-    }
+    let standing: std::collections::BTreeSet<usize> = (0..count)
+        .filter(|item| supported[*item])
+        .map(|item| root(&groups, item))
+        .collect();
     for (index, part) in model.parts.iter().enumerate() {
-        if part.is_solid() && !supported[index] {
+        if part.is_solid() && !standing.contains(&root(&groups, index)) {
             issues.push(Issue {
                 source_lines: Vec::new(),
                 severity: Severity::Warning,

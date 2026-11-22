@@ -60,6 +60,13 @@ pub use eval::{
 };
 pub use exact::{ExactPair, ExactShapes, exact_candidates, rechecked};
 pub use execution_budget::{MAX_HEAP_BYTES as EVALUATION_HEAP_BYTES, MAX_TIME as EVALUATION_TIME};
+
+/// How long evaluating a program and every check of its model may take
+/// together, in the window's worker and in `ketchup-program check` alike
+/// (review 2026-11-22 R1122ac-PG-1102: the command had no deadline): the
+/// checks of the largest example program (1 854 parts) take far longer than
+/// its evaluation, 1.5 s in a release build and 28 s in a debug build.
+pub const CHECK_TIME: std::time::Duration = std::time::Duration::from_secs(60);
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,

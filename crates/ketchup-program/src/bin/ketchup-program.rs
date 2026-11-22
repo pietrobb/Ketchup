@@ -6,7 +6,8 @@
 //! evaluates without error-level issues and its statics, if any, are verified;
 //! 1 when it has error-level issues or a member or joint fails; 3 when nothing
 //! fails but some member or joint is not verified or some load reaches no
-//! member; 2 when it cannot be evaluated, or not as asked: a `--set` name the
+//! member; 2 when it cannot be evaluated, its checks take longer than the
+//! window's deadline (`time_limit`, 60 s), or not as asked: a `--set` name the
 //! program has no parameter of, said on stderr with the parameter it is likely
 //! meant for.
 //!
@@ -25,6 +26,10 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: ketchup-program check FILE.star [--set name=value]... [--model] \
                      [--prelude PRELUDE.star] [--summary] [--diff SAVED.json] \
                      [--calculation sk|cz]";
+
+/// The stack of the thread the checks run on, a main thread's: deep programs
+/// need it.
+const CHECK_STACK_BYTES: usize = 8 << 20;
 
 /// Parts named per issue group in the summary.
 const NAMED_PARTS: usize = 5;
@@ -202,7 +207,45 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (value, code) = match ketchup_program::run(&options.path, &source, &options.overrides) {
+    // The checks run on a thread of their own, so the command answers by the
+    // window's deadline however long they take (review 2026-11-22
+    // R1122ac-PG-1102: 5 000 overlapping parts ran past 300 s).
+    let checks = std::thread::Builder::new()
+        .stack_size(CHECK_STACK_BYTES)
+        .spawn(move || check(&options, &source, saved))
+        .expect("the check thread starts");
+    let deadline = std::time::Instant::now() + ketchup_program::CHECK_TIME;
+    while !checks.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if checks.is_finished() {
+        let (output, code) = checks
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        print!("{output}");
+        ExitCode::from(code)
+    } else {
+        let error = ketchup_program::ProgramError {
+            code: "time_limit",
+            message: format!(
+                "checking the program took longer than {} s",
+                ketchup_program::CHECK_TIME.as_secs()
+            ),
+            location: None,
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({"ok": false, "error": error}))
+                .expect("the error serializes")
+        );
+        ExitCode::from(2)
+    }
+}
+
+/// The report, or the calculation, `options` ask for of `source`, compared
+/// with `saved` when given, and the exit code.
+fn check(options: &Options, source: &str, saved: Option<Value>) -> (String, u8) {
+    let (value, code) = match ketchup_program::run(&options.path, source, &options.overrides) {
         Ok((evaluated, report)) => {
             let names: Vec<&str> = report
                 .params
@@ -212,13 +255,12 @@ fn main() -> ExitCode {
             for line in unused_set_lines(&report.unused_overrides, &names) {
                 eprintln!("{line}");
             }
-            let code = ExitCode::from(report.exit_code());
+            let code = report.exit_code();
             if let Some(language) = options.calculation {
-                print!(
-                    "{}",
-                    ketchup_program::calculation::document(&options.path, &report, language)
+                return (
+                    ketchup_program::calculation::document(&options.path, &report, language),
+                    code,
                 );
-                return code;
             }
             let mut value = if options.summary {
                 summary(&evaluated.model, &report)
@@ -230,17 +272,19 @@ fn main() -> ExitCode {
             }
             (value, code)
         }
-        Err(error) => (json!({"ok": false, "error": error}), ExitCode::from(2)),
+        Err(error) => (json!({"ok": false, "error": error}), 2),
     };
     let value = match saved {
         Some(saved) => json!({"summary": value, "changes": changes(&saved, &value)}),
         None => value,
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).expect("report serializes")
-    );
-    code
+    (
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&value).expect("report serializes")
+        ),
+        code,
+    )
 }
 
 /// Counts that show at a glance what a program makes and what is wrong.

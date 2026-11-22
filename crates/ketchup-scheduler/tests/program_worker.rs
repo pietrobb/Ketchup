@@ -128,17 +128,19 @@ fn the_worker_stays_between_programs_and_is_replaced_after_a_kill() {
     assert_ne!(worker.process_id(), Some(first));
 }
 
-/// Checking 400 boxes that all overlap takes over a minute; the worker is
+/// A model cheap to evaluate but seconds to check: ten thousand boxes side by
+/// side, each touching its neighbours. (Overlapping boxes no longer do: their
+/// pairs stop at a limit, review 2026-11-22 R1122ac-PG-1102.)
+const SLOW_TO_CHECK: &str = "for i in range(100):\n    for j in range(100):\n        \
+    box(\"b%d_%d\" % (i, j), (100, 100, 100), at=(i * 100, j * 100, 0))\n";
+
+/// Checking [`SLOW_TO_CHECK`] takes longer than the deadline; the worker is
 /// stopped at its deadline and the next request starts a new one (review PRG-1).
 #[test]
 fn a_report_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    let evaluated = run(
-        &mut worker,
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
-    )
-    .unwrap();
+    let evaluated = run(&mut worker, SLOW_TO_CHECK).unwrap();
     let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .report(&evaluated, deadline, &CancelToken::default())
@@ -165,11 +167,7 @@ fn a_report_past_the_deadline_is_killed() {
 fn a_refine_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    let evaluated = run(
-        &mut worker,
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
-    )
-    .unwrap();
+    let evaluated = run(&mut worker, SLOW_TO_CHECK).unwrap();
     let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .refine(
@@ -205,9 +203,7 @@ fn a_refine_past_the_deadline_is_killed() {
 #[test]
 fn evaluation_report_and_refine_share_one_deadline() {
     let _turn = crate::integration_support::file_turn();
-    // Checking 400 boxes that all overlap takes over a minute.
-    let source =
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n";
+    let source = SLOW_TO_CHECK;
     let evaluated = evaluate("test.star", source, &BTreeMap::new()).unwrap();
     let mut worker = worker();
     let cancel = CancelToken::default();

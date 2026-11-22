@@ -18,14 +18,14 @@ fn touching(a: &Part, b: &Part, exact: &ExactShapes) -> Option<bool> {
     }
 }
 
-fn root(parents: &[usize], mut index: usize) -> usize {
+pub(crate) fn root(parents: &[usize], mut index: usize) -> usize {
     while parents[index] != index {
         index = parents[index];
     }
     index
 }
 
-fn join(parents: &mut [usize], a: usize, b: usize) {
+pub(crate) fn join(parents: &mut [usize], a: usize, b: usize) {
     let (a, b) = (root(parents, a), root(parents, b));
     parents[b] = a;
 }
