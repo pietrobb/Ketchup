@@ -606,7 +606,9 @@ fn a_part_is_named_by_its_placement_in_the_assembly() {
     let reason = refused(&mut app, &mut bridge, &program("Wire group"), folder.path());
     assert!(
         reason.contains("no part \"Wire group\"")
-            && reason.contains("refused \"Wire frame\": ")
+            && reason.contains("refused \"Crossed prism\": ")
+            && reason.contains("encloses no volume")
+            && reason.contains("\"Wire frame\": ")
             && reason.contains("has no face"),
         "{reason}"
     );
