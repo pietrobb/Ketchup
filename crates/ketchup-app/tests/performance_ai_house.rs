@@ -71,14 +71,18 @@ fn orbit_ai_house() -> Duration {
 
     let worker = exact_worker_path();
     shell.app_mut().connect_exact_worker(&worker).unwrap();
-    for _ in 0..500 {
+    // Bodies come from the exact worker; under load they take longer than any fixed
+    // number of frames, so wait for them, not for a step count (idea #61).
+    let published = shell.wait_until(|shell| {
         shell.step();
-        if shell.app().exact_render_body_count() == definitions {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(shell.app().exact_render_body_count(), definitions);
+        shell.app().exact_render_body_count() == definitions
+    });
+    assert!(
+        published,
+        "expected {definitions} exact bodies, found {}: {}",
+        shell.app().exact_render_body_count(),
+        shell.app().action_digest()
+    );
 
     shell.app_mut().enable_headless_instanced_scene();
     shell.settle();

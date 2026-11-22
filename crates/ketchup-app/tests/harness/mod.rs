@@ -330,10 +330,20 @@ impl Shell {
     /// waited for too: the window applies it when the worker's result wakes it, a wake-up
     /// the harness only sees by running frames. So is a history change whose bodies are
     /// being evaluated: the window asks for no frame while it waits, so an idle window
-    /// does not mean the change has its answer (review 2026-11-07 r26 TST-240).
+    /// does not mean the change has its answer (review 2026-11-07 r26 TST-240). So is a
+    /// file command (Open, Save, an export) running on a worker: its result asks for a
+    /// frame only once it is there, which on a loaded machine is after the window went
+    /// idle (ideas #138/#139).
     fn run_idle(&mut self) {
         let mut last_error = String::new();
         let idle = self.wait_until(|shell| match shell.harness.try_run() {
+            Ok(_) if !shell.app().file_activity_idle() => {
+                last_error = format!(
+                    "a file command is still running: {}",
+                    shell.app().action_digest()
+                );
+                false
+            }
             Ok(_) if shell.app().value_awaits_evaluation() => {
                 last_error = "a typed or dragged value still waits for evaluation".to_owned();
                 false
