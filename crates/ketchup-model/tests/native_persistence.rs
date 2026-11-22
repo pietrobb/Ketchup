@@ -3243,3 +3243,55 @@ fn a_process_started_during_a_save_does_not_keep_the_file_locked() {
     drop(worker_copy);
     assert!(reopened.is_ok(), "{reopened:?}");
 }
+
+/// R1122ac-PS-1101: a save replaced the file with its temporary one, so a
+/// document shared as 0664 became 0600, its `.recovery` too, and a document
+/// saved through a symbolic link became a plain file while the file it pointed
+/// to stayed as it was. A save keeps the permissions and writes through the
+/// link, and opening through the link finds the `.recovery` beside the file.
+#[cfg(unix)]
+#[test]
+fn a_save_keeps_the_permissions_of_the_file_and_its_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode =
+        |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let snapshot = graph_document().current();
+    let directory = tempfile::tempdir().unwrap();
+
+    let shared = directory.path().join("shared.ketchup");
+    persistence::save_atomic(&shared, &snapshot).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o664)).unwrap();
+    persistence::save_atomic(&shared, &snapshot).unwrap();
+    assert_eq!(mode(&shared), 0o664);
+    assert_eq!(
+        mode(&directory.path().join("shared.ketchup.recovery")),
+        0o664
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_through_a_symbolic_link_writes_the_file_it_points_to() {
+    let snapshot = graph_document().current();
+    let directory = tempfile::tempdir().unwrap();
+    let real = directory.path().join("real.ketchup");
+    let link = directory.path().join("link.ketchup");
+    persistence::save_atomic(&real, &snapshot).unwrap();
+    std::os::unix::fs::symlink("real.ketchup", &link).unwrap();
+    persistence::save_atomic(&link, &snapshot).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(directory.path().join("real.ketchup.recovery").is_file());
+    assert!(!directory.path().join("link.ketchup.recovery").exists());
+
+    std::fs::write(&real, b"damaged").unwrap();
+    let opened = persistence::load_file_with_source(&link).unwrap();
+    assert_eq!(
+        opened.source_path(),
+        directory.path().join("real.ketchup.recovery")
+    );
+}
