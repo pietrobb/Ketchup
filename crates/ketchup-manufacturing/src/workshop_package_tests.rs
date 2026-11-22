@@ -491,6 +491,13 @@ fn a_link_or_other_special_file_is_refused() {
         check_workshop_package(&dos_directory),
         Err(WorkshopPackageError::NotAPlainFile("a.nc".to_owned()))
     );
+    // R1122ac, review §4 P3: the refusal says what happened and what to send.
+    let text = WorkshopPackageError::NotAPlainFile("a.nc".to_owned()).to_string();
+    assert!(
+        text.contains("another tool has packed the package again")
+            && text.contains("as Kečup wrote it"),
+        "{text}"
+    );
 }
 
 /// Review 2026-11-20 ac P3: a header flag other than UTF-8 (bit 11), such as a data

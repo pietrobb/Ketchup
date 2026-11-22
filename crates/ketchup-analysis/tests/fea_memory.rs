@@ -157,6 +157,24 @@ fn solve_and_modes_stay_within_the_memory_budget() {
         "{conducted:?}"
     );
     assert!(taken <= budget + vectors(&model), "conduction took {taken}");
+    // And its checks (R1122ac, review §4 P3: about 207 B per tetrahedron,
+    // unbudgeted).
+    for budget in [64 << 10, heat.elements.len() * 256] {
+        let (conducted, taken) = peak(|| {
+            solve_steady_conduction(
+                &heat,
+                ThermalSolveSettings {
+                    maximum_factor_bytes: budget,
+                    ..ThermalSolveSettings::default()
+                },
+            )
+        });
+        assert!(
+            matches!(conducted, Err(ThermalError::FactorTooLarge { .. })),
+            "{conducted:?}"
+        );
+        assert!(taken <= budget, "checking took {taken} under {budget}");
+    }
 }
 
 /// The mesh of `model` conducting heat, one end held.

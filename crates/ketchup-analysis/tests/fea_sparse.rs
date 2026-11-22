@@ -78,4 +78,23 @@ fn a_factor_past_the_memory_budget_is_refused_with_its_size() {
         text.contains("at least") && !text.contains("the solve"),
         "{text}"
     );
+    // R1122ac, review §4 P3: a budget under 1 MiB read "the 0 MiB it may use".
+    let small = FeaError::FactorTooLarge {
+        needed_bytes: 700 << 10,
+        budget_bytes: 512 << 10,
+    }
+    .to_string();
+    assert!(
+        small.contains("at least 700 KiB") && small.contains("the 512 KiB it may use"),
+        "{small}"
+    );
+    let large = FeaError::FactorTooLarge {
+        needed_bytes: (600 << 20) + 1,
+        budget_bytes: 512 << 20,
+    }
+    .to_string();
+    assert!(
+        large.contains("at least 601 MiB") && large.contains("the 512 MiB it may use"),
+        "{large}"
+    );
 }

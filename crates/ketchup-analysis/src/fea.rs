@@ -29,7 +29,7 @@ pub const MAX_FEA_LOADS: usize = 1_000_000;
 pub const MAX_FEA_COUPLINGS: usize = MAX_FEA_NODES;
 /// The memory checking a model's elements holds per element at most: its id,
 /// its sorted nodes and the faces of a tetrahedron, in ordered sets.
-const VALIDATION_BYTES_PER_ELEMENT: usize = 256;
+pub(crate) const VALIDATION_BYTES_PER_ELEMENT: usize = 256;
 /// The default memory for the factored stiffness matrix: 512 MiB.
 pub const DEFAULT_FEA_FACTOR_BYTES: usize = 512 << 20;
 
