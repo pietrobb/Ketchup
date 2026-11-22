@@ -139,6 +139,77 @@ fn a_step_file_is_read_once_until_its_bytes_change() {
     assert_eq!(hinges(&app)["hinge 4"].0, 2100.0);
 }
 
+/// A hall of 22 bought parts, 5 of one assembly part and 17 of another file,
+/// reads each file once; applies after it read none while the files stay
+/// unchanged, in a window that has not read them yet too: the document holds
+/// the bodies, the assembly part's by the name `part=` gave.
+#[test]
+fn twenty_two_bought_parts_read_each_file_once_and_reapply_reads_none() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = folder();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step"),
+        folder.path().join("parts/salvage.step"),
+    )
+    .unwrap();
+    let hall = "door_h = param('door_h', 2000)\n\
+        for i in range(5):\n\
+        \x20   purchased('hinge %d' % i, 'parts/salvage.step', '9073605', 'Hettich',\n\
+        \x20             part = 'Sound block', at = (18, 0, 100 + i * (door_h - 200) / 4))\n\
+        for i in range(17):\n\
+        \x20   purchased('runner %d' % i, 'parts/box.step', '9237903', 'Hettich',\n\
+        \x20             at = (700 + 40 * i, 0, door_h / 2))\n\
+        board('door', (600, 18, door_h))\n";
+    let apply_at = |app: &mut KetchupApp, bridge: &mut LiveBridge, door_h: f64| {
+        let started = Instant::now();
+        bridge
+            .execute(app, apply(hall, Some(folder.path()), door_h), false)
+            .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
+        eprintln!("hall door_h={door_h}: {:?}", started.elapsed());
+        bridge.program_folder.worker_reads()
+    };
+    assert_eq!(apply_at(&mut app, &mut bridge, 2000.0), 2);
+    let snapshot = app.document.current();
+    let placed = |prefix: &str| {
+        snapshot
+            .occurrences()
+            .filter(|occurrence| occurrence.name().starts_with(prefix))
+            .count()
+    };
+    assert_eq!((placed("hinge"), placed("runner")), (5, 17));
+    assert_eq!(snapshot.import_receipts().count(), 2);
+
+    assert_eq!(apply_at(&mut app, &mut bridge, 2400.0), 2);
+    let top = |app: &KetchupApp| {
+        app.document
+            .current()
+            .occurrences()
+            .find(|occurrence| occurrence.name() == "hinge 4")
+            .map(|occurrence| occurrence.transform().matrix()[11])
+    };
+    assert_eq!(top(&app), Some(2300.0));
+
+    // A window that has read nothing yet, as after opening the saved
+    // document: the bodies come from it, neither file is read by the worker.
+    bridge.program_folder = Default::default();
+    assert_eq!(apply_at(&mut app, &mut bridge, 2200.0), 0);
+    assert_eq!(top(&app), Some(2100.0));
+    assert!(app.document.current_rule_program().is_some());
+
+    // Another part of the same file is not the one the document holds.
+    bridge.program_folder = Default::default();
+    let other = hall.replace("'Sound block'", "'Block and figure eight'");
+    if bridge
+        .execute(&mut app, apply(&other, Some(folder.path()), 2200.0), false)
+        .is_err()
+    {
+        take_error_details();
+    }
+    assert_eq!(bridge.program_folder.worker_reads(), 1);
+}
+
 /// The pairs of parts the apply answer reports as colliding, sorted.
 fn collisions(applied: &Value) -> Vec<Vec<String>> {
     let mut pairs = applied["report"]["issues"]

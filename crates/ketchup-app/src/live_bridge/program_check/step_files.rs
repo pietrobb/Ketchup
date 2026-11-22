@@ -2,11 +2,12 @@
 //! `imported()`) from the folder of the program's file, with the exact
 //! worker, and keeps their bytes for the document to seal.
 
-use ketchup_application::program_imports::{ImportFiles, unreadable};
+use ketchup_application::program_imports::{ImportFiles, placed_part_name, unreadable};
 use ketchup_model::document::{FeatureKind, Snapshot};
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
-    ImportFormat, STEP_PARSER_VERSION, StepImportEvidence, StepXdeImportEvidence,
+    ImportFormat, STEP_PARSER_VERSION, STEP_XDE_PARSER_VERSION, StepImportEvidence,
+    StepXdeImportEvidence,
 };
 use ketchup_program::imported::ImportedBody;
 use ketchup_rejection::Rejection;
@@ -121,6 +122,10 @@ pub(crate) struct StepFiles {
     /// Whole-file bodies the document already holds, by the SHA-256 of their
     /// file: a file read again unchanged is not inspected again.
     known: BTreeMap<[u8; 32], StepImportEvidence>,
+    /// Assembly parts the document already places, by the SHA-256 of their
+    /// file and the name `part=` gave: an unchanged file's assembly is not
+    /// read again for them, in a window that has not read it yet either.
+    known_parts: BTreeMap<([u8; 32], String), (u32, StepImportEvidence)>,
     cache: Arc<Mutex<StepCache>>,
 }
 
@@ -132,36 +137,51 @@ impl StepFiles {
         snapshot: &Snapshot,
         cache: Arc<Mutex<StepCache>>,
     ) -> Self {
-        let known = snapshot
-            .features()
-            .filter_map(|feature| match feature.kind() {
-                FeatureKind::ImportedExactBody(spec) if spec.source_part_index.is_none() => {
-                    let receipt = snapshot.import_receipt(spec.import_id)?;
-                    let topology_counts = spec.topology_counts?;
-                    if receipt.format() != ImportFormat::Step
-                        || receipt.parser_version() != STEP_PARSER_VERSION
-                    {
-                        return None;
-                    }
-                    let evidence = StepImportEvidence {
-                        source_sha256: spec.source_sha256,
-                        source_byte_len: spec.source_byte_len,
-                        source_unit: receipt.units().source_unit(),
-                        result_fingerprint: spec.result_fingerprint.clone(),
-                        body_kind: spec.body_kind,
-                        solid_count: spec.solid_count,
-                        topology_counts,
-                        area_mm2: spec.area_mm2,
-                        volume_mm3: spec.volume_mm3,
-                        bounds_mm: spec.bounds_mm,
-                        backend: spec.backend.clone(),
-                        tolerance: spec.tolerance.clone(),
-                    };
-                    Some((spec.source_sha256, evidence))
-                }
-                _ => None,
-            })
-            .collect();
+        let (mut known, mut known_parts) = (BTreeMap::new(), BTreeMap::new());
+        for feature in snapshot.features() {
+            let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
+                continue;
+            };
+            let Some(receipt) = snapshot.import_receipt(spec.import_id) else {
+                continue;
+            };
+            let Some(topology_counts) = spec.topology_counts else {
+                continue;
+            };
+            let version = match spec.source_part_index {
+                None => STEP_PARSER_VERSION,
+                Some(_) => STEP_XDE_PARSER_VERSION,
+            };
+            if receipt.format() != ImportFormat::Step || receipt.parser_version() != version {
+                continue;
+            }
+            let evidence = StepImportEvidence {
+                source_sha256: spec.source_sha256,
+                source_byte_len: spec.source_byte_len,
+                source_unit: receipt.units().source_unit(),
+                result_fingerprint: spec.result_fingerprint.clone(),
+                body_kind: spec.body_kind,
+                solid_count: spec.solid_count,
+                topology_counts,
+                area_mm2: spec.area_mm2,
+                volume_mm3: spec.volume_mm3,
+                bounds_mm: spec.bounds_mm,
+                backend: spec.backend.clone(),
+                tolerance: spec.tolerance.clone(),
+            };
+            let Some(index) = spec.source_part_index else {
+                known.insert(spec.source_sha256, evidence);
+                continue;
+            };
+            let named = snapshot
+                .definition(feature.definition_id())
+                .and_then(|definition| {
+                    placed_part_name(feature.name(), definition.name(), receipt.source_name())
+                });
+            if let Some(named) = named {
+                known_parts.insert((spec.source_sha256, named.to_owned()), (index, evidence));
+            }
+        }
         Self {
             folder,
             worker_path,
@@ -169,6 +189,7 @@ impl StepFiles {
             cancelled,
             sources: BTreeMap::new(),
             known,
+            known_parts,
             cache,
         }
     }
@@ -302,6 +323,11 @@ impl StepFiles {
         file: &mut CachedFile,
         name: &str,
     ) -> Result<(u32, StepImportEvidence), Rejection> {
+        if file.assembly.is_none()
+            && let Some(placed) = self.known_parts.get(&(file.sha, name.to_owned()))
+        {
+            return Ok(placed.clone());
+        }
         let assembly = self.assembly(file)?.map_err(not_step)?;
         let mut found = assembly
             .parts

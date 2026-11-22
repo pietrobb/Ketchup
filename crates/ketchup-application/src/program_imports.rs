@@ -169,6 +169,34 @@ fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBod
     }
 }
 
+/// The name of the feature holding `part`'s body: the part's name, its file's
+/// and the assembly part it is ([`placed_part_name`] reads it back).
+fn feature_name(part: &Part, body: &ImportedBody) -> String {
+    let named = part.imported().and_then(|import| import.part.as_deref());
+    match (body.part_index, named) {
+        (Some(_), Some(named)) => format!(
+            "{}{named}",
+            part_feature_prefix(&part.name, &body.file_name)
+        ),
+        _ => format!("{} from {}", part.name, body.file_name),
+    }
+}
+
+fn part_feature_prefix(definition: &str, file_name: &str) -> String {
+    format!("{definition} from {file_name}, part ")
+}
+
+/// The assembly part (`part=`) a program placed as `feature`, the definition
+/// `definition` of a body read from `file_name`; none for a whole file's.
+#[must_use]
+pub fn placed_part_name<'a>(
+    feature: &'a str,
+    definition: &str,
+    file_name: &str,
+) -> Option<&'a str> {
+    feature.strip_prefix(&part_feature_prefix(definition, file_name))
+}
+
 fn parser_version(body: &ImportedBody) -> &'static str {
     if body.part_index.is_some() {
         STEP_XDE_PARSER_VERSION
@@ -298,7 +326,7 @@ pub(crate) fn append_imported(
             CanonicalCommand::CreateFeature {
                 id: feature_id,
                 definition_id,
-                name: format!("{} from {}", part.name, body.file_name),
+                name: feature_name(part, body),
                 kind: FeatureKind::ImportedExactBody(ImportedExactBodySpec {
                     schema: IMPORTED_EXACT_BODY_SCHEMA_V3.to_owned(),
                     import_id,
