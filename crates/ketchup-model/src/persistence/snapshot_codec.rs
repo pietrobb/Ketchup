@@ -312,6 +312,19 @@ pub(crate) fn rewrite(bytes: &[u8], edit: impl FnOnce(&mut ciborium::Value)) -> 
     rewritten
 }
 
+/// [`rewrite`] of the `document.bin` of the native container `bytes`, in the
+/// format it was written in, with the container's checksums sealed again.
+#[cfg(test)]
+pub(crate) fn rewrite_in_container(
+    bytes: &[u8],
+    edit: impl FnOnce(&mut ciborium::Value),
+) -> Vec<u8> {
+    let mut entries = super::container::container_entries(bytes).expect("an intact container");
+    let (_, document) = entries.get_mut("document.bin").expect("a document entry");
+    *document = rewrite(document, edit);
+    super::container::encode_container(entries).expect("the entries fit a container")
+}
+
 /// A decoded snapshot, and for an older format the digest its writer computed.
 pub(super) struct Decoded {
     pub(super) revision_id: u64,

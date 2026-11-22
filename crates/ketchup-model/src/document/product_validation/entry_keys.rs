@@ -138,8 +138,9 @@ mod tests {
     /// R1122ac-PS-1100: a saved document with an entry filed under another id
     /// than it names, sealed again, is refused on opening with the collection
     /// named, never opened (editable, to fail at the first look-up) nor a
-    /// panic. The fixtures hold groups, occurrences, an assembly recipe
-    /// (format 98) and every other collection checked between them.
+    /// panic. The fixtures, opened and saved again in the current format, hold
+    /// groups, occurrences and every other collection checked between them;
+    /// the formats they were written in are tested below.
     #[test]
     fn an_entry_filed_under_another_id_is_refused_on_opening() {
         let fixtures: [(&str, &[u8]); 3] = [
@@ -181,6 +182,124 @@ mod tests {
         }
         for collection in ["groups", "occurrences", "definitions", "features", "tags"] {
             assert!(covered.contains(collection), "no fixture has {collection}");
+        }
+    }
+
+    /// The stored map `field` of the product in `snapshot` (a CBOR
+    /// `{revision_id, product}`), its first integer key (or `all` of them)
+    /// moved by `RENAMED`, so the entry is not filed under the id it names nor
+    /// found under the id other entries name it by. Whether there was such a key.
+    fn misfile_stored(snapshot: &mut ciborium::Value, field: &str, all: bool) -> bool {
+        fn entry<'a>(
+            value: &'a mut ciborium::Value,
+            name: &str,
+        ) -> Option<&'a mut ciborium::Value> {
+            value.as_map_mut().and_then(|entries| {
+                entries
+                    .iter_mut()
+                    .find(|(key, _)| key.as_text() == Some(name))
+                    .map(|(_, value)| value)
+            })
+        }
+        let Some(ciborium::Value::Map(entries)) =
+            entry(snapshot, "product").and_then(|product| entry(product, field))
+        else {
+            return false;
+        };
+        let mut moved = 0;
+        for (key, _) in entries.iter_mut().take(if all { usize::MAX } else { 1 }) {
+            if let ciborium::Value::Integer(number) = key {
+                *number = (u64::try_from(*number).expect("an id") + RENAMED).into();
+                moved += 1;
+            }
+        }
+        moved > 0
+    }
+
+    /// R1122ac-PS-1100 as the review found it: the files of older formats
+    /// (98, 108, 112, release 0.3.0, the assistant's), an entry filed under
+    /// another id in the format they were written in and sealed again, are
+    /// refused by the collection, before the format-98 assembly recipe or a
+    /// migration looks an entry up, never a panic nor opened.
+    #[test]
+    fn an_older_format_entry_filed_under_another_id_is_refused_on_opening() {
+        let fixtures: [(&str, &[u8]); 5] = [
+            (
+                "format98",
+                include_bytes!(
+                    "../../../tests/fixtures/persistence/legacy/joint-records-format98.bin"
+                ),
+            ),
+            (
+                "format108",
+                include_bytes!("../../../tests/fixtures/persistence/format108.bin"),
+            ),
+            (
+                "format112",
+                include_bytes!("../../../tests/fixtures/persistence/format112.bin"),
+            ),
+            (
+                "release-0.3.0",
+                include_bytes!("../../../tests/fixtures/persistence/release-0.3.0.bin"),
+            ),
+            (
+                "intent_entities",
+                include_bytes!(
+                    "../../../../ketchup-assistant/tests/fixtures/intent_entities.ketchup"
+                ),
+            ),
+        ];
+        let collections = [
+            ("groups", "groups"),
+            ("occurrences", "occurrences"),
+            ("definitions", "definitions"),
+            ("features", "features"),
+            ("tags", "tags"),
+            ("classification_dimensions", "classification dimensions"),
+        ];
+        let mut covered = BTreeSet::new();
+        let mut failures = Vec::new();
+        for (name, fixture) in fixtures {
+            for ((field, collection), all) in collections
+                .into_iter()
+                .flat_map(|collection| [(collection, false), (collection, true)])
+            {
+                let mut found = false;
+                let bytes =
+                    crate::persistence::snapshot_codec::rewrite_in_container(fixture, |snapshot| {
+                        found = misfile_stored(snapshot, field, all);
+                    });
+                if !found {
+                    continue;
+                }
+                let opened = std::panic::catch_unwind(|| load(&bytes).map(|_| ()));
+                match opened {
+                    Ok(Err(error))
+                        if error.to_string().contains(collection)
+                            && error.to_string().contains("names itself") => {}
+                    Ok(Err(error)) => {
+                        failures.push(format!("{name}, {collection}, all {all}: {error}"))
+                    }
+                    Ok(Ok(())) => failures.push(format!("{name}, {collection}, all {all}: opened")),
+                    Err(_) => failures.push(format!("{name}, {collection}, all {all}: panicked")),
+                }
+                covered.insert((name, field));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "not refused by the collection:\n{}",
+            failures.join("\n")
+        );
+        for (name, field) in [
+            ("format98", "occurrences"),
+            ("format108", "groups"),
+            ("format112", "groups"),
+            ("format112", "occurrences"),
+            ("release-0.3.0", "occurrences"),
+            ("intent_entities", "groups"),
+        ] {
+            assert!(covered.contains(&(name, field)), "{name} has no {field}");
         }
     }
 }
