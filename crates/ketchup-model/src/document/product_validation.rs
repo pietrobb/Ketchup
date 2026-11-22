@@ -1,6 +1,8 @@
 use super::*;
 use ketchup_tolerance::limits;
 
+mod entry_keys;
+
 pub(super) fn ensure_product_id(id: u64) -> Result<(), CanonicalError> {
     if id == 0 {
         Err(CanonicalError::ReservedProductId)
@@ -52,6 +54,10 @@ pub(super) fn validate_product_change(
 ) -> Result<(), CanonicalError> {
     let change = ProductChange::between(before, product);
     ensure_product_id(product.document_id.0)?;
+    // Edits file each entry under its id; a product read whole may not.
+    if before.is_none() {
+        entry_keys::validate_entry_keys(product)?;
+    }
     validate_document_entries(product, validate_drawing_sources, &change)?;
     if change.definitions {
         validate_definitions(product)?;
