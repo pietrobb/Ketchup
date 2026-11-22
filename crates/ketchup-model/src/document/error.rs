@@ -191,6 +191,13 @@ pub enum CanonicalError {
     ClassificationCategoryInUse(ClassificationDimensionId),
     CollectionAlreadyExists(CollectionId),
     CollectionNotFound(CollectionId),
+    /// An entry of the product's `collection` is filed under `key` but names
+    /// itself `id`: the file was changed outside Kečup (R1122ac-PS-1100).
+    EntryUnderOtherId {
+        collection: &'static str,
+        key: u64,
+        id: u64,
+    },
     CollectionMembershipNotCanonical(CollectionId),
     OccurrenceInCollection(OccurrenceId),
     InvalidImportReceipt(ImportContractError),
@@ -407,6 +414,7 @@ impl CanonicalError {
             Self::ClassificationCategoryInUse(..) => "canonical.classification_category_in_use",
             Self::CollectionAlreadyExists(..) => "canonical.collection_already_exists",
             Self::CollectionNotFound(..) => "canonical.collection_not_found",
+            Self::EntryUnderOtherId { .. } => "canonical.entry_under_other_id",
             Self::CollectionMembershipNotCanonical(..) => {
                 "canonical.collection_membership_not_canonical"
             }
@@ -843,6 +851,10 @@ impl fmt::Display for CanonicalError {
             Self::CollectionNotFound(id) => {
                 write!(formatter, "collection {} does not exist", id.0)
             }
+            Self::EntryUnderOtherId { collection, key, id } => write!(
+                formatter,
+                "the document's {collection} entry {key} names itself {id}: the file was changed outside Kečup; open a copy Kečup saved"
+            ),
             Self::CollectionMembershipNotCanonical(id) => write!(
                 formatter,
                 "collection {} membership must be unique and strictly sorted",
