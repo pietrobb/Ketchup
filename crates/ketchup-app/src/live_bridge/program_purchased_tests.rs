@@ -97,6 +97,48 @@ fn bought_parts_from_the_programs_folder_move_with_its_parameters() {
     assert!(app.document.current_rule_program().is_some());
 }
 
+/// Five hinges of one file are one read of it, and applies after it read it
+/// again only when its bytes change: a new time of change alone is not one.
+#[test]
+fn a_step_file_is_read_once_until_its_bytes_change() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = folder();
+    let five = WARDROBE.replace(
+        "enumerate([100, door_h - 100])",
+        "enumerate([100 + k * (door_h - 200) / 4 for k in range(5)])",
+    );
+    let mut apply_at = |app: &mut KetchupApp, door_h: f64| {
+        bridge
+            .execute(app, apply(&five, Some(folder.path()), door_h), false)
+            .unwrap();
+        bridge.program_folder.worker_reads()
+    };
+    assert_eq!(apply_at(&mut app, 2000.0), 1);
+    assert_eq!(hinges(&app).len(), 5);
+    assert_eq!(apply_at(&mut app, 2400.0), 1);
+    assert_eq!(hinges(&app)["hinge 4"].0, 2300.0);
+    assert!(app.document.current_rule_program().is_some());
+
+    let file = folder.path().join("parts/box.step");
+    let bytes = std::fs::read(&file).unwrap();
+    std::fs::write(&file, &bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(apply_at(&mut app, 2200.0), 1);
+
+    // Other bytes: read again, the new body placed.
+    let mut changed = String::from_utf8(bytes).unwrap();
+    changed.push('\n');
+    std::fs::write(&file, changed).unwrap();
+    assert_eq!(apply_at(&mut app, 2200.0), 2);
+    assert_eq!(hinges(&app)["hinge 4"].0, 2100.0);
+}
+
 /// The pairs of parts the apply answer reports as colliding, sorted.
 fn collisions(applied: &Value) -> Vec<Vec<String>> {
     let mut pairs = applied["report"]["issues"]
@@ -254,6 +296,21 @@ fn a_part_of_an_assembly_file_is_named_and_a_name_two_parts_share_is_refused() {
     };
     assert!(spec.source_part_index.is_some());
     assert!(app.document.current_rule_program().is_some());
+    // The file read as one body and as its parts, once each: the part named
+    // and a later apply of it take the parts read for the error.
+    assert_eq!(bridge.program_folder.worker_reads(), 2);
+    bridge
+        .execute(
+            &mut app,
+            apply(
+                &program(", part = 'Sound block'"),
+                Some(folder.path()),
+                2400.0,
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(bridge.program_folder.worker_reads(), 2);
 
     // Two parts of one name: the name does not say which one.
     let twins = tempfile::tempdir().unwrap();

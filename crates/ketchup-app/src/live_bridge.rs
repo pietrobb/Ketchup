@@ -1404,8 +1404,8 @@ pub(crate) struct LiveBridge {
     image: image::ImageState,
     /// A bridge without a socket for the window's own edits (`transport::local`).
     serves_window: bool,
-    /// The program file's name and its STEP files' folder, as an apply last gave them.
-    program_folder: Option<(String, PathBuf)>,
+    /// The program file's STEP files' folder, as an apply last gave it, and what was read there.
+    program_folder: program_check::step_files::ProgramFolder,
 }
 impl Drop for LiveBridge {
     fn drop(&mut self) {

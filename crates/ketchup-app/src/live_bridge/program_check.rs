@@ -3,7 +3,7 @@
 #[cfg(test)]
 #[path = "program_check_failure_tests.rs"]
 mod failure_tests;
-mod step_files;
+pub(super) mod step_files;
 #[cfg(test)]
 #[path = "program_plan_tests.rs"]
 mod tests;
@@ -462,16 +462,9 @@ impl LiveBridge {
         source: &RuleProgramSource,
         cancelled: Arc<AtomicBool>,
     ) -> StepFiles {
-        if let Some(folder) = given {
-            self.program_folder = Some((source.file_name.clone(), folder));
-        }
-        let folder = self
-            .program_folder
-            .as_ref()
-            .filter(|(file_name, _)| *file_name == source.file_name)
-            .map(|(_, folder)| folder.clone());
-        StepFiles::new(
-            folder,
+        self.program_folder.files(
+            given,
+            &source.file_name,
             Self::worker_path(app),
             cancelled,
             &app.document.current(),
