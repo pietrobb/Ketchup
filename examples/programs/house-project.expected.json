@@ -18,10 +18,10 @@
   "ok": true,
   "params": [],
   "relations": {
-    "count": 5419,
+    "count": 5421,
     "kinds": {
       "contact": 2178,
-      "gap": 469,
+      "gap": 471,
       "overlap": 2650,
       "touch": 122
     }

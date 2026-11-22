@@ -81,10 +81,10 @@ impl fmt::Display for FeaError {
             ),
             Self::FactorTooLarge { needed_bytes, budget_bytes } => write!(
                 formatter,
-                "the study would need at least {} MiB at once, more than the {} MiB it may use; \
+                "the study would need at least {} at once, more than the {} it may use; \
                  mesh it coarser or study a smaller part",
-                needed_bytes.div_ceil(1 << 20),
-                budget_bytes / (1 << 20)
+                size(*needed_bytes, usize::div_ceil),
+                size(*budget_bytes, |bytes, unit| bytes / unit)
             ),
             Self::NonFiniteSolution => formatter.write_str(
                 "the solve gave numbers too large to be real; check the loads and the material values",
@@ -106,6 +106,16 @@ impl fmt::Display for FeaError {
 }
 
 impl std::error::Error for FeaError {}
+
+/// `bytes` in MiB, or in KiB under 1 MiB, rounded by `round`: a budget under
+/// 1 MiB read "the 0 MiB it may use" (R1122ac, review §4 P3).
+fn size(bytes: usize, round: fn(usize, usize) -> usize) -> String {
+    if bytes < 1 << 20 {
+        format!("{} KiB", round(bytes, 1 << 10))
+    } else {
+        format!("{} MiB", round(bytes, 1 << 20))
+    }
+}
 
 impl fmt::Display for FeaCouplingProblem {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -7,12 +7,14 @@
 
 use crate::contact::ContactFaces;
 use crate::model::{Joint, Part, ProgramModel, ProgramPartBody};
+use crate::near_pairs::near_pairs;
 use crate::validate::{Issue, Severity};
 use ketchup_geometry::linalg::cross2;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct LoadPath {
@@ -205,21 +207,14 @@ pub(crate) fn issues<'a>(
     let mut beside: Vec<BTreeSet<usize>> = parts.iter().map(|_| BTreeSet::new()).collect();
 
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..parts.len()).collect();
-    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
-    for (position, &left) in order.iter().enumerate() {
-        for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                break;
-            }
+    near_pairs(
+        &bounds,
+        (0..parts.len()).collect(),
+        CONTACT_FIT_MM,
+        |left, right| {
             let (a, b) = (&parts[left], &parts[right]);
-            if model.are_alternatives(a, b)
-                || (0..3).any(|axis| {
-                    bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
-                        || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
-                })
-            {
-                continue;
+            if model.are_alternatives(a, b) {
+                return ControlFlow::Continue(());
             }
             for contact in faces.contacts(a, b) {
                 if contact.normal[2] <= RESTS_ON {
@@ -237,8 +232,9 @@ pub(crate) fn issues<'a>(
                     beside[right].insert(left);
                 }
             }
-        }
-    }
+            ControlFlow::Continue(())
+        },
+    );
     // A bearing joint carries its first part into its second, as `loads` reads it.
     for joint in model.joints.iter().filter(|joint| joint.bearing) {
         let (Some(carried), Some(carrier)) = (index(&joint.parts[0]), index(&joint.parts[1]))
