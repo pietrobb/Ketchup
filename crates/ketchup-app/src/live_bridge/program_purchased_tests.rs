@@ -262,59 +262,106 @@ fn a_changed_assembly_file_is_read_again_for_its_named_part() {
     );
 }
 
-/// 22 bought parts of one file, the self-authored box and a part `part=` names
-/// in the self-authored assembly: a changed parameter re-applies in under a
-/// second and parses neither file again; changed bytes parse it once more and
-/// place the new body.
-#[test]
-fn twenty_two_parts_of_one_file_reapply_under_a_second_without_parsing() {
-    let corpora = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/r0/step");
-    for (file, part) in [
-        ("self-authored-box.step", ""),
-        (
-            "self-authored-partly-invalid-assembly.step",
-            ", part = 'Sound block'",
-        ),
-    ] {
-        let (app, mut bridge) = setup();
-        let mut app = with_exact_worker(app);
-        let folder = tempfile::tempdir().unwrap();
-        let copy = folder.path().join("part.step");
-        std::fs::copy(corpora.join(file), &copy).unwrap();
-        let source = format!(
-            "door_h = param('door_h', 2000)\n\
-             for i in range(22):\n\
-             \x20   purchased('hinge %d' % i, 'part.step', '9073605', 'Hettich'{part},\n\
-             \x20             at = (700 + 40 * i, 0, door_h / 2))\n\
-             board('door', (600, 18, door_h))\n"
-        );
-        let mut apply_at = |app: &mut KetchupApp, door_h: f64| {
-            let reads = bridge.program_folder.worker_reads();
-            let started = Instant::now();
-            bridge
-                .execute(app, apply(&source, Some(folder.path()), door_h), false)
-                .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
-            let elapsed = started.elapsed();
-            eprintln!("{file} door_h={door_h}: {elapsed:?}");
-            (bridge.program_folder.worker_reads() - reads, elapsed)
-        };
-        assert_eq!(apply_at(&mut app, 2000.0).0, 1, "{file}");
-        assert_eq!(hinges(&app).len(), 22, "{file}");
-        let first = hinges(&app)["hinge 21"].1;
-        for door_h in [2400.0, 2100.0] {
-            let (parsed, elapsed) = apply_at(&mut app, door_h);
-            assert_eq!(parsed, 0, "{file} parsed again at door_h={door_h}");
-            assert!(elapsed < Duration::from_secs(1), "{file}: {elapsed:?}");
-            assert_eq!(hinges(&app)["hinge 21"].0, door_h / 2.0, "{file}");
-        }
+/// The self-authored box, and a part `part=` names in the self-authored assembly.
+const ONE_FILE_PARTS: [(&str, &str); 2] = [
+    ("self-authored-box.step", ""),
+    (
+        "self-authored-partly-invalid-assembly.step",
+        ", part = 'Sound block'",
+    ),
+];
 
-        let mut changed = std::fs::read_to_string(&copy).unwrap();
-        changed.push('\n');
-        std::fs::write(&copy, changed).unwrap();
-        assert_eq!(apply_at(&mut app, 2200.0).0, 1, "{file}");
-        let placed = hinges(&app);
-        assert_eq!(placed.len(), 22, "{file}");
-        assert_ne!(placed["hinge 21"].1, first, "{file}: the old body stayed");
+/// The size of `name`'s body as its file gives it.
+fn extent(app: &KetchupApp, name: &str) -> [f64; 3] {
+    let snapshot = app.document.current();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == name)
+        .unwrap();
+    let definition = snapshot.definition(occurrence.definition_id()).unwrap();
+    let [feature] = definition.feature_ids() else {
+        panic!("{name}: {:?}", definition.feature_ids());
+    };
+    let FeatureKind::ImportedExactBody(spec) = snapshot.feature(*feature).unwrap().kind() else {
+        panic!("{name} is not the file's body");
+    };
+    let [low, high] = spec.bounds_mm;
+    [0, 1, 2].map(|axis| high[axis] - low[axis])
+}
+
+/// 22 bought parts of `file` (`part` names one in an assembly): the first apply
+/// parses the file once, two re-applies after a parameter change parse it no
+/// more and move the parts, and once the file says centimetres instead of
+/// millimetres it is parsed again and every part is ten times the size. The
+/// two re-apply times, for the release budget.
+fn twenty_two_parts_of_one_file(file: &str, part: &str) -> Vec<Duration> {
+    let corpora = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/r0/step");
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = tempfile::tempdir().unwrap();
+    let copy = folder.path().join("part.step");
+    std::fs::copy(corpora.join(file), &copy).unwrap();
+    let source = format!(
+        "door_h = param('door_h', 2000)\n\
+         for i in range(22):\n\
+         \x20   purchased('hinge %d' % i, 'part.step', '9073605', 'Hettich'{part},\n\
+         \x20             at = (700 + 40 * i, 0, door_h / 2))\n\
+         board('door', (600, 18, door_h))\n"
+    );
+    let mut apply_at = |app: &mut KetchupApp, door_h: f64| {
+        let reads = bridge.program_folder.worker_reads();
+        let started = Instant::now();
+        bridge
+            .execute(app, apply(&source, Some(folder.path()), door_h), false)
+            .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
+        let elapsed = started.elapsed();
+        eprintln!("{file} door_h={door_h}: {elapsed:?}");
+        (bridge.program_folder.worker_reads() - reads, elapsed)
+    };
+    assert_eq!(apply_at(&mut app, 2000.0).0, 1, "{file}");
+    assert_eq!(hinges(&app).len(), 22, "{file}");
+    let size = extent(&app, "hinge 21");
+    let mut times = Vec::new();
+    for door_h in [2400.0, 2100.0] {
+        let (parsed, elapsed) = apply_at(&mut app, door_h);
+        assert_eq!(parsed, 0, "{file} parsed again at door_h={door_h}");
+        assert_eq!(hinges(&app)["hinge 21"].0, door_h / 2.0, "{file}");
+        times.push(elapsed);
+    }
+
+    let text = std::fs::read_to_string(&copy).unwrap();
+    let centimetres = text.replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT(.CENTI.,.METRE.)");
+    assert_ne!(centimetres, text, "{file} names no millimetres");
+    std::fs::write(&copy, centimetres).unwrap();
+    assert_eq!(apply_at(&mut app, 2200.0).0, 1, "{file}");
+    assert_eq!(hinges(&app).len(), 22, "{file}");
+    for name in ["hinge 0", "hinge 21"] {
+        let grown = extent(&app, name);
+        for axis in 0..3 {
+            assert!(
+                (grown[axis] - 10.0 * size[axis]).abs() < 1e-6 * grown[axis].max(1.0),
+                "{file} {name}: {grown:?}, before {size:?}"
+            );
+        }
+    }
+    times
+}
+
+#[test]
+fn twenty_two_parts_of_one_file_reapply_without_parsing_and_reread_a_changed_file() {
+    for (file, part) in ONE_FILE_PARTS {
+        twenty_two_parts_of_one_file(file, part);
+    }
+}
+
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_twenty_two_parts_of_one_file_reapply_within_a_second() {
+    let budget = ketchup_test_env::perf_budget(Duration::from_secs(1));
+    for (file, part) in ONE_FILE_PARTS {
+        for elapsed in twenty_two_parts_of_one_file(file, part) {
+            assert!(elapsed < budget, "{file}: {elapsed:?}, budget {budget:?}");
+        }
     }
 }
 
