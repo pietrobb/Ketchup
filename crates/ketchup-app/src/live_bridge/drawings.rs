@@ -344,14 +344,23 @@ fn write_failed(error: impl std::error::Error + Send + Sync + 'static) -> &'stat
                 json!({
                     "path": path.display().to_string(),
                     "preserved": preserved.display().to_string(),
+                    "changed_by_another": path.display().to_string(),
                 }),
             );
         }
-        Some(ExportTransactionError::TargetChanged { path }) => (
-            "drawings_target_exists",
-            "is not a file this project's earlier export of these drawings wrote (or it changed while they were drawn), so it is not replaced; rename or move it, or export the drawings to another folder",
-            path,
-        ),
+        Some(ExportTransactionError::TargetChanged { path }) => {
+            return failure(
+                "drawings_target_exists",
+                format!(
+                    "{} is not a file this project's earlier export of these drawings wrote (or it changed while they were drawn), so it is not replaced; rename or move it, or export the drawings to another folder. Nothing was written; the file is as it was.",
+                    path.display()
+                ),
+                json!({
+                    "path": path.display().to_string(),
+                    "changed_by_another": path.display().to_string(),
+                }),
+            );
+        }
         _ => return failed_because("drawings_write_failed", error),
     };
     failure(
@@ -1377,5 +1386,24 @@ mod tests {
             preserved.display().to_string(),
             "{answer}"
         );
+        // R1122ac, review §4 P3: the file another program changed is named,
+        // so the Connect tab does not list it as the client's write; through
+        // an export's cause chain as well.
+        let shown = path.display().to_string();
+        assert_eq!(answer["details"]["changed_by_another"], shown, "{answer}");
+        assert_eq!(
+            write_failed(ExportTransactionError::changed(&path)),
+            "drawings_target_exists"
+        );
+        let answer = crate::live_bridge::take_error_details().unwrap_or_default();
+        assert_eq!(answer["details"]["changed_by_another"], shown, "{answer}");
+        let export =
+            crate::export_bundle::ExportError::Transaction(ExportTransactionError::unrecovered(
+                ExportTransactionError::changed(&path),
+                ExportTransactionError::BackupMissing { path: preserved },
+            ));
+        crate::live_bridge::LiveBridge::export_failed(&shown, "dxf", export);
+        let answer = crate::live_bridge::take_error_details().unwrap_or_default();
+        assert_eq!(answer["details"]["changed_by_another"], shown, "{answer}");
     }
 }

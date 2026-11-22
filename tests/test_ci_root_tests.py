@@ -14,6 +14,10 @@ and a step with `if: false`, a commented-out `sudo` and a run under `|| true`
 counted. Now the arguments after `sudo "$test"` are split as the shell splits
 them and read as libtest reads them, and a run that is never made, or whose
 failure is let through, does not count.
+
+R1122ac, review §4 P3: `--list` and `--help` (which run no test), a run put in
+the background with `&`, `continue-on-error` given as text or an expression,
+and a run after `set +e` counted. None of them does now.
 """
 import re
 import shlex
@@ -36,6 +40,10 @@ SHELL_COMMENT = re.compile(r"(?:^|\s)#.*")
 VALUED = {"--skip", "--test-threads", "--format", "--color", "--logfile", "-Z"}
 # What ends the test's command: a pipe, a list operator, a redirection.
 SHELL_OPERATOR = re.compile(r"^[()<>|&;]+$")
+# libtest's options under which it runs no test.
+RUNS_NONE = {"--ignored", "--list", "--help", "-h"}
+# `set` turning the shell's exit on a failed command off (`+e`) or on (`-e`).
+ERREXIT = re.compile(r"\bset\s+([+-])[a-z]*e")
 
 
 def module_path(relative):
@@ -75,18 +83,22 @@ def root_only_tests():
 
 def never_made(part):
     """A job or step with `if: false`, or one whose failure does not fail CI."""
+    off = ("false", "${{false}}")
     condition = str(part.get("if", "")).replace(" ", "").lower()
-    return condition in ("false", "${{false}}") or part.get("continue-on-error") is True
+    # `continue-on-error` as text or an expression may be true, so it lets failures through.
+    let_fail = str(part.get("continue-on-error", False)).replace(" ", "").lower()
+    return condition in off or let_fail not in off
 
 
 def libtest_run(rest):
     """(filters, skips, exact) of the arguments after `sudo "$test"` on its line, as libtest
-    reads them; None when the run takes only ignored tests or a `||` after it, as
-    `done || true` of its loop, may let its failure through."""
+    reads them; None when the run takes only ignored tests or none, or a `||` after it,
+    as `done || true` of its loop, or an `&` putting it in the background may let its
+    failure through."""
     lexer = shlex.shlex(rest, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     tokens = list(lexer)
-    if "||" in tokens:
+    if "||" in tokens or "&" in tokens:
         return None
     filters, skips, exact = [], [], False
     arguments = iter(tokens)
@@ -100,7 +112,7 @@ def libtest_run(rest):
             skips.append(value)
         elif option == "--exact":
             exact = True
-        elif option == "--ignored":
+        elif option in RUNS_NONE:
             return None
         elif not token.startswith("-"):
             filters.append(token)
@@ -117,16 +129,22 @@ def root_runs(workflow):
             if never_made(step):
                 continue
             run = step.get("run", "")
+            # GitHub runs a step with `bash -e`: a failed run fails it until `set +e`.
+            exits = True
             for line in run.replace("\\\n", " ").splitlines():
                 line = SHELL_COMMENT.sub("", line)
                 if "cargo test" in line and "--no-run" in line:
                     named = TARGET_NAME.findall(line)
                     crates = [name.replace("_", "-") for name in named] or PACKAGE.findall(line)
                     built = (frozenset(crates), 'index("lib")' in line)
+                switches = [(each.start(), each.group(1) == "-") for each in ERREXIT.finditer(line)]
                 for match in AS_ROOT.finditer(line):
+                    before = [on for at, on in switches if at < match.start()]
                     arguments = libtest_run(line[match.end():])
-                    if arguments is not None:
+                    if (before[-1] if before else exits) and arguments is not None:
                         yield built[0], built[1], arguments
+                if switches:
+                    exits = switches[-1][1]
 
 
 def selects(arguments, test):
@@ -247,3 +265,52 @@ def test_a_run_that_is_skipped_never_made_or_let_fail_does_not_count():
     ]:
         assert not covered(unmade), unmade
     assert not runs_as_root(runs, "ketchup-app", "anything", True)
+
+
+LET_THROUGH = """
+jobs:
+  one:
+    steps:
+      - name: build
+        run: cargo test -p ketchup-mcp --no-run
+      - name: as root
+        run: |
+          sudo "$test" listed:: --list
+          sudo "$test" helped:: --help
+          sudo "$test" behind:: &
+          for test in $tests; do sudo "$test" looped::; done &
+          sudo "$test" counted:: 2>&1 | tee out.txt
+          set -euo pipefail; sudo "$test" strict::
+          set +e
+          sudo "$test" unchecked::
+          set -e
+          sudo "$test" checked_again::
+          set +e; sudo "$test" same_line::
+      - name: let fail as text
+        continue-on-error: "true"
+        run: sudo "$test" text_step
+      - name: let fail by an expression
+        continue-on-error: ${{ matrix.experimental }}
+        run: sudo "$test" expression_step
+      - name: kept
+        continue-on-error: false
+        run: sudo "$test" kept_step
+"""
+
+
+def test_a_run_listed_backgrounded_or_after_set_plus_e_does_not_count():
+    runs = list(root_runs(yaml.safe_load(LET_THROUGH)))
+    covered = lambda test: runs_as_root(runs, "ketchup-mcp", test, True)
+    for counted in ["counted::a", "strict::a", "checked_again::a", "kept_step::a"]:
+        assert covered(counted), counted
+    for unmade in [
+        "listed::a",
+        "helped::a",
+        "behind::a",
+        "looped::a",
+        "unchecked::a",
+        "same_line::a",
+        "text_step::a",
+        "expression_step::a",
+    ]:
+        assert not covered(unmade), unmade

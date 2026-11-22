@@ -125,10 +125,14 @@ pub fn exact_worker_memory_bytes() -> usize {
 /// The memory limit of this process's Linux control group, the least of its own and
 /// its ancestors': of cgroup v2, else of the v1 memory controller (R1121ac P3: not only
 /// the v1 root's). In a container the OOM killer acts at that limit, long before the
-/// host's memory is used (review 2026-11-20 ac P3). `None` where there is none, as on
-/// Windows and macOS.
+/// host's memory is used (review 2026-11-20 ac P3). Where the process's group cannot be
+/// read, the root's (R1122ac, review §4 P3: it was taken as no limit). `None` where
+/// there is none, as on Windows and macOS.
 fn cgroup_memory_limit(read: impl Fn(&str) -> Option<String>) -> Option<u64> {
-    let groups = read("/proc/self/cgroup")?;
+    let Some(groups) = read("/proc/self/cgroup") else {
+        return least_limit(&read, "/sys/fs/cgroup", "", "memory.max")
+            .or_else(|| least_limit(&read, "/sys/fs/cgroup/memory", "", "memory.limit_in_bytes"));
+    };
     let unified = groups
         .lines()
         .find_map(|line| line.strip_prefix("0::"))

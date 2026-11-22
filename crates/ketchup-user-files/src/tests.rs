@@ -472,9 +472,16 @@ fn a_link_or_a_file_in_a_folders_place_is_the_race_lost() {
     std::fs::write(directory.path().join("file"), b"x").unwrap();
     let parent = rustix::fs::open(directory.path(), OFlags::RDONLY, Mode::empty()).unwrap();
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    for name in ["link", "file"] {
+    // R1122ac, review §4 P3: a folder removed since it was read (ENOENT), and a
+    // link read where a folder or nothing is now (EINVAL, ENOENT), too.
+    for name in ["link", "file", "gone"] {
         let errno = rustix::fs::openat(&parent, name, flags, Mode::empty()).unwrap_err();
         assert!(replaced_since_read(errno), "{name}: {errno}");
     }
     assert!(!replaced_since_read(rustix::io::Errno::ACCESS));
+    for name in ["real", "gone"] {
+        let errno = rustix::fs::readlinkat(&parent, name, Vec::new()).unwrap_err();
+        assert!(link_replaced_since_read(errno), "{name}: {errno}");
+    }
+    assert!(!link_replaced_since_read(rustix::io::Errno::ACCESS));
 }

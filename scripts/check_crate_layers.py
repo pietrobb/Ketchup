@@ -82,7 +82,7 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/app/viewport.rs": 4813,
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
-    "crates/ketchup-app/src/live_bridge.rs": 3436,
+    "crates/ketchup-app/src/live_bridge.rs": 3424,
     "crates/ketchup-application/src/planner.rs": 4307,
     "crates/ketchup-application/src/validation.rs": 4053,
     "crates/ketchup-assistant/src/sidecar.rs": 3972,
