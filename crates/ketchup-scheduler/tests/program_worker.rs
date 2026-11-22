@@ -340,29 +340,39 @@ fn assert_round_trip(programs: Vec<(String, String)>) {
     }
 }
 
+/// A program worker that never answers its handshake stops the check as past its
+/// deadline. `sort` stands in for it: it reads its input to the end and never
+/// answers.
+#[test]
+fn a_worker_slow_to_start_is_past_the_check_deadline() {
+    assert_eq!(slow_start(Duration::from_secs(1)).code, "time_limit");
+}
+
 /// A program worker that is slow to start still ends the check by its deadline:
 /// the start-up gets only the time left, not its own 30 s (R1122ac, review §4 P3).
-/// `sort` stands in for it: it reads its input to the end and never answers the
-/// handshake.
 #[test]
-fn a_worker_slow_to_start_ends_by_the_check_deadline() {
+#[ignore = "a wall-clock budget, run nightly in release"]
+fn perf_a_worker_slow_to_start_ends_by_the_check_deadline() {
+    let started = std::time::Instant::now();
+    let error = slow_start(Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+}
+
+/// The error of a check given `time` on a worker that never answers its handshake.
+fn slow_start(time: Duration) -> ketchup_program::ProgramError {
     let sort = if cfg!(windows) {
-        Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32\\sort.exe")
+        Path::new(r"C:\Windows\System32\sort.exe")
     } else {
-        Path::new("/usr/bin/sort").to_path_buf()
+        Path::new("/usr/bin/sort")
     };
     let mut worker = ProgramWorker::new(sort).unwrap();
-    let deadline = CheckDeadline::after(Duration::from_secs(1));
-    let started = std::time::Instant::now();
-    let error = worker
+    worker
         .evaluate_by(
             "test.star",
             BOX,
             &BTreeMap::new(),
-            deadline,
+            CheckDeadline::after(time),
             &CancelToken::default(),
         )
-        .unwrap_err();
-    assert_eq!(error.code, "time_limit", "{error}");
-    assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+        .unwrap_err()
 }
