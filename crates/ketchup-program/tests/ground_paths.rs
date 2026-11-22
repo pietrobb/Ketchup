@@ -362,7 +362,8 @@ fn stacked_short_pieces_are_as_slender_as_one_rod() {
 /// to a grounded post held the beam while one rod 7 x 2 400 x 7 did not. A
 /// chain is as slender as the length of its path over each piece's width,
 /// whichever way it runs: one of pieces 7 x 7 buckles as one rod, one of
-/// pieces 50 x 400 x 50 to a post 200 x 200 holds.
+/// pieces 50 x 400 x 50 to a post 200 x 200 holds. The pieces are screwed end
+/// to end, as bare they only push (R1122ac-PG-1101).
 #[test]
 fn a_sideways_chain_is_as_slender_as_one_rod() {
     let chain = |side: i32, pieces: i32| {
@@ -373,11 +374,22 @@ fn a_sideways_chain_is_as_slender_as_one_rod() {
                 x - 75
             );
             for k in 0..pieces {
+                let before = if k == 0 {
+                    format!("block {x}")
+                } else {
+                    format!("piece {x} {}", k - 1)
+                };
                 source.push_str(&format!(
-                    "box(\"piece {x} {k}\", ({side}, {length}, {side}), at = ({x}, {}, 2400), material = \"GL24h\", grounded = True)\n",
+                    "box(\"piece {x} {k}\", ({side}, {length}, {side}), at = ({x}, {}, 2400), material = \"GL24h\", grounded = True)
+joint(\"{before}\", \"piece {x} {k}\", kind = \"screw\")
+",
                     250 + length * k
                 ));
             }
+            source.push_str(&format!(
+                "joint(\"piece {x} {}\", \"post {x}\", kind = \"screw\")\n",
+                pieces - 1
+            ));
             source
         })
     };
