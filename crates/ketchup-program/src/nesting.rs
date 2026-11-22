@@ -66,7 +66,11 @@ pub(crate) fn too_deep(file_name: &str, source: &str) -> Option<usize> {
     let mut elements = vec![0_usize];
     let mut blocks = vec![0_usize];
     let mut line_start = true;
-    for (begin, token, _) in Lexer::new(source, &dialect, codemap).map_while(Result::ok) {
+    // A comment nests nothing; a line holding only one ends with no newline.
+    let tokens = Lexer::new(source, &dialect, codemap)
+        .map_while(Result::ok)
+        .filter(|(_, token, _)| !matches!(token, Token::Comment(_)));
+    for (begin, token, _) in tokens {
         let current = elements.len() - 1;
         let starts_line = std::mem::replace(&mut line_start, false);
         match token {

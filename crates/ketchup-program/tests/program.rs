@@ -1264,7 +1264,12 @@ fn a_program_nesting_thousands_deep_is_refused_with_its_line() {
         "x = [{}]\nbox(\"a\", (1, 2, len(x)))\n",
         "(1 + 2) * 3, ".repeat(5000)
     );
-    for source in [nested, shallow, branches, table] {
+    let notes = format!(
+        "{}def far():\n    # note\n    return 1  # note\nx = [\n{}]\nbox(\"a\", (1, 2, far() + len(x)))\n",
+        "# note\n".repeat(3000),
+        "    # note\n    1,\n".repeat(3000)
+    );
+    for source in [nested, shallow, branches, table, notes] {
         run("fine.star", &source, &BTreeMap::new()).unwrap();
     }
 }
