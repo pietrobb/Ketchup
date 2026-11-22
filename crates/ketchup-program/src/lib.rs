@@ -37,6 +37,7 @@ mod material;
 pub mod member_check;
 pub mod model;
 pub mod motion;
+mod nesting;
 mod opposing_holes;
 pub mod path;
 pub mod quote;
