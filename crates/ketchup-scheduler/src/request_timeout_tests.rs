@@ -480,12 +480,15 @@ fn converted_iges_past_32_mib_is_returned_whole() {
 }
 
 /// A graph request and an exchange request (converting a STEP file) are
-/// given their own budgets, not the 5 s of a simple call (EX-2): both workers
-/// answer only after that and both answers are taken.
+/// given their own budgets, not the 5 s of a simple call (EX-2), and so is the
+/// handshake: a worker just started is still loading its libraries (OCCT), which
+/// under load takes longer, and a slow start is not a hung worker (idea #40). All
+/// three workers answer only after 5 s and all answers are taken.
 #[test]
-fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
+fn handshake_graph_and_exchange_requests_outlast_the_simple_call_budget() {
     assert_eq!(DEFAULT_WORKER_REQUEST_TIMEOUT, Duration::from_secs(5));
     assert_eq!(EXACT_BREP_GRAPH_REQUEST_TIMEOUT, Duration::from_secs(60));
+    let (mut starting_worker, starting_writes, starting_responses) = controlled_worker();
     let (mut graph_worker, graph_writes, graph_responses) = controlled_worker();
     let (mut exchange_worker, exchange_writes, exchange_responses) = controlled_worker();
     let output = tempfile::NamedTempFile::new().unwrap();
@@ -495,10 +498,16 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
         sha256: None,
     });
     let responder = std::thread::spawn(move || {
-        for writes in [graph_writes, exchange_writes] {
+        for writes in [starting_writes, graph_writes, exchange_writes] {
             writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
         }
         std::thread::sleep(DEFAULT_WORKER_REQUEST_TIMEOUT + Duration::from_millis(500));
+        let hello = WorkerReply::Hello {
+            protocol: crate::protocol::protocol_identity().to_owned(),
+        };
+        starting_responses
+            .send(WorkerResponse::Reply(Box::new(hello)))
+            .unwrap();
         graph_responses
             .send(WorkerResponse::Reply(Box::new(WorkerReply::Done)))
             .unwrap();
@@ -508,6 +517,7 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
     });
     let started = Instant::now();
     std::thread::scope(|scope| {
+        let handshake = scope.spawn(|| starting_worker.ping());
         let graph = scope.spawn(|| {
             graph_worker.request_with_timeout(
                 &WorkerRequest::Hello,
@@ -524,6 +534,7 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
         );
         assert_eq!(converted, Ok(b"converted IGES".to_vec()));
         assert_eq!(graph.join().unwrap(), Ok(WorkerReply::Done));
+        assert_eq!(handshake.join().unwrap(), Ok(()));
     });
     assert!(started.elapsed() > DEFAULT_WORKER_REQUEST_TIMEOUT);
     responder.join().unwrap();
