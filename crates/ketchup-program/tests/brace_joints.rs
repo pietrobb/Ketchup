@@ -199,7 +199,8 @@ joint(\"deck a\", \"block {x}\", kind = \"screw\")
 /// anchor 20 x 1 200 x 20 touching a wall held the beam (877 N), while one rod
 /// 20 x 2 400 x 20 buckles at 227 N: the brace's length was forgotten where it
 /// met the anchor. A path buckles over the whole length it runs from the
-/// member.
+/// member. The anchor is screwed to the wall, as bare it only pushes
+/// (R1122ac-PG-1101).
 #[test]
 fn a_brace_and_its_anchor_end_to_end_buckle_as_one_rod() {
     let two = beam_with(
@@ -209,6 +210,7 @@ fn a_brace_and_its_anchor_end_to_end_buckle_as_one_rod() {
 box(\"anchor {x}\", (20, 1200, 20), at = ({x}, 1280, 2380), material = \"GL24h\", grounded = True)
 joint(\"brace {x}\", \"beam\", kind = \"screw\")
 joint(\"brace {x}\", \"anchor {x}\", kind = \"screw\")
+joint(\"anchor {x}\", \"wall\", kind = \"screw\")
 "
             )
         },
@@ -220,6 +222,7 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
             format!(
                 "box(\"brace {x}\", (20, 2400, 20), at = ({x}, 80, 2380), material = \"GL24h\", grounded = True, tags = [\"brace\"])
 joint(\"brace {x}\", \"beam\", kind = \"screw\")
+joint(\"brace {x}\", \"wall\", kind = \"screw\")
 "
             )
         },
@@ -253,6 +256,7 @@ fn a_stepped_path_buckles_over_its_whole_length() {
 box(\"anchor {x}\", (30, 1200, 30), at = ({}, 1280, 2370), material = \"GL24h\", grounded = True)
 joint(\"brace {x}\", \"beam\", kind = \"screw\")
 joint(\"brace {x}\", \"anchor {x}\", kind = \"screw\")
+joint(\"anchor {x}\", \"wall\", kind = \"screw\")
 ",
                 x - 5
             )
@@ -591,5 +595,66 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
         let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
         assert!(anchorage.stiffness_n_mm > 0.0, "{brace:?}");
         assert_eq!(anchorage.capacity_n, None, "{brace:?}");
+    }
+}
+
+/// Review 2026-11-22 R1122ac-PG-1101: a brace 100 x 960 x 100 fixed by two
+/// screws at each end to the beam and to the top of a grounded column 400 (x)
+/// x 20 (y) x 2 400, whose head bears without a fastener on a grounded block
+/// 200 x 400 x 200 on a post 200 x 200, held the beam at 247 N/mm and passed:
+/// two grounded parts touching were taken as one, though a bare contact only
+/// pushes. Pulled away from the block the column holds alone, its weak way
+/// 3 E I / L³ about 0.6 N/mm, as with no block. Screwed to the block, the
+/// column pulls it as well.
+#[test]
+fn a_bare_contact_between_grounded_parts_only_pushes() {
+    fn block(x: i32) -> String {
+        format!(
+            "box(\"block {x}\", (200, 400, 200), at = ({}, 970, 2200), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (200, 200, 2200), at = ({}, 1170, 0), material = \"GL24h\", grounded = True)
+",
+            x - 100,
+            x - 100
+        )
+    }
+    let braced = |head: fn(i32) -> String| {
+        beam_with(
+            |x| {
+                format!(
+                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 2400), ({}, 958, 2400)])
+{}",
+                    x - 50,
+                    x - 200,
+                    x + 15,
+                    x - 15,
+                    x - 30,
+                    x + 30,
+                    head(x)
+                )
+            },
+            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+        )
+    };
+    let alone = stiffnesses(&braced(|_| String::new()), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    for stiffness in &alone {
+        assert!((0.3..=1.0).contains(stiffness), "{stiffness}");
+    }
+    let bearing = braced(block);
+    assert_eq!(stiffnesses(&bearing, "brace"), alone);
+    assert_ne!(checked(&bearing, "beam").status, "pass");
+    let screwed = braced(|x| {
+        format!(
+            "{}joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 2300), ({}, 970, 2300)])\n",
+            block(x),
+            x - 50,
+            x + 50
+        )
+    });
+    for stiffness in stiffnesses(&screwed, "brace") {
+        assert!(stiffness > 10.0, "{stiffness}");
     }
 }

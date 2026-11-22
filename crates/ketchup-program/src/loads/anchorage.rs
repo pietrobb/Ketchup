@@ -218,6 +218,20 @@ pub(super) fn weaker(a: Anchorage, b: Anchorage) -> Anchorage {
     }
 }
 
+/// How a brace `by` holds where the force it passes on, run `run` mm from the
+/// member, finds no path to the ground: not at all (review 2026-11-22
+/// R1122ac-PG-1101: a hanger pushing up a block that only rests on its column
+/// was taken as holding without a figure).
+fn holds_nothing(by: usize, run: f64) -> Anchorage {
+    Anchorage {
+        stiffness_n_mm: 0.0,
+        capacity_n: f64::INFINITY,
+        weakest: by,
+        buckling: by,
+        over_mm: run,
+    }
+}
+
 /// A part resting on supports far apart along its length spans between them
 /// and bends like a member (R1113r95-PG-705): its long axis, for each part
 /// not `skipped`.
@@ -403,10 +417,26 @@ impl<'a> Footing<'a> {
         );
         let mut found: Option<(Anchorage, BTreeSet<usize>)> = None;
         for probe in probes {
-            let Some((this, route)) = self.search(anchor, member, &key.2, probe, reach) else {
+            let Some((mut this, mut route)) = self.search(anchor, member, &key.2, probe, reach)
+            else {
                 found = None;
                 break;
             };
+            // A path pushing through a bare contact holds the other way
+            // without it, or not at all.
+            if self.pushes_through(&route, probe.along) {
+                let back = Probe {
+                    along: scale(probe.along, -1.0),
+                    ..probe
+                };
+                let Some((pulled, through)) = self.search(anchor, member, &key.2, back, reach)
+                else {
+                    found = None;
+                    break;
+                };
+                this = weaker(this, pulled);
+                route.extend(through);
+            }
             found = Some(match found {
                 Some((known, mut parts)) => {
                     parts.extend(route);
@@ -534,7 +564,14 @@ impl<'a> Footing<'a> {
                         enter: at,
                         along: sideways,
                     });
-                    let (from_anchor, through) = self.reached(anchor, member, apart, run, probe)?;
+                    let Some((from_anchor, through)) =
+                        self.reached(anchor, member, apart, run, probe)
+                    else {
+                        found = Some(found.map_or(holds_nothing(by, run), |known| {
+                            weaker(known, holds_nothing(by, run))
+                        }));
+                        continue;
+                    };
                     route.extend(through);
                     let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
                     let own = brace_give(&obb, self.moduli[by].0, point, at, sideways)
@@ -576,8 +613,14 @@ impl<'a> Footing<'a> {
                         enter: ends.1,
                         along: Strut::of(&obb, self.moduli[by], ends, sideways, reach).axis,
                     };
-                    let (from_anchor, through) =
-                        self.reached(anchor, member, apart, reach, Some(probe))?;
+                    let Some((from_anchor, through)) =
+                        self.reached(anchor, member, apart, reach, Some(probe))
+                    else {
+                        found = Some(found.map_or(holds_nothing(by, run), |known| {
+                            weaker(known, holds_nothing(by, run))
+                        }));
+                        continue;
+                    };
                     route.extend(through);
                     let strut =
                         Strut::of(&obb, self.moduli[by], ends, sideways, from_anchor.over_mm);
@@ -755,6 +798,9 @@ impl<'a> Footing<'a> {
                 if kept || (!self.ends(next) && depth(&self.parts[next], frame) < deep) {
                     continue;
                 }
+                if self.bears(item, next, sideways) == Some(false) {
+                    continue;
+                }
                 let Some(tie) = self.tie(item, next) else {
                     continue;
                 };
@@ -870,8 +916,9 @@ impl<'a> Footing<'a> {
     }
 
     /// How touching parts `a` and `b` hold each other: rigidly when both are
-    /// grounded, else on the fasteners of a joint() fastening them, where it
-    /// names none on two when two fit ([`Self::fitting`]), one being a pivot.
+    /// grounded (a bare contact only where it pushes, [`Self::bears`]), else
+    /// on the fasteners of a joint() fastening them, where it names none on
+    /// two when two fit ([`Self::fitting`]), one being a pivot.
     /// A free part only bearing on another turns about it freely, as on the
     /// floor (PG-163; capability review 771: a free post on a grounded slab
     /// was ground, on the bare floor not).
@@ -895,6 +942,36 @@ impl<'a> Footing<'a> {
             &shared(&first, &second),
             first.axes.into_iter().chain(second.axes),
         )
+    }
+
+    /// Whether `a` pushes `b` under a force `along` on the path, where the two
+    /// only bear on each other: both grounded, touching with no joint() between
+    /// them, facing each other along the force; None where they hold each
+    /// other either way, a joint fastening them or their contact lying along
+    /// the force. A bare contact only pushes (review 2026-11-22 R1122ac-PG-1101:
+    /// a column bearing on a grounded block held a brace pulling it away at
+    /// 247 N/mm, the column alone at 0.6).
+    fn bears(&self, a: usize, b: usize, along: [f64; 3]) -> Option<bool> {
+        if !(self.grounded[a] && self.grounded[b])
+            || self.joined.contains_key(&(a.min(b), a.max(b)))
+        {
+            return None;
+        }
+        let normal = self.contact_normal(a, b)?;
+        let facing = dot(normal, along);
+        if facing.abs() < std::f64::consts::FRAC_1_SQRT_2 {
+            return None;
+        }
+        let apart = sub(self.parts[b].obb().centre, self.parts[a].obb().centre);
+        Some(facing * dot(apart, normal) > 0.0)
+    }
+
+    /// Whether the path `route` (its parts in order) pushes through a bare
+    /// contact ([`Self::bears`]) under a force `along`.
+    fn pushes_through(&self, route: &[usize], along: [f64; 3]) -> bool {
+        route
+            .windows(2)
+            .any(|pair| self.bears(pair[0], pair[1], along) == Some(true))
     }
 
     /// The fasteners a joint naming none is taken to have between `a` and
