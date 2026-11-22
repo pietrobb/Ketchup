@@ -68,8 +68,6 @@ pub(super) mod program_access;
 mod program_edit;
 #[path = "program_purchased_tests.rs"]
 mod program_purchased;
-#[path = "program_purchased_live_tests.rs"]
-mod program_purchased_live;
 #[path = "project_drawings_job_tests.rs"]
 mod project_drawings_job;
 #[path = "room_areas_tests.rs"]
