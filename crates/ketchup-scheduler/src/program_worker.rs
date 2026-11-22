@@ -40,10 +40,7 @@ pub const PROGRAM_WORKER_MEMORY_BYTES: usize = 2 * EVALUATION_HEAP_BYTES;
 /// can run far past it, so the parent stops the worker a little later.
 const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
-/// How long evaluating a program and every check of its model may take
-/// together: the checks of the largest example program (1 854 parts) take far
-/// longer than its evaluation, 1.5 s in a release build and 28 s in a debug build.
-pub const PROGRAM_CHECK_TIME: Duration = Duration::from_secs(60);
+pub use ketchup_program::CHECK_TIME as PROGRAM_CHECK_TIME;
 
 /// One deadline for evaluating a program, its report, the exact check and the
 /// refined report: each step gets only the time the earlier ones left, so a
@@ -919,7 +916,7 @@ mod tests {
     use super::*;
     use ketchup_program::{Issue, REPORT_TRUNCATED, Severity};
 
-    /// Thirty boxes that all overlap: 435 collisions.
+    /// Thirty boxes that all overlap: 435 pairs, the first of them collisions.
     fn overlapping() -> Evaluated {
         let source =
             "for i in range(30):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n";
@@ -962,7 +959,11 @@ mod tests {
     /// its first issues and relations and says how many it leaves out (PRG-1).
     #[test]
     fn a_report_past_its_reply_lists_its_first_issues_and_names_the_rest() {
-        let whole = ketchup_program::report(&overlapping());
+        let mut whole = ketchup_program::report(&overlapping());
+        // The checks list the first collisions only: a report of more issues
+        // is made of copies of theirs.
+        let issues = whole.issues.iter().cycle().take(435).cloned().collect();
+        whole.set_issues(issues);
         assert!(
             !whole.ok && whole.issues.len() > 400,
             "{}",

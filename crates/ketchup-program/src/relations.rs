@@ -7,11 +7,13 @@ use crate::contact::{ContactFaces, contact};
 use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel};
+use crate::near_pairs::near_pairs;
 use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
 use ketchup_geometry::linalg::dot;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 
 /// Parts closer than this are listed with their clearance.
 pub const GAP_LIMIT_MM: f64 = 20.0;
@@ -370,6 +372,21 @@ pub fn relations_with(
     relations_by_bounds(model, issues, exact, true)
 }
 
+/// How many pairs whose bounds overlap [`relations_by_bounds`] relates, the
+/// jointed besides: each costs the volume they share, and parts a loop placed
+/// at one spot overlap each with every other (review 2026-11-22
+/// R1122ac-PG-1102: 1 000 parts at the origin, 499 500 overlaps measured).
+/// Far more than a model's sockets and pockets (the large example project
+/// has some 3 000 overlaps of turned members seated on others; a cap of 2 000
+/// cut its relations short and changed which it listed); past them the model's
+/// collisions are its news ([`crate::validate`] lists the first of them).
+const MAX_OVERLAPPING_PAIRS: usize = 20_000;
+
+/// Whether bounds `a` and `b` overlap by more than the contact fit every way.
+fn boxes_overlap(a: &Bounds, b: &Bounds) -> bool {
+    (0..3).all(|axis| a.1[axis].min(b.1[axis]) - a.0[axis].max(b.0[axis]) > CONTACT_FIT_MM)
+}
+
 /// [`relations_with`]; without `skip_by_bounds` every candidate pair apart
 /// is measured on its boxes, as a reference for tests.
 fn relations_by_bounds(
@@ -380,8 +397,6 @@ fn relations_by_bounds(
 ) -> Vec<Relation> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..parts.len()).collect();
-    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     let joint_of = |a: &Part, b: &Part| {
         model
             .joints
@@ -390,14 +405,20 @@ fn relations_by_bounds(
             .map(|joint| joint.name.as_str())
     };
     let mut pairs = Vec::new();
-    for (position, &left) in order.iter().enumerate() {
-        for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + GAP_LIMIT_MM {
-                break;
+    let mut overlapping = 0_usize;
+    // Bounds further apart than the limit and its margin on one axis are
+    // further apart than the limit, and so are the boxes inside them.
+    let reach = GAP_LIMIT_MM + BOUNDS_MARGIN_MM;
+    near_pairs(&bounds, (0..parts.len()).collect(), reach, |left, right| {
+        if boxes_overlap(&bounds[left], &bounds[right]) {
+            if overlapping == MAX_OVERLAPPING_PAIRS {
+                return ControlFlow::Continue(());
             }
-            pairs.push((left.min(right), left.max(right)));
+            overlapping += 1;
         }
-    }
+        pairs.push((left.min(right), left.max(right)));
+        ControlFlow::Continue(())
+    });
     for joint in &model.joints {
         let index = |name: &str| parts.iter().position(|part| part.name == name);
         if let (Some(a), Some(b)) = (index(&joint.parts[0]), index(&joint.parts[1])) {

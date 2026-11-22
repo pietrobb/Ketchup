@@ -9,10 +9,12 @@
 
 use crate::expect::Measure;
 use crate::model::{Part, ProgramModel};
+use crate::near_pairs::near_pairs;
 use crate::validate;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 /// What the exact solids of two parts share.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -238,31 +240,23 @@ pub fn measured_pairs(model: &ProgramModel) -> BTreeSet<(String, String)> {
 pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
-    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
+    let solids = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
     let mut names: BTreeSet<String> = measured_pairs(model)
         .into_iter()
         .flat_map(|(a, b)| [a, b])
         .collect();
-    for (position, &left) in order.iter().enumerate() {
-        for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                break;
-            }
-            let (a, b) = (&parts[left], &parts[right]);
-            if box_is_solid(a) && box_is_solid(b) {
-                continue;
-            }
-            if a.obb().separation(&b.obb()) > CONTACT_FIT_MM {
-                continue;
-            }
+    near_pairs(&bounds, solids, CONTACT_FIT_MM, |left, right| {
+        let (a, b) = (&parts[left], &parts[right]);
+        if (!box_is_solid(a) || !box_is_solid(b)) && a.obb().separation(&b.obb()) <= CONTACT_FIT_MM
+        {
             for part in [a, b] {
                 if !box_is_solid(part) {
                     names.insert(part.name.clone());
                 }
             }
         }
-    }
+        ControlFlow::Continue(())
+    });
     names
 }
 
