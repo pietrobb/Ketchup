@@ -15,6 +15,7 @@ fn check(expected: Option<Stamp>, source: Option<&str>, edits: Option<Vec<Source
 
 fn apply(source: &str) -> Request {
     Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.into(),
         overrides: None,

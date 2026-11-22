@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn apply_source(source: &str) -> Request {
     Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.into(),
         overrides: Some(BTreeMap::from([("width".into(), 25.)])),

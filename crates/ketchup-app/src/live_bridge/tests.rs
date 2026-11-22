@@ -66,6 +66,8 @@ mod product_integration;
 pub(super) mod program_access;
 #[path = "program_tests.rs"]
 mod program_edit;
+#[path = "program_purchased_tests.rs"]
+mod program_purchased;
 #[path = "project_drawings_job_tests.rs"]
 mod project_drawings_job;
 #[path = "room_areas_tests.rs"]

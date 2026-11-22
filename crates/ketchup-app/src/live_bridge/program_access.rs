@@ -244,6 +244,7 @@ impl LiveBridge {
             overrides: Some(program.overrides.clone()),
             file_name: Some(program.file_name.clone()),
             replace_document: false,
+            source_folder: None,
         })
     }
 

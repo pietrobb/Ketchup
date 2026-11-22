@@ -319,6 +319,7 @@ fn missing_exact_result_and_worker_failure_never_claim_verified_or_revert_the_ed
             .apply_program(
                 &mut app,
                 Request::ApplyProgram {
+                    source_folder: None,
                     expected: None,
                     source: "a=box('a',(10,10,10))\nhole(a,'z+',at=(5,5),diameter=2,depth=2)"
                         .into(),

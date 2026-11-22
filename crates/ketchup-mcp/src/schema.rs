@@ -96,7 +96,7 @@ pub fn tools() -> Value {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "For report: default 50; frame budget may return fewer rows. basis=program_evaluation does not claim a native check."},
                 "detail": {"type": "string", "enum": ["concise", "implementation"], "description": "For docs: concise by default; implementation only on explicit request."},
                 "source": {"type": "string", "description": "For apply and check: the complete program text (at most ~8 MB)."},
-                "source_path": {"type": "string", "description": "For apply and check: absolute path of a .star file to send instead of source."},
+                "source_path": {"type": "string", "description": "For apply and check: absolute path of a .star file to send instead of source. apply reads the STEP files its purchased()/imported() parts name from this file's folder; apply by source alone reuses the bodies the document already holds."},
                 "overrides": {"type": "object", "additionalProperties": {"type": "number"}, "description": "For apply and check: parameter values by name, e.g. {\"width\": 900}. Omitted keeps the values the window stored for this program (e.g. after Push/Pull); {} clears them."},
                 "file_name": {"type": "string", "description": "For apply: program file name for a new program."},
                 "path": {"type": "string", "description": "For export_variants: local absolute path ending in .csv or .xlsx for the cut lists; the takeoffs go beside it as <name>.takeoff.<ext>."},

@@ -167,6 +167,7 @@ impl LiveBridge {
                 overrides,
                 file_name,
                 replace_document: false,
+                source_folder: None,
             },
             (None, Some(edits)) => Request::PatchProgram {
                 expected: expected.ok_or_else(|| {

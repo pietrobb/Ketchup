@@ -351,6 +351,11 @@ pub enum Request {
         /// Replace a saved document that no program owns.
         #[serde(default)]
         replace_document: bool,
+        /// The absolute folder of the program's file, which its bought parts'
+        /// STEP files are read from; absent keeps the one given before for
+        /// the same file.
+        #[serde(default)]
+        source_folder: Option<String>,
     },
     /// Plans and exactly checks a whole program (`source`) or a patch (`edits`)
     /// like `ApplyProgram`, without publishing anything.
@@ -953,6 +958,14 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
             code.clone(),
             "Give the parameter a value it takes (inside its range, whole for a count), or leave it out of overrides to keep its default.",
         ),
+        Error::Program { code, .. }
+            if code == ketchup_application::program_imports::IMPORT_FAILED =>
+        {
+            (
+                code.clone(),
+                "Put a STEP file the exact kernel reads at the path purchased() names, relative to the program's file, and apply the program from its file again.",
+            )
+        }
         Error::Program { code, .. } => (
             code.clone(),
             "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again.",
@@ -1409,6 +1422,9 @@ pub(crate) struct LiveBridge {
     image: image::ImageState,
     /// A bridge without a socket for the window's own edits (`transport::local`).
     serves_window: bool,
+    /// The program file's name and the folder its STEP files are read from,
+    /// as the last apply that gave it said.
+    program_folder: Option<(String, PathBuf)>,
 }
 impl Drop for LiveBridge {
     fn drop(&mut self) {

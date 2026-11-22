@@ -78,9 +78,12 @@ pub fn read_imports(
     Ok(())
 }
 
+/// The code of a program whose bought part's file cannot be read.
+pub const IMPORT_FAILED: &str = "program_import_failed";
+
 fn failed(part: &Part, file: &str, reason: String) -> RuleProgramApplyError {
     RuleProgramApplyError::Program {
-        code: "program_import_failed".to_owned(),
+        code: IMPORT_FAILED.to_owned(),
         message: format!("{:?}: cannot read {file:?}: {reason}", part.name),
         location: None,
     }

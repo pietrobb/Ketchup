@@ -155,6 +155,7 @@ mod program_detach;
 mod program_edit;
 mod program_evaluation;
 mod program_source_ui;
+mod program_step_files;
 mod program_transform;
 mod program_variants_ui;
 pub mod recent_files;

@@ -180,6 +180,7 @@ fn assemble(
         next_batch_job: 1,
         image: image::ImageState::default(),
         serves_window: false,
+        program_folder: None,
     }
 }
 

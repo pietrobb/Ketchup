@@ -419,6 +419,10 @@ impl Tools {
                     }
                     let source = read_program_source(Path::new(&path))?;
                     args.insert("source".into(), source.into());
+                    // Its bought parts' STEP files are read from its folder.
+                    if let ("apply", Some(folder)) = (action, Path::new(&path).parent()) {
+                        args.insert("source_folder".into(), folder.display().to_string().into());
+                    }
                 }
                 let method = if action == "check" {
                     "check_program"
