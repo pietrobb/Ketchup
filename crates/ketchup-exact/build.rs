@@ -131,6 +131,7 @@ fn main() {
         "TKCAF",
         "TKXCAF",
         "TKXSBase",
+        "TKShHealing",
         "TKDESTEP",
         "TKDEIGES",
     ] {

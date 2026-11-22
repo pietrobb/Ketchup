@@ -3702,13 +3702,16 @@ mod tests {
                 .iter()
                 .map(|part| (part.index, part.solid_count))
                 .collect::<Vec<_>>(),
-            [(0, 1), (1, 2), (3, 1)]
+            [(0, 1), (1, 2), (2, 2), (3, 1)]
         );
         assert!(evidence.parts[0].rejected_shapes.is_empty());
         // Review 2026-11-01 EX-102: a part sound as a whole is kept whole.
         assert!(evidence.parts[1].rejected_shapes.is_empty());
+        // The crossed prism, refused as read, is kept repaired: shape healing
+        // splits it into the two prisms it winds.
+        assert!(evidence.parts[2].rejected_shapes.is_empty());
         assert_eq!(
-            evidence.parts[2].rejected_shapes,
+            evidence.parts[3].rejected_shapes,
             [StepXdeRejectedShape {
                 ordinal: 1,
                 kind: "solid".to_owned(),
@@ -3717,20 +3720,8 @@ mod tests {
                     .to_owned(),
             }]
         );
-        assert_eq!(evidence.rejected_parts.len(), 2);
-        let rejected = &evidence.rejected_parts[0];
-        assert_eq!(
-            (rejected.index, rejected.name.as_str()),
-            (2, "Crossed prism")
-        );
-        assert!(
-            rejected
-                .reason
-                .ends_with("solid 1 (entity #1077) encloses no volume"),
-            "{}",
-            rejected.reason
-        );
-        let wires = &evidence.rejected_parts[1];
+        assert_eq!(evidence.rejected_parts.len(), 1);
+        let wires = &evidence.rejected_parts[0];
         assert_eq!((wires.index, wires.name.as_str()), (4, "Wire frame"));
         assert!(
             wires

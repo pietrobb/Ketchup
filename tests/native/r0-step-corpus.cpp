@@ -239,6 +239,21 @@ bool write_cone_apex(const std::filesystem::path& path)
       && writer.Write(path.string().c_str()) == IFSelect_RetDone;
 }
 
+// The figure-eight prism alone: a file whose only solid fails the validity
+// check once read back and is not mended by shape healing, as the Push to
+// move unit of a hardware supplier's assembly is not.
+bool write_figure_eight(const std::filesystem::path& path)
+{
+  const TopoDS_Shape prism = figure_eight_prism(0.0);
+  if (BRepCheck_Analyzer(prism).IsValid()) {
+    std::cerr << "Unexpected validity of " << path.string() << '\n';
+    return false;
+  }
+  STEPControl_Writer writer;
+  return writer.Transfer(prism, STEPControl_AsIs) == IFSelect_RetDone
+      && writer.Write(path.string().c_str()) == IFSelect_RetDone;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -277,7 +292,8 @@ int main(int argc, char** argv)
       !write_shape(fuse.Shape(), output_dir / "self-authored-l-bracket.step", 6000.0) ||
       !write_bspline_pcurve_overshoot(output_dir / "self-authored-bspline-pcurve-overshoot.step") ||
       !write_partly_invalid_assembly(output_dir / "self-authored-partly-invalid-assembly.step") ||
-      !write_cone_apex(output_dir / "self-authored-cone-apex.step")) {
+      !write_cone_apex(output_dir / "self-authored-cone-apex.step") ||
+      !write_figure_eight(output_dir / "self-authored-figure-eight.step")) {
     return 5;
   }
 
