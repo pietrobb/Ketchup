@@ -70,6 +70,15 @@ impl ExportTransactionError {
         }
     }
 
+    /// The file another program changed, when that is why publishing was refused.
+    fn changed_path(&self) -> Option<&Path> {
+        match self {
+            Self::TargetChanged { path } | Self::OriginalPreserved { path, .. } => Some(path),
+            Self::Unrecovered { failure, .. } => failure.changed_path(),
+            _ => None,
+        }
+    }
+
     /// A no-clobber publish fails with `AlreadyExists` exactly when another writer created
     /// the target after it was checked.
     fn publish(path: &Path, cause: std::io::Error) -> Self {
@@ -141,6 +150,33 @@ impl std::error::Error for ExportTransactionError {
             _ => None,
         }
     }
+}
+
+/// The file whose change by another program is why `error` refused to publish, if it
+/// is: the change is that program's, not a write of the export (R1122ac, review §4
+/// P3: the Connect tab listed it as the AI's).
+pub(crate) fn changed_by_another<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a Path> {
+    let mut next = Some(error);
+    while let Some(error) = next {
+        let transaction = match error.downcast_ref::<ExportError>() {
+            Some(ExportError::Transaction(transaction)) => Some(transaction),
+            _ => error.downcast_ref::<ExportTransactionError>(),
+        };
+        if let Some(transaction) = transaction {
+            return transaction.changed_path();
+        }
+        // An I/O error made of another error does not give it as its source.
+        next = match error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
+            None => error.source(),
+        };
+    }
+    None
 }
 
 /// Why one export command was refused.

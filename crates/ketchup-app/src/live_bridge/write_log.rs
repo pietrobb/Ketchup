@@ -6,7 +6,7 @@ use super::Response;
 use crate::delivery::Deliver;
 use eframe::egui;
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::SystemTime;
@@ -15,6 +15,10 @@ use std::time::SystemTime;
 /// answer named, so one set of more sheets than this does not push out every
 /// write before it (review 2026-11-21 ac P3).
 const KEPT: usize = 100;
+
+/// The most entries of a written file's folder read for the files beside it a
+/// write may change.
+const READ_ENTRIES: usize = 4_096;
 
 /// A file a client wrote or removed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,9 +56,11 @@ impl WriteLog {
     /// the answer goes on to `reply` as it came, and when it is a success the
     /// files it says it wrote or removed are listed ([`answered_files`]), else
     /// `path` when the answer says it was saved or the file there is another
-    /// than before, a refusal's too: an export that failed and could not put
-    /// back what it wrote left that file. A request answered never drops its
-    /// `reply` unanswered.
+    /// than before, with the work-recovery checkpoint beside a file written.
+    /// For a refusal, every file of [`stamps`] another than before or gone:
+    /// an export that failed and could not put back what it wrote left them,
+    /// but not the file the refusal says another program changed. A request
+    /// answered never drops its `reply` unanswered.
     pub(super) fn watch(
         &self,
         path: PathBuf,
@@ -62,7 +68,7 @@ impl WriteLog {
         context: egui::Context,
     ) -> mpsc::SyncSender<Response> {
         let (watched, answers) = mpsc::sync_channel::<Response>(1);
-        let before = stamp(&path);
+        let before = stamps(&path);
         let log = self.clone();
         let forward = reply.clone();
         let shown = path.display().to_string();
@@ -73,16 +79,11 @@ impl WriteLog {
                 let Some(answer) = answers.iter().next() else {
                     return;
                 };
-                let result = answer.result.as_ref().filter(|_| answer.ok);
-                let (mut files, removed) = answered_files(result);
-                // A save of the same size within the clock of a FAT disk
-                // leaves the stamp as it was, so the answer is believed.
-                let saved = result.is_some_and(|result| result["saved"] == true);
-                if files.is_empty()
-                    && (saved || stamp(&path).is_some_and(|after| Some(after) != before))
-                {
-                    files.push(path);
-                }
+                let (files, removed) = if answer.ok {
+                    succeeded(&path, &before, answer.result.as_ref())
+                } else {
+                    refused(&path, &before, answer.result.as_ref())
+                };
                 if log.record_write(&files, &removed) {
                     context.request_repaint();
                 }
@@ -137,10 +138,107 @@ impl WriteLog {
 
 /// What tells one write of `path` from another: when it was last modified and
 /// its size; none when nothing is there.
-fn stamp(path: &Path) -> Option<(Option<SystemTime>, u64)> {
+fn stamp(path: &Path) -> Option<Stamp> {
     std::fs::metadata(path)
         .ok()
         .map(|metadata| (metadata.modified().ok(), metadata.len()))
+}
+
+type Stamp = (Option<SystemTime>, u64);
+
+/// The [`stamp`] of `path` and of every file in its folder whose name starts as
+/// the name of `path` without its extension does: a set's sheets and list, the
+/// reports and companions beside an export, a document's work-recovery
+/// checkpoint (R1122ac, review §4 P3: only the path asked for was compared). At
+/// most [`READ_ENTRIES`] entries of the folder are read.
+fn stamps(path: &Path) -> BTreeMap<PathBuf, Stamp> {
+    let mut stamps = BTreeMap::new();
+    if let Some(stamp) = stamp(path) {
+        stamps.insert(path.to_path_buf(), stamp);
+    }
+    let (Some(folder), Some(stem)) = (path.parent(), path.file_stem()) else {
+        return stamps;
+    };
+    let stem = stem.to_string_lossy();
+    // A folder that does not read has no files beside the path to compare.
+    let entries = std::fs::read_dir(folder).ok().into_iter().flatten();
+    for entry in entries.take(READ_ENTRIES).flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&*stem)
+            && let Ok(metadata) = entry.metadata()
+            && metadata.is_file()
+        {
+            stamps.insert(entry.path(), (metadata.modified().ok(), metadata.len()));
+        }
+    }
+    stamps
+}
+
+/// The files of [`stamps`] of `path` another than `before` or new, `path`
+/// first, and those gone.
+fn changed_since(path: &Path, before: &BTreeMap<PathBuf, Stamp>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let after = stamps(path);
+    let mut written: Vec<PathBuf> = after
+        .iter()
+        .filter(|(file, stamp)| before.get(*file) != Some(stamp))
+        .map(|(file, _)| file.clone())
+        .collect();
+    written.sort_by_key(|file| file != path);
+    let removed = before
+        .keys()
+        .filter(|file| !after.contains_key(*file))
+        .cloned()
+        .collect();
+    (written, removed)
+}
+
+/// The files a successful request writing `path` wrote and removed: those its
+/// answer names, else `path` when it was saved or changed, and the
+/// work-recovery checkpoint beside any of them written or removed since
+/// `before`.
+fn succeeded(
+    path: &Path,
+    before: &BTreeMap<PathBuf, Stamp>,
+    result: Option<&Value>,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let (mut files, mut removed) = answered_files(result);
+    let (changed, gone) = changed_since(path, before);
+    // A save of the same size within the clock of a FAT disk leaves the stamp
+    // as it was, so the answer is believed.
+    let saved = result.is_some_and(|result| result["saved"] == true);
+    if files.is_empty() && (saved || changed.first().is_some_and(|file| file == path)) {
+        files.push(path.to_path_buf());
+    }
+    let checkpoints = files
+        .iter()
+        .map(|file| {
+            let mut checkpoint = file.clone().into_os_string();
+            checkpoint.push(".work-recovery");
+            PathBuf::from(checkpoint)
+        })
+        .collect::<Vec<_>>();
+    files.extend(
+        changed
+            .into_iter()
+            .filter(|file| checkpoints.contains(file)),
+    );
+    removed.extend(gone.into_iter().filter(|file| checkpoints.contains(file)));
+    (files, removed)
+}
+
+/// The files a refused request writing `path` left another than `before` or
+/// removed, but not the one its refusal says another program changed.
+fn refused(
+    path: &Path,
+    before: &BTreeMap<PathBuf, Stamp>,
+    result: Option<&Value>,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let another = result
+        .and_then(|result| result["details"]["changed_by_another"].as_str())
+        .map(PathBuf::from);
+    let (mut files, mut removed) = changed_since(path, before);
+    files.retain(|file| Some(file) != another.as_ref());
+    removed.retain(|file| Some(file) != another.as_ref());
+    (files, removed)
 }
 
 /// The files a successful answer says its request wrote, as the exporter
@@ -373,6 +471,66 @@ mod tests {
         );
         assert!(!files[0].removed);
         assert_eq!(files[KEPT + 21].path, directory.path().join("before.step"));
+    }
+
+    /// R1122ac, review §4 P3: a refused export lists every file beside its path
+    /// it left another or removed (a set's sheets and list, a report), not only
+    /// the path asked for, and not the file the refusal says another program
+    /// changed; a save lists the work-recovery checkpoint it removed.
+    #[test]
+    fn a_refusal_lists_the_files_beside_its_path_and_not_another_programs() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path();
+        let path = folder.join("plan.dxf");
+        for name in ["plan-01.dxf", "plan-02.dxf", "other.dxf"] {
+            std::fs::write(folder.join(name), b"before").unwrap();
+        }
+        let log = WriteLog::default();
+        let answer = |ok: bool, result: Value, write: &dyn Fn()| {
+            log.files_now().clear();
+            let (reply, client) = mpsc::sync_channel(1);
+            let watched = log.watch(path.clone(), reply, egui::Context::default());
+            write();
+            let mut response = Response::error(1, "export_failed");
+            response.ok = ok;
+            response.result = Some(result);
+            watched.deliver(response);
+            client.recv().unwrap();
+            log.files()
+                .iter()
+                .map(|file| (file.path.clone(), file.removed))
+                .collect::<Vec<_>>()
+        };
+        let failed = serde_json::json!({"code": "export_failed"});
+        let files = answer(false, failed, &|| {
+            std::fs::write(folder.join("plan-01.dxf"), b"half written").unwrap();
+            std::fs::write(folder.join("plan.dxf.sheets.txt"), b"list").unwrap();
+            std::fs::remove_file(folder.join("plan-02.dxf")).unwrap();
+            std::fs::write(folder.join("other.dxf"), b"another program's").unwrap();
+        });
+        assert_eq!(
+            files,
+            [
+                (folder.join("plan-01.dxf"), false),
+                (folder.join("plan.dxf.sheets.txt"), false),
+                (folder.join("plan-02.dxf"), true),
+            ]
+        );
+        let another = serde_json::json!({"code": "export_failed",
+            "details": {"changed_by_another": path.display().to_string()}});
+        let files = answer(false, another, &|| {
+            std::fs::write(&path, b"theirs").unwrap()
+        });
+        assert!(files.is_empty(), "{files:?}");
+        let document = folder.join("plan.ketchup");
+        let checkpoint = folder.join("plan.ketchup.work-recovery");
+        std::fs::write(&checkpoint, b"steps").unwrap();
+        let saved = serde_json::json!({"saved": true, "save_path": document.display().to_string()});
+        let files = answer(true, saved, &|| {
+            std::fs::write(&document, b"saved").unwrap();
+            std::fs::remove_file(&checkpoint).unwrap();
+        });
+        assert_eq!(files, [(document.clone(), false), (checkpoint, true)]);
     }
 
     /// A save the answer reports is listed even when the file's stamp did not

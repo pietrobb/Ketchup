@@ -225,11 +225,20 @@ pub fn holder_of_way(path: &Path) -> io::Result<(u32, u32)> {
 /// Whether opening a folder read on the way failed as one replaced since:
 /// by a link (`ELOOP`, as no link is followed) or a file (`ENOTDIR`). The race
 /// was lost, HOME is right (review 2026-11-21 ac P3: it told the user to set
-/// HOME).
+/// HOME). Removed since (`ENOENT`) too (R1122ac, review §4 P3).
 #[cfg(unix)]
 fn replaced_since_read(errno: rustix::io::Errno) -> bool {
     use rustix::io::Errno;
-    errno == Errno::LOOP || errno == Errno::NOTDIR
+    errno == Errno::LOOP || errno == Errno::NOTDIR || errno == Errno::NOENT
+}
+
+/// Whether reading a link on the way failed as one replaced since: by what is
+/// no link (`EINVAL`) or by nothing (`ENOENT`) (R1122ac, review §4 P3: it told
+/// the user to set HOME).
+#[cfg(unix)]
+fn link_replaced_since_read(errno: rustix::io::Errno) -> bool {
+    use rustix::io::Errno;
+    errno == Errno::INVAL || errno == Errno::NOENT
 }
 
 /// [`user_of_home`] of `path`, up to the part of it there now when `partial`.
@@ -331,7 +340,16 @@ fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
                 if links > MAX_LINKS {
                     return Err(unreadable(io::Error::other("too many links on the way")).into());
                 }
-                let to = rustix::fs::readlinkat(&folder.0, &part, Vec::new()).map_err(failed)?;
+                let to = rustix::fs::readlinkat(&folder.0, &part, Vec::new()).map_err(|errno| {
+                    if link_replaced_since_read(errno) {
+                        HomeError::ChangedWhileRead {
+                            home: path.to_owned(),
+                            folder: at.join(&part),
+                        }
+                    } else {
+                        failed(errno)
+                    }
+                })?;
                 pending.extend(
                     Path::new(OsStr::from_bytes(to.as_bytes()))
                         .components()
