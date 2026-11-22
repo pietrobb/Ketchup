@@ -65,23 +65,35 @@ fn source(program: &str) -> RuleProgramSource {
     }
 }
 
-/// 800 boxes that all overlap evaluate in a fraction of a second, but checking
-/// their 319 600 pairs takes minutes in a debug build (400 boxes finished on CI
-/// once #110 made sync_with_issues linear): the caller waits
-/// no longer than the worker's 60 s deadline for a report. The report is no
-/// gate (review 2026-10-16 N-12, AGENTS.md §3): the model is applied and its
-/// report says that its checks did not finish.
+/// A grid of boxes side by side, each touching its neighbours, evaluates in
+/// under 1.5 s but takes about 9 s to check in a debug build (a release build:
+/// 100 × 100, 6 s). Boxes that all overlap no longer do: their pairs stop at a
+/// limit (review 2026-11-22 R1122ac-PG-1102). The caller waits no longer than
+/// its deadline for a report. The report is no gate (review 2026-10-16 N-12,
+/// AGENTS.md §3): the model is applied and its report says that its checks did
+/// not finish.
 #[test]
 fn a_model_too_large_to_check_is_applied_with_an_unfinished_report_and_the_session_lives_on() {
     let _turn = crate::integration_support::file_turn();
+    let (side, seconds) = if cfg!(debug_assertions) {
+        (60, 5)
+    } else {
+        (100, 3)
+    };
     let mut window = DocumentSession::new(SessionSettings::default());
     let applied = window
-        .apply_rule_program(
-            source("for i in range(800):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n"),
+        .apply_rule_program_by(
+            source(&format!(
+                "for i in range({side}):\n    for j in range({side}):\n        \
+                 box(\"b%d_%d\" % (i, j), (100, 100, 100), at=(i * 100, j * 100, 0))\n"
+            )),
             false,
+            ketchup_application::program_isolation::CheckDeadline::after(
+                std::time::Duration::from_secs(seconds),
+            ),
         )
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(applied.snapshot.occurrences().count(), 800);
+    assert_eq!(applied.snapshot.occurrences().count(), side * side);
     let unfinished = applied
         .report
         .issues
