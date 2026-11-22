@@ -1132,9 +1132,7 @@ fn insert_profile_part(
             let radius = max[0].abs().max(min[0].abs());
             [radius * 2.0, max[1] - min[1], radius * 2.0]
         }
-        ProgramPartBody::Profile { .. }
-        | ProgramPartBody::Sweep { .. }
-        | ProgramPartBody::Loft { .. } => {
+        _ => {
             let (min, max) = new_part(name, [0.0; 3], at_mm, body.clone()).local_bounds();
             std::array::from_fn(|axis| max[axis] - min[axis])
         }
@@ -1561,7 +1559,7 @@ fn boolean_depth(part: &Part) -> usize {
 
 /// Appends one operation to a part, keeping operation names unique.
 fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result<()> {
-    let name = operation.name();
+    let name = crate::imported::operation_name(part, &operation)?;
     if part
         .operations
         .iter()
@@ -1729,6 +1727,7 @@ mod error_location;
 mod pricing;
 pub use error_location::{CallFrame, ErrorLocation, NumberedLine, Position};
 mod face_cache;
+mod imported;
 mod joints;
 mod machining;
 mod params;
@@ -2643,6 +2642,7 @@ fn globals() -> Globals {
     .with(joints::builtins)
     .with(support::builtins)
     .with(annotations::builtins)
+    .with(imported::builtins)
     .with(path_builtins)
     .with(boolean_builtins)
     .with_namespace("math", math_functions)

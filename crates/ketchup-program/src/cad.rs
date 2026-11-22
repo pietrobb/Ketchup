@@ -85,7 +85,8 @@ pub fn part(part: &Part) -> Option<AssistantCadEditOperation> {
         })
         .collect();
     let (segments, feature) = match &part.body {
-        ProgramPartBody::Profile { .. } => return None,
+        // The host places a file's body itself (`crate::imported`).
+        ProgramPartBody::Profile { .. } | ProgramPartBody::Imported(_) => return None,
         ProgramPartBody::Extrusion {
             segments,
             distance_mm,

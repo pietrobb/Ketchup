@@ -29,6 +29,7 @@ pub mod expect;
 mod face_at;
 pub mod faces;
 pub mod frame;
+pub mod imported;
 pub mod joint_check;
 pub mod joint_kind;
 pub mod load_path;

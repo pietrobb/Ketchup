@@ -2046,6 +2046,38 @@ def bearing_envelope(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags =
     cut(part, profile = _circle(dimensions["bore_mm"] / 2.0, "bore"), through = True, name = "bore")
     return _turn_onto(part, at, axis)
 
+#   purchased(name, step, article, supplier, at=(0,0,0), z=(0,0,1), x=(1,0,0), part=None,
+#             qty=1, tags=None) -> part
+#     A bought part (a hinge, a runner, a handle) whose body is the maker's STEP file:
+#     `step` relative to the folder of this program's file and inside it. The file's
+#     origin goes to `at`, its z along `z` and its x along `x`, so the part follows
+#     the parameters it is placed by. `part=` takes one part of an assembly file.
+#     Listed in the hardware list as "<supplier> <article>" (qty pieces), never in
+#     the cut list or CNC; it takes no cut or hole. One file used by many parts is
+#     read once.
+#     Example: purchased("hinge left", "hettich/9073662.step", "9073662", "Hettich",
+#                        at = (18, 0, door_h - 100), z = (-1, 0, 0), x = (0, 0, 1))
+def purchased(name, step, article, supplier, at = (0, 0, 0), z = (0, 0, 1), x = (1, 0, 0), part = None,
+              qty = 1, tags = None):
+    """A bought part whose body is the STEP file `step`, ordered as `supplier` `article`."""
+    if type(qty) != "int" or qty < 1:
+        fail("purchased(%r): qty must be a whole number of at least 1, got %r" % (name, qty))
+    for (field, value) in (("article", article), ("supplier", supplier)):
+        if type(value) != "string" or not value.strip():
+            fail("purchased(%r): %s must be the text the part is ordered by, got %r" % (name, field, value))
+    attributes = {
+        "designation": supplier.strip() + " " + article.strip(),
+        "article": article.strip(),
+        "supplier": supplier.strip(),
+        FABRICATION_ROLE: PURCHASED_ITEM,
+    }
+    if qty != 1:
+        attributes["quantity"] = str(qty)
+    body = imported(name, step, part = part, at = at, tags = tags, attributes = attributes)
+    if tuple(z) != (0, 0, 1) or tuple(x) != (1, 0, 0):
+        place(body, origin = at, z = z, x = x)
+    return body
+
 #   ball_screw_nut_dimensions(designation) -> HIWIN DIN 69051-5 form B single flange nut
 #     dimensions; raceway and mass are None (not specified), unknown designations fail.
 #   ball_screw_nut(name, designation, at=(0,0,0), axis=(0,0,1), tags=None) -> purchased part.

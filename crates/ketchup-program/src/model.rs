@@ -648,6 +648,8 @@ pub enum ProgramPartBody {
     /// A solid through closed profiles lying in local XY planes at strictly
     /// increasing heights.
     Loft { sections: Vec<ProgramLoftSection> },
+    /// The body a STEP file holds, read by the host (`crate::imported`).
+    Imported(Box<crate::imported::ProgramImport>),
 }
 
 impl ProgramPartBody {
@@ -837,7 +839,7 @@ impl std::fmt::Display for FaceNameError {
             ),
             Self::NoFramedFaces { part } => write!(
                 f,
-                "{part:?} has no flat or cylindrical faces with names (swept and lofted bodies have none)"
+                "{part:?} has no flat or cylindrical faces with names (swept and lofted bodies have none, nor does a body read from a STEP file, which takes no operations)"
             ),
             Self::NotFramed { name, part, faces } => write!(
                 f,
@@ -914,10 +916,13 @@ impl Part {
     }
 
     /// A part made in the workshop of the cut list: neither bought by its
-    /// designation nor cut from bar stock.
+    /// designation, cut from bar stock nor read from a file.
     #[must_use]
     pub fn made(&self) -> bool {
-        self.is_solid() && self.designation().is_none() && self.cut_length_mm().is_none()
+        self.is_solid()
+            && self.designation().is_none()
+            && self.cut_length_mm().is_none()
+            && self.imported().is_none()
     }
 
     pub fn holes(&self) -> impl Iterator<Item = &Hole> {
@@ -1021,7 +1026,9 @@ impl Part {
                 .chain(segments.iter().map(|segment| segment.name.clone()))
                 .collect(),
             ProgramPartBody::Loft { .. } => vec!["start".to_owned(), "end".to_owned()],
-            ProgramPartBody::Profile { .. } | ProgramPartBody::Sweep { .. } => Vec::new(),
+            ProgramPartBody::Profile { .. }
+            | ProgramPartBody::Sweep { .. }
+            | ProgramPartBody::Imported(_) => Vec::new(),
         }
     }
 
@@ -1145,7 +1152,8 @@ impl Part {
             ProgramPartBody::Loft { .. } if name == "start" || name == "end" => Ok(name.to_owned()),
             ProgramPartBody::Profile { .. }
             | ProgramPartBody::Sweep { .. }
-            | ProgramPartBody::Loft { .. } => Err(unknown()),
+            | ProgramPartBody::Loft { .. }
+            | ProgramPartBody::Imported(_) => Err(unknown()),
         }
     }
 
@@ -1446,6 +1454,7 @@ impl Part {
                     std::array::from_fn(|index| axis(index, 1.0)),
                 )
             }
+            ProgramPartBody::Imported(import) => import.bounds(),
         }
     }
 
@@ -1611,6 +1620,7 @@ impl Part {
             ProgramPartBody::Revolve { .. } if self.pushed_out() > 0.0 => bounds_reach(),
             ProgramPartBody::Revolve { .. } => self.revolve_support(local),
             ProgramPartBody::Sweep { .. } | ProgramPartBody::Loft { .. } => self.local_reach(local),
+            ProgramPartBody::Imported(_) => bounds_reach(),
         };
         let joined = self.joined().map(|(after, tool)| {
             let (local, mirrored) = self.reach_before(after, finished);
@@ -1855,6 +1865,8 @@ impl Part {
                 ProgramFeatureKind::Loft,
                 Vec::new(),
             )),
+            // The file holds the body: only its placement is the program's.
+            ProgramPartBody::Imported(_) => {}
         }
         features
     }

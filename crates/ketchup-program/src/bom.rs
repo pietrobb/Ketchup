@@ -156,12 +156,17 @@ pub fn bom(model: &ProgramModel) -> Bom {
             row.parts.push(part.name.clone());
             continue;
         }
-        if let Some(designation) = part.designation() {
+        // A part read from a file without a designation is bought by its file.
+        let designation = part
+            .designation()
+            .or_else(|| part.imported().map(|import| import.file.as_str()));
+        if let Some(designation) = designation {
             let attributes = part
                 .attributes
                 .iter()
                 .filter(|(name, _)| {
-                    plain_attribute(name) && *name != "designation" && *name != "bought_item"
+                    plain_attribute(name)
+                        && !["designation", "bought_item", "quantity"].contains(&name.as_str())
                 })
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
@@ -169,7 +174,8 @@ pub fn bom(model: &ProgramModel) -> Bom {
                 .bought_item()
                 .is_none_or(|item| items.insert((designation.to_owned(), item.to_owned())));
             let row = bought(&mut hardware, designation, attributes);
-            row.count += usize::from(first_piece);
+            let pieces = number("quantity").map_or(1, |quantity| quantity as usize);
+            row.count += pieces * usize::from(first_piece);
             row.parts.push(part.name.clone());
             continue;
         }
