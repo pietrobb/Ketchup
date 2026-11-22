@@ -2649,7 +2649,7 @@ fn globals() -> Globals {
     .build()
 }
 
-fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> ProgramError {
+pub(crate) fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> ProgramError {
     ProgramError {
         code,
         message: error.to_string(),
@@ -2844,13 +2844,8 @@ pub fn evaluate_cancellable(
     overrides: &BTreeMap<String, f64>,
     cancel: &CancelToken,
 ) -> Result<Evaluated, ProgramError> {
-    evaluate_bounded(
-        file_name,
-        source,
-        overrides,
-        cancel,
-        crate::execution_budget::MAX_HEAP_BYTES,
-    )
+    let heap = crate::execution_budget::MAX_HEAP_BYTES;
+    crate::nesting::on_own_stack(|| evaluate_bounded(file_name, source, overrides, cancel, heap))
 }
 
 /// [`evaluate_cancellable`] with a heap bound of `heap_bytes`, so tests reach it cheaply.
@@ -2862,6 +2857,7 @@ fn evaluate_bounded(
     heap_bytes: usize,
 ) -> Result<Evaluated, ProgramError> {
     let (globals, prelude) = library()?;
+    crate::nesting::refuse_too_deep(file_name, source)?;
     let ast = AstModule::parse(file_name, source.to_owned(), &dialect())
         .map_err(|error| {
             // Before a trailing newline the parser reports an unclosed bracket at 1:1;

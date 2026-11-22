@@ -1217,6 +1217,58 @@ fn errors_name_the_line_and_the_cause() {
     assert!(error.message.contains("unknown dowel"), "{}", error.message);
 }
 
+/// R1122ac-PG-1103: a few kilobytes nesting thousands deep, a list in a list
+/// or a sum of thousands of terms, overflowed the interpreter's stack and
+/// killed the process without an answer. It is refused as a syntax error
+/// naming its line; nesting a program really uses still runs.
+#[test]
+fn a_program_nesting_thousands_deep_is_refused_with_its_line() {
+    let deep_list = format!(
+        "a = box(\"a\", (1, 2, 3))\nx = {}0{}\n",
+        "[".repeat(3000),
+        "]".repeat(3000)
+    );
+    let long_sum = format!(
+        "a = box(\"a\", (1, 2, 3))\n\nx = 0{}\n",
+        " + 1".repeat(5000)
+    );
+    let indexed = format!("y = [0]\nx = y{}\n", "[0]".repeat(3000));
+    let chained = format!(
+        "x = 1\nif x == 0:\n    pass\n{}else:\n    pass\n",
+        "elif x == 1:\n    pass\n".repeat(3000)
+    );
+    for (source, line) in [(deep_list, 2), (long_sum, 3), (indexed, 2)] {
+        let error = run("deep.star", &source, &BTreeMap::new()).unwrap_err();
+        assert_eq!(error.code, "syntax_error", "{}", error.message);
+        assert!(
+            error.message.contains(&format!("deep.star:{line}:")),
+            "{}",
+            error.message
+        );
+        assert_eq!(error.location.map(|at| at.at.line), Some(line));
+    }
+    let error = run("deep.star", &chained, &BTreeMap::new()).unwrap_err();
+    assert_eq!(error.code, "syntax_error", "{}", error.message);
+
+    let nested = format!(
+        "x = {}0{}\nbox(\"a\", (1, 2, 3 + len(x)))\n",
+        "[".repeat(100),
+        "]".repeat(100)
+    );
+    let shallow = format!("x = 0{}\nbox(\"a\", (1, 2, x))\n", " + 1".repeat(150));
+    let branches = format!(
+        "x = 1\nif x == 0:\n    pass\n{}else:\n    pass\nbox(\"a\", (1, 2, 3))\n",
+        "elif x == 1:\n    pass\n".repeat(100)
+    );
+    let table = format!(
+        "x = [{}]\nbox(\"a\", (1, 2, len(x)))\n",
+        "(1 + 2) * 3, ".repeat(5000)
+    );
+    for source in [nested, shallow, branches, table] {
+        run("fine.star", &source, &BTreeMap::new()).unwrap();
+    }
+}
+
 #[test]
 fn a_tapped_hole_drills_the_tap_drill_and_the_machining_report_names_the_thread() {
     let (evaluated, report) = run(
