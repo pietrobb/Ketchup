@@ -343,6 +343,49 @@ joint(\"strut {x}\", \"column {x}\", kind = \"screw\", fasteners = [({screw_x}, 
     assert_ne!(checked(&held, "beam").status, "pass");
 }
 
+/// Review 2026-11-22 R1122ac-PG-1100: a plate 300 x 1 000 x 40 lying on the
+/// beam along y, one screw at each end, the beam's at (x - 135, 40) and the
+/// far one at (x + 5, 950) on a grounded column 20 (x) x 400 (y) x 2 400, held
+/// the beam at 214.9 N/mm and passed: the force was taken along the plate's
+/// long axis, though a part turning about a screw at each end pushes along the
+/// line through its screws, d = (0.152, 0.988). The column gives along d
+/// 0.0231 x 1.503 (its weak way) + 0.977 / 266 (its strong way) + slip, about
+/// 0.040 mm/N, and the plate holds the beam about 0.977 / 0.040 = 24 N/mm,
+/// against about 56 asked. With both screws on the plate's axis it holds the
+/// column's strong way, about 211.
+#[test]
+fn a_strut_pushes_along_the_line_through_its_screws() {
+    let plate = |beam_screw: i32| {
+        beam_with(
+            |x| {
+                format!(
+                    "box(\"plate {x}\", (300, 1000, 40), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"plate\"])
+box(\"column {x}\", (20, 400, 2400), at = ({}, 600, 0), material = \"GL24h\", grounded = True)
+joint(\"plate {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 40, 2400)])
+joint(\"plate {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 950, 2400)])
+",
+                    x - 150,
+                    x - 5,
+                    x + beam_screw,
+                    x + 5
+                )
+            },
+            "brace([\"beam\"], by = [\"plate\"], edge = \"top\")\n",
+        )
+    };
+    let slanting = plate(-135);
+    let found = stiffnesses(&slanting, "plate");
+    assert_eq!(found.len(), PLACES.len(), "{found:?}");
+    for stiffness in found {
+        assert!((18.0..=30.0).contains(&stiffness), "{stiffness}");
+    }
+    assert_ne!(checked(&slanting, "beam").status, "pass");
+    let straight = plate(5);
+    for stiffness in stiffnesses(&straight, "plate") {
+        assert!((180.0..=230.0).contains(&stiffness), "{stiffness}");
+    }
+}
+
 /// R1121ac-PG-1000: a brace 100 x 100 x 1 000 at 30° in plan, screwed twice at
 /// each end, fixed on a grounded head 400 x 400 x 400 standing on a column
 /// 20 x 400 x 2 000 under where it meets the brace, held the beam at about
