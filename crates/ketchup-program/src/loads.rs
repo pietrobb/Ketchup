@@ -16,12 +16,14 @@ use crate::contact::ContactFaces;
 use crate::continuous_span::{self, Piece};
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Joint, JointFastening, Part, ProgramModel, ProgramPartBody};
+use crate::near_pairs::near_pairs;
 use crate::validate::{Issue, Severity};
 use anchorage::{Anchorage, Footing, across_beyond, beyond_side, reaches_beyond, weaker};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 pub const LOAD_KINDS: [&str; 4] = ["permanent", "imposed", "roof", "snow"];
 const GRAVITY: f64 = 9.81;
@@ -2536,55 +2538,48 @@ fn bearings<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'a>) -> Bearin
         }
     };
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..parts.len()).collect();
-    order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
-    for (position, &left) in order.iter().enumerate() {
-        for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                break;
-            }
+    near_pairs(
+        &bounds,
+        (0..parts.len()).collect(),
+        CONTACT_FIT_MM,
+        |left, right| {
             let (a, b) = (&parts[left], &parts[right]);
-            if model.are_alternatives(a, b)
-                || (0..3).any(|axis| {
-                    bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
-                        || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
-                })
-            {
-                continue;
-            }
-            for contact in faces.contacts(a, b) {
-                let support = |supporter| Support {
-                    supporter,
-                    points: contact.points_mm.clone(),
-                    pieces: vec![contact.points_mm.clone()],
-                    area: polygon_area(&contact.points_mm),
-                    joint: None,
-                };
-                let (upper, lower) = if contact.normal[2] <= RESTS_ON {
-                    (left, right)
-                } else if contact.normal[2] >= -RESTS_ON {
-                    (right, left)
-                } else {
-                    for (item, other) in [(left, right), (right, left)] {
-                        if leans_on[other] {
-                            fix_to(item, other, support(other), true);
-                        } else if may_carry[other] && !may_carry[item] {
-                            fix_to(item, other, support(other), false);
+            if !model.are_alternatives(a, b) {
+                for contact in faces.contacts(a, b) {
+                    let support = |supporter| Support {
+                        supporter,
+                        points: contact.points_mm.clone(),
+                        pieces: vec![contact.points_mm.clone()],
+                        area: polygon_area(&contact.points_mm),
+                        joint: None,
+                    };
+                    let (upper, lower) = if contact.normal[2] <= RESTS_ON {
+                        (left, right)
+                    } else if contact.normal[2] >= -RESTS_ON {
+                        (right, left)
+                    } else {
+                        for (item, other) in [(left, right), (right, left)] {
+                            if leans_on[other] {
+                                fix_to(item, other, support(other), true);
+                            } else if may_carry[other] && !may_carry[item] {
+                                fix_to(item, other, support(other), false);
+                            }
                         }
+                        continue;
+                    };
+                    if may_carry[lower] {
+                        rests[upper].push(support(lower));
+                    } else if leans_on[upper] {
+                        // Hangs from it (a ceiling board under a joist), unless it carries it.
+                        fix_to(lower, upper, support(upper), true);
+                    } else if may_carry[upper] {
+                        fix_to(lower, upper, support(upper), false);
                     }
-                    continue;
-                };
-                if may_carry[lower] {
-                    rests[upper].push(support(lower));
-                } else if leans_on[upper] {
-                    // Hangs from it (a ceiling board under a joist), unless it carries it.
-                    fix_to(lower, upper, support(upper), true);
-                } else if may_carry[upper] {
-                    fix_to(lower, upper, support(upper), false);
                 }
             }
-        }
-    }
+            ControlFlow::Continue(())
+        },
+    );
     let index = |name: &str| parts.iter().position(|part| part.name == name);
     for joint in model.joints.iter().filter(|joint| joint.bearing) {
         let (Some(a), Some(b)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {

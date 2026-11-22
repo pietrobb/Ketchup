@@ -128,16 +128,17 @@ fn the_worker_stays_between_programs_and_is_replaced_after_a_kill() {
     assert_ne!(worker.process_id(), Some(first));
 }
 
-/// A model cheap to evaluate but seconds to check: a grid of boxes side by side,
-/// each touching its neighbours. (Overlapping boxes no longer do: their pairs
-/// stop at a limit, review 2026-11-22 R1122ac-PG-1102.) A debug build checks
-/// 60 × 60 in 9 s, a release build 100 × 100 in 6 s; a debug build evaluating
-/// 100 × 100 under load ran past the deadline before the checks began.
+/// A model cheap to evaluate but seconds to check: a block of cubes, each
+/// touching its 26 neighbours. (Overlapping cubes stop at a pair limit and a
+/// flat grid now checks only neighbours, review 2026-11-22 R1122ac-PG-1102.)
+/// A debug build checks 15 × 15 × 15 in about 7 s, a release build
+/// 27 × 27 × 27 in 6 s; a debug build evaluating 10 000 parts under load ran
+/// past the deadline before the checks began.
 fn slow_to_check() -> String {
-    let side = if cfg!(debug_assertions) { 60 } else { 100 };
+    let side = if cfg!(debug_assertions) { 15 } else { 27 };
     format!(
-        "for i in range({side}):\n    for j in range({side}):\n        \
-         box(\"b%d_%d\" % (i, j), (100, 100, 100), at=(i * 100, j * 100, 0))\n"
+        "for i in range({side}):\n    for j in range({side}):\n        for k in range({side}):\n            \
+         box(\"b%d_%d_%d\" % (i, j, k), (100, 100, 100), at=(i * 100, j * 100, k * 100))\n"
     )
 }
 
