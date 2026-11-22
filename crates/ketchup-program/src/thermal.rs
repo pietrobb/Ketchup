@@ -173,11 +173,20 @@ impl ThermalReport {
                          control layer to the warm side."
                             .to_owned()
                     } else if !check.condenses_in.is_empty() {
-                        // Review 2026-11-21 ac P3: every input is given here.
-                        "Put a vapour control layer on the warm side or open the cold side to \
-                         vapour (lower s_d outside), or show by the annual moisture balance of \
-                         EN ISO 13788 that the condensate dries out."
-                            .to_owned()
+                        // Review 2026-11-21 ac P3; what is missing besides, a site among
+                        // it, is named too (R1122ac, review §4 P3).
+                        let mut hint = "Put a vapour control layer on the warm side or open the \
+                                        cold side to vapour (lower s_d outside), or show by the \
+                                        annual moisture balance of EN ISO 13788 that the \
+                                        condensate dries out."
+                            .to_owned();
+                        if !check.missing.is_empty() {
+                            hint.push_str(&format!(
+                                " Give also what is missing: {}.",
+                                check.missing.join("; ")
+                            ));
+                        }
+                        hint
                     } else {
                         "Give what is missing (lambda and mu of each layer, theta_e of the place, \
                          site(country))."
@@ -527,29 +536,43 @@ pub fn thermal_checks(model: &crate::ProgramModel) -> ThermalReport {
 }
 
 /// EN ISO 6946 Table 8: thickness mm, thermal resistance m²K/W of an
-/// unventilated air layer with heat flowing down, the largest of the three
-/// directions.
-const AIR_LAYER_R: [(f64, f64); 9] = [
-    (0.0, 0.0),
-    (5.0, 0.11),
-    (7.0, 0.13),
-    (10.0, 0.15),
-    (15.0, 0.17),
-    (25.0, 0.19),
-    (50.0, 0.21),
-    (100.0, 0.22),
-    (300.0, 0.23),
+/// unventilated air layer with heat flowing up, sideways and down.
+const AIR_LAYER_R: [(f64, [f64; 3]); 9] = [
+    (0.0, [0.0, 0.0, 0.0]),
+    (5.0, [0.11, 0.11, 0.11]),
+    (7.0, [0.13, 0.13, 0.13]),
+    (10.0, [0.15, 0.15, 0.15]),
+    (15.0, [0.16, 0.17, 0.17]),
+    (25.0, [0.16, 0.18, 0.19]),
+    (50.0, [0.16, 0.18, 0.21]),
+    (100.0, [0.16, 0.18, 0.22]),
+    (300.0, [0.16, 0.18, 0.23]),
 ];
 
+/// The column of Table 8 for the way heat flows through `element`, as
+/// [`surfaces`] takes R_si of table 7: up through a roof or a ceiling, sideways
+/// through a wall, down through a floor (R1122ac, review §4 P3: every element
+/// was given the column of heat flowing down, the largest).
+fn heat_flow(element: &str) -> usize {
+    match element {
+        "steep_roof" | "roof" | "ceiling_under_unheated" => 0,
+        "wall" => 1,
+        _ => 2,
+    }
+}
+
 /// The largest thermal resistance of an unventilated air layer of this
-/// thickness, interpolated linearly as Table 8 allows; 0.23 beyond 300 mm.
-fn max_air_layer_r(thickness_mm: f64) -> f64 {
+/// thickness in `element`, interpolated linearly as Table 8 allows; that of
+/// 300 mm beyond it.
+fn max_air_layer_r(thickness_mm: f64, element: &str) -> f64 {
+    let column = heat_flow(element);
+    let [.., (_, thickest)] = AIR_LAYER_R;
     AIR_LAYER_R
         .windows(2)
         .find(|pair| thickness_mm <= pair[1].0)
-        .map_or(0.23, |pair| {
+        .map_or(thickest[column], |pair| {
             let ((t0, r0), (t1, r1)) = (pair[0], pair[1]);
-            r0 + (r1 - r0) * (thickness_mm - t0) / (t1 - t0)
+            r0[column] + (r1[column] - r0[column]) * (thickness_mm - t0) / (t1 - t0)
         })
 }
 
@@ -557,6 +580,7 @@ fn max_air_layer_r(thickness_mm: f64) -> f64 {
 /// number under key, if given.
 pub(crate) fn layer(
     name: &str,
+    element: &str,
     label: String,
     ventilated: bool,
     read: impl Fn(&str) -> anyhow::Result<Option<f64>>,
@@ -585,7 +609,7 @@ pub(crate) fn layer(
     }
     // r stands for an unventilated air layer; EN ISO 6946 Table 8 bounds it by
     // the layer's thickness (review 2026-11-20 ac P3, 2026-11-21 ac P3).
-    let max_r = max_air_layer_r(thickness_mm);
+    let max_r = max_air_layer_r(thickness_mm, element);
     if let Some(r) = positive("r")?.filter(|r| *r > max_r + ketchup_tolerance::ROUNDING) {
         anyhow::bail!(
             "thermal_check({name:?}): layer {label:?} r {r} is more than an unventilated air \

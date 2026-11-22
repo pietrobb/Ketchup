@@ -267,15 +267,15 @@ mod tests {
     }
 
     /// R1120ac-PG-903: a strut 50 x 50 x 1 000 at 45° to the force holds with
-    /// cos² of its stretching stiffness E A / L and cos of its Euler load; along
-    /// the force with all of both; across it, a pendulum, with nothing.
+    /// cos² of its stretching stiffness E A / L and cos of its buckling load;
+    /// along the force with all of both; across it, a pendulum, with nothing.
     #[test]
     fn a_strut_holds_with_its_force_along_it() {
         let moduli = (11_000.0, 7_400.0, 21.0);
         let rod = Obb::new([0.0; 3], &IDENTITY, [0.0; 3], [50.0, 1000.0, 50.0]);
         let ends = ([25.0, 1000.0, 25.0], [25.0, 0.0, 25.0]);
         let stretching = 11_000.0 * 2500.0 / 1000.0;
-        let euler = std::f64::consts::PI.powi(2) * 7_400.0 * 50.0_f64.powi(4) / 12.0 / 1.0e6;
+        let euler = buckling_load(&rod, (7_400.0, 21.0), [0.0, 1000.0, 0.0], 1000.0);
         let along = Strut::of(&rod, moduli, ends, [0.0, 1.0, 0.0], 1000.0);
         let (stiffness, capacity) = along.holds(0.0, 0.0, f64::INFINITY);
         assert!(

@@ -254,7 +254,8 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
 /// 263 asked and passed: the brace buckled only over its own length, where the
 /// stepped rod pinned at both ends buckles at about 112 N (FE). Every part of
 /// a path buckles over the whole length of the path: the brace over 2 400 mm,
-/// 69.4 N, on the safe side.
+/// Euler's 69.4 N, k_c f_c,0,k A 67.9 N (R1122ac, review §4 P3), on the safe
+/// side.
 #[test]
 fn a_stepped_path_buckles_over_its_whole_length() {
     let held = beam_with(
@@ -283,7 +284,7 @@ brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
     for brace in braces {
         let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
         let capacity = anchorage.capacity_n.expect("the path buckles");
-        assert!((capacity - 69.4).abs() < 0.5, "{brace:?}");
+        assert!((capacity - 67.9).abs() < 0.1, "{brace:?}");
         assert_eq!(
             anchorage.buckling_in.as_deref(),
             Some(brace.part.as_str()),
@@ -573,7 +574,8 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
 /// grounded block 200 x 400 x 200 on a column bent the block, which was given
 /// Euler's load over the path as F_cap, some 29 000 kN (4 669 kN in the
 /// review). A piece that stocky crushes long before it buckles (EN 1995-1-1
-/// 6.3.2(3), relative slenderness at most 0.3): it holds without buckling.
+/// 6.3.2(3), relative slenderness at most 0.3): it holds up to its crushing
+/// load f_c,0,k A, 24 x 200 x 200 = 960 kN (R1122ac, review §4 P3).
 #[test]
 fn a_stocky_block_on_the_path_does_not_buckle() {
     let held = beam_with(
@@ -602,7 +604,13 @@ joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
     for brace in braces {
         let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
         assert!(anchorage.stiffness_n_mm > 0.0, "{brace:?}");
-        assert_eq!(anchorage.capacity_n, None, "{brace:?}");
+        assert_eq!(anchorage.capacity_n, Some(960_000.0), "{brace:?}");
+        let block = brace.part.replace("hanger", "block");
+        assert_eq!(
+            anchorage.buckling_in.as_deref(),
+            Some(block.as_str()),
+            "{brace:?}"
+        );
     }
 }
 
@@ -654,6 +662,15 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 24
     let bearing = braced(block);
     assert_eq!(stiffnesses(&bearing, "brace"), alone);
     assert_ne!(checked(&bearing, "beam").status, "pass");
+    assert!(
+        bearing
+            .design
+            .basis
+            .iter()
+            .any(|line| line.contains("holding no pull unless a joint() fastens them")),
+        "{:?}",
+        bearing.design.basis
+    );
     let screwed = braced(|x| {
         format!(
             "{}joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 2300), ({}, 970, 2300)])\n",
