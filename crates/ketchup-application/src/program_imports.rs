@@ -329,7 +329,9 @@ pub(crate) fn append_imported(
     }
     // Each new receipt after the bodies it lists, which must exist by then.
     for (key, body) in new_receipts {
-        let (import_id, mut outputs) = receipts.remove(&key).expect("recorded above");
+        let Some((import_id, mut outputs)) = receipts.remove(&key) else {
+            continue;
+        };
         outputs.sort_unstable();
         outputs.truncate(ketchup_model::import::MAX_IMPORT_RECEIPT_OUTPUTS);
         let receipt = ImportReceipt::new(

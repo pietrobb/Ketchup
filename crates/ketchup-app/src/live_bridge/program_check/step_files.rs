@@ -109,15 +109,20 @@ impl StepFiles {
     }
 
     fn worker(&mut self) -> Result<&mut ExactWorkerSupervisor, Rejection> {
-        if self.worker.is_none() {
-            let path = self.worker_path.clone().ok_or_else(|| {
-                unreadable("the exact worker that reads STEP files is not installed next to Kečup")
-            })?;
-            let worker = ExactWorkerSupervisor::spawn_with_cancellation(&path, &self.cancelled)
-                .map_err(|error| unreadable("the exact worker did not start").caused_by(error))?;
-            self.worker = Some(worker);
-        }
-        Ok(self.worker.as_mut().expect("started above"))
+        let worker = match self.worker.take() {
+            Some(worker) => worker,
+            None => {
+                let path = self.worker_path.clone().ok_or_else(|| {
+                    unreadable(
+                        "the exact worker that reads STEP files is not installed next to Kečup",
+                    )
+                })?;
+                ExactWorkerSupervisor::spawn_with_cancellation(&path, &self.cancelled).map_err(
+                    |error| unreadable("the exact worker did not start").caused_by(error),
+                )?
+            }
+        };
+        Ok(self.worker.insert(worker))
     }
 }
 
