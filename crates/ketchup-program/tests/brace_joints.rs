@@ -654,6 +654,15 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 24
     let bearing = braced(block);
     assert_eq!(stiffnesses(&bearing, "brace"), alone);
     assert_ne!(checked(&bearing, "beam").status, "pass");
+    assert!(
+        bearing
+            .design
+            .basis
+            .iter()
+            .any(|line| line.contains("holding no pull unless a joint() fastens them")),
+        "{:?}",
+        bearing.design.basis
+    );
     let screwed = braced(|x| {
         format!(
             "{}joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 2300), ({}, 970, 2300)])\n",
