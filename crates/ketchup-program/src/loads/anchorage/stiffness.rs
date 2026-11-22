@@ -169,8 +169,8 @@ const STOCKY_SLENDERNESS: f64 = 0.3;
 
 /// The largest force `sideways` the part of box `obb` takes before buckling
 /// where it carries it along its axis between `entry` and `exit`, N, by
-/// Euler's load at the fifth-percentile modulus over the length `reach` of
-/// the rod it is a piece of: short pieces end to end buckle as one rod
+/// [`buckling_load`] over the length `reach` of the rod it is a piece of:
+/// short pieces end to end buckle as one rod
 /// (R1113r95-PG-700, R1121ac-PG-1002). Infinite where it carries none.
 pub(super) fn part_capacity(
     obb: &Obb,
@@ -187,11 +187,14 @@ pub(super) fn part_capacity(
     }
 }
 
-/// [`euler_load`] at the fifth-percentile modulus `modulus_05`, infinite
-/// where the piece is so stocky that it crushes at the compressive strength
-/// `fc0_k` (N/mm²) before it buckles: Euler's load at least f_c,0,k A over
-/// the relative slenderness 0.3 squared (review 2026-11-21 ac P3: a block
-/// 200 x 400 x 200 bent by a hanger was given 29 000 kN).
+/// The load the piece takes pushed along its axis, N: k_c f_c,0,k A (EN
+/// 1995-1-1 6.3.2 (6.25)-(6.29)) at the compressive strength `fc0_k` (N/mm²),
+/// with the relative slenderness of [`euler_load`] at the fifth-percentile
+/// modulus `modulus_05`. A stocky piece crushes at f_c,0,k A; a slender one
+/// buckles below Euler's load. β_c is that of solid timber, 0.2, also for
+/// glulam (0.1), which it puts on the safe side. Euler's load alone gave a
+/// piece just past the relative slenderness 0.3 eleven times its crushing load
+/// (R1122ac, review §4 P3; before it, review 2026-11-21 ac P3).
 pub(super) fn buckling_load(
     obb: &Obb,
     (modulus_05, fc0_k): (f64, f64),
@@ -201,12 +204,22 @@ pub(super) fn buckling_load(
     let euler = euler_load(obb, modulus_05, run, reach);
     let (_, [(_, wide_i), (_, wide_j)]) = section(obb, run);
     let crushing = fc0_k * wide_i * wide_j;
-    if euler * STOCKY_SLENDERNESS * STOCKY_SLENDERNESS >= crushing {
-        f64::INFINITY
-    } else {
-        euler
-    }
+    crushing * buckling_factor((crushing / euler).sqrt())
 }
+
+/// k_c of the relative slenderness `slenderness` (EN 1995-1-1 (6.25)-(6.29)):
+/// 1 up to 0.3.
+fn buckling_factor(slenderness: f64) -> f64 {
+    if slenderness <= STOCKY_SLENDERNESS {
+        return 1.0;
+    }
+    let k = 0.5 * (1.0 + SOLID_TIMBER_STRAIGHTNESS * (slenderness - STOCKY_SLENDERNESS))
+        + 0.5 * slenderness * slenderness;
+    1.0 / (k + (k * k - slenderness * slenderness).sqrt())
+}
+
+/// β_c of solid timber (EN 1995-1-1 (6.29)).
+const SOLID_TIMBER_STRAIGHTNESS: f64 = 0.2;
 
 /// The share of a force `sideways` the part of box `obb` carries along its
 /// axis between `entry` and `exit`, where it carries any. Along the part's
@@ -266,8 +279,8 @@ mod tests {
         );
     }
 
-    /// Pushed along its length a rod only stretches, and buckles at Euler's
-    /// load over the length the path has run.
+    /// Pushed along its length a rod only stretches, and buckles just under
+    /// Euler's load over the length the path has run.
     #[test]
     fn a_rod_pushed_along_it_stretches_and_buckles() {
         let obb = post(7.0, 400.0, 7.0);
@@ -277,7 +290,7 @@ mod tests {
         let capacity = part_capacity(&obb, (9_600.0, 24.0), entry, exit, [0.0, 1.0, 0.0], 2400.0);
         let euler =
             std::f64::consts::PI.powi(2) * 9_600.0 * 7.0_f64.powi(4) / 12.0 / 2400.0_f64.powi(2);
-        assert!((capacity - euler).abs() < 1e-9, "{capacity}");
+        assert!(capacity < euler && capacity > 0.98 * euler, "{capacity}");
         let across = part_capacity(
             &obb,
             (9_600.0, 24.0),
@@ -306,19 +319,27 @@ mod tests {
         assert!(capacity.is_infinite(), "{capacity}");
     }
 
-    /// A rod 50 x 50 pushed along it buckles at Euler's load while its
-    /// relative slenderness exceeds 0.3; over 200 mm (about 0.24) it crushes
-    /// first and does not buckle (review 2026-11-21 ac P3).
+    /// A rod 50 x 50 pushed along it takes k_c f_c,0,k A: over 200 mm (relative
+    /// slenderness about 0.24) it crushes at f_c,0,k A, just past 0.3 it takes
+    /// nearly that, not Euler's eleven times as much, and at 0.49 and 1 it takes
+    /// k_c of it, 0.953 and 0.689 (R1122ac, review §4 P3).
     #[test]
-    fn a_stocky_rod_crushes_before_it_buckles() {
+    fn a_rod_takes_its_buckling_factor_of_its_crushing_load() {
         let obb = post(50.0, 1000.0, 50.0);
         let run = [0.0, 1000.0, 0.0];
-        let euler = |reach: f64| {
-            std::f64::consts::PI.powi(2) * 7_400.0 * 50.0_f64.powi(4) / 12.0 / (reach * reach)
+        let crushing = 21.0 * 2500.0;
+        let inertia = 50.0_f64.powi(4) / 12.0;
+        // The length over which Euler's load is f_c,0,k A over `slenderness` squared.
+        let reach = |slenderness: f64| {
+            std::f64::consts::PI * (7_400.0 * inertia / crushing).sqrt() * slenderness
         };
-        let slender = buckling_load(&obb, (7_400.0, 21.0), run, 300.0);
-        assert!((slender - euler(300.0)).abs() < 1e-9 * slender, "{slender}");
-        let stocky = buckling_load(&obb, (7_400.0, 21.0), run, 200.0);
-        assert!(stocky.is_infinite(), "{stocky}");
+        let load = |reach: f64| buckling_load(&obb, (7_400.0, 21.0), run, reach);
+        assert!((load(200.0) - crushing).abs() < 1e-9 * crushing);
+        for (slenderness, factor) in [(0.301, 0.999_78), (0.49, 0.953_04), (1.0, 0.689_34)] {
+            let taken = load(reach(slenderness)) / crushing;
+            assert!((taken - factor).abs() < 1e-4, "{slenderness}: {taken}");
+        }
+        let euler = crushing / 4.0;
+        assert!(load(reach(2.0)) < euler, "{}", load(reach(2.0)));
     }
 }
