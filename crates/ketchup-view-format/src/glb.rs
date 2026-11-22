@@ -291,7 +291,48 @@ fn validate_document(doc: &Document, binary: &[u8]) -> Result<(), Rejection> {
             ));
         }
     }
-    validate_tree(doc)
+    validate_tree(doc)?;
+    validate_drawn(doc)
+}
+
+/// How many indices the Viewer draws at most, every copy of a mesh counted:
+/// three times as many as a package may store.
+pub(crate) const MAX_DRAWN_INDICES: usize = 48_000_000;
+
+/// The work a package asks of whoever draws and picks it: each node's mesh
+/// draws all its indices again (review 2026-11-22 R1122ac-VW-1100: 50 001
+/// nodes on one mesh of 5 M triangles, 64.6 MB, passed every byte limit and
+/// froze the Viewer at 2.5 × 10¹¹ triangles a frame).
+fn validate_drawn(doc: &Document) -> Result<(), Rejection> {
+    let per_mesh: Vec<usize> = doc
+        .meshes
+        .iter()
+        .map(|mesh| {
+            mesh.primitives
+                .iter()
+                .map(|primitive| doc.accessors[primitive.indices].count)
+                .sum()
+        })
+        .collect();
+    let drawn = doc
+        .nodes
+        .iter()
+        .filter_map(|node| node.mesh)
+        .try_fold(0_usize, |drawn, mesh| {
+            drawn
+                .checked_add(per_mesh[mesh])
+                .filter(|&drawn| drawn <= MAX_DRAWN_INDICES)
+        });
+    if drawn.is_none() {
+        return Err(reject(
+            "glb.nodes",
+            format!(
+                "The model draws more than {MAX_DRAWN_INDICES} triangle and line indices across \
+                 the copies of its meshes; export it with fewer copies or simpler parts."
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The bytes of one accessor, after checking type, alignment and bounds.
