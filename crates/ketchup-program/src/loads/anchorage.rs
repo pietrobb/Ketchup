@@ -15,7 +15,7 @@ use super::{BraceAnchorage, Frame, Support, depth, middle};
 use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
-use joint::{Hold, Strut, hold};
+use joint::{Hold, Pivot, Strut, hold, strut_line};
 use ketchup_geometry::linalg::{self, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
 use sheet::{Spring, on_springs};
@@ -84,6 +84,26 @@ fn meeting(a: &Obb, b: &Obb) -> Option<[f64; 3]> {
             (std::array::from_fn(|i| sum[i] + corner[i]), count + 1.0)
         });
     (count > 0.0).then(|| sum.map(|sum| sum / count))
+}
+
+/// How far from `at` along `way` (unit) the line through it runs inside box
+/// `obb`, within the fit: before and past `at`, or None where it misses it.
+fn inside_along(obb: &Obb, at: [f64; 3], way: [f64; 3]) -> Option<(f64, f64)> {
+    let mut stretch = (f64::NEG_INFINITY, f64::INFINITY);
+    for k in 0..3 {
+        let offset = dot(sub(at, obb.centre), obb.axes[k]);
+        let half = obb.half[k] + CONTACT_FIT_MM;
+        let rate = dot(way, obb.axes[k]);
+        if rate.abs() <= f64::EPSILON {
+            if offset.abs() > half {
+                return None;
+            }
+            continue;
+        }
+        let (lo, hi) = ((-half - offset) / rate, (half - offset) / rate);
+        stretch = (stretch.0.max(lo.min(hi)), stretch.1.min(lo.max(hi)));
+    }
+    (stretch.0 <= stretch.1).then_some(stretch)
 }
 
 /// The corners of the region boxes `a` and `b` share within the fit.
@@ -431,6 +451,42 @@ impl<'a> Footing<'a> {
             .unwrap_or(anchor_obb.centre)
     }
 
+    /// Where `by` turns about its joint with `other`, which it meets at
+    /// `meets` (R1122ac-PG-1100): the middle of the fasteners joining them,
+    /// else where they meet, anywhere along the contact's normal as deep as
+    /// the thinner part is thick that way, within the two parts.
+    fn pivot(&self, by: usize, other: usize, meets: [f64; 3]) -> Pivot {
+        let at = self
+            .joined
+            .get(&(by.min(other), by.max(other)))
+            .and_then(|fasteners| middle(fasteners))
+            .unwrap_or(meets);
+        let Some(normal) = self.contact_normal(by, other) else {
+            return Pivot::point(at);
+        };
+        let boxes = [self.parts[by].obb(), self.parts[other].obb()];
+        let deep = boxes
+            .iter()
+            .map(|obb| {
+                (0..3)
+                    .map(|k| 2.0 * obb.half[k] * dot(obb.axes[k], normal).abs())
+                    .sum()
+            })
+            .fold(f64::INFINITY, f64::min);
+        let (from, to) = boxes
+            .iter()
+            .filter_map(|obb| inside_along(obb, at, normal))
+            .fold((0.0_f64, 0.0_f64), |(from, to), (lo, hi)| {
+                (from.min(lo), to.max(hi))
+            });
+        Pivot {
+            at,
+            along: normal,
+            from: from.max(-deep),
+            to: to.min(deep),
+        }
+    }
+
     /// The level directions across `member` a force holding it acts in: the
     /// one across it, or both for an upright one.
     fn sideways(&self, member: usize) -> Vec<[f64; 3]> {
@@ -509,14 +565,19 @@ impl<'a> Footing<'a> {
                     }
                 }
                 (to_member, to_anchor) => {
-                    let ends = (point, at);
+                    let ends = strut_line(
+                        self.pivot(by, member, point),
+                        self.pivot(by, anchor, at),
+                        sideways,
+                    );
+                    let reach = length(sub(ends.0, ends.1));
                     let probe = Probe {
-                        held: at,
-                        enter: at,
-                        along: Strut::of(&obb, self.moduli[by], ends, sideways, run).axis,
+                        held: ends.1,
+                        enter: ends.1,
+                        along: Strut::of(&obb, self.moduli[by], ends, sideways, reach).axis,
                     };
                     let (from_anchor, through) =
-                        self.reached(anchor, member, apart, run, Some(probe))?;
+                        self.reached(anchor, member, apart, reach, Some(probe))?;
                     route.extend(through);
                     let strut =
                         Strut::of(&obb, self.moduli[by], ends, sideways, from_anchor.over_mm);

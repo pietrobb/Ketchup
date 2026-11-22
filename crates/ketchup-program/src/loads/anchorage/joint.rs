@@ -79,6 +79,72 @@ pub(super) fn hold(tie: Tie, at: [f64; 3], held: [f64; 3], sideways: [f64; 3], t
     }
 }
 
+/// Where a strut turns at one end: about `at`, or anywhere along the
+/// fasteners' run there (`along`, the contact's normal) from `from` to `to`
+/// past it, within the parts they join.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Pivot {
+    pub(super) at: [f64; 3],
+    pub(super) along: [f64; 3],
+    pub(super) from: f64,
+    pub(super) to: f64,
+}
+
+impl Pivot {
+    /// A pivot at the point `at` alone.
+    pub(super) const fn point(at: [f64; 3]) -> Self {
+        Self {
+            at,
+            along: [0.0; 3],
+            from: 0.0,
+            to: 0.0,
+        }
+    }
+
+    fn at_share(self, share: f64) -> [f64; 3] {
+        let past = self.from + (self.to - self.from) * share;
+        std::array::from_fn(|i| self.at[i] + self.along[i] * past)
+    }
+}
+
+/// The line a strut turning about pivots `a` and `b` pushes along, from `a`
+/// to `b`: through both, the one most across the force `sideways` where the
+/// pivots leave it open, on the safe side (R1122ac-PG-1100). A fastener
+/// turns the part about itself anywhere along its run.
+pub(super) fn strut_line(a: Pivot, b: Pivot, sideways: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    const STEPS: u32 = 4;
+    let line = |(first, second): (f64, f64)| (a.at_share(first), b.at_share(second));
+    // The force's share along the line runs linearly with the shares: where
+    // it changes sign between two corners, a line between them lies across.
+    let along = |shares| {
+        let (start, end) = line(shares);
+        dot(sub(end, start), sideways)
+    };
+    let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    for (index, &p) in corners.iter().enumerate() {
+        let q = corners[(index + 1) % 4];
+        let (at_p, at_q) = (along(p), along(q));
+        if at_p == 0.0 || at_p * at_q < 0.0 {
+            let share = at_p / (at_p - at_q);
+            return line((p.0 + (q.0 - p.0) * share, p.1 + (q.1 - p.1) * share));
+        }
+    }
+    let cosine = |shares| {
+        let (start, end) = line(shares);
+        let long = length(sub(end, start));
+        if long > f64::EPSILON {
+            along(shares).abs() / long
+        } else {
+            f64::INFINITY
+        }
+    };
+    let steps = || (0..=STEPS).map(|step| f64::from(step) / f64::from(STEPS));
+    steps()
+        .flat_map(|first| steps().map(move |second| (first, second)))
+        .min_by(|p, q| cosine(*p).total_cmp(&cosine(*q)))
+        .map_or((a.at, b.at), line)
+}
+
 /// A brace turning about a joint at either end, from the point of the member
 /// it holds to its anchor: it pushes and pulls only along its axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,9 +161,13 @@ pub(super) struct Strut {
 
 impl Strut {
     /// The strut of box `obb`, modulus `modulus`, fifth-percentile modulus
-    /// `modulus_05` and compressive strength `fc0_k` (N/mm²) between `entry`
-    /// and `exit`, buckling over the length `reach`, held by a force
-    /// `sideways`.
+    /// `modulus_05` and compressive strength `fc0_k` (N/mm²) turning about
+    /// `entry` and `exit`, buckling over the length `reach`, held by a force
+    /// `sideways`. A part turning about a joint at each end pushes along the
+    /// line through them, wherever its box lies (review 2026-11-22
+    /// R1122ac-PG-1100: a plate 300 wide on a screw at each end, 140 mm apart
+    /// across it, was taken to push along its length, its column's strong
+    /// way, and held the member nine times too stiffly).
     pub(super) fn of(
         obb: &Obb,
         (modulus, modulus_05, fc0_k): (f64, f64, f64),
@@ -107,10 +177,16 @@ impl Strut {
     ) -> Self {
         let run = sub(entry, exit);
         let (along, [(_, wide_i), (_, wide_j)]) = section(obb, run);
+        let long = length(run);
+        let axis = if long > f64::EPSILON {
+            scale(run, 1.0 / long)
+        } else {
+            obb.axes[along]
+        };
         Self {
-            axis: obb.axes[along],
-            cosine: dot(sideways, obb.axes[along]).abs(),
-            give: length(run) / (modulus * wide_i * wide_j),
+            axis,
+            cosine: dot(sideways, axis).abs(),
+            give: long / (modulus * wide_i * wide_j),
             capacity: buckling_load(obb, (modulus_05, fc0_k), run, reach),
         }
     }
@@ -168,7 +244,7 @@ mod tests {
         let expected = slip / 2.0 + 2390.0_f64.powi(2) / (SLIP_PER_FASTENER * 1250.0);
         assert!((give - expected).abs() < 1e-9);
         // R1121ac-PG-1001: in a contact facing z the same moment turns about
-        // an axis lying in it, pulling the fasteners out: a hinge.
+        // an axis lying in it, pulling the fasteners out: a pivot.
         let lying = Tie::fasteners(&screws, Some([0.0, 0.0, 1.0]));
         assert_eq!(
             hold(lying, foot, held, sideways, 50.0),
