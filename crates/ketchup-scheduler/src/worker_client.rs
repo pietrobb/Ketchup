@@ -13,7 +13,7 @@ use ketchup_rejection::{Reason, dropped};
 
 // The handshake is a new worker's first request: its budget also covers starting the
 // process and loading the OCCT libraries, which on a loaded machine takes seconds.
-const WORKER_START_UP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const WORKER_START_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct WorkerWriteRequest {
     pub(crate) frame: Vec<u8>,
@@ -141,7 +141,17 @@ impl ExactWorkerClient {
         &mut self,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
-        match self.call(&WorkerRequest::Hello, cancelled, WORKER_START_UP_TIMEOUT)? {
+        self.ping_within(cancelled, WORKER_START_UP_TIMEOUT)
+    }
+
+    /// The handshake within `time`: a caller with a deadline of its own gives it only
+    /// what is left of it.
+    pub(crate) fn ping_within(
+        &mut self,
+        cancelled: &AtomicBool,
+        time: Duration,
+    ) -> Result<(), WorkerError> {
+        match self.call(&WorkerRequest::Hello, cancelled, time)? {
             WorkerReply::Hello { protocol } if protocol == protocol_identity() => Ok(()),
             WorkerReply::Hello { protocol } => self.fail_protocol(format!(
                 "worker protocol {protocol} differs from scheduler protocol {}",
@@ -846,11 +856,23 @@ impl ExactWorkerClient {
         hold: Duration,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
-        self.call_done(
-            &WorkerRequest::Allocate { bytes, hold },
+        self.allocate_probe_within(
+            bytes,
+            hold,
             cancelled,
             DEFAULT_WORKER_REQUEST_TIMEOUT.saturating_add(hold),
         )
+    }
+
+    /// [`Self::allocate_probe_holding`] that waits for the answer only `time`.
+    pub fn allocate_probe_within(
+        &mut self,
+        bytes: u64,
+        hold: Duration,
+        cancelled: &AtomicBool,
+        time: Duration,
+    ) -> Result<(), WorkerError> {
+        self.call_done(&WorkerRequest::Allocate { bytes, hold }, cancelled, time)
     }
 
     pub fn begin_killable_job(&mut self, duration: Duration) -> Result<(), WorkerError> {
@@ -1098,12 +1120,12 @@ impl ExactWorkerClient {
     /// Stops the worker; one that died of a failed allocation, or that the memory
     /// watch killed (macOS), fails with [`WorkerError::MemoryLimit`] instead of `error`,
     /// and one the window's memory budget stopped with [`WorkerError::MemoryBudget`].
+    /// A timed-out worker is asked too: a failed allocation calls abort(), which on
+    /// Windows holds the process for seconds while it files an error report, so the
+    /// request's time can run out before the worker exits (R1122ac, review §4 P3).
     fn fail<T>(&mut self, error: WorkerError) -> Result<T, WorkerError> {
         self.terminate_worker();
-        if matches!(
-            error,
-            WorkerError::Cancelled | WorkerError::RequestTimedOut(_)
-        ) {
+        if matches!(error, WorkerError::Cancelled) {
             return Err(error);
         }
         if let Some(stop) = self

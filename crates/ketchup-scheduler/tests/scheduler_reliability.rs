@@ -77,6 +77,28 @@ fn the_exact_worker_is_stopped_past_its_memory_limit() {
     next.ping().unwrap();
 }
 
+/// A failed allocation calls abort(), which on Windows holds the worker for seconds
+/// while it files an error report: a request whose time runs out meanwhile is still
+/// the memory limit, not a timeout (R1122ac, review §4 P3). The refused probe holds
+/// the worker the same way.
+#[test]
+fn a_failed_allocation_held_past_the_request_time_is_the_memory_limit() {
+    let _turn = crate::integration_support::file_turn();
+    let limit = ketchup_scheduler::exact_worker_memory_bytes();
+    let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.ping().unwrap();
+    let past_limit = u64::try_from(limit).unwrap() + (256 << 20);
+    assert_eq!(
+        worker.allocate_probe_within(
+            past_limit,
+            Duration::from_secs(60),
+            &AtomicBool::new(false),
+            Duration::from_secs(2),
+        ),
+        Err(WorkerError::MemoryLimit { bytes: limit })
+    );
+}
+
 /// Workers each within the limit of their kind but together past the window's
 /// budget: the largest is stopped and its request says what each used, the other
 /// keeps running (README "One memory limit per kind of background job").
