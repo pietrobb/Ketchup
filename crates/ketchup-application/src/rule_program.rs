@@ -220,8 +220,29 @@ pub fn plan_rule_program_by(
     deadline: crate::program_isolation::CheckDeadline,
     cancel: &ketchup_program::CancelToken,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    plan_rule_program_reading(
+        document,
+        source,
+        &mut crate::program_imports::NoFiles,
+        deadline,
+        cancel,
+    )
+}
+
+/// [`plan_rule_program_by`] whose parts read from STEP files are read by
+/// `files`, the host that has the folder of the program's file.
+///
+/// # Errors
+/// As [`plan_rule_program_by`], or a file could not be read.
+pub fn plan_rule_program_reading(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+    files: &mut dyn crate::program_imports::ImportFiles,
+    deadline: crate::program_isolation::CheckDeadline,
+    cancel: &ketchup_program::CancelToken,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
     let evaluated = evaluate_by(source, deadline, cancel)?;
-    plan_evaluated(document, source, evaluated, None, deadline, cancel)
+    plan_evaluated(document, source, evaluated, None, files, deadline, cancel)
 }
 
 /// [`plan_rule_program`] of `source` the caller already evaluated as
@@ -241,6 +262,7 @@ pub fn plan_rule_program_from(
         source,
         evaluated,
         current,
+        &mut crate::program_imports::NoFiles,
         crate::program_isolation::CheckDeadline::start(),
         // A window edit, waited for on the window's thread.
         &ketchup_program::CancelToken::default(),
@@ -250,18 +272,34 @@ pub fn plan_rule_program_from(
 fn plan_evaluated(
     document: &DocumentStore,
     source: &RuleProgramSource,
-    evaluated: ketchup_program::Evaluated,
+    mut evaluated: ketchup_program::Evaluated,
     current_evaluated: Option<&ketchup_program::Evaluated>,
+    files: &mut dyn crate::program_imports::ImportFiles,
     deadline: crate::program_isolation::CheckDeadline,
     cancel: &ketchup_program::CancelToken,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    read_evaluated(&mut evaluated, &document.current(), files)?;
     let change = match document.current_rule_program() {
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
-            let old = match current_evaluated {
+            let mut old = match current_evaluated {
                 Some(old) => std::borrow::Cow::Borrowed(old),
                 None => std::borrow::Cow::Owned(evaluate_by(current, deadline, cancel)?),
             };
+            // What the program placed is what the document holds.
+            let model = old.reference_model();
+            if model
+                .parts
+                .iter()
+                .chain(model.components.iter().flat_map(|c| c.parts.iter()))
+                .any(|part| part.imported().is_some_and(|import| import.read.is_none()))
+            {
+                read_evaluated(
+                    old.to_mut(),
+                    &document.current(),
+                    &mut crate::program_imports::NoFiles,
+                )?;
+            }
             let previous = document.current();
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
@@ -308,6 +346,19 @@ fn plan_evaluated(
     Ok(RuleProgramPlan { evaluated, change })
 }
 
+/// [`crate::program_imports::read_imports`] of both models of `evaluated`.
+fn read_evaluated(
+    evaluated: &mut ketchup_program::Evaluated,
+    snapshot: &Snapshot,
+    files: &mut dyn crate::program_imports::ImportFiles,
+) -> Result<(), RuleProgramApplyError> {
+    crate::program_imports::read_imports(&mut evaluated.model, snapshot, files)?;
+    if let Some(reference) = &mut evaluated.reference_model {
+        crate::program_imports::read_imports(reference, snapshot, files)?;
+    }
+    Ok(())
+}
+
 impl DocumentSession {
     /// Evaluates and publishes a rule program through the canonical document session.
     /// Incremental updates preserve identities; replacing an unrelated document requires
@@ -336,9 +387,29 @@ impl DocumentSession {
         allow_replacement: bool,
         deadline: crate::program_isolation::CheckDeadline,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
+        self.apply_rule_program_reading(
+            source,
+            allow_replacement,
+            &mut crate::program_imports::NoFiles,
+            deadline,
+        )
+    }
+
+    /// [`Self::apply_rule_program_by`] whose STEP files `files` reads.
+    ///
+    /// # Errors
+    /// As [`Self::apply_rule_program`], or a file could not be read.
+    pub fn apply_rule_program_reading(
+        &mut self,
+        source: RuleProgramSource,
+        allow_replacement: bool,
+        files: &mut dyn crate::program_imports::ImportFiles,
+        deadline: crate::program_isolation::CheckDeadline,
+    ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
         // A session call, waited for on its caller's thread.
         let cancel = ketchup_program::CancelToken::default();
-        let plan = plan_rule_program_by(self.document_store(), &source, deadline, &cancel)?;
+        let plan =
+            plan_rule_program_reading(self.document_store(), &source, files, deadline, &cancel)?;
         let report = plan.report(deadline, &cancel);
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
@@ -557,27 +628,36 @@ fn replacement_batch(
         .collect::<Vec<_>>();
     let additions =
         crate::planner::plan_rule_part_batch(document, &parts).map_err(SessionError::Planning)?;
+    // By the part's name: the planner places some kinds of body after others.
     let definitions = additions
         .commands()
         .iter()
         .filter_map(|command| match command {
-            CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
+            CanonicalCommand::CreateDefinition { id, name } => Some((name.as_str(), *id)),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<std::collections::BTreeMap<_, _>>();
     let temporary_occurrences = additions
         .commands()
         .iter()
         .filter_map(|command| match command {
-            CanonicalCommand::CreateOccurrence { id, transform, .. } => Some((*id, *transform)),
+            CanonicalCommand::CreateOccurrence {
+                id,
+                definition_id,
+                transform,
+                ..
+            } => Some((*definition_id, (*id, *transform))),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut commands = additions.commands().to_vec();
-    for ((old_id, _), (definition_id, (temporary_id, transform))) in replacements
-        .iter()
-        .zip(definitions.into_iter().zip(temporary_occurrences))
-    {
+    for (old_id, part) in replacements {
+        let definition_id = *definitions
+            .get(part.name.as_str())
+            .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
+        let (temporary_id, transform) = *temporary_occurrences
+            .get(&definition_id)
+            .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
         commands.push(CanonicalCommand::SetOccurrenceTransform {
             id: *old_id,
             transform,
@@ -719,7 +799,8 @@ pub(crate) fn program_feature_references_match(
         (
             ketchup_program::model::ProgramPartBody::Profile { .. }
             | ketchup_program::model::ProgramPartBody::Sweep { .. }
-            | ketchup_program::model::ProgramPartBody::Loft { .. },
+            | ketchup_program::model::ProgramPartBody::Loft { .. }
+            | ketchup_program::model::ProgramPartBody::Imported(_),
             _,
         ) => before.body == after.body,
         _ => false,

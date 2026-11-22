@@ -574,6 +574,16 @@ impl<'a> OperationPlanner<'a> {
                     "Extrude the profile before using a solid operation.",
                 ));
             }
+            // The program refuses it (`ketchup_program::imported::operation_name`).
+            ProgramPartBody::Imported(_) => {
+                return Err(assistant_planning_rejection(
+                    "planning.imported_tool",
+                    "rule_part",
+                    &tool.name,
+                    "A body read from a STEP file cannot be used as a solid tool.",
+                    "Cut with a tool body of the room it needs.",
+                ));
+            }
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. }
             | ProgramPartBody::Sweep { segments, .. } => {
@@ -609,7 +619,9 @@ impl<'a> OperationPlanner<'a> {
                 path: self.feature(format!("{prefix} tool path"), spatial_path(path))?,
                 up: *up,
             },
-            ProgramPartBody::Profile { .. } | ProgramPartBody::Loft { .. } => {
+            ProgramPartBody::Profile { .. }
+            | ProgramPartBody::Loft { .. }
+            | ProgramPartBody::Imported(_) => {
                 unreachable!("handled above")
             }
             ProgramPartBody::Extrusion { distance_mm, .. } => {

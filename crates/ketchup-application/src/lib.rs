@@ -23,6 +23,7 @@ pub mod pdm_workflow;
 mod planner;
 mod plugin;
 mod product_change;
+pub mod program_imports;
 pub mod program_isolation;
 mod program_part_change;
 mod program_part_edit;
@@ -77,6 +78,7 @@ pub use rule_instances::{made_parts, rule_program_part_name};
 pub use rule_program::{
     RuleProgramApplyError, RuleProgramApplyResult, RuleProgramChange, RuleProgramPlan,
     plan_rule_program, plan_rule_program_cancellable, plan_rule_program_from,
+    plan_rule_program_reading,
 };
 
 mod session;

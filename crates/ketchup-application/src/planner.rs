@@ -4210,10 +4210,15 @@ pub fn plan_rule_part_batch(
     document: &DocumentStore,
     parts: &[ProgramPart],
 ) -> Result<CommandBatch, Box<AssistantRejectionDiagnostic>> {
+    // A body read from a file is placed as it is (`crate::program_imports`).
     let solids = parts
         .iter()
-        .filter(|p| p.is_solid())
+        .filter(|p| p.is_solid() && p.imported().is_none())
         .cloned()
+        .collect::<Vec<_>>();
+    let imported = parts
+        .iter()
+        .filter(|p| p.imported().is_some())
         .collect::<Vec<_>>();
     let profiles = parts.iter().filter(|p| !p.is_solid()).collect::<Vec<_>>();
     let parts = &solids;
@@ -4287,6 +4292,7 @@ pub fn plan_rule_part_batch(
         OperationPlanner::new(&mut commands, definition_id, &mut next_feature, &part.name)
             .apply(part, target)?;
     }
+    crate::program_imports::append_imported(document, &imported, &mut commands)?;
     crate::rule_operations::append_profiles(document, &profiles, &mut commands)?;
     Ok(CommandBatch::new(commands))
 }
