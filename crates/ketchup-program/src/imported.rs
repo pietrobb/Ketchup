@@ -3,8 +3,9 @@
 //! a worker without them. So the program only names the file, and the host
 //! reads it after the evaluation and records here what it read: the file's own
 //! name, the part of an assembly it took and the exact kernel's account of the
-//! body, its bounds among it. Until then the body has no extent and no check
-//! takes it into account.
+//! body, its bounds among it. The worker's own report sees the body without
+//! extent; its collisions come from the window's exact check, which runs on
+//! the placed bodies after the apply and is the report the apply answers with.
 
 use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody};
 use ketchup_model::import::StepImportEvidence;
