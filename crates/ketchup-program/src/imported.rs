@@ -91,16 +91,28 @@ impl ProgramModel {
 /// `file` is absolute, or a `..` takes it out of the program's folder.
 pub fn check_inside_program_folder(name: &str, file: &str) -> anyhow::Result<()> {
     use std::path::Component;
-    let path = std::path::Path::new(file);
+    // The same answer on every system: a backslash separates and a colon
+    // (drive "C:", alternate stream "a.step:x") is refused, as Windows reads
+    // them, even where the program is checked on Linux or macOS.
+    let outside = || {
+        anyhow::anyhow!(
+            "{name:?}: {file:?} is outside the folder of the program's file; copy the STEP file into that folder (or below it) and give its path from there, e.g. \"supplier/article.step\""
+        )
+    };
+    if file.contains(':') {
+        return Err(outside());
+    }
+    let normalized = file.replace('\\', "/");
+    let path = std::path::Path::new(&normalized);
     let mut depth = 0_usize;
     for component in path.components() {
         match component {
             Component::Normal(_) => depth += 1,
             Component::CurDir => {}
             Component::ParentDir if depth > 0 => depth -= 1,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => anyhow::bail!(
-                "{name:?}: {file:?} is outside the folder of the program's file; copy the STEP file into that folder (or below it) and give its path from there, e.g. \"supplier/article.step\""
-            ),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(outside());
+            }
         }
     }
     Ok(())

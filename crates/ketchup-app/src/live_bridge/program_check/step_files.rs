@@ -318,10 +318,7 @@ impl StepFiles {
                     rejected.reason
                 )));
             }
-            return Err(unreadable(format!(
-                "it has no part {name:?}; its parts are {}",
-                part_names(&assembly.parts)
-            )));
+            return placed_part(&assembly, name);
         };
         let more = found.count();
         if more > 0 {
@@ -382,13 +379,105 @@ fn not_step(error: ketchup_scheduler::WorkerError) -> Rejection {
     unreadable("the exact kernel cannot read it as a STEP body").caused_by(error)
 }
 
+/// The one part placed under the assembly node `name`. Many CAD systems name
+/// each part's product after its shape ("SOLID") and only its placement after
+/// the article, so `part=` names either.
+fn placed_part(
+    assembly: &StepXdeImportEvidence,
+    name: &str,
+) -> Result<(u32, StepImportEvidence), Rejection> {
+    let parent = |id: u32| {
+        assembly
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .and_then(|node| node.parent_id)
+    };
+    let named = |id: u32| {
+        assembly
+            .nodes
+            .iter()
+            .any(|node| node.id == id && node.name == name)
+    };
+    let mut indices = Vec::new();
+    for node in &assembly.nodes {
+        let Some(index) = node.part_index else {
+            continue;
+        };
+        let mut at = Some(node.id);
+        let mut steps = 0;
+        while let Some(id) = at.filter(|_| steps <= assembly.nodes.len()) {
+            if named(id) {
+                if !indices.contains(&index) {
+                    indices.push(index);
+                }
+                break;
+            }
+            at = parent(id);
+            steps += 1;
+        }
+    }
+    match indices.as_slice() {
+        [] => {
+            // A refused part's placements are left out of `nodes`, so its
+            // name may be the one asked for: say which were refused and why.
+            let refused = assembly
+                .rejected_parts
+                .iter()
+                .map(|rejected| format!("{:?}: {}", rejected.name, rejected.reason))
+                .collect::<Vec<_>>();
+            let refused = if refused.is_empty() {
+                String::new()
+            } else {
+                format!("; it refused {}", refused.join("; "))
+            };
+            Err(unreadable(format!(
+                "it has no part {name:?}; its parts are {}{refused}",
+                names(
+                    assembly
+                        .nodes
+                        .iter()
+                        .filter(|node| node.name_from_source)
+                        .map(|node| node.name.as_str())
+                        .chain(assembly.parts.iter().map(|part| part.name.as_str()))
+                )
+            )))
+        }
+        [index] => {
+            if let Some(part) = assembly.parts.iter().find(|part| part.index == *index) {
+                return Ok((part.index, part.exact.clone()));
+            }
+            let reason = assembly
+                .rejected_parts
+                .iter()
+                .find(|rejected| rejected.index == *index)
+                .map_or("the exact kernel refused it", |rejected| {
+                    rejected.reason.as_str()
+                });
+            Err(unreadable(format!(
+                "its part {name:?} cannot be read: {reason}"
+            )))
+        }
+        more => Err(unreadable(format!(
+            "{name:?} in it holds {} parts, so the name does not say which one; \
+             name one placed under it, or export it alone",
+            more.len()
+        ))),
+    }
+}
+
 /// The distinct names of `parts`, quoted, the first few of a long list.
 fn part_names(parts: &[ketchup_model::import::StepXdePartEvidence]) -> String {
+    names(parts.iter().map(|part| part.name.as_str()))
+}
+
+/// The distinct `all`, quoted, the first few of a long list.
+fn names<'a>(all: impl Iterator<Item = &'a str>) -> String {
     const SHOWN: usize = 20;
     let mut names = Vec::<&str>::new();
-    for part in parts {
-        if !names.contains(&part.name.as_str()) {
-            names.push(&part.name);
+    for name in all {
+        if !names.contains(&name) {
+            names.push(name);
         }
     }
     let mut text = names

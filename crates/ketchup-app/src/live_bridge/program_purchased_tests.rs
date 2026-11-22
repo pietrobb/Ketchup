@@ -5,7 +5,7 @@ use ketchup_model::document::FeatureKind;
 
 const WARDROBE: &str = "door_h = param('door_h', 2000)\n\
     for (i, z) in enumerate([100, door_h - 100]):\n\
-    \x20   purchased('hinge %d' % i, 'parts/box.step', '9073662', 'Hettich',\n\
+    \x20   purchased('hinge %d' % i, 'parts/box.step', '9237903', 'Hettich',\n\
     \x20             at = (18, 0, z), z = (-1, 0, 0), x = (0, 0, 1))\n\
     board('door', (600, 18, door_h))\n";
 
@@ -324,6 +324,66 @@ fn a_part_of_an_assembly_file_is_named_and_a_name_two_parts_share_is_refused() {
         twins.path(),
     );
     assert!(reason.contains("are named \"Sound block\""), "{reason}");
+}
+
+/// A supplier's assembly often names every part's product after its shape
+/// ("SOLID") and only the placement after the article: `part=` takes the
+/// placement's name too, one holding several parts is refused as not saying
+/// which, and a name the file lacks lists the parts it refused and why.
+#[test]
+fn a_part_is_named_by_its_placement_in_the_assembly() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = tempfile::tempdir().unwrap();
+    let assembly = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step"),
+    )
+    .unwrap();
+    let placed = assembly
+        .replace("'Sound block','Sound block'", "'SOLID','SOLID'")
+        .replace("'1','=>[0:1:1:2]'", "'1','Hettich 1 hinge'");
+    assert_ne!(placed, assembly);
+    std::fs::write(folder.path().join("salvage.step"), placed).unwrap();
+    let program = |part: &str| {
+        format!(
+            "door_h = param('door_h', 2000)\n\
+             purchased('block', 'salvage.step', '1', 'Test', part = '{part}')\n\
+             board('door', (600, 18, door_h))\n"
+        )
+    };
+    bridge
+        .execute(
+            &mut app,
+            apply(&program("Hettich 1 hinge"), Some(folder.path()), 2000.0),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
+    assert!(
+        app.document
+            .current()
+            .occurrences()
+            .any(|occurrence| occurrence.name() == "block")
+    );
+
+    let reason = refused(
+        &mut app,
+        &mut bridge,
+        &program("Salvage assembly"),
+        folder.path(),
+    );
+    assert!(
+        reason.contains("holds") && reason.contains("parts"),
+        "{reason}"
+    );
+
+    let reason = refused(&mut app, &mut bridge, &program("Wire group"), folder.path());
+    assert!(
+        reason.contains("no part \"Wire group\"")
+            && reason.contains("refused \"Wire frame\": ")
+            && reason.contains("has no face"),
+        "{reason}"
+    );
 }
 
 #[test]

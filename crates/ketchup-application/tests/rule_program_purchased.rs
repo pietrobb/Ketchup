@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 const WARDROBE: &str = "door_h = param('door_h', 2000)\n\
     for (i, z) in enumerate([100, door_h - 100]):\n\
-    \x20   purchased('hinge %d' % i, 'hettich/9073662.step', '9073662', 'Hettich',\n\
+    \x20   purchased('hinge %d' % i, 'hettich/9237903.stp', '9237903', 'Hettich',\n\
     \x20             at = (18, 0, z), z = (-1, 0, 0), x = (0, 0, 1))\n\
     board('door', (600, 18, door_h))\n";
 
@@ -60,9 +60,9 @@ impl ImportFiles for Folder {
                 "the exact kernel found no solid in it",
             ));
         }
-        assert_eq!(file, "hettich/9073662.step");
+        assert_eq!(file, "hettich/9237903.stp");
         Ok(Some(ImportedBody {
-            file_name: "9073662.step".to_owned(),
+            file_name: "9237903.stp".to_owned(),
             part_index: None,
             evidence: hinge_evidence(),
         }))
@@ -101,10 +101,10 @@ fn the_program_places_each_bought_part_and_keeps_the_document() {
     let mut folder = Folder::default();
     let snapshot = apply(&mut session, 2000.0, &mut folder).unwrap();
     // Two hinges of one file: read once, one receipt.
-    assert_eq!(folder.reads["hettich/9073662.step"], 1);
+    assert_eq!(folder.reads["hettich/9237903.stp"], 1);
     assert_eq!(snapshot.import_receipts().count(), 1);
     let receipt = snapshot.import_receipts().next().unwrap();
-    assert_eq!(receipt.source_name(), "9073662.step");
+    assert_eq!(receipt.source_name(), "9237903.stp");
     let (top, at_2000) = hinge(&snapshot, "hinge 1");
     hinge(&snapshot, "hinge 0");
     assert_eq!(at_2000.matrix()[11], 1900.0);
@@ -113,7 +113,7 @@ fn the_program_places_each_bought_part_and_keeps_the_document() {
     // A taller door moves the upper hinge; the occurrence stays and so does
     // the program, the file read from the folder again only once.
     let snapshot = apply(&mut session, 2400.0, &mut folder).unwrap();
-    assert_eq!(folder.reads["hettich/9073662.step"], 2);
+    assert_eq!(folder.reads["hettich/9237903.stp"], 2);
     let (moved, at_2400) = hinge(&snapshot, "hinge 1");
     assert_eq!(moved, top);
     assert_eq!(at_2400.matrix()[11], 2300.0);
@@ -144,7 +144,7 @@ fn a_file_that_cannot_be_read_says_which_part_and_why() {
     let message = error.to_string();
     assert!(
         message.contains("hinge 0")
-            && message.contains("hettich/9073662.step")
+            && message.contains("hettich/9237903.stp")
             && message.contains("found no solid"),
         "{message}"
     );

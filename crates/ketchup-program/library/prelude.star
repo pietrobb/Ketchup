@@ -2051,11 +2051,12 @@ def bearing_envelope(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags =
 #     A bought part (a hinge, a runner, a handle) whose body is the maker's STEP file:
 #     `step` relative to the folder of this program's file and inside it. The file's
 #     origin goes to `at`, its z along `z` and its x along `x`, so the part follows
-#     the parameters it is placed by. `part=` takes one part of an assembly file.
+#     the parameters it is placed by. `part=` takes one part of an assembly file, by
+#     its name or by the name of its placement in the assembly.
 #     Listed in the hardware list as "<supplier> <article>" (qty pieces), never in
 #     the cut list or CNC; it takes no cut or hole. One file used by many parts is
 #     read once.
-#     Example: purchased("hinge left", "hettich/9073662.step", "9073662", "Hettich",
+#     Example: purchased("hinge left", "hettich/9237903.stp", "9237903", "Hettich",
 #                        at = (18, 0, door_h - 100), z = (-1, 0, 0), x = (0, 0, 1))
 def purchased(name, step, article, supplier, at = (0, 0, 0), z = (0, 0, 1), x = (1, 0, 0), part = None,
               qty = 1, tags = None):
