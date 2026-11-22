@@ -128,19 +128,26 @@ fn the_worker_stays_between_programs_and_is_replaced_after_a_kill() {
     assert_ne!(worker.process_id(), Some(first));
 }
 
-/// A model cheap to evaluate but seconds to check: ten thousand boxes side by
-/// side, each touching its neighbours. (Overlapping boxes no longer do: their
-/// pairs stop at a limit, review 2026-11-22 R1122ac-PG-1102.)
-const SLOW_TO_CHECK: &str = "for i in range(100):\n    for j in range(100):\n        \
-    box(\"b%d_%d\" % (i, j), (100, 100, 100), at=(i * 100, j * 100, 0))\n";
+/// A model cheap to evaluate but seconds to check: a grid of boxes side by side,
+/// each touching its neighbours. (Overlapping boxes no longer do: their pairs
+/// stop at a limit, review 2026-11-22 R1122ac-PG-1102.) A debug build checks
+/// 60 × 60 in 9 s, a release build 100 × 100 in 6 s; a debug build evaluating
+/// 100 × 100 under load ran past the deadline before the checks began.
+fn slow_to_check() -> String {
+    let side = if cfg!(debug_assertions) { 60 } else { 100 };
+    format!(
+        "for i in range({side}):\n    for j in range({side}):\n        \
+         box(\"b%d_%d\" % (i, j), (100, 100, 100), at=(i * 100, j * 100, 0))\n"
+    )
+}
 
-/// Checking [`SLOW_TO_CHECK`] takes longer than the deadline; the worker is
+/// Checking [`slow_to_check`] takes longer than the deadline; the worker is
 /// stopped at its deadline and the next request starts a new one (review PRG-1).
 #[test]
 fn a_report_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    let evaluated = run(&mut worker, SLOW_TO_CHECK).unwrap();
+    let evaluated = run(&mut worker, &slow_to_check()).unwrap();
     let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .report(&evaluated, deadline, &CancelToken::default())
@@ -167,7 +174,7 @@ fn a_report_past_the_deadline_is_killed() {
 fn a_refine_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    let evaluated = run(&mut worker, SLOW_TO_CHECK).unwrap();
+    let evaluated = run(&mut worker, &slow_to_check()).unwrap();
     let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .refine(
@@ -203,7 +210,8 @@ fn a_refine_past_the_deadline_is_killed() {
 #[test]
 fn evaluation_report_and_refine_share_one_deadline() {
     let _turn = crate::integration_support::file_turn();
-    let source = SLOW_TO_CHECK;
+    let source = slow_to_check();
+    let source = source.as_str();
     let evaluated = evaluate("test.star", source, &BTreeMap::new()).unwrap();
     let mut worker = worker();
     let cancel = CancelToken::default();
