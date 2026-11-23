@@ -112,6 +112,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 |---|---|
 | `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, an int in the program even with a default written `3.0`, whose fraction stops the program at `param()`, naming the parameter. An override outside `min`/`max`, or one with a fraction (or of 1e9 or more) for a `whole=True` count, is not used: the program is built with the default and reports `param_out_of_range`, so a document saved before its program narrowed still opens. The window's field, MCP `set_params` and program `apply`/`check` with `overrides` refuse such a value outright; a default outside `min`/`max` is reported as `param_out_of_range` |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there, and `"material:axis"`, the axis the cut list keeps its blank square to; an extrusion turned in its profile's plane needs that one to keep it) |
+| `imported(name, file, part=, at=, material=, color=, attributes=, tags=, grounded=False)` | a part whose body is the STEP file `file` (`.step` or `.stp`), given relative to the folder of the program's own file and inside it (an absolute path, a drive or a `..` out of that folder is refused). `part=` takes one part of an assembly file, by its name or by the name of its placement there; without it the whole file. The file's origin and axes are the part's own, so `at=`, `move`, `rotate` and `place` move it like any part. The host reads the file after the evaluation, so the program does not know the body's size, and the part takes no operation (hole, pocket, cut, boolean) and is no tool: shape the parts it fits instead. Bought parts use the library's `purchased()` |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
 | `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, through=False, id=)` | a hole drilled along the face's inward normal; returns an operation reference for `joint_link`; `face` is a name or a `face()` value; on a round face `at=(angle, v)` |
@@ -421,6 +422,33 @@ not a detailed bearing, material-volume model, mass estimate or load rating.
 Use `component("bearing unit", [bearing_envelope("body", "6204")])` and
 `instance()` for repeated placements. Raceway, cage, ball and chamfer geometry
 are not specified by this library; use a supplier model when they are needed.
+
+`purchased(name, step, article, supplier, at=(0,0,0), z=(0,0,1), x=(1,0,0),
+part=None, qty=1, tags=None)` places a supplier's STEP model (a hinge, a
+runner, a push-to-open unit) as a bought part. `step` follows the rules of
+`imported()`: relative to the folder of the program's file and inside it. The
+file's origin goes to `at`, its z axis along `z` and its x axis along `x`, so
+the part follows the parameters it is placed by. `part=` takes one part of an
+assembly file by its name or by the name of its placement in the assembly, and
+sits where that assembly places it. The part is listed in `bom.hardware` as
+`"<supplier> <article>"` with `article` and `supplier` attributes, counted once
+per call (`qty` pieces), so five calls with one article are one row of 5; it is
+never in the cut list, CNC or BTLx output. An empty `article` or `supplier`, or
+a `qty` below 1, stops the program. On apply the host reads each file once,
+however many parts use it; a file it cannot read stops the apply with
+`program_import_failed` naming the part, the file and why. Applying by source
+alone, without the program's file, reuses the bodies the document already
+holds. Bought parts take part in the collision check like any other part; two
+parts of one assembly file that overlap where that file places them are a
+`purchased_assembly_contact` warning, not a collision.
+
+```python
+door_h = param("door_h", 2000, min = 1200, max = 2600)
+board("door", (600, 18, door_h))
+for (i, z) in enumerate([100, door_h - 100]):
+    purchased("hinge %d" % i, "hettich/9237903.stp", "9237903", "Hettich",
+              at = (18, 0, z), z = (-1, 0, 0), x = (0, 0, 1))
+```
 
 `ball_screw_nut_dimensions(designation)` returns the DIN 69051-5 form B single
 flange nut dimensions of the [HIWIN Italy ground ballscrew catalogue](https://www.hiwin.it/images/download/documenti/ENG/catalogo%20viti.pdf),
