@@ -127,6 +127,7 @@ pub fn exact_check_past_deadline(
     report: &mut Report,
     model: &ProgramModel,
     deadline: CheckDeadline,
+    cancel: &CancelToken,
 ) -> Value {
     let stopped = json!({"complete": false, "not_evaluated": [{"reason": "time_limit"}],
         "checked_pair_count": 0});
@@ -136,7 +137,7 @@ pub fn exact_check_past_deadline(
         ExactShapes::default(),
         &(stopped, ExactPairFacts::new()),
         deadline,
-        &CancelToken::default(),
+        cancel,
     )
     .0
 }
@@ -262,9 +263,10 @@ fn verify_candidates(
     if candidates.is_empty() {
         return (None, None);
     }
+    let cancel = CancelToken::from(Arc::clone(&cancelled));
     let past_deadline = |report: &mut Report| -> (Option<Value>, Option<ExactBaseline>) {
         (
-            Some(exact_check_past_deadline(report, model, deadline)),
+            Some(exact_check_past_deadline(report, model, deadline, &cancel)),
             None,
         )
     };
@@ -343,7 +345,6 @@ fn verify_candidates(
             ))
         })
         .collect();
-    let cancel = CancelToken::from(Arc::clone(&cancelled));
     let answer = if checked.is_empty() {
         // Every pair keeps the answer of the baseline.
         let nothing = json!({"complete": true, "not_evaluated": [], "checked_pair_count": 0});

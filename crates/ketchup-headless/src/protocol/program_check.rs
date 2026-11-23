@@ -19,6 +19,7 @@ impl Server {
         // The scratch document of a large model takes seconds to build, so it
         // is built once and the build stops between parts at the deadline.
         let past_deadline = || deadline.remaining().is_zero();
+        let cancelled = Arc::new(AtomicBool::new(false));
         let mut scratch = DocumentSession::new(self.settings.clone());
         let snapshot = match scratch.build_rule_model_scratch(
             evaluated.reference_model(),
@@ -31,6 +32,7 @@ impl Server {
                     report,
                     &evaluated.model,
                     deadline,
+                    &ketchup_program::CancelToken::from(Arc::clone(&cancelled)),
                 ));
             }
             Err(error) => {
@@ -46,7 +48,7 @@ impl Server {
             scratch.container_data(),
             self.settings.exact_worker_path.clone(),
             deadline,
-            Arc::new(AtomicBool::new(false)),
+            cancelled,
         )
     }
 }
