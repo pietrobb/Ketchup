@@ -15,6 +15,10 @@ use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
+#[cfg(test)]
+#[path = "validate_joint_tests.rs"]
+mod joint_tests;
+
 /// Issue kind for a box overlap that only the exact solids can decide.
 pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
 /// Issue kind of two parts of one bought assembly file whose solids overlap
@@ -754,10 +758,15 @@ fn joints<'a>(
             Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
                 (gap > joint.max_gap_mm + CONTACT_FIT_MM).then_some(Some(gap))
             }),
-            None => (faces.contact(a, b).is_none()
-                && overlap(a, b).is_none()
-                && gap(a, b) > joint.max_gap_mm + CONTACT_FIT_MM)
-                .then(|| Some(gap(a, b))),
+            // Boxes within the allowed gap settle it before any face is
+            // measured.
+            None => {
+                let gap = gap(a, b);
+                (gap > joint.max_gap_mm + CONTACT_FIT_MM
+                    && faces.contact(a, b).is_none()
+                    && overlap(a, b).is_none())
+                .then_some(Some(gap))
+            }
         };
         if let Some(apart) = apart {
             if apart.is_none() && joint.max_gap_mm > CONTACT_FIT_MM {
@@ -883,29 +892,9 @@ fn support<'a>(
     // Which parts touch or are joined, through each other, as groups; a part
     // is supported where its group holds one that stands. A pair already in
     // one group is not measured (review 2026-11-22 R1122ac-PG-1102: 1 000
-    // parts at one spot measured 499 500 contacts).
+    // parts at one spot measured 499 500 contacts). Joints are grouped first,
+    // so a jointed pair's faces are not measured either.
     let mut groups: Vec<usize> = (0..count).collect();
-    let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
-    let solids = (0..count).filter(|i| model.parts[*i].is_solid()).collect();
-    near_pairs(&bounds, solids, CONTACT_FIT_MM, |left, right| {
-        if root(&groups, left) == root(&groups, right) {
-            return ControlFlow::Continue(());
-        }
-        let (part, other) = (&model.parts[left], &model.parts[right]);
-        let touching = match exact.decides(part, other) {
-            Some(pair) => pair.in_contact(),
-            None => {
-                faces.contact(part, other).is_some()
-                    || overlap(part, other).is_some()
-                    || ((part.is_rotated() || other.is_rotated())
-                        && gap(part, other) <= CONTACT_FIT_MM)
-            }
-        };
-        if touching {
-            join(&mut groups, left, right);
-        }
-        ControlFlow::Continue(())
-    });
     let index: std::collections::BTreeMap<&str, usize> = model
         .parts
         .iter()
@@ -929,6 +918,27 @@ fn support<'a>(
             join(&mut groups, left, right);
         }
     }
+    let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
+    let solids = (0..count).filter(|i| model.parts[*i].is_solid()).collect();
+    near_pairs(&bounds, solids, CONTACT_FIT_MM, |left, right| {
+        if root(&groups, left) == root(&groups, right) {
+            return ControlFlow::Continue(());
+        }
+        let (part, other) = (&model.parts[left], &model.parts[right]);
+        let touching = match exact.decides(part, other) {
+            Some(pair) => pair.in_contact(),
+            None => {
+                faces.contact(part, other).is_some()
+                    || overlap(part, other).is_some()
+                    || ((part.is_rotated() || other.is_rotated())
+                        && gap(part, other) <= CONTACT_FIT_MM)
+            }
+        };
+        if touching {
+            join(&mut groups, left, right);
+        }
+        ControlFlow::Continue(())
+    });
     let standing: std::collections::BTreeSet<usize> = (0..count)
         .filter(|item| supported[*item])
         .map(|item| root(&groups, item))

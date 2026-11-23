@@ -237,6 +237,12 @@ impl<'a> ContactFaces<'a> {
     pub fn measured_and_reused(&self) -> (usize, usize) {
         (self.pairs.len(), self.reused)
     }
+
+    /// How many parts had their faces measured.
+    #[cfg(test)]
+    pub fn parts_measured(&self) -> usize {
+        self.faces.len()
+    }
 }
 fn planar_faces(part: &Part) -> Vec<FaceFrame> {
     part.face_frames()
