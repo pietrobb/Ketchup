@@ -3933,7 +3933,6 @@ mod tests {
     // separate pair batches, now parse it once on a worker.
     #[test]
     fn graphs_of_the_parts_of_one_source_parse_it_once_on_a_worker() {
-        use ketchup_model::document::{DocumentStore, FeatureKind};
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../corpora/r0/step/independent-xde-assembly.step");
         let bytes = std::fs::read(&corpus).unwrap();
@@ -3948,29 +3947,32 @@ mod tests {
         else {
             panic!("the STEP source inspects as XDE");
         };
-        let batch = ketchup_model::import::plan_step_xde_import(
-            &DocumentStore::new().current(),
-            &bytes,
-            "assembly.step",
-            &evidence,
-        )
+        let template: ExactBRepGraph = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/v9_top_side_contact/left.graph"
+        ))
         .unwrap();
-        let mut document = DocumentStore::new();
-        document.apply_batch(&batch).unwrap();
-        let snapshot = document.current();
-        let graphs = snapshot
-            .features()
-            .filter(|feature| {
-                matches!(feature.kind(), FeatureKind::ImportedExactBody(spec)
-                    if spec.source_part_index.is_some())
-            })
-            .map(|feature| {
-                let definition = snapshot
-                    .definitions()
-                    .find(|definition| definition.feature_ids().contains(&feature.id()))
-                    .unwrap()
-                    .id();
-                ExactBRepGraph::from_snapshot(&snapshot, definition, feature.id()).unwrap()
+        let graphs = evidence
+            .parts
+            .iter()
+            .map(|part| {
+                let mut graph = template.clone();
+                graph.schema =
+                    ketchup_model::exact_brep_graph::EXACT_BREP_GRAPH_SCHEMA_V23.to_owned();
+                graph.producer_feature_id = 1;
+                graph.profiles.clear();
+                graph.nodes = vec![ketchup_model::exact_brep_graph::ExactBRepNode {
+                    id: ketchup_model::exact_brep_graph::ExactBRepNodeId(0),
+                    source_feature_id: 1,
+                    operation: ExactBRepOperation::ImportedExact {
+                        source_sha256: ketchup_model::graph::sha256_bytes(&bytes),
+                        source_byte_len: bytes.len() as u64,
+                        result_fingerprint: part.result_fingerprint.clone(),
+                        source_format: ExactBRepImportedFormat::Step,
+                        source_part_index: Some(part.index),
+                    },
+                }];
+                graph.reseal_for_testing().unwrap();
+                graph
             })
             .collect::<Vec<_>>();
         let mut pairs = pair_query::PairQuerySession::default();
