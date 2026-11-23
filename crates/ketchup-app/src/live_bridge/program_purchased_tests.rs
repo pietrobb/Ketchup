@@ -614,6 +614,159 @@ fn a_part_is_named_by_its_placement_in_the_assembly() {
     );
 }
 
+/// `name`'s occurrence transform and its body's bounds in its own frame.
+fn placed_at(app: &KetchupApp, name: &str) -> ([f64; 16], [[f64; 3]; 2]) {
+    let snapshot = app.document.current();
+    let occurrence = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == name)
+        .unwrap_or_else(|| panic!("{name} not placed"));
+    let definition = snapshot.definition(occurrence.definition_id()).unwrap();
+    let FeatureKind::ImportedExactBody(spec) = snapshot
+        .feature(definition.feature_ids()[0])
+        .unwrap()
+        .kind()
+    else {
+        panic!("{name} is not the file's body");
+    };
+    (*occurrence.transform().matrix(), spec.bounds_mm)
+}
+
+/// The world bounds of `bounds` placed by the row-major `matrix`.
+fn world_bounds(matrix: &[f64; 16], [low, high]: [[f64; 3]; 2]) -> Vec<f64> {
+    let mut placed = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for corner in 0..8 {
+        let point: [f64; 3] = std::array::from_fn(|axis| {
+            if corner & (1 << axis) == 0 {
+                low[axis]
+            } else {
+                high[axis]
+            }
+        });
+        for axis in 0..3 {
+            let value = (0..3)
+                .map(|column| matrix[axis * 4 + column] * point[column])
+                .sum::<f64>()
+                + matrix[axis * 4 + 3];
+            placed[0][axis] = placed[0][axis].min(value);
+            placed[1][axis] = placed[1][axis].max(value);
+        }
+    }
+    placed.concat()
+}
+
+fn assert_near(actual: &[f64], expected: &[f64], what: &str) {
+    assert_eq!(actual.len(), expected.len(), "{what}");
+    for (a, e) in actual.iter().zip(expected) {
+        assert!(
+            (a - e).abs() < 1e-9,
+            "{what}: {actual:?} is not {expected:?}"
+        );
+    }
+}
+
+/// A part named in an assembly sits where the assembly places it, every
+/// placement from its root down to it: a bracket under a subassembly moved
+/// to (-913, 0, -77.5) and one 40 mm along in it, a pin turned half a turn
+/// about x (diag(1, -1, -1)). It stays there in a window that has not read
+/// the file and with no folder at all; a part placed twice is named by one
+/// of its placements.
+#[test]
+fn a_named_assembly_part_sits_where_its_assembly_places_it() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = tempfile::tempdir().unwrap();
+    let original = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step"),
+    )
+    .unwrap();
+    let (carriage, pin_axis) = (
+        "#16 = CARTESIAN_POINT('',(0.,50.,0.));",
+        "#21 = DIRECTION('',(0.,0.,1.));",
+    );
+    assert!(original.contains(carriage) && original.contains(pin_axis));
+    let fixture = original
+        .replace(carriage, "#16 = CARTESIAN_POINT('',(-913.,0.,-77.5));")
+        .replace(pin_axis, "#21 = DIRECTION('',(0.,0.,-1.));");
+    std::fs::write(folder.path().join("fixture.step"), fixture).unwrap();
+    let program = "door_h = param('door_h', 2000)\n\
+        purchased('left', 'fixture.step', '1', 'Test', part = 'Bracket left instance')\n\
+        purchased('right', 'fixture.step', '1', 'Test', part = 'Bracket right instance',\n\
+        \x20         at = (0, 0, door_h))\n\
+        purchased('pin', 'fixture.step', '1', 'Test', part = 'Pin definition')\n\
+        board('door', (600, 18, door_h))\n";
+    let check = |app: &KetchupApp, door_h: f64| {
+        let moved = |x: f64, y: f64, z: f64| {
+            [
+                1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0,
+            ]
+        };
+        for (name, expected, offset) in [
+            ("left", moved(-913.0, 0.0, -77.5), [-913.0, 0.0, -77.5]),
+            (
+                "right",
+                moved(-873.0, 0.0, door_h - 77.5),
+                [-873.0, 0.0, door_h - 77.5],
+            ),
+        ] {
+            let (matrix, [low, high]) = placed_at(app, name);
+            assert_near(&matrix, &expected, name);
+            let shifted = |corner: [f64; 3]| (0..3).map(move |axis| corner[axis] + offset[axis]);
+            let expected: Vec<f64> = shifted(low).chain(shifted(high)).collect();
+            assert_near(&world_bounds(&matrix, [low, high]), &expected, name);
+        }
+        // Half a turn about x at (20, 10, 5): x stays, y and z turn over.
+        let (matrix, [low, high]) = placed_at(app, "pin");
+        assert_near(
+            &matrix,
+            &[
+                1.0, 0.0, 0.0, 20.0, 0.0, -1.0, 0.0, 10.0, 0.0, 0.0, -1.0, 5.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            "pin",
+        );
+        assert_near(
+            &world_bounds(&matrix, [low, high]),
+            &[
+                low[0] + 20.0,
+                10.0 - high[1],
+                5.0 - high[2],
+                high[0] + 20.0,
+                10.0 - low[1],
+                5.0 - low[2],
+            ],
+            "pin",
+        );
+    };
+    let apply_at =
+        |app: &mut KetchupApp, bridge: &mut LiveBridge, folder: Option<&Path>, door_h| {
+            bridge
+                .execute(app, apply(program, folder, door_h), false)
+                .unwrap_or_else(|code| panic!("{code}: {:#}", take_error_details().unwrap()));
+            check(app, door_h);
+        };
+    apply_at(&mut app, &mut bridge, Some(folder.path()), 2000.0);
+    assert_eq!(bridge.program_folder.worker_reads(), 1);
+
+    // A window that has read nothing yet takes the placements the document
+    // holds, reading nothing; a host with no folder keeps them too.
+    bridge.program_folder = Default::default();
+    apply_at(&mut app, &mut bridge, Some(folder.path()), 2400.0);
+    assert_eq!(bridge.program_folder.worker_reads(), 0);
+    apply_at(&mut app, &mut bridge, None, 2200.0);
+
+    // One bracket placed twice: its own name, or a subassembly holding both,
+    // does not say which placement.
+    for part in ["Bracket definition", "Carriage nested instance"] {
+        let source = program.replace("'Pin definition'", &format!("'{part}'"));
+        let reason = refused(&mut app, &mut bridge, &source, folder.path());
+        assert!(
+            reason.contains("2 times") && reason.contains("placement"),
+            "{part}: {reason}"
+        );
+    }
+}
+
 #[test]
 fn a_broken_step_file_is_refused_with_its_part_and_name() {
     let (app, mut bridge) = setup();

@@ -1280,7 +1280,12 @@ pub(super) fn validate_imported_exact_body(
     if spec.import_id.0 == 0 {
         return reject(ImportContractError::InvalidIdentity);
     }
+    // A placement moves an assembly part only, and keeps its size.
+    let placement_valid = spec.source_placement.is_none_or(|placement| {
+        typed_body && spec.source_part_index.is_some() && placement.is_rigid()
+    });
     if (!legacy_solid && !typed_body)
+        || !placement_valid
         || spec.source_byte_len == 0
         || spec.source_sha256.iter().all(|byte| *byte == 0)
     {

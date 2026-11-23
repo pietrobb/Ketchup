@@ -3,11 +3,11 @@
 //! worker, and keeps their bytes for the document to seal.
 
 use ketchup_application::program_imports::{ImportFiles, placed_part_name, unreadable};
-use ketchup_model::document::{FeatureKind, Snapshot};
+use ketchup_model::document::{FeatureKind, Snapshot, Transform};
 use ketchup_model::graph::sha256_bytes;
 use ketchup_model::import::{
     ImportFormat, STEP_PARSER_VERSION, STEP_XDE_PARSER_VERSION, StepImportEvidence,
-    StepXdeImportEvidence,
+    StepXdeImportEvidence, StepXdeNodeEvidence,
 };
 use ketchup_program::imported::ImportedBody;
 use ketchup_rejection::Rejection;
@@ -125,7 +125,7 @@ pub(crate) struct StepFiles {
     /// Assembly parts the document already places, by the SHA-256 of their
     /// file and the name `part=` gave: an unchanged file's assembly is not
     /// read again for them, in a window that has not read it yet either.
-    known_parts: BTreeMap<([u8; 32], String), (u32, StepImportEvidence)>,
+    known_parts: BTreeMap<([u8; 32], String), Placed>,
     cache: Arc<Mutex<StepCache>>,
 }
 
@@ -179,7 +179,10 @@ impl StepFiles {
                     placed_part_name(feature.name(), definition.name(), receipt.source_name())
                 });
             if let Some(named) = named {
-                known_parts.insert((spec.source_sha256, named.to_owned()), (index, evidence));
+                known_parts.insert(
+                    (spec.source_sha256, named.to_owned()),
+                    (index, evidence, spec.source_placement),
+                );
             }
         }
         Self {
@@ -317,12 +320,8 @@ impl StepFiles {
         Ok(whole)
     }
 
-    /// The part `name` of `file`, its index and body.
-    fn part(
-        &mut self,
-        file: &mut CachedFile,
-        name: &str,
-    ) -> Result<(u32, StepImportEvidence), Rejection> {
+    /// The part `name` of `file`, its index, body and placement.
+    fn part(&mut self, file: &mut CachedFile, name: &str) -> Result<Placed, Rejection> {
         if file.assembly.is_none()
             && let Some(placed) = self.known_parts.get(&(file.sha, name.to_owned()))
         {
@@ -354,7 +353,24 @@ impl StepFiles {
                 more + 1
             )));
         }
-        Ok((first.index, first.exact.clone()))
+        let placements = assembly
+            .nodes
+            .iter()
+            .filter(|node| node.part_index == Some(first.index))
+            .map(|node| placement(&assembly, node.id))
+            .collect::<Vec<_>>();
+        if placements.windows(2).any(|pair| pair[0] != pair[1]) {
+            return Err(unreadable(format!(
+                "it places its part {name:?} {} times, so the name does not say \
+                 which one; name its placement in the assembly",
+                placements.len()
+            )));
+        }
+        Ok((
+            first.index,
+            first.exact.clone(),
+            placements.first().copied().flatten(),
+        ))
     }
 
     /// `file` in the folder, its real path inside the real folder: a link
@@ -405,42 +421,54 @@ fn not_step(error: ketchup_scheduler::WorkerError) -> Rejection {
     unreadable("the exact kernel cannot read it as a STEP body").caused_by(error)
 }
 
-/// The one part placed under the assembly node `name`. Many CAD systems name
-/// each part's product after its shape ("SOLID") and only its placement after
-/// the article, so `part=` names either.
-fn placed_part(
-    assembly: &StepXdeImportEvidence,
-    name: &str,
-) -> Result<(u32, StepImportEvidence), Rejection> {
-    let parent = |id: u32| {
-        assembly
-            .nodes
-            .iter()
-            .find(|node| node.id == id)
-            .and_then(|node| node.parent_id)
-    };
-    let named = |id: u32| {
-        assembly
-            .nodes
-            .iter()
-            .any(|node| node.id == id && node.name == name)
-    };
+/// An assembly part read: its index among the file's parts, its body in its
+/// own frame, and where the assembly places it (none when nowhere else).
+type Placed = (u32, StepImportEvidence, Option<Transform>);
+
+/// The nodes from the assembly's root down to `id`, the root first.
+fn path_to(assembly: &StepXdeImportEvidence, id: u32) -> Vec<&StepXdeNodeEvidence> {
+    let mut path = Vec::new();
+    let mut at = Some(id);
+    while let Some(node) = at
+        .filter(|_| path.len() <= assembly.nodes.len())
+        .and_then(|id| assembly.nodes.iter().find(|node| node.id == id))
+    {
+        path.push(node);
+        at = node.parent_id;
+    }
+    path.reverse();
+    path
+}
+
+/// Where the assembly places the node `id`: each placement from its root
+/// down to it, the root's outermost; none when that is no move.
+fn placement(assembly: &StepXdeImportEvidence, id: u32) -> Option<Transform> {
+    let placed = path_to(assembly, id)
+        .into_iter()
+        .fold(Transform::identity(), |placed, node| {
+            placed.compose(node.transform)
+        });
+    (placed != Transform::identity()).then_some(placed)
+}
+
+/// The one part placed under the assembly node `name`, where it is placed.
+/// Many CAD systems name each part's product after its shape ("SOLID") and
+/// only its placement after the article, so `part=` names either.
+fn placed_part(assembly: &StepXdeImportEvidence, name: &str) -> Result<Placed, Rejection> {
     let mut indices = Vec::new();
+    let mut leaves = Vec::new();
     for node in &assembly.nodes {
         let Some(index) = node.part_index else {
             continue;
         };
-        let mut at = Some(node.id);
-        let mut steps = 0;
-        while let Some(id) = at.filter(|_| steps <= assembly.nodes.len()) {
-            if named(id) {
-                if !indices.contains(&index) {
-                    indices.push(index);
-                }
-                break;
+        if path_to(assembly, node.id)
+            .iter()
+            .any(|above| above.name == name)
+        {
+            leaves.push(node.id);
+            if !indices.contains(&index) {
+                indices.push(index);
             }
-            at = parent(id);
-            steps += 1;
         }
     }
     match indices.as_slice() {
@@ -471,7 +499,14 @@ fn placed_part(
         }
         [index] => {
             if let Some(part) = assembly.parts.iter().find(|part| part.index == *index) {
-                return Ok((part.index, part.exact.clone()));
+                let [leaf] = leaves.as_slice() else {
+                    return Err(unreadable(format!(
+                        "{name:?} in it places its part {} times, so the name does not say \
+                         which one; name one placement under it, or export it alone",
+                        leaves.len()
+                    )));
+                };
+                return Ok((part.index, part.exact.clone(), placement(assembly, *leaf)));
             }
             let reason = assembly
                 .rejected_parts
@@ -531,20 +566,21 @@ impl ImportFiles for StepFiles {
             .to_owned();
         let mut cached = self.cached(&path)?;
         let read = match part {
-            None => self.whole(&mut cached).map(|whole| (None, whole)),
+            None => self.whole(&mut cached).map(|whole| (None, whole, None)),
             Some(name) => self
                 .part(&mut cached, name)
-                .map(|(index, body)| (Some(index), body)),
+                .map(|(index, body, placement)| (Some(index), body, placement)),
         };
         // What the worker read stays known, a file it refused too.
         let (sha, bytes) = (cached.sha, Arc::clone(&cached.bytes));
         lock(&self.cache).keep(path, cached);
-        let (part_index, evidence) = read?;
+        let (part_index, evidence, placement) = read?;
         self.sources.insert(sha, bytes);
         Ok(Some(ImportedBody {
             file_name,
             part_index,
             evidence,
+            placement,
         }))
     }
 }

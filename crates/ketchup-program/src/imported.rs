@@ -8,6 +8,7 @@
 //! the placed bodies after the apply and is the report the apply answers with.
 
 use crate::model::{Part, ProgramModel, ProgramOperation, ProgramPartBody};
+use ketchup_model::document::Transform;
 use ketchup_model::import::StepImportEvidence;
 use serde::{Deserialize, Serialize};
 
@@ -35,11 +36,16 @@ pub struct ImportedBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_index: Option<u32>,
     pub evidence: StepImportEvidence,
+    /// Where the assembly places the part, from its root down to it; the
+    /// body is in the part's own frame and `evidence` measures it there.
+    /// None when that is no move, and for the whole file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Transform>,
 }
 
 impl ProgramImport {
-    /// Bounds of the body in its own frame (the file's coordinates); a point
-    /// at the origin until the file is read.
+    /// Bounds of the body in its own frame (the file's coordinates, an
+    /// assembly part's own); a point at the origin until the file is read.
     #[must_use]
     pub fn bounds(&self) -> ([f64; 3], [f64; 3]) {
         self.read.as_ref().map_or(([0.0; 3], [0.0; 3]), |read| {
@@ -47,8 +53,23 @@ impl ProgramImport {
         })
     }
 
-    /// Records what the host read and sizes `part` by it.
+    /// Records what the host read and sizes `part` by it. The program placed
+    /// the file's frame; an assembly part's frame is where the assembly puts
+    /// it in that, so the part's frame takes the assembly's placement too.
     pub fn record(part: &mut Part, read: ImportedBody) {
+        if let Some(placement) = read.placement {
+            let matrix = placement.matrix();
+            let linear: [[f64; 3]; 3] =
+                std::array::from_fn(|row| std::array::from_fn(|column| matrix[row * 4 + column]));
+            let offset = [matrix[3], matrix[7], matrix[11]];
+            part.at_mm = std::array::from_fn(|row| {
+                part.at_mm[row]
+                    + (0..3)
+                        .map(|k| part.rotation[row][k] * offset[k])
+                        .sum::<f64>()
+            });
+            part.rotation = crate::frame::multiply(&part.rotation, &linear);
+        }
         let [min, max] = read.evidence.bounds_mm;
         if let ProgramPartBody::Imported(import) = &mut part.body {
             import.read = Some(read);

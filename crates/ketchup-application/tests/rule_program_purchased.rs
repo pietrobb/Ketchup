@@ -65,6 +65,7 @@ impl ImportFiles for Folder {
             file_name: "9237903.stp".to_owned(),
             part_index: None,
             evidence: hinge_evidence(),
+            placement: None,
         }))
     }
 }

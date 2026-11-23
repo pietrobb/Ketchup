@@ -1000,6 +1000,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document/entities.rs: rail", // Format 116.
     "document/entities.rs: rail", // Format 116.
     "document/entities.rs: section",
+    "document/entities.rs: source_placement", // Format 121.
     "document/entities.rs: up",
     "document/entities.rs: weight", // Format 119.
     "document/revision.rs: variants",
