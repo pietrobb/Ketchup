@@ -71,6 +71,18 @@ pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-4;
 /// precision machining and far below printing.
 pub const NETWORK_SURFACE_APPROXIMATION_MM: f64 = 1.0e-3;
 
+/// Growth of the box the collision check puts around a revolved or swept solid, in mm,
+/// before it lets two boxes apart skip the exact check. The kernel may fit such faces with
+/// surfaces a little off the exact ones; a tenth of a millimetre is far more than any
+/// approximation above is allowed to miss, and far less than parts set apart in a model.
+pub const SWEPT_ENVELOPE_MARGIN_MM: f64 = 0.1;
+
+/// Growth of the box the collision check puts around a bought part's recorded bounds, in
+/// mm. Those bounds are the kernel's tightest box of the part's geometry, without the
+/// tolerances of its faces and edges, which a supplier's file sets; a tenth of a millimetre
+/// is the same growth swept solids get and far less than parts set apart in a model.
+pub const IMPORTED_BOUNDS_MARGIN_MM: f64 = 0.1;
+
 /// Angle allowed between the normals of a blend surface and the surface it meets with
 /// tangent (G1) or curvature (G2) continuity, in radians, at every sampled point of the
 /// seam. A thousandth of a radian (0.06 degree) shows no crease in reflections and is

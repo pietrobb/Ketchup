@@ -1699,10 +1699,7 @@ fn collision_report(
             }
             Ok(sources)
         })();
-        let local_bounds = graphs
-            .iter()
-            .map(bounds::certified_bounds)
-            .collect::<Vec<_>>();
+        let local_bounds = bounds::local_bounds(snapshot, &graphs, &graph_indices);
         let world_bounds = bodies
             .iter()
             .map(|body| {

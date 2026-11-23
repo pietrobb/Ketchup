@@ -102,8 +102,9 @@ fn scene(snapshot: &Snapshot) -> Vec<ketchup_model::document::SceneOccurrence> {
 #[test]
 fn unsupported_envelope_stays_incomplete_despite_clear_native_samples() {
     let _turn = crate::integration_support::file_turn();
+    // An edge finish may grow the solid, so its envelope is never certified.
     let (_, pair) = pair(
-        "revolve('moving',profile=[(0,0),(10,0),(10,2),(0,2)],axis=[(0,0),(0,1)])\nbox('obstacle',(2,2,2),at=(100,0,0))",
+        "box('moving',(10,2,2))\nfillet('moving',edges=[['x+','y+']],radius=0.5)\nbox('obstacle',(2,2,2),at=(100,0,0))",
         "moving",
         "obstacle",
         slide(),
@@ -117,6 +118,21 @@ fn unsupported_envelope_stays_incomplete_despite_clear_native_samples() {
         report["not_evaluated"][0]["reason"],
         "uncertified_motion_envelope"
     );
+}
+
+#[test]
+fn revolved_envelope_is_certified_and_clear_motion_passes() {
+    let _turn = crate::integration_support::file_turn();
+    let (_, pair) = pair(
+        "revolve('moving',profile=[(0,0),(10,0),(10,2),(0,2)],axis=[(0,0),(0,1)])\nbox('obstacle',(2,2,2),at=(100,0,0))",
+        "moving",
+        "obstacle",
+        slide(),
+        0.,
+        10.,
+    );
+    let report = check(&pair);
+    assert_eq!(report["state"], "passed", "{report}");
 }
 
 #[test]
