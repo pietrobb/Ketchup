@@ -166,6 +166,7 @@ fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBod
             backend: spec.backend.clone(),
             tolerance: spec.tolerance.clone(),
         },
+        placement: spec.source_placement,
     }
 }
 
@@ -316,6 +317,7 @@ pub(crate) fn append_imported(
                 ImportOutputRef::Occurrence(occurrence_id),
             ]);
         }
+        // An assembly part's frame already holds where the assembly places it.
         let transform = Transform::from_matrix(part.transform_matrix())
             .map_err(|error| assistant_canonical_rejection(error, "rule_part", &part.name))?;
         commands.extend([
@@ -342,6 +344,7 @@ pub(crate) fn append_imported(
                     bounds_mm: evidence.bounds_mm,
                     backend: evidence.backend.clone(),
                     tolerance: evidence.tolerance.clone(),
+                    source_placement: body.placement,
                 }),
             },
             CanonicalCommand::CreateOccurrence {

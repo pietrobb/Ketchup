@@ -1596,7 +1596,7 @@ impl DigestV3 {
                     self.u64(coordinate.to_bits());
                 }
                 self.bytes(spec.backend.as_bytes());
-                self.bytes(spec.tolerance.as_bytes());
+                self.tolerance_and_placement(spec);
             }
             FeatureKind::MeshBody(spec) => {
                 self.byte(9);
@@ -1672,6 +1672,18 @@ impl DigestV3 {
         for edge in named {
             self.profile_face(&edge.first);
             self.profile_face(&edge.second);
+        }
+    }
+
+    /// An imported body's tolerance, then where its source assembly places
+    /// it: absent from bodies saved before format 121, so their digest stays.
+    fn tolerance_and_placement(&mut self, spec: &crate::document::ImportedExactBodySpec) {
+        self.bytes(spec.tolerance.as_bytes());
+        if let Some(placement) = spec.source_placement {
+            self.byte(0xA2);
+            for value in placement.matrix() {
+                self.u64(value.to_bits());
+            }
         }
     }
 

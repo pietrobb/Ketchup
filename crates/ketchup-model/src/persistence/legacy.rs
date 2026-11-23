@@ -3588,10 +3588,7 @@ fn read_product(
                     (BodyKind::Solid, 0.0)
                 };
                 let volume_mm3 = f64::from_bits(reader.u64()?);
-                let mut bounds_mm = [[0.0; 3]; 2];
-                for coordinate in bounds_mm.iter_mut().flatten() {
-                    *coordinate = f64::from_bits(reader.u64()?);
-                }
+                let bounds_mm = [read_vector3(reader)?, read_vector3(reader)?];
                 FeatureKind::ImportedExactBody(ImportedExactBodySpec {
                     schema,
                     import_id,
@@ -3607,6 +3604,7 @@ fn read_product(
                     bounds_mm,
                     backend: reader.string()?,
                     tolerance: reader.string()?,
+                    source_placement: None,
                 })
             }
             9 if capabilities.mesh_body => {

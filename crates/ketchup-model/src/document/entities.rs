@@ -585,6 +585,12 @@ pub struct ImportedExactBodySpec {
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
+    /// Where the source assembly places the part `source_part_index` (every
+    /// placement from its root down to it), which a program's occurrence of
+    /// it composes; the body itself stays in the part's own frame. None when
+    /// that is no move. Format 121.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_placement: Option<Transform>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
