@@ -1366,7 +1366,7 @@ fn collision_report(
     pair_facts: Option<&mut ExactPairFacts>,
 ) -> Value {
     let started = Instant::now();
-    let worker_timeout = worker.as_ref().map(|(_, _, timeout)| *timeout);
+    let timeout = worker.as_ref().map(|(_, _, timeout)| *timeout);
     let mut group_facts = ExactPairFacts::new();
     let (exact_gaps, mut pair_facts) = if selection.requested.contains("group_connectivity") {
         (false, Some(&mut group_facts))
@@ -1460,13 +1460,7 @@ fn collision_report(
         )
     });
     let scope = scope.or(whole_model_scope.as_ref());
-    // The preparation walks the whole snapshot and cannot stop part way.
-    if let Some(reason) = interrupted(
-        cancellation.as_ref(),
-        scope.is_some(),
-        worker_timeout,
-        started,
-    ) {
+    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), timeout, started) {
         return not_evaluated(report, reason);
     }
     let exact_preparation = match ExactSnapshotPreparation::new(snapshot) {
@@ -1481,12 +1475,7 @@ fn collision_report(
             );
         }
     };
-    if let Some(reason) = interrupted(
-        cancellation.as_ref(),
-        scope.is_some(),
-        worker_timeout,
-        started,
-    ) {
+    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), timeout, started) {
         return not_evaluated(report, reason);
     }
     report["visible_occurrence_count"] = json!(visible.len());
@@ -1500,12 +1489,8 @@ fn collision_report(
     let mut unavailable = Vec::new();
     let mut failures = Vec::new();
     for occurrence in &visible {
-        if let Some(reason) = interrupted(
-            cancellation.as_ref(),
-            scope.is_some(),
-            worker_timeout,
-            started,
-        ) {
+        if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), timeout, started)
+        {
             return not_evaluated(report, reason);
         }
         let terminals = terminal_cache
@@ -1530,12 +1515,9 @@ fn collision_report(
                 .and_then(|definition| definition.body(*id))
                 .is_some_and(|body| body.visible())
         }) {
-            if let Some(reason) = interrupted(
-                cancellation.as_ref(),
-                scope.is_some(),
-                worker_timeout,
-                started,
-            ) {
+            if let Some(reason) =
+                interrupted(cancellation.as_ref(), scope.is_some(), timeout, started)
+            {
                 return not_evaluated(report, reason);
             }
             if scope.is_none() && bodies.len() == MAX_COLLISION_BODIES {

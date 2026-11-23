@@ -1141,15 +1141,7 @@ impl ExactWorkerClient {
                 bytes: self.memory_limit,
             });
         }
-        // A timed-out worker is not waited for: Windows ends a killed process
-        // seconds after TerminateJobObject, and a check past its deadline waited
-        // here each time (nightly 2026-11-23). A failed allocation names itself
-        // before abort() holds the worker, so its line has been read already.
-        let wait = if matches!(error, WorkerError::RequestTimedOut(_)) {
-            Duration::ZERO
-        } else {
-            STDERR_WAIT
-        };
+        let wait = stderr_wait(&error);
         let tail = self
             .stderr_tail
             .take()
@@ -1176,6 +1168,19 @@ impl ExactWorkerClient {
 /// How long a dead worker's standard error may take to arrive.
 const STDERR_WAIT: Duration = Duration::from_secs(3);
 
+/// How long a worker that failed with `error` is waited for to end its standard
+/// error. A timed-out worker is not: Windows ends a killed process seconds after
+/// TerminateJobObject, and a check past its deadline waited here each time
+/// (nightly 2026-11-23). A failed allocation names itself before abort() holds
+/// the worker, so its line has been read already.
+pub(crate) fn stderr_wait(error: &WorkerError) -> Duration {
+    if matches!(error, WorkerError::RequestTimedOut(_)) {
+        Duration::ZERO
+    } else {
+        STDERR_WAIT
+    }
+}
+
 /// Bytes of standard error kept: enough for the allocation failure message.
 const STDERR_TAIL_BYTES: usize = 4096;
 
@@ -1183,20 +1188,24 @@ const STDERR_TAIL_BYTES: usize = 4096;
 /// the stream, which comes when the worker has exited.
 pub(crate) struct StderrTail {
     read: Arc<Mutex<Vec<u8>>>,
-    ended: Receiver<()>,
+    ended: Receiver<Vec<u8>>,
 }
 
 impl StderrTail {
     /// The bytes once the stream ends, or those read by then after `wait`.
     fn within(self, wait: Duration) -> Vec<u8> {
-        if self.ended.recv_timeout(wait).is_err() {
+        match self.ended.recv_timeout(wait) {
+            Ok(tail) => tail,
             // Not ended yet, or its reader is gone: what it read is the tail.
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                read_so_far(&self.read)
+            }
         }
-        self.read
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
     }
+}
+
+fn read_so_far(read: &Mutex<Vec<u8>>) -> Vec<u8> {
+    read.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 /// Collects the last bytes of the worker's standard error as they arrive.
@@ -1217,7 +1226,7 @@ pub(crate) fn stderr_tail(stderr: Option<impl std::io::Read + Send + 'static>) -
                 tail.drain(..excess);
             }
             // The client is gone and no longer reports the worker's end.
-            dropped(sender.send(()), Reason::NobodyWaiting);
+            dropped(sender.send(read_so_far(&tail)), Reason::NobodyWaiting);
         });
     }
     StderrTail { read, ended }

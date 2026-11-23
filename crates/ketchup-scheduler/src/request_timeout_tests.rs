@@ -564,20 +564,21 @@ fn simple_calls_time_out_at_the_default_budget() {
 }
 
 /// Standard error that says one line and then stays open, as a killed worker's does
-/// while Windows is still ending it.
-struct OpenStderr(Option<&'static [u8]>);
+/// while Windows is still ending it, until the test drops the sender of `open`.
+struct OpenStderr {
+    line: Option<&'static [u8]>,
+    open: Receiver<()>,
+}
 
 impl Read for OpenStderr {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self.0.take() {
+        match self.line.take() {
             Some(line) => {
                 buffer[..line.len()].copy_from_slice(line);
                 Ok(line.len())
             }
-            None => {
-                std::thread::sleep(Duration::from_secs(60));
-                Ok(0)
-            }
+            // The stream ends when the test is done with it.
+            None => Ok(self.open.recv().map_or(0, |()| 0)),
         }
     }
 }
@@ -592,14 +593,21 @@ fn a_timed_out_worker_is_not_waited_for_its_standard_error() {
         (b"loading\n", false),
         (b"memory allocation of 99 bytes failed\n", true),
     ];
+    let timed_out = WorkerError::RequestTimedOut(Duration::from_millis(80));
+    assert_eq!(worker_client::stderr_wait(&timed_out), Duration::ZERO);
     for (line, memory) in said {
         let (mut worker, writes, _responses) = controlled_worker();
-        worker.stderr_tail = Some(worker_client::stderr_tail(Some(OpenStderr(Some(line)))));
+        let (_open, open) = mpsc::channel();
+        let stderr = OpenStderr {
+            line: Some(line),
+            open,
+        };
+        worker.stderr_tail = Some(worker_client::stderr_tail(Some(stderr)));
         let responder = std::thread::spawn(move || {
             writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
         });
-        let started = Instant::now();
-        // The line is read while the request waits its 80 ms.
+        // The line is read while the request waits its 80 ms; the stream stays
+        // open, and the wait for its end is the one asserted above.
         let error = worker
             .request_with_timeout(
                 &WorkerRequest::Hello,
@@ -607,7 +615,6 @@ fn a_timed_out_worker_is_not_waited_for_its_standard_error() {
                 Duration::from_millis(80),
             )
             .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(1), "{error}");
         if memory {
             assert_eq!(error, WorkerError::MemoryLimit { bytes: 0 });
         } else {

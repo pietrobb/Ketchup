@@ -1231,12 +1231,13 @@ impl DocumentStore {
         batch: &CommandBatch,
         stop: &dyn Fn() -> bool,
     ) -> Result<Option<Arc<Revision>>, CanonicalError> {
-        self.apply_batch_stopping(
+        let built = self.apply_batch_stopping(
             batch,
             RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
             true,
-            stop,
-        )
+            &|| if stop() { Err(()) } else { Ok(()) },
+        )?;
+        Ok(built.ok())
     }
 
     /// The size limit the proposal gate puts on `batch` (commands, read
@@ -1268,19 +1269,22 @@ impl DocumentStore {
         origin: RevisionOrigin,
         validate_drawing_sources: bool,
     ) -> Result<Arc<Revision>, CanonicalError> {
-        match self.apply_batch_stopping(batch, origin, validate_drawing_sources, &|| false)? {
-            Some(revision) => Ok(revision),
-            None => unreachable!("a build nothing stops runs to its end"),
+        let never_stops = || Ok::<(), std::convert::Infallible>(());
+        match self.apply_batch_stopping(batch, origin, validate_drawing_sources, &never_stops)? {
+            Ok(revision) => Ok(revision),
+            Err(never) => match never {},
         }
     }
 
-    fn apply_batch_stopping(
+    /// The build of `batch`; `stop` is asked before every command and between
+    /// the steps after them, and the error it answers ends the build there.
+    fn apply_batch_stopping<Stopped>(
         &mut self,
         batch: &CommandBatch,
         origin: RevisionOrigin,
         validate_drawing_sources: bool,
-        stop: &dyn Fn() -> bool,
-    ) -> Result<Option<Arc<Revision>>, CanonicalError> {
+        stop: &dyn Fn() -> Result<(), Stopped>,
+    ) -> Result<Result<Arc<Revision>, Stopped>, CanonicalError> {
         if batch.schema != COMMAND_SCHEMA_V1 {
             return Err(CanonicalError::UnsupportedCommandSchema);
         }
@@ -1309,13 +1313,13 @@ impl DocumentStore {
             rebound_production_paths: BTreeSet::new(),
         };
         for command in &batch.commands {
-            if stop() {
-                return Ok(None);
+            if let Err(stopped) = stop() {
+                return Ok(Err(stopped));
             }
             edit.apply(command)?;
         }
-        if stop() {
-            return Ok(None);
+        if let Err(stopped) = stop() {
+            return Ok(Err(stopped));
         }
         let commands::BatchEdit {
             current,
@@ -1348,8 +1352,8 @@ impl DocumentStore {
         }
         validate_sketch_projections(&product)?;
         validate_assembly_joint_motion_publication(&current, &product, batch)?;
-        if stop() {
-            return Ok(None);
+        if let Err(stopped) = stop() {
+            return Ok(Err(stopped));
         }
         let revision_id = self.next_revision_id;
         let following_revision_id = revision_id
@@ -1389,8 +1393,8 @@ impl DocumentStore {
             &recomputed_nodes,
         )
         .map_err(CanonicalError::Graph)?;
-        if stop() {
-            return Ok(None);
+        if let Err(stopped) = stop() {
+            return Ok(Err(stopped));
         }
         let (changed_features, feature_graph) = feature_changes(&current, &product)?;
         let dirty_features = feature_graph.dependent_closure(
@@ -1423,7 +1427,7 @@ impl DocumentStore {
         self.mutation_epoch = Self::fresh_mutation_epoch();
         self.push_revision(Arc::clone(&revision));
         self.next_revision_id = following_revision_id;
-        Ok(Some(revision))
+        Ok(Ok(revision))
     }
 
     pub fn make_unique(
