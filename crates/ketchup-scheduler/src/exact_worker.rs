@@ -53,6 +53,7 @@ type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
 mod cam_simulation;
 mod failure;
+mod graph_documents;
 mod graph_outputs;
 mod loft;
 mod output_cache;
@@ -652,6 +653,8 @@ fn exact_brep_sheet_metal(
 thread_local! {
     static GRAPH_OUTPUT_CACHE: std::cell::RefCell<output_cache::OutputCache<ExactOpOutput>> =
         std::cell::RefCell::default();
+    static GRAPH_DOCUMENTS: std::cell::RefCell<graph_documents::KeptDocuments<ketchup_exact::StepXdeDocument>> =
+        std::cell::RefCell::default();
 }
 
 fn evaluate_exact_brep_graph_cached(
@@ -686,7 +689,6 @@ fn evaluate_exact_brep_graph(
     let mut outputs = Vec::<ExactOpOutput>::with_capacity(graph.nodes.len());
     let mut face_names = Vec::<Option<Vec<String>>>::with_capacity(graph.nodes.len());
     let mut extrusion_lineage = Vec::<bool>::with_capacity(graph.nodes.len());
-    let mut xde_documents = Vec::<(String, ketchup_exact::StepXdeDocument)>::new();
     for (node_index, node) in graph.nodes.iter().enumerate() {
         let mut produced_face_names = None;
         let output = match &node.operation {
@@ -1149,13 +1151,9 @@ fn evaluate_exact_brep_graph(
                 graph,
                 &exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends),
             )?,
-            ExactBRepOperation::ImportedExact { .. } => exact_brep_imported_body(
-                backend,
-                graph,
-                &node.operation,
-                imported_sources,
-                &mut xde_documents,
-            )?,
+            ExactBRepOperation::ImportedExact { .. } => {
+                exact_brep_imported_body(backend, graph, &node.operation, imported_sources)?
+            }
         };
         let extrusion = extrusion_lineage_of(&node.operation, &extrusion_lineage);
         let mut output = output;
@@ -1172,14 +1170,13 @@ fn evaluate_exact_brep_graph(
 }
 
 /// The body an `ImportedExact` node names: its whole source, or one XDE part
-/// of it read as STEP or IGES. Parts of one source read it once per graph,
-/// into `xde_documents`.
+/// of it read as STEP or IGES. Parts of one source read it once per worker
+/// while it stays among `GRAPH_DOCUMENTS`.
 fn exact_brep_imported_body(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
     operation: &ExactBRepOperation,
     imported_sources: &[(String, tempfile::NamedTempFile)],
-    xde_documents: &mut Vec<(String, ketchup_exact::StepXdeDocument)>,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let ExactBRepOperation::ImportedExact {
         source_sha256,
@@ -1207,22 +1204,22 @@ fn exact_brep_imported_body(
         (ExactBRepImportedFormat::Step, None) => backend.import_step(&source)?,
         (ExactBRepImportedFormat::Iges, None) => backend.import_iges(&source)?,
         (format, Some(part_index)) => {
-            let read = match xde_documents
-                .iter()
-                .position(|(digest, _)| *digest == source_sha256)
-            {
-                Some(position) => position,
-                None => {
-                    let document = match format {
+            let key = match format {
+                ExactBRepImportedFormat::Step => format!("step:{source_sha256}"),
+                ExactBRepImportedFormat::Iges => format!("iges:{source_sha256}"),
+            };
+            let document = GRAPH_DOCUMENTS.with(|documents| {
+                documents.borrow_mut().get_or_open(&key, || {
+                    match format {
                         ExactBRepImportedFormat::Step => backend.open_step_xde(&source),
                         ExactBRepImportedFormat::Iges => backend.open_iges_xde(&source),
                     }
-                    .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
-                    xde_documents.push((source_sha256.clone(), document));
-                    xde_documents.len() - 1
-                }
-            };
-            xde_documents[read].1.part(*part_index)?
+                    // The staged copy is deleted after this request; the document outlives it.
+                    .map(|document| document.named(format!("sha256:{source_sha256}")))
+                    .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))
+                })
+            })?;
+            document.part(*part_index)?
         }
     };
     if !imported_result_matches(&source_sha256, &output, result_fingerprint) {
@@ -3927,6 +3924,78 @@ mod tests {
             ),
             (2, 1, 1, 1),
             "parts, then parses of the STEP, of the IGES and of the STEP after it"
+        );
+    }
+
+    // A model's first check built 22 parts of one Hettich STEP on every
+    // worker, and each part's graph opened the source for itself: 214 parses
+    // of about 4 s. Graphs of parts of one source, each its own request as in
+    // separate pair batches, now parse it once on a worker.
+    #[test]
+    fn graphs_of_the_parts_of_one_source_parse_it_once_on_a_worker() {
+        use ketchup_model::document::{DocumentStore, FeatureKind};
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/independent-xde-assembly.step");
+        let bytes = std::fs::read(&corpus).unwrap();
+        let step = SourceFile {
+            sha256: sha256_hex(&bytes),
+            path: corpus,
+        };
+        let backend = ExactBackend::new();
+        let WorkerReply::Xde(evidence) =
+            m21_step_xde_inspection_response(&backend, &mut SourceDocument::default(), &step)
+                .unwrap()
+        else {
+            panic!("the STEP source inspects as XDE");
+        };
+        let batch = ketchup_model::import::plan_step_xde_import(
+            &DocumentStore::new().current(),
+            &bytes,
+            "assembly.step",
+            &evidence,
+        )
+        .unwrap();
+        let mut document = DocumentStore::new();
+        document.apply_batch(&batch).unwrap();
+        let snapshot = document.current();
+        let graphs = snapshot
+            .features()
+            .filter(|feature| {
+                matches!(feature.kind(), FeatureKind::ImportedExactBody(spec)
+                    if spec.source_part_index.is_some())
+            })
+            .map(|feature| {
+                let definition = snapshot
+                    .definitions()
+                    .find(|definition| definition.feature_ids().contains(&feature.id()))
+                    .unwrap()
+                    .id();
+                ExactBRepGraph::from_snapshot(&snapshot, definition, feature.id()).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut pairs = pair_query::PairQuerySession::default();
+        let mut read = SourceDocument::default();
+
+        let before = ExactBackend::step_source_parses_on_this_thread();
+        for graph in &graphs {
+            let reply = handle_request(
+                &backend,
+                &mut pairs,
+                &mut read,
+                WorkerRequest::EvaluateGraph(GraphInput {
+                    graph: graph.clone(),
+                    sources: vec![step.clone()],
+                }),
+            );
+            assert!(reply.is_ok(), "{reply:?}");
+        }
+        assert_eq!(
+            (
+                graphs.len(),
+                ExactBackend::step_source_parses_on_this_thread() - before
+            ),
+            (2, 1),
+            "part graphs, then parses of their source"
         );
     }
 
