@@ -662,7 +662,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 // A hole that drills material and then runs into a pocket or
                 // cut-out of the same part ends there, inside the part: only
                 // leaving its outer surface breaks through (owner 2026-11-23,
-                // a Hettich pin hole into the pocket of its support unit).
+                // a fitting's pin hole into the pocket of its support unit).
                 if material > CONTACT_FIT_MM && hole.depth_mm >= material - CONTACT_FIT_MM {
                     part.stock_along(local_entry, local_inward, rim, limit)
                         .unwrap_or(material)
