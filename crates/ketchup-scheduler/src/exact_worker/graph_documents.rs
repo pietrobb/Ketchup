@@ -69,20 +69,16 @@ mod tests {
     fn a_third_source_lets_the_one_used_longest_ago_go() {
         let mut documents = KeptDocuments::new(2);
         let mut opens = 0;
-        let mut get = |documents: &mut KeptDocuments<()>, key: &str| {
+        for key in ["a", "b", "a", "c", "a", "b"] {
             documents
                 .get_or_open(key, || {
                     opens += 1;
                     Ok::<_, ()>(())
                 })
                 .unwrap();
-        };
-        for key in ["a", "b", "a", "c", "a", "b"] {
-            get(&mut documents, key);
         }
         // "a" was used again before "c" came, so "b" left; "b" read again pushed out "c".
         assert_eq!(documents.keys(), ["a", "b"]);
-        drop(get);
         assert_eq!(opens, 4);
     }
 
