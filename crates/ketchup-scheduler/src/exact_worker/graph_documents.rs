@@ -2,7 +2,7 @@
 //!
 //! A graph naming one part of a multi-part source opened the source for
 //! itself alone, so every part a worker built parsed the whole file again: on
-//! a model's first check, 22 parts of one Hettich STEP parsed it 214 times
+//! a model's first check, 22 parts of one purchased STEP parsed it 214 times
 //! across the workers, about 4 s each. The worker now keeps the documents of
 //! the last two sources it opened, by format and the SHA-256 of their verified
 //! bytes; a third source lets the one used longest ago go before it is read.
