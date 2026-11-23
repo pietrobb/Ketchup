@@ -1676,13 +1676,20 @@ impl DigestV3 {
     }
 
     /// An imported body's tolerance, then where its source assembly places
-    /// it: absent from bodies saved before format 121, so their digest stays.
+    /// it and the box that holds all of it: absent from bodies saved before
+    /// formats 121 and 122, so their digest stays.
     fn tolerance_and_placement(&mut self, spec: &crate::document::ImportedExactBodySpec) {
         self.bytes(spec.tolerance.as_bytes());
         if let Some(placement) = spec.source_placement {
             self.byte(0xA2);
             for value in placement.matrix() {
                 self.u64(value.to_bits());
+            }
+        }
+        if let Some(enclosing) = spec.enclosing_bounds_mm {
+            self.byte(0xA3);
+            for coordinate in enclosing.iter().flatten() {
+                self.u64(coordinate.to_bits());
             }
         }
     }

@@ -1322,6 +1322,7 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
             bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
             backend: "headless-imported-solid-tool.v1".into(),
             tolerance: "1e-7-mm".into(),
+            enclosing_bounds_mm: None,
         },
         StepImportEvidence {
             source_sha256: ketchup_model::graph::sha256_bytes(sources[1]),
@@ -1336,6 +1337,7 @@ fn imported_exact_occurrences_route_through_solid_tool_preview_and_commit() {
             bounds_mm: [[0.0, 0.0, 0.0], [6.0, 6.0, 12.0]],
             backend: "headless-imported-solid-tool.v1".into(),
             tolerance: "1e-7-mm".into(),
+            enclosing_bounds_mm: None,
         },
     ];
     for (index, (source, evidence)) in sources.iter().zip(&evidences).enumerate() {
@@ -1508,18 +1510,16 @@ fn mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools() {
         bounds_mm: [[0.0, 0.0, 0.0], [20.0, 30.0, 20.0]],
         backend: "headless-mixed-solid-tool.v1".into(),
         tolerance: "1e-7-mm".into(),
+        enclosing_bounds_mm: None,
     };
-    app.document
-        .apply_batch(
-            &plan_step_import(
-                &app.document.current(),
-                source,
-                "mixed-imported.step",
-                &evidence,
-            )
-            .unwrap(),
-        )
-        .unwrap();
+    let plan = plan_step_import(
+        &app.document.current(),
+        source,
+        "mixed-imported.step",
+        &evidence,
+    )
+    .unwrap();
+    app.document.apply_batch(&plan).unwrap();
     let snapshot = app.document.current();
     let imported_occurrence = snapshot
         .occurrences()

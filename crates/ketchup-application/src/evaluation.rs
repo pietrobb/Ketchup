@@ -878,6 +878,7 @@ fn evaluate_imported(
         bounds_mm: spec.bounds_mm,
         backend: spec.backend.clone(),
         tolerance: spec.tolerance.clone(),
+        enclosing_bounds_mm: spec.enclosing_bounds_mm,
     };
     let mut temporary = tempfile::Builder::new()
         .prefix("ketchup-imported-exact-")
@@ -925,6 +926,7 @@ fn evaluate_imported(
                     bounds_mm: evidence.bounds_mm,
                     backend: evidence.backend,
                     tolerance: evidence.tolerance,
+                    enclosing_bounds_mm: None,
                 }),
         },
         _ => unreachable!("receipt format was validated above"),
@@ -1479,6 +1481,7 @@ mod imported_source_tests {
             bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
             backend: "occt-test".to_owned(),
             tolerance: "test-tolerance".to_owned(),
+            enclosing_bounds_mm: None,
         };
         let mut document = DocumentStore::new();
         let batch = plan_step_import(&document.current(), &source, "part.step", &evidence).unwrap();

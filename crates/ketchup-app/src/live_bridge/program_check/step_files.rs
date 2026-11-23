@@ -168,6 +168,7 @@ impl StepFiles {
                 bounds_mm: spec.bounds_mm,
                 backend: spec.backend.clone(),
                 tolerance: spec.tolerance.clone(),
+                enclosing_bounds_mm: spec.enclosing_bounds_mm,
             };
             let Some(index) = spec.source_part_index else {
                 known.insert(spec.source_sha256, evidence);

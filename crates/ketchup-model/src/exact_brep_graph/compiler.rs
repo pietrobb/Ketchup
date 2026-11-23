@@ -138,6 +138,9 @@ impl<'a> GraphCompiler<'a> {
             result_fingerprint: spec.result_fingerprint.clone(),
             source_format,
             source_part_index: spec.source_part_index,
+            enclosing_bounds_bits: spec
+                .enclosing_bounds_mm
+                .map(|bounds| bounds.map(|corner| corner.map(f64::to_bits))),
         })
     }
 

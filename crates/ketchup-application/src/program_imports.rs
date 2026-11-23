@@ -165,6 +165,7 @@ fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBod
             bounds_mm: spec.bounds_mm,
             backend: spec.backend.clone(),
             tolerance: spec.tolerance.clone(),
+            enclosing_bounds_mm: spec.enclosing_bounds_mm,
         },
         placement: spec.source_placement,
     }
@@ -345,6 +346,7 @@ pub(crate) fn append_imported(
                     backend: evidence.backend.clone(),
                     tolerance: evidence.tolerance.clone(),
                     source_placement: body.placement,
+                    enclosing_bounds_mm: evidence.enclosing_bounds_mm,
                 }),
             },
             CanonicalCommand::CreateOccurrence {

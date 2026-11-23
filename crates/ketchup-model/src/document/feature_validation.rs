@@ -1248,7 +1248,8 @@ pub(super) fn validate_imported_exact_body(
         .iter()
         .flatten()
         .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= MAX_COORDINATE_MM)
-        && (0..3).all(|axis| spec.bounds_mm[0][axis] <= spec.bounds_mm[1][axis]);
+        && (0..3).all(|axis| spec.bounds_mm[0][axis] <= spec.bounds_mm[1][axis])
+        && crate::import::encloses(spec.bounds_mm, spec.enclosing_bounds_mm);
     let legacy_solid = matches!(
         (spec.schema.as_str(), spec.source_part_index, spec.body_kind),
         (IMPORTED_EXACT_BODY_SCHEMA_V1, None, BodyKind::Solid)

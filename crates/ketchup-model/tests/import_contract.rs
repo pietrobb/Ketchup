@@ -144,6 +144,7 @@ fn exact_step_import_is_one_deterministic_persistent_undoable_transaction() {
         bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let mut document = DocumentStore::new();
     let before = document.current().canonical_digest();
@@ -233,6 +234,7 @@ fn exact_step_import_rejects_worker_evidence_from_another_source() {
         bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let document = DocumentStore::new();
     let before = document.current().canonical_digest();
@@ -278,6 +280,7 @@ fn imported_evidence_a_few_last_bits_away_is_the_same_body() {
         ],
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let mut evaluated = recorded.clone();
     evaluated.result_fingerprint = "fnv1a64:7bb317a07566e095".to_owned();
@@ -432,6 +435,7 @@ fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
         bounds_mm: [[x, 0.0, 0.0], [x + 10.0, 10.0, 10.0]],
         backend: "occt-iges-xde-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let evidence = IgesXdeImportEvidence {
         source_sha256: ketchup_model::graph::sha256_bytes(source),
@@ -567,6 +571,7 @@ fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_tr
         bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
         backend: "occt-xde-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let evidence = StepXdeImportEvidence {
         source_sha256: ketchup_model::graph::sha256_bytes(source),
@@ -700,6 +705,7 @@ fn step_and_iges_xde_imports_keep_the_parts_read_and_name_the_refused() {
         bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
         backend: "occt-xde-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let left_out = ImportRejectedShape {
         ordinal: 1,
@@ -945,6 +951,7 @@ fn exact_step_plan_refuses_invalid_worker_evidence_without_mutation() {
         bounds_mm: [[0.0; 3], [1.0; 3]],
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let mut invalid = valid;
     invalid.result_fingerprint.clear();

@@ -159,6 +159,7 @@ fn release_with_imported_exact_geometry_reopens_with_its_source_blob() {
         bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     };
     let mut document = DocumentStore::new();
     let batch = plan_step_import(&document.current(), source, "part.step", &evidence).unwrap();

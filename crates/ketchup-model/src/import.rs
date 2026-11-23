@@ -400,6 +400,20 @@ pub struct StepImportEvidence {
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
+    /// See `ImportedExactBodySpec::enclosing_bounds_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_bounds_mm: Option<[[f64; 3]; 2]>,
+}
+
+/// Whether `enclosing` is a finite box around all of `bounds`, or absent.
+#[must_use]
+pub fn encloses(bounds: [[f64; 3]; 2], enclosing: Option<[[f64; 3]; 2]>) -> bool {
+    enclosing.is_none_or(|enclosing| {
+        enclosing.iter().flatten().all(|value| value.is_finite())
+            && (0..3).all(|axis| {
+                enclosing[0][axis] <= bounds[0][axis] && bounds[1][axis] <= enclosing[1][axis]
+            })
+    })
 }
 
 /// How many units in the last place an imported body's volume and area may
@@ -1033,6 +1047,7 @@ pub fn plan_step_import(
                 backend: evidence.backend.clone(),
                 tolerance: evidence.tolerance.clone(),
                 source_placement: None,
+                enclosing_bounds_mm: evidence.enclosing_bounds_mm,
             }),
         },
         CanonicalCommand::CreateOccurrence {
@@ -1054,7 +1069,8 @@ fn exact_body_evidence_valid(evidence: &StepImportEvidence) -> bool {
         .iter()
         .flatten()
         .all(|value| value.is_finite())
-        && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis]);
+        && (0..3).all(|axis| evidence.bounds_mm[0][axis] <= evidence.bounds_mm[1][axis])
+        && encloses(evidence.bounds_mm, evidence.enclosing_bounds_mm);
     let topology_valid = !evidence.topology_counts[..3].contains(&0)
         && evidence.topology_counts[4] == evidence.solid_count
         && evidence.topology_counts[..3]
@@ -1283,6 +1299,7 @@ pub fn plan_step_xde_import(
                 backend: part.exact.backend.clone(),
                 tolerance: part.exact.tolerance.clone(),
                 source_placement: None,
+                enclosing_bounds_mm: part.exact.enclosing_bounds_mm,
             }),
         });
         outputs.push(ImportOutputRef::Definition(definition_id));

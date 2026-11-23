@@ -40,6 +40,7 @@ fn graphs_of_the_parts_of_one_source_parse_it_once_on_a_worker() {
                     result_fingerprint: part.result_fingerprint.clone(),
                     source_format: ExactBRepImportedFormat::Step,
                     source_part_index: Some(part.index),
+                    enclosing_bounds_bits: None,
                 },
             }];
             graph.reseal_for_testing().unwrap();

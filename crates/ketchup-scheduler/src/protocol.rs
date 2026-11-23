@@ -824,6 +824,10 @@ pub struct WorkerImportPart {
     pub source_unit: String,
     pub backend: String,
     pub tolerance: String,
+    /// See `ImportedExactBodySpec::enclosing_bounds_mm`; absent from a worker
+    /// that does not find it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_bounds_mm: Option<[[f64; 3]; 2]>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

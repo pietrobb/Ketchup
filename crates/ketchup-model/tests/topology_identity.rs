@@ -365,6 +365,7 @@ fn imported_exact_publication_is_source_bound_best_effort_and_backend_guarded() 
         bounds_mm: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
         backend: "occt-import.v1".into(),
         tolerance: "1e-7-mm".into(),
+        enclosing_bounds_mm: None,
     };
     let mut document = DocumentStore::new();
     document
@@ -458,6 +459,7 @@ fn serialized_reference_survives_recompute_undo_redo_and_byte_stable_save_open()
         bounds_mm: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
         backend: "occt-import.v1".into(),
         tolerance: "1e-7-mm".into(),
+        enclosing_bounds_mm: None,
     };
     let mesh = StepImportMesh {
         vertices_mm: vec![

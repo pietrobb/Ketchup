@@ -30,7 +30,8 @@
 //! (`SurfaceBodySpec::Blend`); 119 a moved control point of a surface
 //! (`SurfaceBodySpec::ControlPoint`); 120 the point angle of a CAM plan's drill
 //! (`CamTool::point_angle_deg`); 121 where its source assembly places an imported part
-//! (`ImportedExactBodySpec::source_placement`). Older files have no generated ownership and need no
+//! (`ImportedExactBodySpec::source_placement`); 122 the box that holds all of an imported
+//! body (`ImportedExactBodySpec::enclosing_bounds_mm`). Older files have no generated ownership and need no
 //! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
@@ -48,7 +49,7 @@ use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 121;
+pub(super) const SNAPSHOT_FORMAT: u16 = 122;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -57,7 +58,8 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 121;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 121 with an imported assembly part's placement in its source, which a Kečup
+/// 122 with the box that holds all of an imported body, which a Kečup that
+/// writes 121 would drop, else 121 with an imported assembly part's placement in its source, which a Kečup
 /// that writes 120 would drop, else 120 with a drill point angle in a CAM plan,
 /// which a Kečup that writes 119 would drop, else 119 with a moved control point of a surface, which a Kečup that writes 118
 /// does not know, else 118 with a blend between two surfaces, which a Kečup
@@ -109,11 +111,15 @@ fn format_of(product: &ProductModel) -> u16 {
             matches!(feature.kind(), crate::document::FeatureKind::SurfaceBody(spec) if is(spec))
         })
     };
-    if product.features.values().any(|feature| {
-        matches!(feature.kind(), crate::document::FeatureKind::ImportedExactBody(spec)
-            if spec.source_placement.is_some())
-    }) {
+    let imported_body = |is: fn(&crate::document::ImportedExactBodySpec) -> bool| {
+        product.features.values().any(|feature| {
+            matches!(feature.kind(), crate::document::FeatureKind::ImportedExactBody(spec) if is(spec))
+        })
+    };
+    if imported_body(|spec| spec.enclosing_bounds_mm.is_some()) {
         SNAPSHOT_FORMAT
+    } else if imported_body(|spec| spec.source_placement.is_some()) {
+        121
     } else if product
         .cam_plans
         .values()

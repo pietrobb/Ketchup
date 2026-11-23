@@ -45,6 +45,7 @@ fn hinge_evidence() -> StepImportEvidence {
         bounds_mm: [[-10.0, -25.0, 0.0], [10.0, 25.0, 12.0]],
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
+        enclosing_bounds_mm: None,
     }
 }
 

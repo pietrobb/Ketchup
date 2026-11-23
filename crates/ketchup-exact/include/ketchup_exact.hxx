@@ -51,6 +51,7 @@ public:
   NativeTopologySummary topology_summary() const noexcept;
   rust::Vec<NativeFaceEvidence> face_evidence() const;
   rust::Vec<NativeEdgeEvidence> edge_evidence() const;
+  rust::Vec<double> enclosing_bounds() const;
   rust::Vec<NativeFaceEdgeEvidence> face_edge_evidence() const;
   rust::Vec<NativeEdgeFaceEvidence> edge_face_evidence() const;
   rust::Vec<NativeHistoryEvidence> history_evidence() const;

@@ -257,7 +257,12 @@ pub(super) fn operation_bounds(
             .filter(|bounds| valid_bounds(*bounds))
             .map(Some)
             .ok_or(ExactBRepGraphError::ResourceLimit),
-        ExactBRepOperation::ImportedExact { .. } => Ok(None),
+        ExactBRepOperation::ImportedExact {
+            enclosing_bounds_bits,
+            ..
+        } => Ok(enclosing_bounds_bits
+            .map(|bounds| bounds.map(|corner| corner.map(f64::from_bits)))
+            .filter(|bounds| valid_bounds(*bounds))),
     }
 }
 

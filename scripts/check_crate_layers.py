@@ -95,7 +95,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3192,
     "crates/ketchup-scheduler/src/exact_worker.rs": 4188,
-    "crates/ketchup-scheduler/src/lib.rs": 3051,
+    "crates/ketchup-scheduler/src/lib.rs": 3010,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review
@@ -138,7 +138,7 @@ LONG_TESTS = {
     "crates/ketchup-app/src/live_bridge/product_integration_tests.rs::original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry": 489,
     "crates/ketchup-app/src/tests/exact_modeling.rs::contained_circle_subtract_intersect_split_and_containing_union_round_trip_atomically": 335,
     "crates/ketchup-app/src/tests/exact_modeling.rs::contained_slanted_polygon_solid_tools_round_trip_atomically": 398,
-    "crates/ketchup-app/src/tests/exact_modeling.rs::mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools": 321,
+    "crates/ketchup-app/src/tests/exact_modeling.rs::mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools": 319,
     "crates/ketchup-app/tests/capstone_chain.rs::empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence": 305,
     "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 342,
     "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 419,
@@ -516,7 +516,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-app casts": 208,
     # One `#[expect(` on the CAM review's export (review 2026-11-20 ac P3), so 9 -> 10.
     "ketchup-application allows": 10,
-    "ketchup-application casts": 28,
+    "ketchup-application casts": 27,
     "ketchup-assistant allows": 3,
     "ketchup-assistant casts": 5,
     "ketchup-exact allows": 4,
