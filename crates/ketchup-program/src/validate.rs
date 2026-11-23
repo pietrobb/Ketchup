@@ -656,8 +656,19 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             } else {
                 let limit = span.min(hole.depth_mm + THIN_WALL_MM + 1.0);
                 let rim = if off_face { 0.0 } else { radius };
-                part.material_along(local_entry, local_inward, rim, hole.depth_mm, limit)
-                    .unwrap_or(span)
+                let material = part
+                    .material_along(local_entry, local_inward, rim, hole.depth_mm, limit)
+                    .unwrap_or(span);
+                // A hole that drills material and then runs into a pocket or
+                // cut-out of the same part ends there, inside the part: only
+                // leaving its outer surface breaks through (owner 2026-11-23,
+                // a Hettich pin hole into the pocket of its support unit).
+                if material > CONTACT_FIT_MM && hole.depth_mm >= material - CONTACT_FIT_MM {
+                    part.stock_along(local_entry, local_inward, rim, limit)
+                        .unwrap_or(material)
+                } else {
+                    material
+                }
             };
             if let Some((false, at, face)) = fit {
                 issues.push(Issue {

@@ -20,20 +20,24 @@ fn kinds(model: &ProgramModel) -> Vec<&'static str> {
 }
 
 /// A 12 mm hole from the front of an 18 mm side on the line of a 10 mm deep
-/// groove in its back meets the groove after 8 mm.
+/// groove in its back meets the groove after 8 mm and ends in it, inside the
+/// side (owner 2026-11-23); 18 mm deep it leaves the side's back.
 #[test]
-fn a_blind_hole_into_a_groove_behind_it_breaks_through() {
+fn a_blind_hole_into_a_groove_behind_it_breaks_through_only_out_of_the_back() {
     let side = "\
 side = board(\"side\", (18, 300, 600))
 groove(side, \"x+\", along = \"z\", width = 4, depth = 10, offset = 280)
 ";
-    let into_groove = eval(&format!(
-        "{side}hole(side, \"x-\", world = (0, 282, 300), diameter = 12, depth = 12)\n"
-    ));
+    let hole = |depth: f64| {
+        eval(&format!(
+            "{side}hole(side, \"x-\", world = (0, 282, 300), diameter = 12, depth = {depth})\n"
+        ))
+    };
+    assert_eq!(kinds(&hole(12.0)), Vec::<&str>::new());
     assert!(
-        kinds(&into_groove).contains(&"hole_breaks_through"),
+        kinds(&hole(18.0)).contains(&"hole_breaks_through"),
         "{:?}",
-        kinds(&into_groove)
+        kinds(&hole(18.0))
     );
     let beside = eval(&format!(
         "{side}hole(side, \"x-\", world = (0, 150, 300), diameter = 12, depth = 12)\n"
@@ -41,28 +45,64 @@ groove(side, \"x+\", along = \"z\", width = 4, depth = 10, offset = 280)
     assert_eq!(kinds(&beside), Vec::<&str>::new());
 }
 
-/// PG-11 (review 2026-10-18): a 12 mm hole 12 mm deep at y = 96 in an 18 mm
-/// board with a 6 x 10 mm groove at y = 100..106 in its back misses the
-/// groove on its axis but cuts 2 mm into it with its rim.
+/// PG-11 (review 2026-10-18): a 12 mm hole at y = 96 in an 18 mm board with
+/// a 6 x 10 mm groove at y = 100..106 in its back misses the groove on its
+/// axis but cuts 2 mm into it with its rim. 12 mm deep it ends there, inside
+/// the board; 18 mm deep its rim leaves the board's back beside the groove.
 #[test]
-fn a_blind_hole_whose_rim_reaches_a_groove_breaks_through() {
+fn a_blind_hole_whose_rim_reaches_a_groove_breaks_through_only_out_of_the_back() {
     let side = "\
 side = board(\"side\", (18, 300, 600))
 groove(side, \"x+\", along = \"z\", width = 6, depth = 10, offset = 100)
 ";
-    let hole = |y: f64| {
+    let hole = |y: f64, depth: f64| {
         eval(&format!(
-            "{side}hole(side, \"x-\", world = (0, {y}, 300), diameter = 12, depth = 12)\n"
+            "{side}hole(side, \"x-\", world = (0, {y}, 300), diameter = 12, depth = {depth})\n"
         ))
     };
-    let rim_in_groove = hole(96.0);
+    assert_eq!(kinds(&hole(96.0, 12.0)), Vec::<&str>::new());
     assert!(
-        kinds(&rim_in_groove).contains(&"hole_breaks_through"),
+        kinds(&hole(96.0, 18.0)).contains(&"hole_breaks_through"),
         "{:?}",
-        kinds(&rim_in_groove)
+        kinds(&hole(96.0, 18.0))
     );
     // The rim 0.5 mm short of the groove leaves the board whole.
-    assert_eq!(kinds(&hole(93.5)), Vec::<&str>::new());
+    assert_eq!(kinds(&hole(93.5, 12.0)), Vec::<&str>::new());
+}
+
+/// Owner 2026-11-23 (Hettich WingLine L Push to move): a 12 mm pin hole
+/// 45 mm deep from the front edge of an 18 mm top, 9.5 mm below its upper
+/// face, runs after 17.5 mm into the pocket milled from below for the support
+/// unit and ends there, inside the top. Past the pocket and out of the top's
+/// back, or down through the pocket's mouth, it breaks through.
+#[test]
+fn a_blind_hole_ending_in_a_pocket_of_its_part_does_not_break_through() {
+    let top = "\
+top = box(\"top\", (600, 100, 18))
+pocket(top, \"z-\", rect = (270, 17.5, 330, 70.5), depth = 14.5)
+";
+    let pin = |depth: f64| {
+        eval(&format!(
+            "{top}hole(top, \"y-\", world = (300, 0, 8.5), diameter = 12, depth = {depth})\n"
+        ))
+    };
+    assert_eq!(kinds(&pin(45.0)), Vec::<&str>::new());
+    assert!(
+        kinds(&pin(100.0)).contains(&"hole_breaks_through"),
+        "{:?}",
+        kinds(&pin(100.0))
+    );
+    let cap = |depth: f64| {
+        eval(&format!(
+            "{top}hole(top, \"z+\", world = (300, 40, 18), diameter = 5.5, depth = {depth})\n"
+        ))
+    };
+    assert_eq!(kinds(&cap(4.0)), Vec::<&str>::new());
+    assert!(
+        kinds(&cap(18.0)).contains(&"hole_breaks_through"),
+        "{:?}",
+        kinds(&cap(18.0))
+    );
 }
 
 /// PG-23 (review 2026-10-24): a 12 mm hole at y = 96 whose rim reaches a
