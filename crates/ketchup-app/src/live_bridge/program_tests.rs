@@ -1705,12 +1705,9 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
         .call_within(apply(TABLE, true), Duration::from_secs(60))
         .result
         .unwrap();
-    assert_eq!(boards["geometry_evaluated"], true, "{boards}");
+    let (exact, _) = exact_assemblies::settled_exact_check(&mut wire, &boards);
     assert_eq!(
-        (
-            boards["exact_collisions"]["state"].as_str(),
-            boards["exact_collisions"]["collisions"].as_u64()
-        ),
+        (exact["state"].as_str(), exact["collisions"].as_u64()),
         (Some("verified"), Some(0)),
         "{boards}"
     );
@@ -1721,15 +1718,14 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
         .call_within(apply(&corner, true), Duration::from_secs(60))
         .result
         .unwrap();
-    assert_eq!(cleared["geometry_evaluated"], true, "{cleared}");
-    assert_eq!(cleared["exact_collisions"]["cleared"], 1, "{cleared}");
-    assert_eq!(cleared["report"]["ok"], true);
-    assert_eq!(cleared["report"]["warnings"], 0, "{cleared}");
+    let (exact, issues) = exact_assemblies::settled_exact_check(&mut wire, &cleared);
+    assert_eq!(exact["cleared"], 1, "{cleared}");
+    assert!(issues.is_empty(), "{issues:#?}");
     // The relation map follows the exact solids: the cube's corner (70, 70)
     // is (140 - 100) / sqrt(2) mm from the hypotenuse.
-    let relation = &cleared["report"]["relations"][0];
-    assert_eq!(relation["kind"], "gap", "{cleared}");
-    assert_eq!(relation["gap_mm"], 28.3, "{cleared}");
+    let relations = settled_relations(&mut wire);
+    assert_eq!(relations[0]["kind"], "gap", "{relations:#?}");
+    assert_eq!(relations[0]["gap_mm"], 28.3, "{relations:#?}");
 
     // Moved onto the triangle's solid part, the same cube collides.
     let solid = format!("{TRIANGLE}c = box(\"c\", (20, 20, 20), at = (10, 10, 0))\n");
@@ -1737,13 +1733,27 @@ fn applied_program_answers_box_overlaps_with_the_exact_solids() {
         .call_within(apply(&solid, false), Duration::from_secs(60))
         .result
         .unwrap();
-    assert_eq!(collides["exact_collisions"]["collisions"], 1, "{collides}");
-    assert_eq!(collides["report"]["ok"], false);
-    assert_eq!(collides["report"]["issues"][0]["kind"], "collision");
-    assert_eq!(
-        collides["report"]["relations"][0]["status"], "collision",
-        "{collides}"
+    let (exact, issues) = exact_assemblies::settled_exact_check(&mut wire, &collides);
+    assert_eq!(exact["collisions"], 1, "{collides}");
+    assert_eq!(issues[0]["kind"], "collision", "{issues:#?}");
+    let relations = settled_relations(&mut wire);
+    assert_eq!(relations[0]["status"], "collision", "{relations:#?}");
+}
+
+/// The first page of relations of the current program, after its exact check.
+fn settled_relations(wire: &mut Wire) -> Vec<Value> {
+    let expected = wire.app.live_bridge_stamp();
+    let response = wire.answer_within(
+        Request::ProgramReport {
+            expected,
+            section: ReportSection::Relations,
+            offset: 0,
+            limit: 50,
+        },
+        Duration::from_secs(60),
     );
+    assert!(response.ok, "{response:?}");
+    response.result.unwrap()["rows"].as_array().unwrap().clone()
 }
 
 /// World origin and axes of the program part `name`.

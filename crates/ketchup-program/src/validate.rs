@@ -17,6 +17,10 @@ use std::ops::ControlFlow;
 
 /// Issue kind for a box overlap that only the exact solids can decide.
 pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
+/// Issue kind of two parts of one bought assembly file whose solids overlap
+/// where the file's maker placed them (a fitting on its mounting plate): told,
+/// but no collision ([`crate::imported::same_assembly_placement`]).
+pub const PURCHASED_ASSEMBLY_CONTACT: &str = "purchased_assembly_contact";
 
 /// Issue kind of a report whose checks did not finish within the program
 /// worker's limits: nothing was checked, and nothing was found to pass.
@@ -526,6 +530,25 @@ fn collision(
     let (min, max) = region;
     if needs_exact_shapes(a, b) {
         match exact.between(a, b) {
+            Some(pair) if pair.penetrating() && crate::imported::same_assembly_placement(a, b) => {
+                issues.push(Issue {
+                    source_lines: Vec::new(),
+                    severity: Severity::Warning,
+                    kind: PURCHASED_ASSEMBLY_CONTACT,
+                    parts: vec![a.name.clone(), b.name.clone()],
+                    message: format!(
+                        "the solids of {} and {} overlap ({} mm³) where their assembly file \
+                         places them: a contact in the bought assembly, not a collision",
+                        a.name,
+                        b.name,
+                        (pair.common_volume_mm3 * 10.0).round() / 10.0
+                    ),
+                    where_mm: Some((min.map(round), max.map(round))),
+                    hint: "Nothing to fix in the program: the file's maker assembled them so."
+                        .to_owned(),
+                });
+                return;
+            }
             Some(pair) if pair.penetrating() => {
                 issues.push(Issue {
                     source_lines: Vec::new(),

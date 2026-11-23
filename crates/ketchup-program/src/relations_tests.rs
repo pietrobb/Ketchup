@@ -15,8 +15,8 @@ fn model(source: &str) -> ProgramModel {
 }
 
 fn assert_same(model: &ProgramModel, issues: &[Issue], exact: &ExactShapes) -> Vec<Relation> {
-    let skipped = relations_by_bounds(model, issues, exact, true);
-    let measured = relations_by_bounds(model, issues, exact, false);
+    let skipped = relations_by_bounds(model, issues, exact, true, &mut ContactFaces::default());
+    let measured = relations_by_bounds(model, issues, exact, false, &mut ContactFaces::default());
     if let Some((index, (left, right))) = skipped
         .iter()
         .zip(&measured)

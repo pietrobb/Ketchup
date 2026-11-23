@@ -87,6 +87,49 @@ impl Part {
             _ => None,
         }
     }
+
+    /// Where the program placed the frame of the assembly file this part
+    /// was read from: its own frame with the assembly's placement of it
+    /// undone ([`ProgramImport::record`]). None for a whole file or one not
+    /// read yet.
+    fn assembly_frame(&self) -> Option<([f64; 3], crate::frame::Mat3)> {
+        let import = self.imported()?;
+        import.part.as_ref()?;
+        let read = import.read.as_ref()?;
+        let Some(placement) = read.placement else {
+            return Some((self.at_mm, self.rotation));
+        };
+        let matrix = placement.matrix();
+        let linear: crate::frame::Mat3 =
+            std::array::from_fn(|row| std::array::from_fn(|column| matrix[row * 4 + column]));
+        let rotation = crate::frame::multiply(&self.rotation, &crate::frame::transposed(&linear));
+        let offset = crate::frame::apply(&rotation, [matrix[3], matrix[7], matrix[11]]);
+        Some((std::array::from_fn(|i| self.at_mm[i] - offset[i]), rotation))
+    }
+}
+
+/// `a` and `b` are two parts of one assembly file that both sit where that
+/// file puts them, the program having placed the file once for both: where
+/// they meet, the file's maker assembled them so (a fitting on its mounting
+/// plate), and the overlap is no collision of the program's. The two
+/// placements may differ by the rounding of the matrices that carried them.
+#[must_use]
+pub fn same_assembly_placement(a: &Part, b: &Part) -> bool {
+    let (Some(ia), Some(ib)) = (a.imported(), b.imported()) else {
+        return false;
+    };
+    if ia.file != ib.file || ia.part == ib.part {
+        return false;
+    }
+    let (Some((at_a, rot_a)), Some((at_b, rot_b))) = (a.assembly_frame(), b.assembly_frame())
+    else {
+        return false;
+    };
+    let rounding = ketchup_model::tolerance::ACCUMULATED_ROUNDING;
+    (0..3).all(|i| {
+        (at_a[i] - at_b[i]).abs() <= rounding
+            && (0..3).all(|j| (rot_a[i][j] - rot_b[i][j]).abs() <= rounding)
+    })
 }
 
 impl ProgramModel {
@@ -102,6 +145,10 @@ impl ProgramModel {
             .filter(|part| part.imported().is_some())
     }
 }
+
+#[cfg(test)]
+#[path = "imported_tests.rs"]
+mod tests;
 
 /// Why the program of part `name` may not read `file`: only files in the
 /// folder of the program's own file or below it, so a program someone sends
