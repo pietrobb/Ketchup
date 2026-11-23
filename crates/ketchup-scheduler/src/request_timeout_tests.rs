@@ -563,6 +563,63 @@ fn simple_calls_time_out_at_the_default_budget() {
     responder.join().unwrap();
 }
 
+/// Standard error that says one line and then stays open, as a killed worker's does
+/// while Windows is still ending it.
+struct OpenStderr(Option<&'static [u8]>);
+
+impl Read for OpenStderr {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.0.take() {
+            Some(line) => {
+                buffer[..line.len()].copy_from_slice(line);
+                Ok(line.len())
+            }
+            None => {
+                std::thread::sleep(Duration::from_secs(60));
+                Ok(0)
+            }
+        }
+    }
+}
+
+/// Nightly 2026-11-23: each request a check past its deadline stopped waited 3 s
+/// more for the killed worker's standard error to end, and the check took 14 s for
+/// its 1.3 s. A timed-out worker is not waited for, and the allocation failure it
+/// said before it was held still makes the timeout the memory limit.
+#[test]
+fn a_timed_out_worker_is_not_waited_for_its_standard_error() {
+    let said: [(&'static [u8], bool); 2] = [
+        (b"loading\n", false),
+        (b"memory allocation of 99 bytes failed\n", true),
+    ];
+    for (line, memory) in said {
+        let (mut worker, writes, _responses) = controlled_worker();
+        worker.stderr_tail = Some(worker_client::stderr_tail(Some(OpenStderr(Some(line)))));
+        let responder = std::thread::spawn(move || {
+            writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
+        });
+        let started = Instant::now();
+        // The line is read while the request waits its 80 ms.
+        let error = worker
+            .request_with_timeout(
+                &WorkerRequest::Hello,
+                &NEVER_CANCELLED,
+                Duration::from_millis(80),
+            )
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(1), "{error}");
+        if memory {
+            assert_eq!(error, WorkerError::MemoryLimit { bytes: 0 });
+        } else {
+            assert_eq!(
+                error,
+                WorkerError::RequestTimedOut(Duration::from_millis(80))
+            );
+        }
+        responder.join().unwrap();
+    }
+}
+
 #[test]
 fn explicit_timeout_bounds_both_write_and_response_waits() {
     for acknowledge_write in [false, true] {

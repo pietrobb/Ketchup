@@ -10,6 +10,7 @@ use crate::protocol::{
     encode_frame, protocol_identity, read_frame,
 };
 use ketchup_rejection::{Reason, dropped};
+use std::sync::{Arc, Mutex, PoisonError};
 
 // The handshake is a new worker's first request: its budget also covers starting the
 // process and loading the OCCT libraries, which on a loaded machine takes seconds.
@@ -1140,10 +1141,19 @@ impl ExactWorkerClient {
                 bytes: self.memory_limit,
             });
         }
+        // A timed-out worker is not waited for: Windows ends a killed process
+        // seconds after TerminateJobObject, and a check past its deadline waited
+        // here each time (nightly 2026-11-23). A failed allocation names itself
+        // before abort() holds the worker, so its line has been read already.
+        let wait = if matches!(error, WorkerError::RequestTimedOut(_)) {
+            Duration::ZERO
+        } else {
+            STDERR_WAIT
+        };
         let tail = self
             .stderr_tail
             .take()
-            .and_then(|tail| tail.recv_timeout(STDERR_WAIT).ok())
+            .map(|tail| tail.within(wait))
             .unwrap_or_default();
         if String::from_utf8_lossy(&tail).contains("memory allocation of") {
             return Err(WorkerError::MemoryLimit {
@@ -1169,26 +1179,48 @@ const STDERR_WAIT: Duration = Duration::from_secs(3);
 /// Bytes of standard error kept: enough for the allocation failure message.
 const STDERR_TAIL_BYTES: usize = 4096;
 
-/// Collects the last bytes of the worker's standard error; they arrive when it exits.
-fn stderr_tail(stderr: Option<std::process::ChildStderr>) -> Receiver<Vec<u8>> {
-    let (sender, receiver) = mpsc::sync_channel(1);
+/// The last bytes of a worker's standard error: those read so far, and the end of
+/// the stream, which comes when the worker has exited.
+pub(crate) struct StderrTail {
+    read: Arc<Mutex<Vec<u8>>>,
+    ended: Receiver<()>,
+}
+
+impl StderrTail {
+    /// The bytes once the stream ends, or those read by then after `wait`.
+    fn within(self, wait: Duration) -> Vec<u8> {
+        if self.ended.recv_timeout(wait).is_err() {
+            // Not ended yet, or its reader is gone: what it read is the tail.
+        }
+        self.read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Collects the last bytes of the worker's standard error as they arrive.
+pub(crate) fn stderr_tail(stderr: Option<impl std::io::Read + Send + 'static>) -> StderrTail {
+    let (sender, ended) = mpsc::sync_channel(1);
+    let read = Arc::new(Mutex::new(Vec::new()));
     if let Some(mut stderr) = stderr {
+        let tail = Arc::clone(&read);
         std::thread::spawn(move || {
-            let mut tail = Vec::new();
             let mut buffer = [0_u8; 1024];
-            while let Ok(read) = std::io::Read::read(&mut stderr, &mut buffer) {
+            while let Ok(read) = stderr.read(&mut buffer) {
                 if read == 0 {
                     break;
                 }
+                let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
                 tail.extend_from_slice(&buffer[..read]);
                 let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
                 tail.drain(..excess);
             }
             // The client is gone and no longer reports the worker's end.
-            dropped(sender.send(tail), Reason::NobodyWaiting);
+            dropped(sender.send(()), Reason::NobodyWaiting);
         });
     }
-    receiver
+    StderrTail { read, ended }
 }
 
 pub(crate) fn unexpected_reply(reply: &WorkerReply) -> WorkerError {

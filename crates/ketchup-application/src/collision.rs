@@ -1460,7 +1460,13 @@ fn collision_report(
         )
     });
     let scope = scope.or(whole_model_scope.as_ref());
-    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), None, started) {
+    // The preparation walks the whole snapshot and cannot stop part way.
+    if let Some(reason) = interrupted(
+        cancellation.as_ref(),
+        scope.is_some(),
+        worker_timeout,
+        started,
+    ) {
         return not_evaluated(report, reason);
     }
     let exact_preparation = match ExactSnapshotPreparation::new(snapshot) {

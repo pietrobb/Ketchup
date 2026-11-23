@@ -120,6 +120,27 @@ pub fn apply_exact_pairs(
     (summary, complete.then_some(shapes))
 }
 
+/// The exact check of a program whose deadline passed before it measured
+/// anything: the report keeps its unverified contacts, and the summary says
+/// it stopped at the time limit, without building the exact solids.
+pub fn exact_check_past_deadline(
+    report: &mut Report,
+    model: &ProgramModel,
+    deadline: CheckDeadline,
+) -> Value {
+    let stopped = json!({"complete": false, "not_evaluated": [{"reason": "time_limit"}],
+        "checked_pair_count": 0});
+    apply_exact_pairs(
+        report,
+        model,
+        ExactShapes::default(),
+        &(stopped, ExactPairFacts::new()),
+        deadline,
+        &CancelToken::default(),
+    )
+    .0
+}
+
 /// Automatic exact checks for non-box contacts and declared distances.
 pub fn verify_rule_program_exact(
     snapshot: &Snapshot,
@@ -241,16 +262,30 @@ fn verify_candidates(
     if candidates.is_empty() {
         return (None, None);
     }
-    let names: BTreeMap<InstancePath, String> = snapshot
-        .scene_query()
-        .into_iter()
-        .filter(|part| part.visible)
-        .filter_map(|part| {
-            let name = crate::rule_program_part_name(snapshot, &part.instance_path)?;
-            model.part(&name)?;
-            Some((part.instance_path, name))
-        })
-        .collect();
+    let past_deadline = |report: &mut Report| -> (Option<Value>, Option<ExactBaseline>) {
+        (
+            Some(exact_check_past_deadline(report, model, deadline)),
+            None,
+        )
+    };
+    if deadline.remaining().is_zero() {
+        return past_deadline(report);
+    }
+    let mut names: BTreeMap<InstancePath, String> = BTreeMap::new();
+    for part in snapshot.scene_query() {
+        if deadline.remaining().is_zero() {
+            return past_deadline(report);
+        }
+        if !part.visible {
+            continue;
+        }
+        let Some(name) = crate::rule_program_part_name(snapshot, &part.instance_path) else {
+            continue;
+        };
+        if model.part(&name).is_some() {
+            names.insert(part.instance_path, name);
+        }
+    }
     let visible: BTreeSet<String> = names.values().cloned().collect();
     let unchanged: BTreeSet<String> = baseline.map_or_else(BTreeSet::new, |baseline| {
         visible
@@ -313,6 +348,8 @@ fn verify_candidates(
         // Every pair keeps the answer of the baseline.
         let nothing = json!({"complete": true, "not_evaluated": [], "checked_pair_count": 0});
         (nothing, ExactPairFacts::new())
+    } else if deadline.remaining().is_zero() {
+        return past_deadline(report);
     } else {
         // Full paths keep siblings of shared component roots distinct.
         let scope =

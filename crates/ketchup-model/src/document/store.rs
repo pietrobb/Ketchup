@@ -1221,12 +1221,66 @@ impl DocumentStore {
             .flatten()
     }
 
+    /// Applies `batch` as one revision straight, without the two trial builds
+    /// of the proposal gate, for a throwaway document no one publishes (the
+    /// scratch document a program check measures). `stop` is asked before
+    /// every command and between the steps after them; once it answers yes
+    /// the build ends with `Ok(None)` and this document stays as it was.
+    pub fn apply_batch_until(
+        &mut self,
+        batch: &CommandBatch,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<Arc<Revision>>, CanonicalError> {
+        self.apply_batch_stopping(
+            batch,
+            RevisionOrigin::Principal(ProposalPrincipal::ManualClient),
+            true,
+            stop,
+        )
+    }
+
+    /// The size limit the proposal gate puts on `batch` (commands, read
+    /// dependencies, write targets) against `budget`, for a build that goes
+    /// around the gate ([`Self::apply_batch_until`]) and must stay under the
+    /// same limit.
+    ///
+    /// # Errors
+    /// `batch` is over `budget`, or `budget` is over the host's.
+    pub fn validate_batch_budget(
+        &self,
+        batch: &CommandBatch,
+        budget: ProposalBudget,
+    ) -> Result<(), ProposalPrepareError> {
+        let snapshot = self.current();
+        validate_proposal_budget(
+            budget,
+            ProposalCost {
+                commands: batch.commands.len(),
+                read_dependencies: authoritative_dependencies(&snapshot, batch).len(),
+                write_targets: authoritative_writes(&snapshot, batch).len(),
+            },
+        )
+    }
+
     pub(super) fn apply_batch_with_origin_and_validation(
         &mut self,
         batch: &CommandBatch,
         origin: RevisionOrigin,
         validate_drawing_sources: bool,
     ) -> Result<Arc<Revision>, CanonicalError> {
+        match self.apply_batch_stopping(batch, origin, validate_drawing_sources, &|| false)? {
+            Some(revision) => Ok(revision),
+            None => unreachable!("a build nothing stops runs to its end"),
+        }
+    }
+
+    fn apply_batch_stopping(
+        &mut self,
+        batch: &CommandBatch,
+        origin: RevisionOrigin,
+        validate_drawing_sources: bool,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<Arc<Revision>>, CanonicalError> {
         if batch.schema != COMMAND_SCHEMA_V1 {
             return Err(CanonicalError::UnsupportedCommandSchema);
         }
@@ -1255,7 +1309,13 @@ impl DocumentStore {
             rebound_production_paths: BTreeSet::new(),
         };
         for command in &batch.commands {
+            if stop() {
+                return Ok(None);
+            }
             edit.apply(command)?;
+        }
+        if stop() {
+            return Ok(None);
         }
         let commands::BatchEdit {
             current,
@@ -1288,6 +1348,9 @@ impl DocumentStore {
         }
         validate_sketch_projections(&product)?;
         validate_assembly_joint_motion_publication(&current, &product, batch)?;
+        if stop() {
+            return Ok(None);
+        }
         let revision_id = self.next_revision_id;
         let following_revision_id = revision_id
             .checked_add(1)
@@ -1326,6 +1389,9 @@ impl DocumentStore {
             &recomputed_nodes,
         )
         .map_err(CanonicalError::Graph)?;
+        if stop() {
+            return Ok(None);
+        }
         let (changed_features, feature_graph) = feature_changes(&current, &product)?;
         let dirty_features = feature_graph.dependent_closure(
             changed_features
@@ -1357,7 +1423,7 @@ impl DocumentStore {
         self.mutation_epoch = Self::fresh_mutation_epoch();
         self.push_revision(Arc::clone(&revision));
         self.next_revision_id = following_revision_id;
-        Ok(revision)
+        Ok(Some(revision))
     }
 
     pub fn make_unique(

@@ -26,7 +26,7 @@ use ketchup_application::program_isolation::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, RuleProgramApplyError, SaveOptions,
-    SessionError, SessionSettings, verify_rule_program_exact,
+    SessionError, SessionSettings, exact_check_past_deadline, verify_rule_program_exact,
 };
 use ketchup_assistant::sidecar::AssistantCadEditProgram;
 use ketchup_model::cam::{
@@ -467,16 +467,29 @@ impl Server {
         if ketchup_program::exact_candidates(&evaluated.model).is_empty() {
             return None;
         }
+        // The scratch document of a large model takes seconds to build, so it
+        // is built once and the build stops between parts at the deadline.
+        let past_deadline = || deadline.remaining().is_zero();
         let mut scratch = DocumentSession::new(self.settings.clone());
-        let snapshot =
-            match scratch.replace_with_rule_model(evaluated.reference_model(), source.clone()) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    let reason = Error::from(error).code;
-                    return Some(json!({"state": "incomplete",
-                    "not_evaluated": [{"reason": "program_build_failed", "detail": reason}]}));
-                }
-            };
+        let snapshot = match scratch.build_rule_model_scratch(
+            evaluated.reference_model(),
+            source.clone(),
+            &past_deadline,
+        ) {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => {
+                return Some(exact_check_past_deadline(
+                    report,
+                    &evaluated.model,
+                    deadline,
+                ));
+            }
+            Err(error) => {
+                let reason = Error::from(error).code;
+                return Some(json!({"state": "incomplete",
+                "not_evaluated": [{"reason": "program_build_failed", "detail": reason}]}));
+            }
+        };
         verify_rule_program_exact(
             &snapshot,
             &evaluated.model,

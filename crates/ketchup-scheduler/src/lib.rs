@@ -756,7 +756,7 @@ pub struct ExactWorkerClient {
     /// The job's memory limit and the last bytes of standard error, which arrive when
     /// the worker exits: a failed allocation names itself there before it aborts.
     memory_limit: usize,
-    stderr_tail: Option<Receiver<Vec<u8>>>,
+    stderr_tail: Option<worker_client::StderrTail>,
     /// The worker in the window's memory budget, which may stop it.
     budget: Option<memory_budget::Registration>,
     _temp_directory: tempfile::TempDir,
