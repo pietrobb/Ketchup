@@ -94,7 +94,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/persistence/legacy.rs": 4675,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3192,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4190,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4188,
     "crates/ketchup-scheduler/src/lib.rs": 3051,
 }
 
@@ -125,7 +125,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 674,
-    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 496,
+    "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 491,
 }
 
 # A test checks one behavior; a longer one is several scenarios in one, and its

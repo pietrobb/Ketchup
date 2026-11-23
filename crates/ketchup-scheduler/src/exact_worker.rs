@@ -53,6 +53,7 @@ type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
 mod cam_simulation;
 mod failure;
+mod graph_documents;
 mod graph_outputs;
 mod loft;
 mod output_cache;
@@ -652,6 +653,8 @@ fn exact_brep_sheet_metal(
 thread_local! {
     static GRAPH_OUTPUT_CACHE: std::cell::RefCell<output_cache::OutputCache<ExactOpOutput>> =
         std::cell::RefCell::default();
+    static GRAPH_DOCUMENTS: std::cell::RefCell<graph_documents::KeptDocuments<ketchup_exact::StepXdeDocument>> =
+        std::cell::RefCell::default();
 }
 
 fn evaluate_exact_brep_graph_cached(
@@ -686,7 +689,6 @@ fn evaluate_exact_brep_graph(
     let mut outputs = Vec::<ExactOpOutput>::with_capacity(graph.nodes.len());
     let mut face_names = Vec::<Option<Vec<String>>>::with_capacity(graph.nodes.len());
     let mut extrusion_lineage = Vec::<bool>::with_capacity(graph.nodes.len());
-    let mut xde_documents = Vec::<(String, ketchup_exact::StepXdeDocument)>::new();
     for (node_index, node) in graph.nodes.iter().enumerate() {
         let mut produced_face_names = None;
         let output = match &node.operation {
@@ -1149,13 +1151,9 @@ fn evaluate_exact_brep_graph(
                 graph,
                 &exact_sheet_metal_shape(base_mm_bits, *thickness_bits, *k_factor_bits, bends),
             )?,
-            ExactBRepOperation::ImportedExact { .. } => exact_brep_imported_body(
-                backend,
-                graph,
-                &node.operation,
-                imported_sources,
-                &mut xde_documents,
-            )?,
+            ExactBRepOperation::ImportedExact { .. } => {
+                exact_brep_imported_body(backend, graph, &node.operation, imported_sources)?
+            }
         };
         let extrusion = extrusion_lineage_of(&node.operation, &extrusion_lineage);
         let mut output = output;
@@ -1172,14 +1170,13 @@ fn evaluate_exact_brep_graph(
 }
 
 /// The body an `ImportedExact` node names: its whole source, or one XDE part
-/// of it read as STEP or IGES. Parts of one source read it once per graph,
-/// into `xde_documents`.
+/// of it read as STEP or IGES. Parts of one source read it once per worker
+/// while it stays among `GRAPH_DOCUMENTS`.
 fn exact_brep_imported_body(
     backend: &ExactBackend,
     graph: &ExactBRepGraph,
     operation: &ExactBRepOperation,
     imported_sources: &[(String, tempfile::NamedTempFile)],
-    xde_documents: &mut Vec<(String, ketchup_exact::StepXdeDocument)>,
 ) -> Result<ExactOpOutput, ketchup_exact::GeometryError> {
     let ExactBRepOperation::ImportedExact {
         source_sha256,
@@ -1207,22 +1204,22 @@ fn exact_brep_imported_body(
         (ExactBRepImportedFormat::Step, None) => backend.import_step(&source)?,
         (ExactBRepImportedFormat::Iges, None) => backend.import_iges(&source)?,
         (format, Some(part_index)) => {
-            let read = match xde_documents
-                .iter()
-                .position(|(digest, _)| *digest == source_sha256)
-            {
-                Some(position) => position,
-                None => {
-                    let document = match format {
+            let key = match format {
+                ExactBRepImportedFormat::Step => format!("step:{source_sha256}"),
+                ExactBRepImportedFormat::Iges => format!("iges:{source_sha256}"),
+            };
+            let document = GRAPH_DOCUMENTS.with(|documents| {
+                documents.borrow_mut().get_or_open(&key, || {
+                    match format {
                         ExactBRepImportedFormat::Step => backend.open_step_xde(&source),
                         ExactBRepImportedFormat::Iges => backend.open_iges_xde(&source),
                     }
-                    .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))?;
-                    xde_documents.push((source_sha256.clone(), document));
-                    xde_documents.len() - 1
-                }
-            };
-            xde_documents[read].1.part(*part_index)?
+                    // The staged copy is deleted after this request; the document outlives it.
+                    .map(|document| document.named(format!("sha256:{source_sha256}")))
+                    .map_err(|error| exact_brep_graph_error(graph, &error.to_string()))
+                })
+            })?;
+            document.part(*part_index)?
         }
     };
     if !imported_result_matches(&source_sha256, &output, result_fingerprint) {
@@ -3492,6 +3489,7 @@ fn m21_step_assembly_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod graph_documents;
 
     /// ADR 0010: the drawer example's rail 9117663_3, saved on Windows with
     /// MSVC's libm, evaluates one bit away in volume under CORE-MATH. The
