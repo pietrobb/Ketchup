@@ -1007,6 +1007,90 @@ mod tests {
     use crate::SessionSettings;
     use std::collections::BTreeMap;
 
+    /// The scratch document of a program check is built once and gives the
+    /// model the published replacement gives; stopped, it stays empty.
+    #[test]
+    fn a_scratch_build_matches_the_replacement_and_stops_when_asked() {
+        let program = RuleProgramSource {
+            variants: Default::default(),
+            file_name: "model.star".to_owned(),
+            source: "box(\"a\", (100, 60, 40))\nbox(\"b\", (10, 10, 10), at=(300, 0, 0))\n"
+                .to_owned(),
+            overrides: Default::default(),
+        };
+        let evaluated = evaluate(&program).unwrap();
+        let mut replaced = DocumentSession::new(SessionSettings::default());
+        let replacement = replaced
+            .replace_with_rule_model(evaluated.reference_model(), program.clone())
+            .unwrap();
+        let mut scratch = DocumentSession::new(SessionSettings::default());
+        let built = scratch
+            .build_rule_model_scratch(evaluated.reference_model(), program.clone(), &|| false)
+            .unwrap()
+            .unwrap();
+        // The digest also covers the document's own id, which differs.
+        assert_eq!(built.scene_query(), replacement.scene_query());
+        assert!(built.definitions().eq(replacement.definitions()));
+        assert!(built.features().eq(replacement.features()));
+        assert_eq!(scratch.rule_program(), Some(&program));
+
+        let mut stopped = DocumentSession::new(SessionSettings::default());
+        let empty = stopped.snapshot().canonical_digest();
+        let asked = std::cell::Cell::new(0);
+        let second_part = || {
+            asked.set(asked.get() + 1);
+            asked.get() > 2
+        };
+        assert!(
+            stopped
+                .build_rule_model_scratch(evaluated.reference_model(), program, &second_part)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(stopped.snapshot().canonical_digest(), empty);
+    }
+
+    /// The scratch build goes around the proposal gate but not its size
+    /// limit: the budget check it runs answers as the gate does.
+    #[test]
+    fn a_scratch_build_keeps_the_size_limit_of_the_proposal_gate() {
+        use ketchup_model::document::{
+            DocumentStore, ProposalBudget, ProposalContext, ProposalPrepareError,
+        };
+        let program = RuleProgramSource {
+            variants: Default::default(),
+            file_name: "model.star".to_owned(),
+            source: "box(\"a\", (100, 60, 40))\nbox(\"b\", (10, 10, 10), at=(300, 0, 0))\n"
+                .to_owned(),
+            overrides: Default::default(),
+        };
+        let evaluated = evaluate(&program).unwrap();
+        let document = DocumentStore::new();
+        let batch =
+            crate::rule_groups::plan_rule_model_batch(&document, evaluated.reference_model())
+                .unwrap();
+        assert!(batch.commands().len() > 1);
+        document
+            .validate_batch_budget(&batch, ProposalBudget::RULE_PROGRAM)
+            .unwrap();
+        let small = ProposalBudget::T18_ATOMIC_MULTI_COMMAND_EDIT;
+        let scratch = document.validate_batch_budget(&batch, small).unwrap_err();
+        assert!(matches!(
+            scratch,
+            ProposalPrepareError::RequestedBudgetExceeded { .. }
+        ));
+        let gate = document
+            .prepare_proposal_with_context(
+                batch,
+                ProposalContext {
+                    requested_budget: small,
+                    ..ProposalContext::rule_program()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(scratch, gate);
+    }
+
     /// Turning a part of a large program in the window cost four evaluations
     /// of the whole program (the edit and its plan each evaluated the program
     /// before and after it): 370 ms on the largest example program. From the

@@ -1356,25 +1356,9 @@ impl ExactTally<'_> {
     }
 }
 
-fn collision_report(
-    snapshot: &Snapshot,
-    selection: &AssistantValidationSelection,
-    worker: Option<(&ContainerData, Option<PathBuf>, Duration)>,
-    scope: Option<&CollisionScope>,
-    cancellation: Option<Arc<AtomicBool>>,
-    mut gravity_contacts: Option<&mut ExactGravityContacts>,
-    pair_facts: Option<&mut ExactPairFacts>,
-) -> Value {
-    let started = Instant::now();
-    let worker_timeout = worker.as_ref().map(|(_, _, timeout)| *timeout);
-    let mut group_facts = ExactPairFacts::new();
-    let (exact_gaps, mut pair_facts) = if selection.requested.contains("group_connectivity") {
-        (false, Some(&mut group_facts))
-    } else {
-        (pair_facts.is_some(), pair_facts)
-    };
-    let tolerance = snapshot.tolerance();
-    let mut report = json!({"document_id": snapshot.document_id().0,
+/// The report before any check ran: the resource limits and state "skipped".
+fn skipped_report(snapshot: &Snapshot, exact_worker: bool) -> Value {
+    json!({"document_id": snapshot.document_id().0,
         "revision": snapshot.revision_id(), "canonical_digest": snapshot.canonical_digest(),
         "state": "skipped", "complete": false, "checked_occurrence_count": 0,
         "checked_body_count": 0, "checked_pair_count": 0, "total_pair_count": 0,
@@ -1389,360 +1373,279 @@ fn collision_report(
             "max_unique_graphs": MAX_COLLISION_UNIQUE_GRAPHS,
             "max_graphs_per_batch": MAX_EXACT_PAIR_GRAPHS,
             "max_pairs_per_batch": MAX_EXACT_PAIR_CANDIDATES},
-        "method": if worker.is_some() {"worker_brep_common_volume"} else {"canonical_box_analytic"}});
-    let collect_gravity_contacts = worker.is_some()
-        && gravity_contacts.is_some()
-        && selection.requested.contains("gravity_support");
-    if !selection.is_valid()
-        || (!selection.requested.contains("collision")
-            && !collect_gravity_contacts
-            && !selection.requested.contains("group_connectivity"))
-    {
-        return report;
-    }
-    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), None, started) {
-        return not_evaluated(report, reason);
-    }
-    if let Some(scope) = scope {
-        report["scope"] = json!({
-            "mode": "snapshot_bound_occurrences",
-            "requested_occurrence_count": scope.occurrence_ids.len(),
-            "snapshot_bound": true,
-        });
-        if !scope.is_current(snapshot) {
-            return not_evaluated(report, json!({"reason": "stale_collision_scope"}));
-        }
-        if scope.occurrence_ids.is_empty() {
-            return not_evaluated(report, json!({"reason": "empty_collision_scope"}));
-        }
-        if scope.occurrence_ids.len() > MAX_SCOPED_COLLISION_OCCURRENCES {
-            return not_evaluated(
-                report,
-                json!({
-                    "reason": "collision_scope_resource_limit",
-                    "actual": scope.occurrence_ids.len(),
-                    "limit": MAX_SCOPED_COLLISION_OCCURRENCES,
-                }),
-            );
-        }
-        let missing = scope
-            .occurrence_ids
-            .iter()
-            .filter(|id| snapshot.occurrence(**id).is_none())
-            .map(|id| id.0)
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return not_evaluated(
-                report,
-                json!({
-                    "reason": "missing_collision_scope_occurrences",
-                    "occurrence_ids": missing,
-                }),
-            );
-        }
-    }
-    let Some(visible) = visible_scene(snapshot, scope, &mut report) else {
-        return report;
-    };
-    // A whole model past the small-scene limit (1800 parts) is checked by the
-    // spatially indexed scoped pass with every visible occurrence in scope.
-    let whole_model_scope = (scope.is_none() && visible.len() > MAX_COLLISION_BODIES).then(|| {
-        report["scope"] = json!({
-            "mode": "whole_visible_model",
-            "requested_occurrence_count": visible.len(),
-            "snapshot_bound": true,
-        });
-        CollisionScope::bind(
-            snapshot,
-            visible
-                .iter()
-                .map(|occurrence| occurrence.instance_path.root_occurrence()),
-        )
+        "method": if exact_worker {"worker_brep_common_volume"} else {"canonical_box_analytic"}})
+}
+
+/// Records the requested `scope` in `report`; why the check cannot run on it, if
+/// it cannot.
+fn bind_requested_scope(
+    snapshot: &Snapshot,
+    scope: &CollisionScope,
+    report: &mut Value,
+) -> Option<Value> {
+    report["scope"] = json!({
+        "mode": "snapshot_bound_occurrences",
+        "requested_occurrence_count": scope.occurrence_ids.len(),
+        "snapshot_bound": true,
     });
-    let scope = scope.or(whole_model_scope.as_ref());
-    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), None, started) {
-        return not_evaluated(report, reason);
+    if !scope.is_current(snapshot) {
+        return Some(json!({"reason": "stale_collision_scope"}));
     }
-    let exact_preparation = match ExactSnapshotPreparation::new(snapshot) {
-        Ok(preparation) => preparation,
-        Err(error) => {
-            return not_evaluated(
-                report,
-                json!({
-                    "reason": "invalid_exact_dependency_graph",
-                    "detail": format!("{error:?}"),
-                }),
-            );
-        }
-    };
-    if let Some(reason) = interrupted(
-        cancellation.as_ref(),
-        scope.is_some(),
-        worker_timeout,
-        started,
-    ) {
-        return not_evaluated(report, reason);
+    if scope.occurrence_ids.is_empty() {
+        return Some(json!({"reason": "empty_collision_scope"}));
     }
-    report["visible_occurrence_count"] = json!(visible.len());
-    let mut bodies = Vec::new();
-    let mut graphs = Vec::new();
-    let mut graph_indices = BTreeMap::new();
-    let mut graph_failures = BTreeMap::new();
-    let mut graph_bytes = 0usize;
-    let mut graph_attempt_count = 0usize;
-    let mut terminal_cache: BTreeMap<DefinitionId, TerminalBodies> = BTreeMap::new();
-    let mut unavailable = Vec::new();
-    let mut failures = Vec::new();
-    for occurrence in &visible {
-        if let Some(reason) = interrupted(
-            cancellation.as_ref(),
-            scope.is_some(),
-            worker_timeout,
-            started,
-        ) {
-            return not_evaluated(report, reason);
-        }
-        let terminals = terminal_cache
-            .entry(occurrence.definition_id)
-            .or_insert_with(|| {
-                exact_preparation
-                    .terminal_features(occurrence.definition_id)
-                    .map(|terminals| terminals.into_iter().collect())
-            });
-        let terminals = match terminals {
-            Ok(terminals) => terminals,
-            Err(error) => {
-                unavailable.push(json!({"occurrence_id": occurrence.instance_path.root_occurrence().0,
-                    "instance_path": path_json(&occurrence.instance_path), "name": occurrence.occurrence_name,
-                    "reason": format!("unavailable_body_producers: {error:?}")}));
-                continue;
-            }
+    if scope.occurrence_ids.len() > MAX_SCOPED_COLLISION_OCCURRENCES {
+        return Some(json!({
+            "reason": "collision_scope_resource_limit",
+            "actual": scope.occurrence_ids.len(),
+            "limit": MAX_SCOPED_COLLISION_OCCURRENCES,
+        }));
+    }
+    let missing = scope
+        .occurrence_ids
+        .iter()
+        .filter(|id| snapshot.occurrence(**id).is_none())
+        .map(|id| id.0)
+        .collect::<Vec<_>>();
+    (!missing.is_empty()).then(|| {
+        json!({
+            "reason": "missing_collision_scope_occurrences",
+            "occurrence_ids": missing,
+        })
+    })
+}
+
+/// What every step of one collision report past its scope reads.
+struct ReportRun<'a> {
+    snapshot: &'a Snapshot,
+    /// The requested scope, or the whole visible model past the small-scene limit.
+    scope: Option<&'a CollisionScope>,
+    cancellation: Option<&'a Arc<AtomicBool>>,
+    /// The exact worker's timeout; `None` for the analytic box check.
+    timeout: Option<Duration>,
+    started: Instant,
+    tolerance: TolerancePolicy,
+}
+
+/// The bodies one report checks, and the exact graphs the worker gets for them.
+struct CollectedBodies {
+    bodies: Vec<Body>,
+    graphs: Vec<ExactBRepGraph>,
+    graph_indices: BTreeMap<(DefinitionId, FeatureId), usize>,
+    graph_bytes: usize,
+    unavailable: Vec<Value>,
+}
+
+impl ReportRun<'_> {
+    fn interrupted(&self) -> Option<Value> {
+        interrupted(
+            self.cancellation,
+            self.scope.is_some(),
+            self.timeout,
+            self.started,
+        )
+    }
+
+    /// Every visible body of `visible`, with its exact graph when the worker
+    /// checks, or its analytic box when it does not. `Err` is why the check stops.
+    fn collect_bodies(
+        &self,
+        visible: &[SceneOccurrence],
+        exact_preparation: &ExactSnapshotPreparation,
+    ) -> Result<CollectedBodies, Value> {
+        let mut collected = CollectedBodies {
+            bodies: Vec::new(),
+            graphs: Vec::new(),
+            graph_indices: BTreeMap::new(),
+            graph_bytes: 0,
+            unavailable: Vec::new(),
         };
-        for (body_id, producer) in terminals.iter().copied().filter(|(id, _)| {
-            snapshot
-                .definition(occurrence.definition_id)
-                .and_then(|definition| definition.body(*id))
-                .is_some_and(|body| body.visible())
-        }) {
-            if let Some(reason) = interrupted(
-                cancellation.as_ref(),
-                scope.is_some(),
-                worker_timeout,
-                started,
-            ) {
-                return not_evaluated(report, reason);
+        let mut graph_failures = BTreeMap::new();
+        let mut graph_attempt_count = 0usize;
+        let mut terminal_cache: BTreeMap<DefinitionId, TerminalBodies> = BTreeMap::new();
+        for occurrence in visible {
+            if let Some(reason) = self.interrupted() {
+                return Err(reason);
             }
-            if scope.is_none() && bodies.len() == MAX_COLLISION_BODIES {
-                return not_evaluated(
-                    report,
-                    json!({"reason": "collision_body_resource_limit", "limit": MAX_COLLISION_BODIES}),
-                );
-            }
-            if scope.is_some() && bodies.len() == MAX_SCOPED_COLLISION_BODIES {
-                return not_evaluated(
-                    report,
-                    json!({"reason": "scoped_collision_body_resource_limit",
-                    "limit": MAX_SCOPED_COLLISION_BODIES}),
-                );
-            }
-            // Never accept render packages as proof that the canonical solid is a box.
-            // Native-worker validation does not consume this analytic fallback.
-            let analytic = worker
-                .is_none()
-                .then(|| {
-                    GeneralBodyParticipant::accept_made(
-                        snapshot,
-                        &ExactResultRegistry::default(),
-                        occurrence.instance_path.clone(),
-                        tolerance,
-                    )
-                    .ok()
-                    .filter(|body| matches!(body.evidence_class(), EvidenceClass::Exact))
-                })
-                .flatten();
-            let mut body = Body {
-                occurrence: occurrence.clone(),
-                body_id,
-                producer,
-                graph: None,
-                analytic,
+            let terminals = terminal_cache
+                .entry(occurrence.definition_id)
+                .or_insert_with(|| {
+                    exact_preparation
+                        .terminal_features(occurrence.definition_id)
+                        .map(|terminals| terminals.into_iter().collect())
+                });
+            let terminals = match terminals {
+                Ok(terminals) => terminals,
+                Err(error) => {
+                    collected.unavailable.push(json!({"occurrence_id": occurrence.instance_path.root_occurrence().0,
+                        "instance_path": path_json(&occurrence.instance_path), "name": occurrence.occurrence_name,
+                        "reason": format!("unavailable_body_producers: {error:?}")}));
+                    continue;
+                }
             };
-            if let Some((_, _, timeout)) = &worker {
-                let key = (occurrence.definition_id, producer);
-                if let Some(index) = graph_indices.get(&key) {
-                    body.graph = Some(*index);
-                } else if let Some(reason) = graph_failures.get(&key) {
-                    let mut entry = identity(&body);
-                    entry["reason"] = json!(reason);
-                    unavailable.push(entry);
-                } else {
-                    if graph_attempt_count == MAX_COLLISION_UNIQUE_GRAPHS {
-                        return not_evaluated(
-                            report,
-                            json!({
+            for (body_id, producer) in terminals.iter().copied().filter(|(id, _)| {
+                self.snapshot
+                    .definition(occurrence.definition_id)
+                    .and_then(|definition| definition.body(*id))
+                    .is_some_and(|body| body.visible())
+            }) {
+                if let Some(reason) = self.interrupted() {
+                    return Err(reason);
+                }
+                if self.scope.is_none() && collected.bodies.len() == MAX_COLLISION_BODIES {
+                    return Err(
+                        json!({"reason": "collision_body_resource_limit", "limit": MAX_COLLISION_BODIES}),
+                    );
+                }
+                if self.scope.is_some() && collected.bodies.len() == MAX_SCOPED_COLLISION_BODIES {
+                    return Err(json!({"reason": "scoped_collision_body_resource_limit",
+                        "limit": MAX_SCOPED_COLLISION_BODIES}));
+                }
+                // Never accept render packages as proof that the canonical solid is a box.
+                // Native-worker validation does not consume this analytic fallback.
+                let analytic = self
+                    .timeout
+                    .is_none()
+                    .then(|| {
+                        GeneralBodyParticipant::accept_made(
+                            self.snapshot,
+                            &ExactResultRegistry::default(),
+                            occurrence.instance_path.clone(),
+                            self.tolerance,
+                        )
+                        .ok()
+                        .filter(|body| matches!(body.evidence_class(), EvidenceClass::Exact))
+                    })
+                    .flatten();
+                let mut body = Body {
+                    occurrence: occurrence.clone(),
+                    body_id,
+                    producer,
+                    graph: None,
+                    analytic,
+                };
+                if self.timeout.is_some() {
+                    let key = (occurrence.definition_id, producer);
+                    if let Some(index) = collected.graph_indices.get(&key) {
+                        body.graph = Some(*index);
+                    } else if let Some(reason) = graph_failures.get(&key) {
+                        let mut entry = identity(&body);
+                        entry["reason"] = json!(reason);
+                        collected.unavailable.push(entry);
+                    } else {
+                        if graph_attempt_count == MAX_COLLISION_UNIQUE_GRAPHS {
+                            return Err(json!({
                                 "reason": "exact_graph_count_resource_limit",
                                 "limit": MAX_COLLISION_UNIQUE_GRAPHS,
-                            }),
-                        );
-                    }
-                    graph_attempt_count += 1;
-                    let graph = exact_preparation.graph(occurrence.definition_id, producer);
-                    if let Some(reason) = interrupted(
-                        cancellation.as_ref(),
-                        scope.is_some(),
-                        Some(*timeout),
-                        started,
-                    )
-                    .filter(|_| graph.is_ok())
-                    {
-                        return not_evaluated(report, reason);
-                    }
-                    match graph {
-                        Ok(graph) => match graph.to_bytes() {
-                            Ok(bytes) => {
-                                graph_bytes = graph_bytes.saturating_add(bytes.len());
-                                body.graph = Some(graphs.len());
-                                graph_indices.insert(key, graphs.len());
-                                graphs.push(graph);
-                            }
+                            }));
+                        }
+                        graph_attempt_count += 1;
+                        let graph = exact_preparation.graph(occurrence.definition_id, producer);
+                        if let Some(reason) = self.interrupted().filter(|_| graph.is_ok()) {
+                            return Err(reason);
+                        }
+                        match graph {
+                            Ok(graph) => match graph.to_bytes() {
+                                Ok(bytes) => {
+                                    collected.graph_bytes =
+                                        collected.graph_bytes.saturating_add(bytes.len());
+                                    body.graph = Some(collected.graphs.len());
+                                    collected.graph_indices.insert(key, collected.graphs.len());
+                                    collected.graphs.push(graph);
+                                }
+                                Err(error) => {
+                                    let reason = format!("exact_graph_unavailable: {error}");
+                                    graph_failures.insert(key, reason.clone());
+                                    let mut entry = identity(&body);
+                                    entry["reason"] = json!(reason);
+                                    collected.unavailable.push(entry);
+                                }
+                            },
                             Err(error) => {
                                 let reason = format!("exact_graph_unavailable: {error}");
                                 graph_failures.insert(key, reason.clone());
                                 let mut entry = identity(&body);
                                 entry["reason"] = json!(reason);
-                                unavailable.push(entry);
+                                collected.unavailable.push(entry);
                             }
-                        },
-                        Err(error) => {
-                            let reason = format!("exact_graph_unavailable: {error}");
-                            graph_failures.insert(key, reason.clone());
-                            let mut entry = identity(&body);
-                            entry["reason"] = json!(reason);
-                            unavailable.push(entry);
                         }
                     }
+                } else if body.analytic.is_none() {
+                    let mut entry = identity(&body);
+                    entry["reason"] = json!("exact_worker_required_for_non_box_geometry");
+                    collected.unavailable.push(entry);
                 }
-            } else if body.analytic.is_none() {
-                let mut entry = identity(&body);
-                entry["reason"] = json!("exact_worker_required_for_non_box_geometry");
-                unavailable.push(entry);
+                collected.bodies.push(body);
             }
-            bodies.push(body);
         }
+        Ok(collected)
     }
-    let scoped_indices = scope
-        .map(|scope| {
-            bodies
+
+    /// The indices of the bodies the scope checks, all of them without one. A
+    /// scoped occurrence with no visible exact body is listed unavailable.
+    fn scoped_body_indices(
+        &self,
+        collected: &mut CollectedBodies,
+        report: &mut Value,
+    ) -> BTreeSet<usize> {
+        let bodies = &collected.bodies;
+        let scoped_indices = self
+            .scope
+            .map(|scope| {
+                bodies
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, body)| {
+                        scope
+                            .occurrence_ids
+                            .contains(&body.occurrence.instance_path.root_occurrence())
+                            .then_some(index)
+                    })
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_else(|| (0..bodies.len()).collect());
+        if let Some(scope) = self.scope {
+            let resolved = scoped_indices
                 .iter()
-                .enumerate()
-                .filter_map(|(index, body)| {
-                    scope
-                        .occurrence_ids
-                        .contains(&body.occurrence.instance_path.root_occurrence())
-                        .then_some(index)
-                })
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_else(|| (0..bodies.len()).collect());
-    if let Some(scope) = scope {
-        let resolved = scoped_indices
-            .iter()
-            .map(|index| bodies[*index].occurrence.instance_path.root_occurrence())
-            .collect::<BTreeSet<_>>();
-        for id in scope.occurrence_ids.difference(&resolved) {
-            unavailable.push(json!({
-                "occurrence_id": id.0,
-                "reason": "scoped_occurrence_has_no_visible_exact_body",
-            }));
-        }
-        report["scope"]["resolved_occurrence_count"] = json!(resolved.len());
-        report["scope"]["scoped_body_count"] = json!(scoped_indices.len());
-    }
-    let scoped_body_count = scoped_indices.len();
-    let total_pairs = if scope.is_some() {
-        scoped_body_count * bodies.len().saturating_sub(scoped_body_count)
-            + scoped_body_count * scoped_body_count.saturating_sub(1) / 2
-    } else {
-        bodies.len() * bodies.len().saturating_sub(1) / 2
-    };
-    let mut issues = Vec::new();
-    let mut exact_contact_areas = ContactAreas::new();
-    let mut checked = 0;
-    let mut broad_rejected = 0;
-    let mut checked_bodies = BTreeSet::new();
-    if let Some((container, worker_path, timeout)) = worker {
-        if let Some(reason) = interrupted(
-            cancellation.as_ref(),
-            scope.is_some(),
-            Some(timeout),
-            started,
-        ) {
-            return not_evaluated(report, reason);
-        }
-        let sources = (|| -> Result<ketchup_model::persistence::Blobs, CollisionSourceError> {
-            let mut sources = BTreeMap::new();
-            for graph in &graphs {
-                for node in &graph.nodes {
-                    if let ExactBRepOperation::ImportedExact {
-                        source_sha256,
-                        source_byte_len,
-                        ..
-                    } = &node.operation
-                    {
-                        let hash = source_sha256
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<String>();
-                        if sources.contains_key(&hash) {
-                            continue;
-                        }
-                        let source = container
-                            .blobs()
-                            .get(&hash)
-                            .ok_or(CollisionSourceError::MissingBlob)?;
-                        if source.len() as u64 != *source_byte_len
-                            || ketchup_model::graph::sha256_bytes(source) != *source_sha256
-                        {
-                            return Err(CollisionSourceError::InvalidBlob);
-                        }
-                        sources.insert(hash, std::sync::Arc::clone(source));
-                    }
-                }
+                .map(|index| bodies[*index].occurrence.instance_path.root_occurrence())
+                .collect::<BTreeSet<_>>();
+            for id in scope.occurrence_ids.difference(&resolved) {
+                collected.unavailable.push(json!({
+                    "occurrence_id": id.0,
+                    "reason": "scoped_occurrence_has_no_visible_exact_body",
+                }));
             }
-            Ok(sources)
-        })();
-        let local_bounds = bounds::local_bounds(snapshot, &graphs, &graph_indices);
+            report["scope"]["resolved_occurrence_count"] = json!(resolved.len());
+            report["scope"]["scoped_body_count"] = json!(scoped_indices.len());
+        }
+        scoped_indices
+    }
+
+    /// The broad phase of the exact check: the pairs whose bounds overlap, every
+    /// pair `contact_pairs` must measure, and every pair of a body without a
+    /// certified bound; and how many pairs the bounds rejected. `Err` is why the
+    /// check stops.
+    fn broad_phase(
+        &self,
+        collected: &CollectedBodies,
+        scoped_indices: &BTreeSet<usize>,
+        contact_pairs: &BTreeSet<(usize, usize)>,
+        total_pairs: usize,
+        failures: &mut Vec<Value>,
+        report: &mut Value,
+    ) -> Result<(BTreeSet<(usize, usize)>, usize), Value> {
+        let bodies = &collected.bodies;
+        let local_bounds =
+            bounds::local_bounds(self.snapshot, &collected.graphs, &collected.graph_indices);
         let world_bounds = bodies
             .iter()
             .map(|body| {
-                local_bounds
-                    .get(body.graph?)
-                    .copied()
-                    .flatten()?
-                    .world(*body.occurrence.transform.matrix(), tolerance.linear_mm())
+                local_bounds.get(body.graph?).copied().flatten()?.world(
+                    *body.occurrence.transform.matrix(),
+                    self.tolerance.linear_mm(),
+                )
             })
             .collect::<Vec<_>>();
-        let mut pairs = Vec::new();
-        // Every visible solid must pass native validation, even with no neighbors.
-        // These self-queries never contribute issues or checked pair counts;
-        // solids that get a worker pair below drop theirs.
-        for (index, body) in bodies.iter().enumerate() {
-            if !scoped_indices.contains(&index) {
-                continue;
-            }
-            if let Some(graph) = body.graph {
-                pairs.push((
-                    index,
-                    index,
-                    ExactPairCandidate {
-                        left_graph: graph,
-                        right_graph: graph,
-                        left_transform: *body.occurrence.transform.matrix(),
-                        right_transform: *body.occurrence.transform.matrix(),
-                    },
-                ));
-            }
-        }
         let bounded = world_bounds
             .iter()
             .enumerate()
@@ -1760,8 +1663,10 @@ fn collision_report(
             .map(|(_, coordinates)| *coordinates)
             .collect::<Vec<_>>();
         let never_cancelled = AtomicBool::new(false);
-        let spatial_cancelled = cancellation.as_deref().unwrap_or(&never_cancelled);
-        let spatial_pairs = if scope.is_some() {
+        let spatial_cancelled = self
+            .cancellation
+            .map_or(&never_cancelled, |cancelled| &**cancelled);
+        let spatial_pairs = if self.scope.is_some() {
             let scoped_sources = bounded
                 .iter()
                 .enumerate()
@@ -1778,14 +1683,13 @@ fn collision_report(
         } else {
             overlapping_bounds_pairs(&bounded_coordinates)
         };
-        let contact_pairs = required_pairs(snapshot, selection, &bodies, &scoped_indices, scope);
         let mut spatial_complete = true;
         let mut candidates = match spatial_pairs {
             Ok((candidate_pairs, _)) => candidate_pairs
                 .into_iter()
                 .map(|(left, right)| (bounded[left].0, bounded[right].0))
                 .collect::<BTreeSet<_>>(),
-            Err(error) if scope.is_some() => {
+            Err(error) if self.scope.is_some() => {
                 spatial_complete = false;
                 failures.push(json!({
                     "reason": if error == SpatialQueryError::CandidateLimitExceeded {
@@ -1802,13 +1706,8 @@ fn collision_report(
                 .flat_map(|left| (left + 1..bodies.len()).map(move |right| (left, right)))
                 .collect(),
         };
-        if let Some(reason) = interrupted(
-            cancellation.as_ref(),
-            scope.is_some(),
-            Some(timeout),
-            started,
-        ) {
-            return not_evaluated(report, reason);
+        if let Some(reason) = self.interrupted() {
+            return Err(reason);
         }
         candidates.extend(contact_pairs.iter().copied());
         let unbounded = world_bounds
@@ -1816,7 +1715,8 @@ fn collision_report(
             .enumerate()
             .filter_map(|(index, bounds)| bounds.is_none().then_some(index))
             .collect::<Vec<_>>();
-        if scope.is_none() {
+        let broad_rejected;
+        if self.scope.is_none() {
             // An uncertifiable bound can reject nothing in full-model mode.
             for &unbounded in &unbounded {
                 candidates.extend((0..bodies.len()).filter_map(|other| {
@@ -1852,14 +1752,122 @@ fn collision_report(
             report["scope"]["candidate_coverage_complete"] = json!(spatial_complete);
             report["scope"]["indexed_body_count"] = json!(bounded.len());
         }
-        checked = broad_rejected;
+        Ok((candidates, broad_rejected))
+    }
+}
+
+/// The bought parts' STEP sources the exact graphs import, from `container`.
+fn imported_sources(
+    container: &ContainerData,
+    graphs: &[ExactBRepGraph],
+) -> Result<ketchup_model::persistence::Blobs, CollisionSourceError> {
+    let mut sources = BTreeMap::new();
+    for graph in graphs {
+        for node in &graph.nodes {
+            if let ExactBRepOperation::ImportedExact {
+                source_sha256,
+                source_byte_len,
+                ..
+            } = &node.operation
+            {
+                let hash = source_sha256
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                if sources.contains_key(&hash) {
+                    continue;
+                }
+                let source = container
+                    .blobs()
+                    .get(&hash)
+                    .ok_or(CollisionSourceError::MissingBlob)?;
+                if source.len() as u64 != *source_byte_len
+                    || ketchup_model::graph::sha256_bytes(source) != *source_sha256
+                {
+                    return Err(CollisionSourceError::InvalidBlob);
+                }
+                sources.insert(hash, std::sync::Arc::clone(source));
+            }
+        }
+    }
+    Ok(sources)
+}
+
+/// Every visible solid must pass native validation, even with no neighbors.
+/// These self-queries never contribute issues or checked pair counts; solids
+/// that get a worker pair drop theirs.
+fn self_queries(
+    bodies: &[Body],
+    scoped_indices: &BTreeSet<usize>,
+) -> Vec<(usize, usize, ExactPairCandidate)> {
+    let mut pairs = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        if !scoped_indices.contains(&index) {
+            continue;
+        }
+        if let Some(graph) = body.graph {
+            pairs.push((
+                index,
+                index,
+                ExactPairCandidate {
+                    left_graph: graph,
+                    right_graph: graph,
+                    left_transform: *body.occurrence.transform.matrix(),
+                    right_transform: *body.occurrence.transform.matrix(),
+                },
+            ));
+        }
+    }
+    pairs
+}
+
+/// The check without the exact worker: every pair of analytic boxes.
+fn analytic_pass(
+    bodies: &[Body],
+    tolerance: TolerancePolicy,
+    checked: &mut usize,
+    checked_bodies: &mut BTreeSet<usize>,
+    issues: &mut Vec<Value>,
+    failures: &mut Vec<Value>,
+) {
+    for (index, body) in bodies.iter().enumerate() {
+        if body.analytic.is_some() {
+            checked_bodies.insert(index);
+        }
+    }
+    for left in 0..bodies.len() {
+        for right in left + 1..bodies.len() {
+            if let (Some(l), Some(r)) = (&bodies[left].analytic, &bodies[right].analytic) {
+                match general_body_narrow_phase(l, r, tolerance) {
+                Ok(result) => { *checked += 1; if result.signed_separation_mm < -CONTACT_FIT_MM.max(tolerance.linear_mm()) {
+                    issues.push(issue(&bodies[left], &bodies[right], json!({"method": "canonical_box_analytic", "signed_separation_mm": result.signed_separation_mm})));
+                } },
+                Err(error) => failures.push(json!({"left": identity(&bodies[left]), "right": identity(&bodies[right]), "reason": format!("{error:?}")})),
+            }
+            }
+        }
+    }
+}
+
+impl ExactTally<'_> {
+    /// The narrow phase before the worker: separated hulls prove no contact;
+    /// touching hulls prove contact only for faces no cut reaches. Cuts may
+    /// remove the entire bearing face, so the other `candidates` go to OCCT
+    /// through `pairs`. Returns how many pairs the hulls decided.
+    fn decide_by_hulls(
+        &mut self,
+        candidates: BTreeSet<(usize, usize)>,
+        contact_pairs: &BTreeSet<(usize, usize)>,
+        graphs: &[ExactBRepGraph],
+        exact_gaps: bool,
+        pairs: &mut Vec<(usize, usize, ExactPairCandidate)>,
+    ) -> usize {
+        let bodies = self.bodies;
         let graph_block = MAX_EXACT_PAIR_GRAPHS / 2;
         let mut candidates = candidates.into_iter().collect::<Vec<_>>();
         candidates
             .sort_by_key(|(left, right)| (left / graph_block, right / graph_block, *left, *right));
-        // Separated hulls prove no contact; touching hulls prove contact only for
-        // faces no cut reaches. Cuts may remove the entire bearing face, so ask OCCT.
-        let world_hulls = collision_hulls(&graphs, &bodies);
+        let world_hulls = collision_hulls(graphs, bodies);
         let mut hull_decided = 0usize;
         for (left, right) in candidates {
             let (Some(l), Some(r)) = (bodies[left].graph, bodies[right].graph) else {
@@ -1868,16 +1876,16 @@ fn collision_report(
             if !contact_pairs.contains(&(left, right))
                 && let (Some(a), Some(b)) = (&world_hulls[left], &world_hulls[right])
             {
-                let decided = pieces::measure(a, b, tolerance.linear_mm(), exact_gaps);
+                let decided = pieces::measure(a, b, self.tolerance.linear_mm(), exact_gaps);
                 if let Some((patches, distance_mm)) = decided {
-                    checked += 1;
+                    *self.checked += 1;
                     hull_decided += 1;
-                    if collect_gravity_contacts {
-                        add_contact_area(&mut exact_contact_areas, &bodies, left, right, &patches);
+                    if let Some(areas) = self.areas.as_deref_mut() {
+                        add_contact_area(areas, bodies, left, right, &patches);
                     }
                     add_pair_fact(
-                        pair_facts.as_deref_mut(),
-                        &bodies,
+                        self.facts.as_deref_mut(),
+                        bodies,
                         (left, right),
                         ExactPair {
                             common_volume_mm3: 0.0,
@@ -1885,7 +1893,7 @@ fn collision_report(
                             contact_area_mm2: patches.iter().map(|patch| patch.area_mm2).sum(),
                             distance_mm,
                         },
-                        tolerance,
+                        self.tolerance,
                     );
                     continue;
                 }
@@ -1901,46 +1909,172 @@ fn collision_report(
                 },
             ));
         }
+        hull_decided
+    }
+}
+
+fn collision_report(
+    snapshot: &Snapshot,
+    selection: &AssistantValidationSelection,
+    worker: Option<(&ContainerData, Option<PathBuf>, Duration)>,
+    scope: Option<&CollisionScope>,
+    cancellation: Option<Arc<AtomicBool>>,
+    mut gravity_contacts: Option<&mut ExactGravityContacts>,
+    pair_facts: Option<&mut ExactPairFacts>,
+) -> Value {
+    let started = Instant::now();
+    let timeout = worker.as_ref().map(|(_, _, timeout)| *timeout);
+    let mut group_facts = ExactPairFacts::new();
+    let (exact_gaps, mut pair_facts) = if selection.requested.contains("group_connectivity") {
+        (false, Some(&mut group_facts))
+    } else {
+        (pair_facts.is_some(), pair_facts)
+    };
+    let tolerance = snapshot.tolerance();
+    let mut report = skipped_report(snapshot, worker.is_some());
+    let collect_gravity_contacts = worker.is_some()
+        && gravity_contacts.is_some()
+        && selection.requested.contains("gravity_support");
+    if !selection.is_valid()
+        || (!selection.requested.contains("collision")
+            && !collect_gravity_contacts
+            && !selection.requested.contains("group_connectivity"))
+    {
+        return report;
+    }
+    if let Some(reason) = interrupted(cancellation.as_ref(), scope.is_some(), None, started) {
+        return not_evaluated(report, reason);
+    }
+    if let Some(reason) = scope.and_then(|scope| bind_requested_scope(snapshot, scope, &mut report))
+    {
+        return not_evaluated(report, reason);
+    }
+    let Some(visible) = visible_scene(snapshot, scope, &mut report) else {
+        return report;
+    };
+    // A whole model past the small-scene limit (1800 parts) is checked by the
+    // spatially indexed scoped pass with every visible occurrence in scope.
+    let whole_model_scope = (scope.is_none() && visible.len() > MAX_COLLISION_BODIES).then(|| {
+        report["scope"] = json!({
+            "mode": "whole_visible_model",
+            "requested_occurrence_count": visible.len(),
+            "snapshot_bound": true,
+        });
+        CollisionScope::bind(
+            snapshot,
+            visible
+                .iter()
+                .map(|occurrence| occurrence.instance_path.root_occurrence()),
+        )
+    });
+    let run = ReportRun {
+        snapshot,
+        scope: scope.or(whole_model_scope.as_ref()),
+        cancellation: cancellation.as_ref(),
+        timeout,
+        started,
+        tolerance,
+    };
+    let scope = run.scope;
+    if let Some(reason) = run.interrupted() {
+        return not_evaluated(report, reason);
+    }
+    let exact_preparation = match ExactSnapshotPreparation::new(snapshot) {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            return not_evaluated(
+                report,
+                json!({
+                    "reason": "invalid_exact_dependency_graph",
+                    "detail": format!("{error:?}"),
+                }),
+            );
+        }
+    };
+    if let Some(reason) = run.interrupted() {
+        return not_evaluated(report, reason);
+    }
+    report["visible_occurrence_count"] = json!(visible.len());
+    let mut collected = match run.collect_bodies(&visible, &exact_preparation) {
+        Ok(collected) => collected,
+        Err(reason) => return not_evaluated(report, reason),
+    };
+    let scoped_indices = run.scoped_body_indices(&mut collected, &mut report);
+    let bodies = &collected.bodies;
+    let scoped_body_count = scoped_indices.len();
+    let total_pairs = if scope.is_some() {
+        scoped_body_count * bodies.len().saturating_sub(scoped_body_count)
+            + scoped_body_count * scoped_body_count.saturating_sub(1) / 2
+    } else {
+        bodies.len() * bodies.len().saturating_sub(1) / 2
+    };
+    let mut issues = Vec::new();
+    let mut failures = Vec::new();
+    let mut exact_contact_areas = ContactAreas::new();
+    let mut checked = 0;
+    let mut broad_rejected = 0;
+    let mut checked_bodies = BTreeSet::new();
+    if let Some((container, worker_path, timeout)) = worker {
+        if let Some(reason) = run.interrupted() {
+            return not_evaluated(report, reason);
+        }
+        let sources = imported_sources(container, &collected.graphs);
+        let mut pairs = self_queries(bodies, &scoped_indices);
+        let contact_pairs = required_pairs(snapshot, selection, bodies, &scoped_indices, scope);
+        let broad_phase = run.broad_phase(
+            &collected,
+            &scoped_indices,
+            &contact_pairs,
+            total_pairs,
+            &mut failures,
+            &mut report,
+        );
+        let candidates = match broad_phase {
+            Ok((candidates, rejected)) => {
+                broad_rejected = rejected;
+                candidates
+            }
+            Err(reason) => return not_evaluated(report, reason),
+        };
+        checked = broad_rejected;
+        let mut tally = ExactTally {
+            bodies,
+            scoped: &scoped_indices,
+            tolerance,
+            cancelled: cancellation.as_deref(),
+            deadline: (started, timeout),
+            failures: &mut failures,
+            checked: &mut checked,
+            checked_bodies: &mut checked_bodies,
+            issues: &mut issues,
+            areas: collect_gravity_contacts.then_some(&mut exact_contact_areas),
+            facts: pair_facts.as_deref_mut(),
+        };
+        let hull_decided = tally.decide_by_hulls(
+            candidates,
+            &contact_pairs,
+            &collected.graphs,
+            exact_gaps,
+            &mut pairs,
+        );
         report["hull_decided_pair_count"] = json!(hull_decided);
         let path = crate::evaluation::exact_worker_or_installed(worker_path);
         match sources {
-            Err(error) => failures.push(json!({"reason": error.code()})),
+            Err(error) => tally.failures.push(json!({"reason": error.code()})),
             Ok(_) if pairs.is_empty() => {}
-            Ok(sources) => ExactTally {
-                bodies: &bodies,
-                scoped: &scoped_indices,
-                tolerance,
-                cancelled: cancellation.as_deref(),
-                deadline: (started, timeout),
-                failures: &mut failures,
-                checked: &mut checked,
-                checked_bodies: &mut checked_bodies,
-                issues: &mut issues,
-                areas: collect_gravity_contacts.then_some(&mut exact_contact_areas),
-                facts: pair_facts.as_deref_mut(),
-            }
-            .ask_worker(path, pairs, graphs, sources),
+            Ok(sources) => tally.ask_worker(path, pairs, collected.graphs, sources),
         }
     } else {
-        for (index, body) in bodies.iter().enumerate() {
-            if body.analytic.is_some() {
-                checked_bodies.insert(index);
-            }
-        }
-        for left in 0..bodies.len() {
-            for right in left + 1..bodies.len() {
-                if let (Some(l), Some(r)) = (&bodies[left].analytic, &bodies[right].analytic) {
-                    match general_body_narrow_phase(l, r, tolerance) {
-                    Ok(result) => { checked += 1; if result.signed_separation_mm < -CONTACT_FIT_MM.max(tolerance.linear_mm()) {
-                        issues.push(issue(&bodies[left], &bodies[right], json!({"method": "canonical_box_analytic", "signed_separation_mm": result.signed_separation_mm})));
-                    } },
-                    Err(error) => failures.push(json!({"left": identity(&bodies[left]), "right": identity(&bodies[right]), "reason": format!("{error:?}")})),
-                }
-                }
-            }
-        }
+        analytic_pass(
+            bodies,
+            tolerance,
+            &mut checked,
+            &mut checked_bodies,
+            &mut issues,
+            &mut failures,
+        );
     }
-    if !unavailable.is_empty() {
+    if !collected.unavailable.is_empty() {
         failures.push(json!({"reason": "incomplete_exact_geometry_coverage"}));
     }
     if checked != total_pairs || checked_bodies.len() != scoped_body_count {
@@ -1972,7 +2106,7 @@ fn collision_report(
         bodies.len()
     });
     report["model_body_count"] = json!(bodies.len());
-    report["graph_bytes"] = json!(graph_bytes);
+    report["graph_bytes"] = json!(collected.graph_bytes);
     report["checked_pair_count"] = json!(checked);
     report["broad_phase_rejected_pair_count"] = json!(broad_rejected);
     report["narrow_phase_pair_count"] = json!(checked - broad_rejected);
@@ -1980,7 +2114,7 @@ fn collision_report(
     report["issue_count"] = json!(issues.len());
     report["issues"] = json!(issues);
     report["not_evaluated"] = json!(failures);
-    report["unavailable_occurrences"] = json!(unavailable);
+    report["unavailable_occurrences"] = json!(collected.unavailable);
     crate::group_connectivity::finish_collision(report, snapshot, selection, pair_facts.as_deref())
 }
 

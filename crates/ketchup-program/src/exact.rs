@@ -239,19 +239,28 @@ pub fn measured_pairs(model: &ProgramModel) -> BTreeSet<(String, String)> {
 #[must_use]
 pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
     let parts = &model.parts;
-    let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let solids = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
     let mut names: BTreeSet<String> = measured_pairs(model)
         .into_iter()
         .flat_map(|(a, b)| [a, b])
         .collect();
+    // Asked once per part, not once per pair: thousands of overlapping boxes
+    // are millions of pairs (nightly 2026-11-23, 2-5 s past the deadline).
+    let shaped: Vec<bool> = parts.iter().map(|part| !box_is_solid(part)).collect();
+    if !shaped.contains(&true) {
+        return names;
+    }
+    let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
+    let solids = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
+    let mut named = vec![false; parts.len()];
     near_pairs(&bounds, solids, CONTACT_FIT_MM, |left, right| {
-        let (a, b) = (&parts[left], &parts[right]);
-        if (!box_is_solid(a) || !box_is_solid(b)) && a.obb().separation(&b.obb()) <= CONTACT_FIT_MM
+        let open = |i: usize| shaped[i] && !named[i];
+        if (open(left) || open(right))
+            && parts[left].obb().separation(&parts[right].obb()) <= CONTACT_FIT_MM
         {
-            for part in [a, b] {
-                if !box_is_solid(part) {
-                    names.insert(part.name.clone());
+            for i in [left, right] {
+                if shaped[i] && !named[i] {
+                    named[i] = true;
+                    names.insert(parts[i].name.clone());
                 }
             }
         }

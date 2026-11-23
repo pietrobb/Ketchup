@@ -563,6 +563,70 @@ fn simple_calls_time_out_at_the_default_budget() {
     responder.join().unwrap();
 }
 
+/// Standard error that says one line and then stays open, as a killed worker's does
+/// while Windows is still ending it, until the test drops the sender of `open`.
+struct OpenStderr {
+    line: Option<&'static [u8]>,
+    open: Receiver<()>,
+}
+
+impl Read for OpenStderr {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.line.take() {
+            Some(line) => {
+                buffer[..line.len()].copy_from_slice(line);
+                Ok(line.len())
+            }
+            // The stream ends when the test is done with it.
+            None => Ok(self.open.recv().map_or(0, |()| 0)),
+        }
+    }
+}
+
+/// Nightly 2026-11-23: each request a check past its deadline stopped waited 3 s
+/// more for the killed worker's standard error to end, and the check took 14 s for
+/// its 1.3 s. A timed-out worker is not waited for, and the allocation failure it
+/// said before it was held still makes the timeout the memory limit.
+#[test]
+fn a_timed_out_worker_is_not_waited_for_its_standard_error() {
+    let said: [(&'static [u8], bool); 2] = [
+        (b"loading\n", false),
+        (b"memory allocation of 99 bytes failed\n", true),
+    ];
+    let timed_out = WorkerError::RequestTimedOut(Duration::from_millis(80));
+    assert_eq!(worker_client::stderr_wait(&timed_out), Duration::ZERO);
+    for (line, memory) in said {
+        let (mut worker, writes, _responses) = controlled_worker();
+        let (_open, open) = mpsc::channel();
+        let stderr = OpenStderr {
+            line: Some(line),
+            open,
+        };
+        worker.stderr_tail = Some(worker_client::stderr_tail(Some(stderr)));
+        let responder = std::thread::spawn(move || {
+            writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
+        });
+        // The line is read while the request waits its 80 ms; the stream stays
+        // open, and the wait for its end is the one asserted above.
+        let error = worker
+            .request_with_timeout(
+                &WorkerRequest::Hello,
+                &NEVER_CANCELLED,
+                Duration::from_millis(80),
+            )
+            .unwrap_err();
+        if memory {
+            assert_eq!(error, WorkerError::MemoryLimit { bytes: 0 });
+        } else {
+            assert_eq!(
+                error,
+                WorkerError::RequestTimedOut(Duration::from_millis(80))
+            );
+        }
+        responder.join().unwrap();
+    }
+}
+
 #[test]
 fn explicit_timeout_bounds_both_write_and_response_waits() {
     for acknowledge_write in [false, true] {

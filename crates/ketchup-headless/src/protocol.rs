@@ -17,6 +17,7 @@ mod cam_input;
 mod fea_input;
 mod model_tools;
 mod production;
+mod program_check;
 mod thermal_input;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
@@ -26,7 +27,7 @@ use ketchup_application::program_isolation::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, RuleProgramApplyError, SaveOptions,
-    SessionError, SessionSettings, verify_rule_program_exact,
+    SessionError, SessionSettings, exact_check_past_deadline, verify_rule_program_exact,
 };
 use ketchup_assistant::sidecar::AssistantCadEditProgram;
 use ketchup_model::cam::{
@@ -451,41 +452,6 @@ impl Server {
     }
     fn batch_job_handle(&self, id: u64) -> String {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
-    }
-
-    /// Builds the evaluated program in a scratch document, leaving the
-    /// session's document untouched, and settles on its exact solids what the
-    /// boxes cannot, exactly as `program_apply` and the window do, by the
-    /// deadline of the whole check.
-    fn exact_program_check(
-        &self,
-        source: &ketchup_model::document::RuleProgramSource,
-        evaluated: &ketchup_program::Evaluated,
-        report: &mut ketchup_program::Report,
-        deadline: CheckDeadline,
-    ) -> Option<Value> {
-        if ketchup_program::exact_candidates(&evaluated.model).is_empty() {
-            return None;
-        }
-        let mut scratch = DocumentSession::new(self.settings.clone());
-        let snapshot =
-            match scratch.replace_with_rule_model(evaluated.reference_model(), source.clone()) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    let reason = Error::from(error).code;
-                    return Some(json!({"state": "incomplete",
-                    "not_evaluated": [{"reason": "program_build_failed", "detail": reason}]}));
-                }
-            };
-        verify_rule_program_exact(
-            &snapshot,
-            &evaluated.model,
-            report,
-            scratch.container_data(),
-            self.settings.exact_worker_path.clone(),
-            deadline,
-            Arc::new(AtomicBool::new(false)),
-        )
     }
 
     fn verify_job_handle(&self, id: u64) -> String {
