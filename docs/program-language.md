@@ -85,7 +85,8 @@ Full report fields:
   (edge or corner only), `overlap` (`depth_mm` and `status`: `subtracted`
   with `cut_in` naming the part that holds the socket and `depth_mm` how far
   the other reaches in at its deepest; `removed`, `pocket`, `joint`,
-  `collision`, `unverified`, `boxes_only`) or `gap` (`gap_mm`); `direction`
+  `collision`, `unverified`, `boxes_only`, `purchased_assembly`) or `gap`
+  (`gap_mm`); `direction`
   is the world unit vector from the first part towards the second; `joint`
   names a declared joint; `approx` marks a pair measured on the box of a
   profile body or an intersected part. MCP previews at most 8; report pages retrieve every relation.
@@ -639,6 +640,7 @@ outside it.
 | `production_leaves_out_ordered_parts` | warning | bought parts (`designation`) or bars (`cut_length_mm`) carry none of the `production()` tags, so they reach no hardware list or bar schedule; `tag()` them to order them |
 | `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
 | `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured |
+| `purchased_assembly_contact` | warning | the solids of two different parts of one STEP assembly file overlap where that file places them (both `part=` of the same file, placed from the same frame): the maker assembled them so, and it is no collision |
 | `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |
 | `checks_unverified` | warning | the checks did not finish within the program worker's time, memory or size limit; the edit is still applied, and no collision, relation, joint or load was checked |
 | `report_truncated` | error or warning | the whole report did not fit one reply of the program worker, so it lists only its first issues (errors first) and relations; an error when an error was left out |

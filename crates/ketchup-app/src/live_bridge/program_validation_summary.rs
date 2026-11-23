@@ -33,8 +33,9 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
     let distance_incomplete = distances.is_some_and(|value| value == "incomplete");
     let required_exact_distances = !ketchup_program::exact::measured_pairs(model).is_empty();
     // A report that lists only part of itself may have left out a failure,
-    // and one whose checks stopped checked nothing.
-    let partial = report.truncated.is_some()
+    // and one whose checks stopped, or still run, checked nothing.
+    let partial = report.checks_pending()
+        || report.truncated.is_some()
         || has(ketchup_program::REPORT_TRUNCATED)
         || has(ketchup_program::CHECKS_UNVERIFIED);
     let dimensions = if model.expectations.is_empty() {
@@ -126,7 +127,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             "not_evaluated": exact.map(|value| &value["not_evaluated"])
         },
         "collisions": {
-            "state": if collision_count > 0 { "failed" } else if exact_complete && !has("collision_unverified") && !has(ketchup_program::CHECKS_UNVERIFIED) && !has(ketchup_program::REPORT_TRUNCATED) { "passed" } else { "incomplete" },
+            "state": if collision_count > 0 { "failed" } else if exact_complete && !report.checks_pending() && !has("collision_unverified") && !has(ketchup_program::CHECKS_UNVERIFIED) && !has(ketchup_program::REPORT_TRUNCATED) { "passed" } else { "incomplete" },
             "count": collision_count,
             "scope": "program_parts_and_requested_exact_pairs"
         },

@@ -426,9 +426,12 @@ pub struct Refined {
 /// of [`report`], so the editor runs it in the program worker too.
 #[must_use]
 pub fn refine(model: &ProgramModel, exact: &ExactShapes) -> Refined {
+    // The relations reuse the faces the checks took of each part.
+    let mut faces = contact::ContactFaces::default();
+    let issues = validate::validate_with_faces(model, exact, &mut faces);
     Refined {
-        relations: relations_with(model, &[], exact),
-        issues: validate_with(model, exact),
+        relations: relations::relations_with_faces(model, &[], exact, &mut faces),
+        issues,
         truncated: None,
     }
 }
@@ -471,7 +474,12 @@ pub fn report(evaluated: &Evaluated) -> Report {
         ok: errors == 0,
         errors,
         warnings: issues.len() - errors,
-        relations: relations(&evaluated.model, &issues),
+        relations: relations::relations_with_faces(
+            &evaluated.model,
+            &issues,
+            &ExactShapes::default(),
+            &mut faces,
+        ),
         issues,
         params: evaluated.model.params.clone(),
         bom,

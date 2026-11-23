@@ -8,7 +8,7 @@ use crate::exact::{ExactPair, ExactShapes};
 use crate::frame::{self, Obb};
 use crate::model::{Part, ProgramBooleanKind, ProgramModel};
 use crate::near_pairs::near_pairs;
-use crate::validate::{self, COLLISION_UNVERIFIED, Issue};
+use crate::validate::{self, COLLISION_UNVERIFIED, Issue, PURCHASED_ASSEMBLY_CONTACT};
 use ketchup_geometry::linalg::dot;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,8 @@ pub enum OverlapStatus {
     Unverified,
     /// The boxes overlap but the exact solids do not.
     BoxesOnly,
+    /// Two parts of one bought assembly overlap where its file places them.
+    PurchasedAssembly,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -369,7 +371,17 @@ pub fn relations_with(
     issues: &[Issue],
     exact: &ExactShapes,
 ) -> Vec<Relation> {
-    relations_by_bounds(model, issues, exact, true)
+    relations_with_faces(model, issues, exact, &mut ContactFaces::default())
+}
+
+/// [`relations_with`] on the faces the checks already took of each part.
+pub(crate) fn relations_with_faces<'a>(
+    model: &'a ProgramModel,
+    issues: &[Issue],
+    exact: &ExactShapes,
+    faces: &mut ContactFaces<'a>,
+) -> Vec<Relation> {
+    relations_by_bounds(model, issues, exact, true, faces)
 }
 
 /// How many pairs whose bounds overlap [`relations_by_bounds`] relates, the
@@ -389,11 +401,12 @@ fn boxes_overlap(a: &Bounds, b: &Bounds) -> bool {
 
 /// [`relations_with`]; without `skip_by_bounds` every candidate pair apart
 /// is measured on its boxes, as a reference for tests.
-fn relations_by_bounds(
-    model: &ProgramModel,
+fn relations_by_bounds<'a>(
+    model: &'a ProgramModel,
     issues: &[Issue],
     exact: &ExactShapes,
     skip_by_bounds: bool,
+    faces: &mut ContactFaces<'a>,
 ) -> Vec<Relation> {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
@@ -427,14 +440,13 @@ fn relations_by_bounds(
     }
     pairs.sort_unstable();
     pairs.dedup();
-    let mut faces = ContactFaces::default();
     let mut relations: Vec<Relation> = pairs
         .into_iter()
         .filter(|(a, b)| a != b)
         .filter_map(|(a, b)| {
             let pair_bounds = skip_by_bounds.then(|| [&bounds[a], &bounds[b]]);
             let (a, b) = (&parts[a], &parts[b]);
-            relate(model, exact, a, b, joint_of(a, b), pair_bounds, &mut faces)
+            relate(model, exact, a, b, joint_of(a, b), pair_bounds, faces)
         })
         .collect();
     sync_with_issues(&mut relations, issues);
@@ -456,7 +468,12 @@ pub fn sync_with_issues(relations: &mut [Relation], issues: &[Issue]) {
     for relation in relations {
         if !matches!(
             relation.status,
-            Some(OverlapStatus::Collision | OverlapStatus::Unverified | OverlapStatus::BoxesOnly)
+            Some(
+                OverlapStatus::Collision
+                    | OverlapStatus::Unverified
+                    | OverlapStatus::BoxesOnly
+                    | OverlapStatus::PurchasedAssembly
+            )
         ) {
             continue;
         }
@@ -464,6 +481,8 @@ pub fn sync_with_issues(relations: &mut [Relation], issues: &[Issue]) {
             OverlapStatus::Collision
         } else if issue_for(&relation.parts, COLLISION_UNVERIFIED) {
             OverlapStatus::Unverified
+        } else if issue_for(&relation.parts, PURCHASED_ASSEMBLY_CONTACT) {
+            OverlapStatus::PurchasedAssembly
         } else {
             OverlapStatus::BoxesOnly
         });

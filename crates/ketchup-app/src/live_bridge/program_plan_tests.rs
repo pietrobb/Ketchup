@@ -38,7 +38,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
             source,
             replace: false,
             before: original,
-            deadline: CheckDeadline::start(),
+            started: Instant::now(),
             receiver,
         }));
         bridge.poll_program_check_job(&mut app, &context);
@@ -59,6 +59,65 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
         assert!(app.document.current_rule_program().is_none());
         assert!(app.document.current().occurrences().next().is_none());
         assert_eq!((app.undo_step_count(), app.redo_step_count()), history);
+    }
+}
+
+/// Owner 2026-11-23: an apply whose planning took the request's first seconds
+/// answers in the next frame after it is published, and its exact check runs
+/// on in the background on its own time, not on what the request has left.
+#[test]
+fn a_slow_plan_answers_once_published_and_its_check_runs_on_its_own_time() {
+    let (mut app, mut bridge) = setup();
+    app.new_document();
+    let context = egui::Context::default();
+    let source = RuleProgramSource {
+        // A prism overlapping a box, so the exact check has a pair to decide.
+        source: "t=extrude('t',profile=[(0,0),(100,0),(0,100)],distance=20)\n\
+                 h=box('hit',(20,20,20),at=(10,10,0))\n"
+            .into(),
+        ..source()
+    };
+    let plan = plan_with_report(
+        &app.document.fork_for_planning(),
+        &source,
+        &[],
+        CheckDeadline::start(),
+        true,
+        &ketchup_program::CancelToken::default(),
+        &mut ketchup_application::program_imports::NoFiles,
+    )
+    .unwrap();
+    let (reply, response) = mpsc::sync_channel(1);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    bridge.program_check_job = Some(ProgramCheckJob::Planning(ProgramPlanJob {
+        id: 1,
+        reply,
+        cancelled: Arc::default(),
+        source,
+        replace: false,
+        before: app.live_bridge_stamp(),
+        started: Instant::now() - PROGRAM_EXACT_RUNNING_AFTER,
+        receiver,
+    }));
+    sender.send(Ok((plan.0, plan.1, Vec::new()))).unwrap();
+    bridge.poll_program_check_job(&mut app, &context);
+    let Some(ProgramCheckJob::Checking(job)) = &bridge.program_check_job else {
+        panic!("the exact check starts");
+    };
+    assert_eq!(job.answer_after, Duration::ZERO);
+    assert!(
+        job.time > ketchup_mcp::PROGRAM_RESPONSE_WAIT,
+        "{:?}",
+        job.time
+    );
+    bridge.poll_program_check_job(&mut app, &context);
+    let response = response.try_recv().expect("the apply answers at once");
+    assert!(response.ok, "{response:?}");
+    let result = response.result.unwrap();
+    assert!(result["change"].is_string(), "{result}");
+    if let Some(ProgramCheckJob::Checking(mut job)) = bridge.program_check_job.take() {
+        job.worker_cancelled.store(true, Ordering::Release);
+        job.stop_completion();
     }
 }
 
@@ -96,7 +155,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
         source: source.clone(),
         replace: false,
         before,
-        deadline: CheckDeadline::start(),
+        started: Instant::now(),
         receiver,
     }));
     bridge.poll_program_check_job(&mut app, &context);

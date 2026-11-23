@@ -1072,7 +1072,7 @@ fn program_edit_result(
             "params": params,
             "params_total": report.params.len(),
             "unused_overrides": &report.unused_overrides[..report.unused_overrides.len().min(MAX_REPORTED_PARAMS)],
-            "log": log,
+            "log": log, "checks_pending": report.checks_pending(), // still checked; the report pages them
         },
         "geometry_evaluated": exact.as_ref().is_some_and(|exact| exact["state"] == "verified"),
         "validation": program_validation_summary::summary(report, model, exact.as_ref()), "exact_collisions": exact,
