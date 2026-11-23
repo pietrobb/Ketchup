@@ -1,8 +1,17 @@
 //! Certified canonical envelopes for rejection only; never collision evidence.
+use ketchup_model::document::{
+    DefinitionId, FeatureId, FeatureKind, ImportedExactBodySpec, Snapshot,
+};
 use ketchup_model::exact_brep_graph::{
     ExactBRepGraph, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
-    ExactBRepPlanarSegment,
+    ExactBRepPlanarSegment, ExactBRepProfileId, ExactBRepSpatialPath, ExactBRepSpatialPathSegment,
 };
+use std::collections::BTreeMap;
+
+/// A profile's position in the graph's profiles and in every per-profile list.
+fn profile_index(profile: ExactBRepProfileId) -> usize {
+    profile.0 as usize
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Bounds([[f64; 3]; 2]);
@@ -117,6 +126,56 @@ fn affine_scale(matrix: [f64; 16], magnitude: f64, error: f64) -> Option<(f64, f
     (magnitude.is_finite() && error.is_finite()).then_some((magnitude, error))
 }
 
+/// The roundoff of the trigonometry behind a swept or revolved envelope, the
+/// radius mismatch of its profile's arcs and the surface fit.
+fn swept_error(magnitude: f64, slack: f64) -> Option<f64> {
+    let error = 16.0 * ROUNDING * magnitude
+        + 2.0 * slack
+        + ketchup_model::tolerance::SWEPT_ENVELOPE_MARGIN_MM;
+    error.is_finite().then_some(error)
+}
+
+/// Largest coordinate magnitude a spatial path can reach: line ends, the
+/// whole sphere of an arc's circle, the control points that contain a cubic.
+fn spatial_path_reach(path: &ExactBRepSpatialPath) -> Option<f64> {
+    let largest = |points: &[&[u64; 3]]| {
+        points
+            .iter()
+            .flat_map(|point| point.iter())
+            .map(|bits| f64::from_bits(*bits).abs())
+            .fold(0.0, f64::max)
+    };
+    let mut reach: f64 = 1.0;
+    for segment in &path.segments {
+        reach = reach.max(match segment {
+            ExactBRepSpatialPathSegment::Line {
+                start_bits,
+                end_bits,
+            } => largest(&[start_bits, end_bits]),
+            ExactBRepSpatialPathSegment::CircularArc {
+                start_bits,
+                center_bits,
+                ..
+            } => {
+                let [start, center] =
+                    [start_bits, center_bits].map(|bits| bits.map(f64::from_bits));
+                let radius = (0..3)
+                    .map(|axis| (start[axis] - center[axis]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                largest(&[center_bits]) + radius * (1.0 + ROUNDING)
+            }
+            ExactBRepSpatialPathSegment::CubicBezier {
+                start_bits,
+                control_1_bits,
+                control_2_bits,
+                end_bits,
+            } => largest(&[start_bits, control_1_bits, control_2_bits, end_bits]),
+        });
+    }
+    reach.is_finite().then_some(reach)
+}
+
 fn supported_operation(operation: &ExactBRepOperation) -> bool {
     matches!(
         operation,
@@ -124,6 +183,8 @@ fn supported_operation(operation: &ExactBRepOperation) -> bool {
             | ExactBRepOperation::ProfileCut { .. }
             | ExactBRepOperation::RigidTransform { .. }
             | ExactBRepOperation::Boolean { .. }
+            | ExactBRepOperation::Revolve { .. }
+            | ExactBRepOperation::SpatialSweep { .. }
     )
 }
 
@@ -150,8 +211,8 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
                 profile, interval, ..
             } => {
                 let [origin, x_axis, y_axis, _] =
-                    graph.profiles[profile.0 as usize].frame().to_vectors();
-                let (scale, slack) = scales[profile.0 as usize];
+                    graph.profiles[profile_index(*profile)].frame().to_vectors();
+                let (scale, slack) = scales[profile_index(*profile)];
                 let distance = interval.start_mm().abs().max(interval.end_mm().abs());
                 let magnitude = (0..3)
                     .map(|axis| {
@@ -164,6 +225,35 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
                 // The frame axes are unit vectors, so a radius mismatch moves
                 // the solid by at most that much along each axis.
                 (magnitude, ROUNDING * magnitude + 2.0 * slack)
+            }
+            // A point of the profile turns about an axis point at its own
+            // distance from it, at most 3 * reach, and the axis point lies
+            // within 2 * reach of the frame origin.
+            ExactBRepOperation::Revolve {
+                profile,
+                axis_start_bits,
+                axis_end_bits,
+                ..
+            } => {
+                let [origin, ..] = graph.profiles[profile_index(*profile)].frame().to_vectors();
+                let (scale, slack) = scales[profile_index(*profile)];
+                let reach = [axis_start_bits, axis_end_bits]
+                    .into_iter()
+                    .flatten()
+                    .map(|bits| f64::from_bits(*bits).abs())
+                    .fold(scale, f64::max);
+                let magnitude = (origin.iter().map(|value| value.abs()).fold(1.0, f64::max)
+                    + 5.0 * reach)
+                    * (1.0 + ROUNDING);
+                (magnitude, swept_error(magnitude, slack)?)
+            }
+            // Every point of the solid lies within the profile's reach of its
+            // path, which lies inside the points the path reaches.
+            ExactBRepOperation::SpatialSweep { profile, path, .. } => {
+                let (scale, slack) = scales[profile_index(*profile)];
+                let magnitude =
+                    (spatial_path_reach(path)? + 2.0 * scale).max(1.0) * (1.0 + ROUNDING);
+                (magnitude, swept_error(magnitude, slack)?)
             }
             ExactBRepOperation::ProfileCut { target, .. } => errors[target.0 as usize],
             ExactBRepOperation::Boolean { target, tool, .. } => {
@@ -189,6 +279,70 @@ pub(super) fn certified_bounds(graph: &ExactBRepGraph) -> Option<Bounds> {
     }
     let error = errors.last()?.1;
     Bounds::expanded(bounds, error)
+}
+
+/// Each graph's box in its own frame: certified from its operations, or for a
+/// bought part from the bounds its feature recorded. `graph_indices` maps each
+/// body's definition and producing feature to its graph.
+pub(super) fn local_bounds(
+    snapshot: &Snapshot,
+    graphs: &[ExactBRepGraph],
+    graph_indices: &BTreeMap<(DefinitionId, FeatureId), usize>,
+) -> Vec<Option<Bounds>> {
+    let mut producers = vec![None; graphs.len()];
+    for ((_, producer), index) in graph_indices {
+        producers[*index] = Some(*producer);
+    }
+    graphs
+        .iter()
+        .zip(&producers)
+        .map(|(graph, producer)| {
+            certified_bounds(graph).or_else(|| match snapshot.feature((*producer)?)?.kind() {
+                FeatureKind::ImportedExactBody(spec) => imported_bounds(graph, spec),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// A bought part's box, from the bounds its import recorded in the part's own
+/// frame; the occurrence's transform already holds where the source assembly
+/// places the part, and [`Bounds::world`] carries all 8 corners through it.
+/// Only for a graph that is that body alone, read from the source and result
+/// the feature names; nothing new is stored.
+pub(super) fn imported_bounds(
+    graph: &ExactBRepGraph,
+    spec: &ImportedExactBodySpec,
+) -> Option<Bounds> {
+    let [node] = graph.nodes.as_slice() else {
+        return None;
+    };
+    let ExactBRepOperation::ImportedExact {
+        source_sha256,
+        result_fingerprint,
+        source_part_index,
+        ..
+    } = &node.operation
+    else {
+        return None;
+    };
+    if *source_sha256 != spec.source_sha256
+        || *result_fingerprint != spec.result_fingerprint
+        || *source_part_index != spec.source_part_index
+    {
+        return None;
+    }
+    let magnitude = spec
+        .bounds_mm
+        .iter()
+        .flatten()
+        .map(|value| value.abs())
+        .fold(1.0, f64::max)
+        * (1.0 + ROUNDING);
+    Bounds::expanded(
+        spec.bounds_mm,
+        ROUNDING * magnitude + ketchup_model::tolerance::IMPORTED_BOUNDS_MARGIN_MM,
+    )
 }
 
 impl Bounds {
@@ -327,11 +481,9 @@ mod tests {
                 profile: ExactBRepProfileId(0),
                 distance_bits: 1.0_f64.to_bits(),
             },
-            ExactBRepOperation::Revolve {
+            ExactBRepOperation::Sweep {
                 profile: ExactBRepProfileId(0),
-                axis_start_bits: [0.0_f64.to_bits(); 2],
-                axis_end_bits: [0.0_f64.to_bits(), 1.0_f64.to_bits()],
-                angle_degrees_bits: 360.0_f64.to_bits(),
+                path: ExactBRepProfileId(0),
             },
             ExactBRepOperation::ImportedExact {
                 source_sha256: [0; 32],
@@ -349,6 +501,103 @@ mod tests {
         let mut invalid = square();
         invalid.nodes.clear();
         assert!(certified_bounds(&invalid).is_none());
+    }
+
+    // Bought parts had no box, so each was paired with every body of the
+    // model; the bounds their import recorded now reject the pairs apart, and
+    // still keep the ones that touch or overlap.
+    #[test]
+    fn an_imported_part_is_bounded_by_the_bounds_its_import_recorded() {
+        let mut graph = square();
+        graph.nodes.truncate(1);
+        graph.nodes[0].operation = ExactBRepOperation::ImportedExact {
+            source_sha256: [7; 32],
+            source_byte_len: 1,
+            result_fingerprint: "0123456789abcdef".into(),
+            source_format: Default::default(),
+            source_part_index: Some(0),
+        };
+        graph.reseal_for_testing().unwrap();
+        // The graph alone has no box: nothing about the body is stored in it.
+        assert!(certified_bounds(&graph).is_none());
+        let spec = ImportedExactBodySpec {
+            schema: "test".into(),
+            import_id: ketchup_model::import::ImportId(1),
+            source_sha256: [7; 32],
+            source_byte_len: 1,
+            source_part_index: Some(0),
+            result_fingerprint: "0123456789abcdef".into(),
+            body_kind: BodyKind::Solid,
+            solid_count: 1,
+            topology_counts: None,
+            area_mm2: 600.0,
+            volume_mm3: 1000.0,
+            bounds_mm: [[0.0; 3], [10.0; 3]],
+            backend: "occt-test".into(),
+            tolerance: "test-tolerance".into(),
+            source_placement: None,
+        };
+        let part = imported_bounds(&graph, &spec).unwrap();
+        assert!(part.coordinates()[0].iter().all(|value| *value <= 0.0));
+        assert!(part.coordinates()[1].iter().all(|value| *value >= 10.0));
+        let board = certified_bounds(&square()).unwrap();
+        assert!(world(part, 0.0).separated(world(board, 11.0)));
+        // Touching (10) and overlapping boards are still measured.
+        for overlapping in [10.0, 9.0, -5.0] {
+            assert!(!world(part, 0.0).separated(world(board, overlapping)));
+        }
+        // A part turned by its occurrence: all 8 corners go through the transform.
+        let turned = part
+            .world(
+                [
+                    0.0, -1.0, 0.0, 100.0, //
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    0.0, 0.0, 0.0, 1.0,
+                ],
+                0.0,
+            )
+            .unwrap()
+            .coordinates();
+        assert!(turned[0][0] <= 90.0 && turned[1][0] >= 100.0, "{turned:?}");
+        assert!(turned[0][1] <= 0.0 && turned[1][1] >= 10.0, "{turned:?}");
+        // Bounds of another result, or a graph with more than the body, give none.
+        let mut other = spec.clone();
+        other.result_fingerprint = "fedcba9876543210".into();
+        assert!(imported_bounds(&graph, &other).is_none());
+        assert!(imported_bounds(&square(), &spec).is_none());
+    }
+
+    // A pipe fitting turned from a profile had no box either, so it too was
+    // paired with every body of the model.
+    #[test]
+    fn a_revolved_solid_is_bounded_by_the_cylinder_it_turns_in() {
+        let mut graph = square();
+        graph.nodes.truncate(1);
+        graph.nodes[0].operation = ExactBRepOperation::Revolve {
+            profile: ExactBRepProfileId(0),
+            axis_start_bits: [0.0_f64.to_bits(); 2],
+            axis_end_bits: [0.0_f64.to_bits(), 1.0_f64.to_bits()],
+            angle_degrees_bits: 360.0_f64.to_bits(),
+        };
+        graph.reseal_for_testing().unwrap();
+        // The 10 mm square turned about its edge on y: a cylinder of radius 10.
+        let [low, high] = certified_bounds(&graph).unwrap().coordinates();
+        for axis in 0..3 {
+            let (solid_low, solid_high) = if axis == 1 {
+                (0.0, 10.0)
+            } else {
+                (-10.0, 10.0)
+            };
+            assert!(
+                low[axis] <= solid_low && low[axis] > solid_low - 1.0,
+                "{low:?}"
+            );
+            assert!(
+                high[axis] >= solid_high && high[axis] < solid_high + 1.0,
+                "{high:?}"
+            );
+        }
     }
 
     #[test]

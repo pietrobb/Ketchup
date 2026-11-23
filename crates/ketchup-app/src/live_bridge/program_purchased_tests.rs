@@ -387,6 +387,50 @@ fn collisions(applied: &Value) -> Vec<Vec<String>> {
     pairs
 }
 
+/// A turned fitting and a bent pipe are measured only against the boards their
+/// boxes reach: those they cut into collide, the boards 1 mm clear of the pipe
+/// and touching it are measured and clear, and the board far off is never
+/// measured.
+#[test]
+fn turned_and_swept_parts_are_measured_only_against_the_parts_near_them() {
+    let mut app = with_exact_worker(KetchupApp::new());
+    app.selection.clear();
+    let mut wire = Wire::connect(app);
+    let source = "\
+door_h = param('door_h', 2000)\n\
+revolve('fitting', profile = [[55, 0], [63, 0], [63, 40], [55, 40]], axis = [[0, 0], [0, 1]],\n\
+        at = (1000, 0, 1000))\n\
+sweep('pipe', profile = round_thread(55), path = [(0, 500, 0), (0, 500, 300), (0, 800, 300)],\n\
+      bend = 150)\n\
+board('wall', (200, 200, 200), at = (900, -100, 900))\n\
+board('floor', (200, 200, 100), at = (-100, 400, -50))\n\
+board('near', (20, 100, 100), at = (56, 450, 100))\n\
+board('touch', (20, 60, 30), at = (55, 470, 60))\n\
+board('far', (100, 18, 100), at = (5000, 5000, 5000))\n";
+    let applied = wire
+        .call_within(apply(source, None, 2000.0), Duration::from_secs(120))
+        .result
+        .unwrap();
+    assert_eq!(
+        collisions(&applied),
+        [
+            vec!["fitting".to_owned(), "wall".to_owned()],
+            vec!["floor".to_owned(), "pipe".to_owned()],
+        ],
+        "{applied}"
+    );
+    // Unbounded, the fitting and the pipe were each measured against all six
+    // other parts.
+    assert_eq!(
+        applied["exact_collisions"]["state"], "verified",
+        "{applied}"
+    );
+    assert_eq!(
+        applied["exact_collisions"]["exact_pair_count"], 4,
+        "{applied}"
+    );
+}
+
 /// A bought part that overlaps a board is a collision of the two, and one that
 /// clears it is none; the exact body goes out to STEP and GLB with the boards.
 #[test]
@@ -419,6 +463,26 @@ fn bought_parts_collide_with_boards_and_export_with_them() {
     // In front of the door, 12 mm off its face: clear.
     let clear = applied(&WARDROBE.replace("at = (18, 0, z)", "at = (18, 30, z)"));
     assert_eq!(collisions(&clear), Vec::<Vec<String>>::new(), "{clear}");
+
+    // A board far off is never measured against the bought parts: the boxes
+    // let only the two hinges against the door reach the exact check.
+    let far = applied(&format!(
+        "{WARDROBE}board('far', (100, 18, 100), at = (5000, 5000, 5000))\n"
+    ));
+    assert_eq!(collisions(&far), collisions(&first), "{far}");
+    assert_eq!(far["exact_collisions"]["exact_pair_count"], 2, "{far}");
+    // Hinges set against the back of the door touch it: their boxes meet the
+    // door's, so both pairs are still measured, and touching is no collision.
+    let touching = applied(&WARDROBE.replace("at = (18, 0, z)", "at = (18, 18, z)"));
+    assert_eq!(
+        collisions(&touching),
+        Vec::<Vec<String>>::new(),
+        "{touching}"
+    );
+    assert_eq!(
+        touching["exact_collisions"]["exact_pair_count"], 2,
+        "{touching}"
+    );
 
     // The Viewer package needs a laid-out 3D view and a scene to share.
     wire.app.camera.viewport_rect = Some(egui::Rect::from_min_size(

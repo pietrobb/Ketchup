@@ -110,7 +110,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 616,
-    "crates/ketchup-application/src/collision.rs::collision_report": 630,
+    "crates/ketchup-application/src/collision.rs::collision_report": 627,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1729,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
@@ -516,7 +516,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-app casts": 208,
     # One `#[expect(` on the CAM review's export (review 2026-11-20 ac P3), so 9 -> 10.
     "ketchup-application allows": 10,
-    "ketchup-application casts": 28,
+    "ketchup-application casts": 27,
     "ketchup-assistant allows": 3,
     "ketchup-assistant casts": 5,
     "ketchup-exact allows": 4,
