@@ -55,7 +55,6 @@ mod cam_simulation;
 mod failure;
 mod graph_documents;
 mod graph_outputs;
-mod imported_bounds;
 mod loft;
 mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
@@ -1205,7 +1204,10 @@ fn exact_brep_imported_body(
         (ExactBRepImportedFormat::Step, None) => backend.import_step(&source)?,
         (ExactBRepImportedFormat::Iges, None) => backend.import_iges(&source)?,
         (format, Some(part_index)) => {
-            let key = format!("{format:?}:{source_sha256}");
+            let key = match format {
+                ExactBRepImportedFormat::Step => format!("step:{source_sha256}"),
+                ExactBRepImportedFormat::Iges => format!("iges:{source_sha256}"),
+            };
             let document = GRAPH_DOCUMENTS.with(|documents| {
                 documents.borrow_mut().get_or_open(&key, || {
                     match format {
@@ -1220,10 +1222,10 @@ fn exact_brep_imported_body(
             document.part(*part_index)?
         }
     };
-    if !imported_bounds::matches(operation, &source_sha256, &output, result_fingerprint) {
+    if !imported_result_matches(&source_sha256, &output, result_fingerprint) {
         return Err(exact_brep_graph_error(
             graph,
-            "imported exact graph result or its box does not match its source",
+            "imported exact graph result fingerprint does not match its source",
         ));
     }
     output.body.result_fingerprint = result_fingerprint.clone();
@@ -2809,7 +2811,6 @@ fn import_part_reply(
         source_unit: source_unit.to_owned(),
         backend: output.backend_fingerprint.to_owned(),
         tolerance: output.tolerance_report.profile.to_owned(),
-        enclosing_bounds_mm: imported_bounds::enclosing_bounds_mm(output),
     })
 }
 
@@ -2863,7 +2864,6 @@ fn xde_evidence_reply(
                     reason: shape.reason.clone(),
                 })
                 .collect(),
-            enclosing_bounds_mm: imported_bounds::enclosing_bounds_mm(&output),
         });
     }
     if parts.is_empty()

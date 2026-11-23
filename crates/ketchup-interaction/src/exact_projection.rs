@@ -1021,7 +1021,6 @@ mod tests {
             bounds_mm: [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
             backend: "occt-headless-selection.v1".into(),
             tolerance: "1e-7-mm".into(),
-            enclosing_bounds_mm: None,
         };
         let mesh = StepImportMesh {
             vertices_mm: vec![

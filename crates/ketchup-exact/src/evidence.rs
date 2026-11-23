@@ -305,24 +305,6 @@ pub struct ExactBody {
     pub topology: TopologyEvidence,
 }
 
-impl ExactBody {
-    /// A box OCCT finds around every point of the body, tolerances included,
-    /// from the control points of its surfaces and curves: unlike
-    /// `topology.bounds_mm`, never smaller than the body. None when the kernel
-    /// finds the body unbounded.
-    #[must_use]
-    pub fn enclosing_bounds_mm(&self) -> Option<[[f64; 3]; 2]> {
-        let values = self.native.as_ref()?.enclosing_bounds();
-        let [x0, y0, z0, x1, y1, z1] = values[..] else {
-            return None;
-        };
-        let bounds = [[x0, y0, z0], [x1, y1, z1]];
-        (bounds.iter().flatten().all(|value| value.is_finite())
-            && (0..3).all(|axis| bounds[0][axis] <= bounds[1][axis]))
-        .then_some(bounds)
-    }
-}
-
 impl fmt::Debug for ExactBody {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter

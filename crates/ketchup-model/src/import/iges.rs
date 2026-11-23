@@ -161,7 +161,6 @@ pub fn plan_iges_import(
         bounds_mm: evidence.bounds_mm,
         backend: evidence.backend.clone(),
         tolerance: evidence.tolerance.clone(),
-        enclosing_bounds_mm: None,
     };
     if evidence.source_sha256 != sha256_bytes(source)
         || evidence.source_byte_len != source.len() as u64
@@ -263,7 +262,6 @@ pub fn plan_iges_import(
                 backend: evidence.backend.clone(),
                 tolerance: evidence.tolerance.clone(),
                 source_placement: None,
-                enclosing_bounds_mm: None,
             }),
         },
         CanonicalCommand::CreateOccurrence {
@@ -417,7 +415,6 @@ pub fn plan_iges_xde_import(
                 backend: part.exact.backend.clone(),
                 tolerance: part.exact.tolerance.clone(),
                 source_placement: None,
-                enclosing_bounds_mm: part.exact.enclosing_bounds_mm,
             }),
         });
         outputs.push(ImportOutputRef::Definition(definition_id));

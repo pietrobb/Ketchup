@@ -95,7 +95,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3192,
     "crates/ketchup-scheduler/src/exact_worker.rs": 4188,
-    "crates/ketchup-scheduler/src/lib.rs": 3010,
+    "crates/ketchup-scheduler/src/lib.rs": 3051,
 }
 
 # A production module past this size must be listed in FROZEN_MODULES (review
@@ -110,7 +110,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-app/src/assembly_ui.rs::show_assembly_editor_content": 746,
     "crates/ketchup-app/src/feature_history_ui.rs::show_feature_history_content": 628,
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 616,
-    "crates/ketchup-application/src/collision.rs::collision_report": 630,
+    "crates/ketchup-application/src/collision.rs::collision_report": 627,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
     "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1729,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
@@ -138,7 +138,7 @@ LONG_TESTS = {
     "crates/ketchup-app/src/live_bridge/product_integration_tests.rs::original_v9_nightstand_guarded_physical_repair_has_one_undo_and_verified_geometry": 489,
     "crates/ketchup-app/src/tests/exact_modeling.rs::contained_circle_subtract_intersect_split_and_containing_union_round_trip_atomically": 335,
     "crates/ketchup-app/src/tests/exact_modeling.rs::contained_slanted_polygon_solid_tools_round_trip_atomically": 398,
-    "crates/ketchup-app/src/tests/exact_modeling.rs::mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools": 319,
+    "crates/ketchup-app/src/tests/exact_modeling.rs::mixed_extrusion_and_imported_exact_occurrences_route_through_solid_tools": 321,
     "crates/ketchup-app/tests/capstone_chain.rs::empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence": 305,
     "crates/ketchup-app/tests/capstone_chain.rs::the_manual_capstone_runs_end_to_end_through_the_designed_shell": 342,
     "crates/ketchup-app/tests/face_workflow_ui.rs::line_click_preview_exact_length_cancel_undo_and_save_open_are_canonical": 419,

@@ -1126,15 +1126,11 @@ fn valid_imported_exact(operation: &ExactBRepOperation) -> bool {
             source_sha256,
             source_byte_len,
             result_fingerprint,
-            enclosing_bounds_bits,
             ..
         } if source_sha256.iter().any(|byte| *byte != 0)
             && *source_byte_len > 0
             && !result_fingerprint.is_empty()
             && result_fingerprint.len() <= 128
-            && enclosing_bounds_bits.is_none_or(|bounds| {
-                super::bounds::valid_bounds(bounds.map(|corner| corner.map(f64::from_bits)))
-            })
     )
 }
 

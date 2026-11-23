@@ -605,11 +605,6 @@ pub enum ExactBRepOperation {
         source_format: ExactBRepImportedFormat,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_part_index: Option<u32>,
-        /// The box the import found to hold all of the body, as
-        /// `ImportedExactBodySpec::enclosing_bounds_mm`; the body's bounds
-        /// when present, else it has none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        enclosing_bounds_bits: Option<[[u64; 3]; 2]>,
     },
     RigidTransform {
         target: ExactBRepNodeId,

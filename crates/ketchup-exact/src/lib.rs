@@ -665,7 +665,6 @@ mod ffi {
         fn topology_summary(self: &NativeOperationResult) -> NativeTopologySummary;
         fn face_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEvidence>;
         fn edge_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeEvidence>;
-        fn enclosing_bounds(self: &NativeOperationResult) -> Vec<f64>;
         fn face_edge_evidence(self: &NativeOperationResult) -> Vec<NativeFaceEdgeEvidence>;
         fn edge_face_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeFaceEvidence>;
         fn history_evidence(self: &NativeOperationResult) -> Vec<NativeHistoryEvidence>;

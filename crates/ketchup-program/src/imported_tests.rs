@@ -29,7 +29,6 @@ fn evidence(bounds_mm: [[f64; 3]; 2]) -> StepImportEvidence {
         bounds_mm,
         backend: "occt-test".to_owned(),
         tolerance: "test-tolerance".to_owned(),
-        enclosing_bounds_mm: None,
     }
 }
 

@@ -529,7 +529,6 @@ impl ExactWorkerClient {
             source_unit,
             backend,
             tolerance,
-            enclosing_bounds_mm,
         } = part;
         let (Some(body_kind), Some(source_unit)) = (
             parse_import_body_kind(&body_kind),
@@ -557,7 +556,6 @@ impl ExactWorkerClient {
             bounds_mm,
             backend,
             tolerance,
-            enclosing_bounds_mm,
         })
     }
 
@@ -1268,7 +1266,6 @@ fn xde_part_evidence(
         bounds_mm: part.bounds_mm,
         backend: part.backend,
         tolerance: part.tolerance,
-        enclosing_bounds_mm: part.enclosing_bounds_mm,
     }
 }
 

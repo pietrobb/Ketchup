@@ -591,13 +591,6 @@ pub struct ImportedExactBodySpec {
     /// that is no move. Format 121.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_placement: Option<Transform>,
-    /// A box the exact kernel found to hold every point of the body, its
-    /// tolerances included, which `bounds_mm` (the tightest box, without
-    /// them) need not: the collision check passes over a pair whose boxes are
-    /// apart. Read with the body and bound to its `result_fingerprint`; None
-    /// for a body read before format 122. See [`crate::import::encloses`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enclosing_bounds_mm: Option<[[f64; 3]; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

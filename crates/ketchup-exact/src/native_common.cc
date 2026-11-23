@@ -581,31 +581,6 @@ rust::Vec<NativeEdgeEvidence> NativeOperationResult::edge_evidence() const {
   return output;
 }
 
-// A box around every point of the shape: built from the surfaces' and curves'
-// control points rather than sampled, and grown by every face, edge and vertex
-// tolerance; empty for no shape or an unbounded one.
-rust::Vec<double> NativeOperationResult::enclosing_bounds() const {
-  rust::Vec<double> output;
-  if (impl_ == nullptr || impl_->shape.IsNull()) {
-    return output;
-  }
-  Bnd_Box bounds;
-  try {
-    BRepBndLib::Add(impl_->shape, bounds, false);
-  } catch (const Standard_Failure&) {
-    return output;
-  }
-  if (bounds.IsVoid() || bounds.IsOpen()) {
-    return output;
-  }
-  double values[6] = {};
-  bounds.Get(values[0], values[1], values[2], values[3], values[4], values[5]);
-  for (const double value : values) {
-    output.push_back(value);
-  }
-  return output;
-}
-
 rust::Vec<NativeFaceEdgeEvidence> NativeOperationResult::face_edge_evidence() const {
   rust::Vec<NativeFaceEdgeEvidence> output;
   if (impl_ != nullptr) {

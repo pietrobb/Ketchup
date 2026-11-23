@@ -24,10 +24,6 @@ pub mod plugin;
 pub mod program_worker;
 pub mod protocol;
 mod request_budget;
-mod step_xde_wire;
-pub use step_xde_wire::{
-    StepXdeRejectedPart, StepXdeRejectedShape, StepXdeWorkerNode, StepXdeWorkerPart,
-};
 pub mod thermal_setup;
 pub mod underlay_reading;
 pub use pair_query::{
@@ -325,6 +321,51 @@ pub struct StepXdeWorkerEvidence {
     /// The parts that could not be read, which `parts` leaves out; the nodes
     /// still name them.
     pub rejected_parts: Vec<StepXdeRejectedPart>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StepXdeRejectedPart {
+    pub index: u32,
+    pub name: String,
+    pub reason: String,
+}
+
+/// A shape a read part left out: see `ketchup_exact::RejectedShape`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StepXdeRejectedShape {
+    pub ordinal: u32,
+    pub kind: String,
+    pub source_entity: Option<u32>,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StepXdeWorkerPart {
+    pub index: u32,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub result_fingerprint: String,
+    pub body_kind: String,
+    pub solid_count: u32,
+    pub topology_counts: [u32; 5],
+    pub area_mm2: f64,
+    pub volume_mm3: f64,
+    pub bounds_mm: [[f64; 3]; 2],
+    pub backend: String,
+    pub tolerance: String,
+    pub rejected_shapes: Vec<StepXdeRejectedShape>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StepXdeWorkerNode {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub part_index: Option<u32>,
+    pub name: String,
+    pub name_from_source: bool,
+    pub color: Option<[u8; 3]>,
+    pub transform: [f64; 16],
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
