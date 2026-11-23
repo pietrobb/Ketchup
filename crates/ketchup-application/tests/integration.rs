@@ -49,6 +49,7 @@ mod rule_program_motors;
 mod rule_program_named_topology;
 mod rule_program_nested;
 mod rule_program_operations;
+mod rule_program_purchased;
 mod rule_program_review;
 mod rule_program_sheet_annotations;
 mod rule_program_slot_profiles;

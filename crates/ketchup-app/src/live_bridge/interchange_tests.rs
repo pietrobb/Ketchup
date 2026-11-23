@@ -574,6 +574,7 @@ fn unknown_formats_and_mismatched_extensions_write_and_change_nothing() {
 fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(1000, 2000), height_mm=3.5, tags='plan')\n\
                  dim('d', (0, 0), (1000, 0), offset_mm=-500, tags='plan')\n"
@@ -692,6 +693,7 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
 fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
         overrides: None,
@@ -796,6 +798,7 @@ fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps
 fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n\
                  box('slab', (6000, 3000, 200), at=(0, 0, 450))\n"
@@ -859,6 +862,7 @@ fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
 fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "box('slab', (6000, 3000, 200))\n\
                  box('lining', (6000, 3000, 12), at=(0, 0, 2700))\n\
@@ -999,6 +1003,7 @@ fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
 fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n\
                  text('S-02', 'S-02', at=(5000, 0), height_mm=3.5, tags='plan')\n\
@@ -1113,6 +1118,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
 fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01 漢', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
         overrides: None,
@@ -1170,6 +1176,7 @@ fn north_in_the_sheet_settings_names_the_elevations_in_the_sheet_language() {
     use ketchup_manufacturing::title_block::SheetLanguage;
     let (mut app, mut bridge) = setup();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "box('house', (6000, 3000, 2500))\n".into(),
         overrides: None,
@@ -1224,6 +1231,7 @@ fn north_in_the_sheet_settings_names_the_elevations_in_the_sheet_language() {
 fn a_client_sets_north_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "box('house', (6000, 3000, 2500))\n".into(),
         overrides: None,
@@ -1293,6 +1301,7 @@ fn a_client_gives_the_revisions_every_sheet_lists() {
     use ketchup_manufacturing::title_block::SheetLanguage;
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "box('house', (6000, 3000, 2500))\n".into(),
         overrides: None,

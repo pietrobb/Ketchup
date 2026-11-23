@@ -41,6 +41,7 @@ impl Part {
             ProgramPartBody::Loft { sections } => sections
                 .first()
                 .map_or(&[][..], |section| section.segments.as_slice()),
+            ProgramPartBody::Imported(_) => &[],
         };
         if let Some(role) = role {
             let base = role.split('#').next().unwrap_or_default();

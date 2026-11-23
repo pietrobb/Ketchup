@@ -724,6 +724,7 @@ fn selection_framing_finds_program_parts_that_are_not_boxes() {
         .execute(
             h.state_mut(),
             Request::ApplyProgram {
+                source_folder: None,
                 expected: None,
                 source: program.to_owned(),
                 overrides: Some(BTreeMap::new()),

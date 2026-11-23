@@ -386,7 +386,7 @@ pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";
 pub const STEP_XDE_PARSER_VERSION: &str = "3";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StepImportEvidence {
     pub source_sha256: [u8; 32],
     pub source_byte_len: u64,

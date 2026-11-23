@@ -381,7 +381,8 @@ pub(crate) fn is_box(part: &Part) -> bool {
             | ProgramPartBody::Extrusion { .. }
             | ProgramPartBody::Revolve { .. }
             | ProgramPartBody::Sweep { .. }
-            | ProgramPartBody::Loft { .. } => false,
+            | ProgramPartBody::Loft { .. }
+            | ProgramPartBody::Imported(_) => false,
         }
 }
 

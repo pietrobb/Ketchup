@@ -18,6 +18,7 @@ fn run(bridge: &mut LiveBridge, app: &mut KetchupApp, request: Request) -> Value
 fn cabinet_with_variants() -> (KetchupApp, LiveBridge) {
     let (mut app, mut bridge) = setup();
     let apply = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: CABINET.to_owned(),
         overrides: None,

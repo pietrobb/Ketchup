@@ -14,6 +14,7 @@ const APRON: &str = "\napron = board(\"table/apron-front\", (WIDTH - 2 * (INSET 
 
 fn apply(source: &str, replace_document: bool) -> Request {
     Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.to_owned(),
         overrides: Some(BTreeMap::new()),
@@ -1164,6 +1165,7 @@ fn a_whole_program_sent_again_keeps_the_stored_overrides_unless_it_gives_its_own
     let (mut app, mut bridge) = setup();
     bridge.execute(&mut app, apply(TABLE, true), false).unwrap();
     let with = |overrides: Option<BTreeMap<String, f64>>, source: &str| Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.to_owned(),
         overrides,
@@ -1211,6 +1213,7 @@ fn a_new_source_for_the_same_file_keeps_its_saved_variants() {
         .replace_rule_program_source(program.clone())
         .unwrap();
     let with = |file_name: Option<&str>| Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: format!("{TABLE}{APRON}"),
         overrides: Some(BTreeMap::new()),

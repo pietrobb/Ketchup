@@ -89,6 +89,7 @@ impl LiveBridge {
             overrides,
             file_name: Some(file_name),
             replace_document: false,
+            source_folder: None,
         })
     }
 }

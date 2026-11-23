@@ -351,6 +351,8 @@ pub enum Request {
         /// Replace a saved document that no program owns.
         #[serde(default)]
         replace_document: bool,
+        /// Absolute folder of the program's file, its STEP files' root; absent keeps the last.
+        source_folder: Option<String>,
     },
     /// Plans and exactly checks a whole program (`source`) or a patch (`edits`)
     /// like `ApplyProgram`, without publishing anything.
@@ -949,14 +951,7 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
     use ketchup_application::RuleProgramApplyError as Error;
     let (reason, hint) = match &error {
         Error::Rejected(rejection) => return program_write_failure(rejection),
-        Error::Program { code, .. } if code == program_check::OVERRIDE_REFUSED => (
-            code.clone(),
-            "Give the parameter a value it takes (inside its range, whole for a count), or leave it out of overrides to keep its default.",
-        ),
-        Error::Program { code, .. } => (
-            code.clone(),
-            "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again.",
-        ),
+        Error::Program { code, .. } => (code.clone(), program_check::fix_hint(code)),
         Error::IncrementalUnsupported => (
             "incremental_unsupported".to_owned(),
             "A part changed in a way that cannot keep its identity (e.g. a manually added or moved part, or a renamed profile segment). Keep part names and profile segment names stable.",
@@ -1409,6 +1404,8 @@ pub(crate) struct LiveBridge {
     image: image::ImageState,
     /// A bridge without a socket for the window's own edits (`transport::local`).
     serves_window: bool,
+    /// The program file's STEP files' folder, as an apply last gave it, and what was read there.
+    program_folder: program_check::step_files::ProgramFolder,
 }
 impl Drop for LiveBridge {
     fn drop(&mut self) {

@@ -1558,6 +1558,7 @@ fn assert_the_dwg_carries_the_dxf(
 fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     let (mut app, mut bridge) = setup();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "box('slab', (6000, 3000, 200), at=(0, 0, -200))\n\
                  box('post', (200, 200, 2000), at=(5800, 2800, 0))\n\
@@ -1724,6 +1725,7 @@ fn plan_annotations_are_drawn_only_in_a_plan_view_and_inside_it() {
         exports.set(exports.get() + 1);
         let (mut app, mut bridge) = setup();
         let program = Request::ApplyProgram {
+            source_folder: None,
             expected: None,
             source,
             overrides: None,

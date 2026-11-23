@@ -25,6 +25,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
             CheckDeadline::start(),
             true,
             &ketchup_program::CancelToken::default(),
+            &mut ketchup_application::program_imports::NoFiles,
         )
         .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -51,7 +52,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
             app.new_document();
         }
         let history = (app.undo_step_count(), app.redo_step_count());
-        sender.send(Ok(plan)).unwrap();
+        sender.send(Ok((plan.0, plan.1, Vec::new()))).unwrap();
         bridge.poll_program_check_job(&mut app, &context);
         assert!(!response.try_recv().unwrap().ok);
         assert!(bridge.program_check_job.is_none());
@@ -111,9 +112,10 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
         CheckDeadline::start(),
         true,
         &ketchup_program::CancelToken::default(),
+        &mut ketchup_application::program_imports::NoFiles,
     )
     .unwrap();
-    sender.send(Ok(plan)).unwrap();
+    sender.send(Ok((plan.0, plan.1, Vec::new()))).unwrap();
     bridge.poll_program_check_job(&mut app, &context);
     assert!(bridge.program_check_job.is_none());
     assert!(app.document.current().occurrences().next().is_none());
@@ -136,6 +138,7 @@ fn live_program_planner_publishes_one_undo_step() {
         reply,
         Arc::new(AtomicBool::new(false)),
         Request::ApplyProgram {
+            source_folder: None,
             expected: None,
             source: source.source.clone(),
             file_name: Some(source.file_name.clone()),

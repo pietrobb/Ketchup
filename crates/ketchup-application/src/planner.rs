@@ -4210,12 +4210,11 @@ pub fn plan_rule_part_batch(
     document: &DocumentStore,
     parts: &[ProgramPart],
 ) -> Result<CommandBatch, Box<AssistantRejectionDiagnostic>> {
-    let solids = parts
+    // A file's body goes with the profiles: neither is a CAD operation.
+    let (profiles, solids): (Vec<_>, Vec<_>) = parts
         .iter()
-        .filter(|p| p.is_solid())
-        .cloned()
-        .collect::<Vec<_>>();
-    let profiles = parts.iter().filter(|p| !p.is_solid()).collect::<Vec<_>>();
+        .partition(|p| !p.is_solid() || p.imported().is_some());
+    let solids = solids.into_iter().cloned().collect::<Vec<_>>();
     let parts = &solids;
     let operations = parts
         .iter()

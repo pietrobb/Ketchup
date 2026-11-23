@@ -364,7 +364,12 @@ fn escaped_source_envelope_is_refused_before_send_and_connection_remains_usable(
     );
     assert_eq!(
         received.recv().unwrap(),
-        json!({"method":"apply_program", "source":source})
+        json!({
+            "method":"apply_program",
+            "source":source,
+            // Bought parts' STEP files are read beside the program's file.
+            "source_folder":root.path().display().to_string()
+        })
     );
 }
 

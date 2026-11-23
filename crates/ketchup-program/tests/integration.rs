@@ -36,6 +36,7 @@ mod opposing_holes;
 mod overlapping_parts;
 mod profile_arcs;
 mod program;
+mod purchased;
 mod quote;
 mod relations;
 mod report_before_exact;

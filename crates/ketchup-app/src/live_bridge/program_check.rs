@@ -3,16 +3,19 @@
 #[cfg(test)]
 #[path = "program_check_failure_tests.rs"]
 mod failure_tests;
+pub(super) mod step_files;
 #[cfg(test)]
 #[path = "program_plan_tests.rs"]
 mod tests;
 use super::*;
 use crate::delivery::Deliver;
 use crate::program_edit::ProgramEdit;
+use ketchup_application::program_imports::ImportFiles;
 use ketchup_application::program_isolation::{CheckDeadline, complete_pending_checks};
 use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
+use step_files::StepFiles;
 
 /// Plans the program and lists its report, both off the UI thread when queued.
 /// `deadline` is the request's: its exact check gets only what the report left,
@@ -22,6 +25,7 @@ use ketchup_program::{ProgramModel, Report, exact_candidates};
 /// settles; [`complete_pending_checks`] lists the rest wherever the report is
 /// published without that check. `cancel` is the request's: a request given up
 /// ends the planner's worker instead of leaving it busy (review 2026-11-02 MCP-101).
+/// `files` reads the STEP files of the program's bought parts.
 fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
@@ -29,8 +33,15 @@ fn plan_with_report(
     deadline: CheckDeadline,
     exact_follows: bool,
     cancel: &ketchup_program::CancelToken,
+    files: &mut dyn ImportFiles,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
-    let plan = ketchup_application::plan_rule_program_cancellable(document, source, cancel)?;
+    let plan = ketchup_application::plan_rule_program_reading(
+        document,
+        source,
+        files,
+        CheckDeadline::start(),
+        cancel,
+    )?;
     refuse_given_overrides(&plan.evaluated.model, given)?;
     let report = if exact_follows && !exact_candidates(&plan.evaluated.model).is_empty() {
         plan.report_before_exact(deadline, cancel)
@@ -42,6 +53,25 @@ fn plan_with_report(
 
 /// The code of a request whose own parameter value the program refuses.
 pub(super) const OVERRIDE_REFUSED: &str = "param_override_refused";
+
+/// An apply request's program, whether it replaces the document, the
+/// parameters it sets and the folder of its STEP files.
+pub(super) type ProgramRequest = (RuleProgramSource, bool, Vec<String>, Option<PathBuf>);
+
+/// What to do about a program refused with `code`.
+pub(super) fn fix_hint(code: &str) -> &'static str {
+    match code {
+        OVERRIDE_REFUSED => {
+            "Give the parameter a value it takes (inside its range, whole for a count), or leave it out of overrides to keep its default."
+        }
+        ketchup_application::program_imports::IMPORT_FAILED => {
+            "Put a STEP file the exact kernel reads at the path purchased() names, relative to the program's file, and apply the program from its file again."
+        }
+        _ => {
+            "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again."
+        }
+    }
+}
 
 /// A value `given` by the request that the program refuses (outside the
 /// parameter's range, or no whole number of a count) fails it, applied or only
@@ -186,8 +216,11 @@ pub(super) struct ProgramPlanJob {
     replace: bool,
     before: Stamp,
     deadline: CheckDeadline,
-    receiver: mpsc::Receiver<Result<(RuleProgramPlan, Report), RuleProgramApplyError>>,
+    receiver: mpsc::Receiver<Result<PlannedProgram, RuleProgramApplyError>>,
 }
+
+/// A program's plan, its report, and the bytes of the STEP files it read.
+type PlannedProgram = (RuleProgramPlan, Report, Vec<Vec<u8>>);
 
 pub(super) struct ExactCheckJob {
     id: u64,
@@ -327,7 +360,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<(RuleProgramSource, bool, Vec<String>), &'static str> {
+    ) -> Result<ProgramRequest, &'static str> {
         let request = Self::expand_program_patch(app, request)?;
         let Request::ApplyProgram {
             expected,
@@ -335,10 +368,19 @@ impl LiveBridge {
             overrides,
             file_name,
             replace_document,
+            source_folder,
         } = request
         else {
             return Err("invalid_params");
         };
+        // The folder of the program's STEP files: absolute and a folder.
+        let folder = source_folder.map(PathBuf::from);
+        if folder
+            .as_ref()
+            .is_some_and(|folder| !folder.is_absolute() || !folder.is_dir())
+        {
+            return Err("invalid_params");
+        }
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         Self::require_request_authority(cancelled)?;
@@ -378,6 +420,7 @@ impl LiveBridge {
             },
             replace_document,
             given,
+            folder,
         ))
     }
 
@@ -390,19 +433,42 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
-        let (source, replace, given) = Self::program_source(app, request, ui_busy, cancelled)?;
+        let (source, replace, given, folder) =
+            Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
+        let mut files = self.step_files(app, folder, &source, Arc::new(AtomicBool::new(false)));
         // This path answers without an exact check.
-        let planned = plan_with_report(
+        let (plan, report) = plan_with_report(
             &app.document,
             &source,
             &given,
             program_request_deadline(),
             false,
             &ketchup_program::CancelToken::default(),
+            &mut files,
         )
         .map_err(program_failure)?;
+        let planned = (plan, report, files.into_sources());
         self.publish_program(app, source, replace, planned, &before, cancelled)
+    }
+
+    /// The reader of `source`'s STEP files: from the folder the request gave,
+    /// kept for later applies of the same file (a Push/Pull, set_params), or
+    /// the one an earlier apply gave for it.
+    fn step_files(
+        &mut self,
+        app: &KetchupApp,
+        given: Option<PathBuf>,
+        source: &RuleProgramSource,
+        cancelled: Arc<AtomicBool>,
+    ) -> StepFiles {
+        self.program_folder.files(
+            given,
+            &source.file_name,
+            Self::worker_path(app),
+            cancelled,
+            &app.document.current(),
+        )
     }
 
     fn publish_program(
@@ -410,12 +476,22 @@ impl LiveBridge {
         app: &mut KetchupApp,
         source: RuleProgramSource,
         replace: bool,
-        (plan, report): (RuleProgramPlan, Report),
+        (plan, report, step_sources): (RuleProgramPlan, Report, Vec<Vec<u8>>),
         before_stamp: &Stamp,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
         Self::guard(app, &Some(before_stamp.clone()))?;
         Self::require_request_authority(cancelled)?;
+        // The document keeps the bytes of the STEP files its bought parts
+        // were read from; the exact evaluation reads them there.
+        for bytes in step_sources {
+            app.file
+                .container_data
+                .insert_import_blob(bytes)
+                .map_err(|error| {
+                    super::rejection_records::failed_because("commit_rejected", error)
+                })?;
+        }
         let before = app.document.current();
         let source_diff = super::program_access::source_diff(
             app.document
@@ -474,14 +550,15 @@ impl LiveBridge {
             );
             return;
         }
-        let (source, replace, given) = match Self::program_source(app, request, ui_busy, &cancelled)
-        {
-            Ok(source) => source,
-            Err(code) => {
-                Self::reply(app, id, &reply, Err(code));
-                return;
-            }
-        };
+        let (source, replace, given, folder) =
+            match Self::program_source(app, request, ui_busy, &cancelled) {
+                Ok(sourced) => sourced,
+                Err(code) => {
+                    Self::reply(app, id, &reply, Err(code));
+                    return;
+                }
+            };
+        let mut files = self.step_files(app, folder, &source, Arc::clone(&cancelled));
         let document = app.document.fork_for_planning();
         let before = app.live_bridge_stamp();
         let worker_source = source.clone();
@@ -491,8 +568,16 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result =
-                    plan_with_report(&document, &worker_source, &given, deadline, true, &cancel);
+                let result = plan_with_report(
+                    &document,
+                    &worker_source,
+                    &given,
+                    deadline,
+                    true,
+                    &cancel,
+                    &mut files,
+                )
+                .map(|(plan, report)| (plan, report, files.into_sources()));
                 sender.deliver(result);
                 repaint.request_repaint();
             });
