@@ -110,6 +110,7 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
         across.push_str(&format!(
             "box(\"board {x}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\", grounded = True, tags = [\"board\"])
 joint(\"board {x}\", \"beam\", kind = \"screw\")
+joint(\"board {x}\", \"wall\", kind = \"screw\")
 "
         ));
     }
@@ -128,7 +129,7 @@ const WALL: &str =
 /// named in brace(), with `extra`.
 fn blocks(size: [i32; 3], y: i32, extra: &str) -> Report {
     let [dx, dy, dz] = size;
-    let mut source = format!("{BEAM}{extra}");
+    let mut source = BEAM.to_owned();
     for x in PLACES {
         source.push_str(&format!(
             "box(\"block {x}\", ({dx}, {dy}, {dz}), at = ({x}, {y}, 2400), material = \"GL24h\", grounded = True, tags = [\"block\"])
@@ -136,6 +137,7 @@ joint(\"block {x}\", \"beam\", kind = \"screw\")
 "
         ));
     }
+    source.push_str(extra);
     source.push_str("brace([\"beam\"], by = [\"block\"], edge = \"top\")\n");
     report(&source)
 }
@@ -222,7 +224,8 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
     let mut posts = String::new();
     for x in PLACES {
         posts.push_str(&format!(
-            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)\n",
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)
+joint(\"under {x}\", \"block {x}\", kind = \"screw\")\n",
             x - 25
         ));
     }
@@ -244,7 +247,7 @@ fn gapped_deck(across: i32, extra: &str) -> Report {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let mut source = format!("{BEAM}{extra}");
+    let mut source = BEAM.to_owned();
     for (name, from, to) in [
         ("a", 0, 1200),
         ("b", 1600, 2750),
@@ -265,6 +268,7 @@ joint(\"strip {name}\", \"beam\", kind = \"screw\", fasteners = [{}])
 "
         ));
     }
+    source.push_str(extra);
     source.push_str(
         "joint(\"strip a\", \"plate 1\", kind = \"screw\")
 joint(\"strip b\", \"plate 1\", kind = \"screw\")
@@ -312,7 +316,9 @@ box(\"hanger 2\", (50, 50, 300), at = (4400, 200, 2122), material = \"GL24h\")
     // The wall reaches up to the boards on the strips.
     let on_wall = gapped_deck(
         1560,
-        "box(\"wall\", (5900, 100, 2422), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+        "box(\"wall\", (5900, 100, 2422), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+joint(\"plate 1\", \"wall\", kind = \"screw\")
+joint(\"plate 2\", \"wall\", kind = \"screw\")\n",
     );
     assert_eq!(ignored(&on_wall), Vec::<&str>::new());
     assert_eq!(checked(&on_wall, "beam").status, "pass");
