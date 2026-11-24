@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::ControlFlow;
-use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give, pushed_along};
+use stiffness::{SLIP_PER_FASTENER, Tie, part_capacity, part_give, pushed_along};
 
 /// The modulus of elasticity, mean and fifth percentile, and the compressive
 /// strength f_c,0,k, N/mm², of a part of no wood strength class:
@@ -587,7 +587,7 @@ impl<'a> Footing<'a> {
                     };
                     route.extend(through);
                     let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
-                    let own = brace_give(&obb, self.moduli[by].0, point, at, sideways)
+                    let own = part_give(&obb, self.moduli[by].0, point, at, point, sideways)
                         + to_member
                         + to_anchor;
                     let capacity = part_capacity(

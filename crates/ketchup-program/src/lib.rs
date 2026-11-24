@@ -69,6 +69,27 @@ pub use execution_budget::{MAX_HEAP_BYTES as EVALUATION_HEAP_BYTES, MAX_TIME as 
 /// checks of the largest example program (1 854 parts) take far longer than
 /// its evaluation, 1.5 s in a release build and 28 s in a debug build.
 pub const CHECK_TIME: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The program and its checks stopped together at `total`, the deadline they
+/// share ([`CHECK_TIME`]), with the causes and what to change (review
+/// 2026-11-24 og PG-908, PG-909: the command line gave no advice, and the
+/// window's worker named its own time and blamed the program alone).
+#[must_use]
+pub fn check_time_limit(total: std::time::Duration) -> ProgramError {
+    ProgramError {
+        code: "time_limit",
+        message: format!(
+            "evaluating the program and its checks took longer than {} s together and were \
+             stopped; shorten the program's loops, or move apart parts that lie in one place \
+             or within {} mm of many others (a loop that does not move its parts, thousands \
+             of parts side by side), which the checks compare pair by pair",
+            total.as_secs(),
+            relations::GAP_LIMIT_MM
+        ),
+        location: None,
+    }
+}
+
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,

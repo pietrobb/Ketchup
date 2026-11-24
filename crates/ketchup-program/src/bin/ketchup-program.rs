@@ -231,14 +231,7 @@ fn main() -> ExitCode {
         print!("{output}");
         ExitCode::from(code)
     } else {
-        let error = ketchup_program::ProgramError {
-            code: "time_limit",
-            message: format!(
-                "checking the program took longer than {} s",
-                ketchup_program::CHECK_TIME.as_secs()
-            ),
-            location: None,
-        };
+        let error = ketchup_program::check_time_limit(ketchup_program::CHECK_TIME);
         println!("{:#}", json!({"ok": false, "error": error}));
         ExitCode::from(2)
     }

@@ -365,7 +365,8 @@ joint(\"strut {x}\", \"column {x}\", kind = \"screw\", fasteners = [({screw_x}, 
 /// 0.0231 x 1.503 (its weak way) + 0.977 / 266 (its strong way) + slip, about
 /// 0.040 mm/N, and the plate holds the beam about 0.977 / 0.040 = 24 N/mm,
 /// against about 56 asked. With both screws on the plate's axis it holds the
-/// column's strong way, about 211.
+/// column's strong way, about 194 with the column's shear, L / (5/6 G A) =
+/// 0.0005 mm/N; 214.9 without it (R1124og-PG-906).
 #[test]
 fn a_strut_pushes_along_the_line_through_its_screws() {
     let plate = |beam_screw: i32| {
@@ -395,7 +396,7 @@ joint(\"plate {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 950, 24
     assert_ne!(checked(&slanting, "beam").status, "pass");
     let straight = plate(5);
     for stiffness in stiffnesses(&straight, "plate") {
-        assert!((180.0..=230.0).contains(&stiffness), "{stiffness}");
+        assert!((185.0..=205.0).contains(&stiffness), "{stiffness}");
     }
 }
 

@@ -172,6 +172,13 @@ pub enum ExactFeaSetupError {
     InvalidJoint {
         joint: usize,
     },
+    /// The faces of the joint at index `joint` touch, but their meshes meet
+    /// only along a line, which would let them turn about it: they touch along
+    /// an edge, or one covers only part of the other and neither mesh has
+    /// nodes where the other face ends (R1124og-FEA-900).
+    MeetsAlongALine {
+        joint: usize,
+    },
     /// The mate is not a face-to-face mate of the document whose two
     /// resolved faces belong to studied parts.
     InvalidMate {
@@ -204,8 +211,17 @@ impl std::fmt::Display for ExactFeaSetupError {
             }
             Self::InvalidJoint { joint } => write!(
                 formatter,
-                "joint {} cannot be built: its faces belong to one part, do not touch over an \
-                 area, or share every free node with an earlier joint",
+                "joint {} cannot be built: its faces belong to one part, do not touch, or \
+                 share every free node with an earlier joint",
+                joint + 1
+            ),
+            Self::MeetsAlongALine { joint } => write!(
+                formatter,
+                "joint {} cannot be built: its faces' meshes meet only along a line, which \
+                 would let them turn about that line. They touch along an edge, or one face covers \
+                 only part of the other and neither mesh has nodes where the other face \
+                 ends; join faces that cover each other, or split the larger face where \
+                 the smaller ends",
                 joint + 1
             ),
             Self::InvalidMate { mate_id } => write!(

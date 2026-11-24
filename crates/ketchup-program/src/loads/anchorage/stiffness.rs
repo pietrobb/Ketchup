@@ -9,7 +9,7 @@
 //! stiffness is one over the sum (the unit-load method on the path).
 
 use crate::frame::Obb;
-use ketchup_geometry::linalg::{cross, dot, length, scale, sub};
+use ketchup_geometry::linalg::{cross, dot, length, sub};
 use ketchup_model::tolerance::ALONG_AXIS_NEGLIGIBLE;
 
 /// Shear modulus over modulus of elasticity of wood, as EN 338 and EN 14080
@@ -134,33 +134,15 @@ pub(super) fn part_give(
     };
     let shear = modulus * SHEAR_PER_E;
     let pull = dot(sideways, obb.axes[along]);
+    // The force across the axis shears the section, 5/6 of it (Timoshenko): a
+    // deep part or a sheet carrying the force in its plane gives as much in
+    // shear as in bending (R1119og-PG-801, R1124og-PG-906).
+    let across = (dot(sideways, sideways) - pull * pull).max(0.0);
     squared(obb.axes[i]) / (modulus * bending_i)
         + squared(obb.axes[j]) / (modulus * bending_j)
         + squared(obb.axes[along]) / (shear * twisting)
         + pull * pull * long / (modulus * area)
-}
-
-/// [`part_give`] of a brace or a diaphragm's sheet from the point of the
-/// member it holds, `entry`, to where it meets its anchor, `exit`, with its
-/// shear (5/6 of the section, Timoshenko) as well: a sheet carries the force
-/// across its plane, where shear gives as much as bending (R1119og-PG-801).
-pub(super) fn brace_give(
-    obb: &Obb,
-    modulus: f64,
-    entry: [f64; 3],
-    exit: [f64; 3],
-    sideways: [f64; 3],
-) -> f64 {
-    let run = sub(entry, exit);
-    let long = length(run);
-    if long <= f64::EPSILON {
-        return 0.0;
-    }
-    let (_, [(_, wide_i), (_, wide_j)]) = section(obb, run);
-    let along = dot(sideways, scale(run, 1.0 / long));
-    let across = 1.0 - along * along;
-    part_give(obb, modulus, entry, exit, entry, sideways)
-        + across.max(0.0) * long / (5.0 / 6.0 * modulus * SHEAR_PER_E * wide_i * wide_j)
+        + across * long / (5.0 / 6.0 * shear * area)
 }
 
 /// The largest relative slenderness of a piece that does not buckle, EN
@@ -263,20 +245,52 @@ mod tests {
         Obb::new([0.0; 3], &IDENTITY, [0.0; 3], [width, thick, height])
     }
 
-    /// A post fixed at its foot and pushed at its top is a cantilever:
-    /// 3 E I / L³.
+    /// The give of a cantilever `width` x `deep` x `long` pushed at its top
+    /// across `deep`: bending L³ / (3 E I) and shear L / (5/6 G A).
+    fn cantilever_give(width: f64, deep: f64, long: f64) -> (f64, f64) {
+        let inertia = width * deep.powi(3) / 12.0;
+        let bending = long.powi(3) / (3.0 * 11_500.0 * inertia);
+        let shear = long / (5.0 / 6.0 * 11_500.0 * SHEAR_PER_E * width * deep);
+        (bending, shear)
+    }
+
+    /// A post fixed at its foot and pushed at its top is a cantilever that
+    /// bends and shears.
     #[test]
     fn a_post_pushed_at_its_top_bends_as_a_cantilever() {
         let obb = post(50.0, 100.0, 2400.0);
         let top = [25.0, 50.0, 2400.0];
         let give = part_give(&obb, 11_500.0, top, [25.0, 50.0, 0.0], top, [0.0, 1.0, 0.0]);
-        let inertia = 50.0 * 100.0_f64.powi(3) / 12.0;
-        let cantilever = 3.0 * 11_500.0 * inertia / 2400.0_f64.powi(3);
+        let (bending, shear) = cantilever_give(50.0, 100.0, 2400.0);
         assert!(
-            (1.0 / give - cantilever).abs() < 1e-6 * cantilever,
+            (give - bending - shear).abs() < 1e-9 * give,
             "{}",
             1.0 / give
         );
+    }
+
+    /// R1124og-PG-906: a part on the path deep for its length gives in shear
+    /// as much as in bending. A wall 1 200 x 40 x 2 400 pushed in its plane at
+    /// its top was held 2.2 times as stiffly as it is, by bending alone.
+    #[test]
+    fn a_wall_pushed_in_its_plane_shears() {
+        let obb = post(1200.0, 40.0, 2400.0);
+        let top = [600.0, 20.0, 2400.0];
+        let give = part_give(
+            &obb,
+            11_500.0,
+            top,
+            [600.0, 20.0, 0.0],
+            top,
+            [1.0, 0.0, 0.0],
+        );
+        let (bending, shear) = cantilever_give(40.0, 1200.0, 2400.0);
+        assert!(
+            (give - bending - shear).abs() < 1e-9 * give,
+            "{}",
+            1.0 / give
+        );
+        assert!(give > 2.0 * bending, "{give} against {bending}");
     }
 
     /// Pushed along its length a rod only stretches, and buckles just under
