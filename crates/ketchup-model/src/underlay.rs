@@ -205,15 +205,17 @@ fn point_bounds(mut points: impl Iterator<Item = [f64; 2]>) -> Option<[[f64; 2];
 /// The versions of the blob, read all: lines only (1); each layer's texts after its points
 /// (2); the styles first, and the style of each polyline and text (3); the bytes of 3
 /// deflated after their length (4, written without fills); of 3 with each layer's
-/// fills after its texts (5, written with fills and no objects); and of 5 with the
-/// objects after the layers (6, written with objects).
-const MAGICS: [&[u8; 8]; 6] = [
+/// fills after its texts (5, written with fills and no objects); of 5 with the
+/// objects after the layers (6, written with objects); and of 6 with each style's
+/// width and font after its pattern (7, written where a style has either).
+const MAGICS: [&[u8; 8]; 7] = [
     b"KUNDRLY1",
     b"KUNDRLY2",
     b"KUNDRLY3",
     b"KUNDRLY4",
     b"KUNDRLY5",
     b"KUNDRLY6",
+    b"KUNDRLY7",
 ];
 
 /// The deflate level of a written blob: the default, which keeps a 12 MB drawing to a
@@ -572,46 +574,51 @@ impl UnderlayLines {
 
     /// The bytes of the container blob: the length of the body, then the body deflated
     /// (zlib) — little-endian counts, ends, coordinates and style indices, the styles
-    /// before the layers, the objects after them. Lines without objects are written as
-    /// version 5, without fills either as version 4, which older readers read too.
+    /// before the layers, the objects after them. Lines whose styles have no width or
+    /// font are written as version 6, without objects either as version 5, without
+    /// fills either as version 4, which older readers read too.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let (with_objects, with_fills, body) = self.encode_whole_body();
-        Self::deflate(with_objects, with_fills, &body)
+        let (version, body) = self.encode_whole_body();
+        Self::deflate(version, &body)
     }
 
     /// What [`Self::encode`] writes, or why [`Self::decode`] would not read it back: lines
     /// past [`limits::UNDERLAY_LINES_BYTES`] are refused before they are deflated.
     pub fn encode_readable(&self) -> Result<Vec<u8>, UnderlayLinesError> {
-        let (with_objects, with_fills, body) = self.encode_whole_body();
+        let (version, body) = self.encode_whole_body();
         if body.len() > limits::UNDERLAY_LINES_BYTES {
             return Err(UnderlayLinesError::TooLarge { length: body.len() });
         }
-        Ok(Self::deflate(with_objects, with_fills, &body))
+        Ok(Self::deflate(version, &body))
     }
 
-    fn encode_whole_body(&self) -> (bool, bool, Vec<u8>) {
-        let with_objects = !self.objects.is_empty();
-        let with_fills = with_objects || self.fill_count() > 0;
-        let mut body = self.encode_body(with_fills);
-        if with_objects {
+    /// The oldest version that holds the lines (4 to 7), and its body.
+    fn encode_whole_body(&self) -> (usize, Vec<u8>) {
+        let version = if self.styles.iter().any(LineStyle::needs_width_and_font) {
+            7
+        } else if !self.objects.is_empty() {
+            6
+        } else if self.fill_count() > 0 {
+            5
+        } else {
+            4
+        };
+        let mut body = self.encode_body(version >= 5, version >= 7);
+        if version >= 6 {
             self.objects.encode(&mut body);
         }
-        (with_objects, with_fills, body)
+        (version, body)
     }
 
-    fn deflate(with_objects: bool, with_fills: bool, body: &[u8]) -> Vec<u8> {
+    fn deflate(version: usize, body: &[u8]) -> Vec<u8> {
         let mut deflated = miniz_oxide::deflate::compress_to_vec_zlib(body, DEFLATE_LEVEL);
         if !inflates_plausibly(body.len(), deflated.len()) {
             // Stored, as `decode` refuses a body more than [`MAX_INFLATION`] times its
             // deflated bytes.
             deflated = miniz_oxide::deflate::compress_to_vec_zlib(body, 0);
         }
-        let magic = MAGICS[match (with_objects, with_fills) {
-            (true, _) => 5,
-            (false, true) => 4,
-            (false, false) => 3,
-        }];
+        let magic = MAGICS[version - 1];
         let mut bytes = Vec::with_capacity(magic.len() + 8 + deflated.len());
         bytes.extend_from_slice(magic);
         let length = u64::try_from(body.len()).expect("a blob's length fits u64");
@@ -620,9 +627,9 @@ impl UnderlayLines {
         bytes
     }
 
-    /// The bytes version 3 wrote after its magic, and `with_fills` each layer's fills
-    /// after its texts.
-    fn encode_body(&self, with_fills: bool) -> Vec<u8> {
+    /// The bytes version 3 wrote after its magic, `with_fills` each layer's fills after
+    /// its texts, and `with_width_and_font` each style's width and font.
+    fn encode_body(&self, with_fills: bool, with_width_and_font: bool) -> Vec<u8> {
         let capacity = 8 + self
             .layers
             .iter()
@@ -631,7 +638,7 @@ impl UnderlayLines {
         let mut bytes = Vec::with_capacity(capacity);
         push_count(&mut bytes, self.styles.len());
         for style in &self.styles {
-            style.encode(&mut bytes);
+            style.encode(&mut bytes, with_width_and_font);
         }
         push_count(&mut bytes, self.layers.len());
         for layer in &self.layers {
@@ -694,7 +701,7 @@ impl UnderlayLines {
         }
         let body = inflate_exactly(deflated, length)?;
         // Version 4 deflates the body of 3; 5 that of 3 with fills; 6 that of 5 with
-        // objects.
+        // objects; 7 that of 6 with the styles' widths and fonts.
         Self::decode_body(if version == 4 { 3 } else { version }, &body, layers)
     }
 
@@ -709,7 +716,7 @@ impl UnderlayLines {
         if version >= 3 {
             // Pushed one by one: each style checks its own bytes before it is kept.
             for _ in 0..reader.count()? {
-                styles.push(LineStyle::decode(&mut reader)?);
+                styles.push(LineStyle::decode(&mut reader, version >= 7)?);
             }
         }
         let named = |style: u32| {

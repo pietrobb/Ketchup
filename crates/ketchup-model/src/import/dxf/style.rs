@@ -51,6 +51,22 @@ pub(super) struct EntityStyle {
     /// The object of the drawing that drew it ([`super::objects`]): an index into the
     /// objects of what was read with it, [`UNCLAIMED`] until its entity is read.
     pub(super) object: u32,
+    /// How wide an LWPOLYLINE is drawn, in drawing units times the scale of the
+    /// inserts that place it: its constant width (group 43), or else the widest of its
+    /// vertices (40, 41); `0` for any other entity.
+    pub(super) width: f64,
+    /// The text style (group 7) a text names and the fonts its MTEXT codes switch to;
+    /// `None` for what is no text.
+    pub(super) font: Option<TextFont>,
+}
+
+/// What a text says of its font.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct TextFont {
+    /// The upper-case name of its text style.
+    pub(super) style: String,
+    /// The fonts it switches to, in order.
+    pub(super) switched: Vec<String>,
 }
 
 /// The object of what no entity has claimed yet.
@@ -65,11 +81,21 @@ impl Default for EntityStyle {
             scale: 1.0,
             invalid_scale: None,
             object: UNCLAIMED,
+            width: 0.0,
+            font: None,
         }
     }
 }
 
 impl EntityStyle {
+    /// The style of a text in `font` before its record's groups are read.
+    pub(super) fn of_text(font: TextFont) -> Self {
+        Self {
+            font: Some(font),
+            ..Self::default()
+        }
+    }
+
     pub(super) fn read(record: &[DxfPair<'_>]) -> Result<Self, DxfImportError> {
         let color = match parse_optional_i64(record, 420)? {
             Some(rgb) => Named::Own(Some(true_color(rgb))),
@@ -99,6 +125,8 @@ impl EntityStyle {
             scale: if valid { scale } else { 1.0 },
             invalid_scale: (!valid).then_some(scale),
             object: UNCLAIMED,
+            width: 0.0,
+            font: None,
         })
     }
 
@@ -120,6 +148,18 @@ impl EntityStyle {
             scale: self.scale * scale,
             invalid_scale: self.invalid_scale,
             object: self.object,
+            width: self.width * scale,
+            font: self.font.clone(),
+        }
+    }
+
+    /// `self` given to what an entity drew as `own`: the width and font stay its own,
+    /// read with the entity.
+    pub(super) fn over(&self, own: &mut Self) -> Self {
+        Self {
+            width: own.width,
+            font: own.font.take(),
+            ..self.clone()
         }
     }
 
@@ -162,6 +202,10 @@ pub(super) struct DrawingStyles {
     /// Millimetres of pattern per drawing unit of a linetype at scale 1.
     pattern_scale: f64,
     default_weight: i16,
+    /// The font of each text style: its font file, big font file and family, as the
+    /// drawing writes them, by upper-case name.
+    text_styles: BTreeMap<String, String>,
+    millimetres_per_unit: f64,
 }
 
 impl DrawingStyles {
@@ -211,6 +255,8 @@ impl DrawingStyles {
             linetypes: BTreeMap::new(),
             pattern_scale: ltscale * units.millimetres_per_unit(),
             default_weight,
+            text_styles: BTreeMap::new(),
+            millimetres_per_unit: units.millimetres_per_unit(),
         };
         let mut table = String::new();
         let mut index = 0;
@@ -282,6 +328,21 @@ impl DrawingStyles {
                     .filter(|pair| pair.code == 74)
                     .any(|pair| pair.value.trim() != "0");
                 styles.linetypes.insert(name, Linetype { pattern, complex });
+            } else if table == "STYLE" && kind.eq_ignore_ascii_case("STYLE") {
+                // A style without a name draws no text a record can name.
+                let Some(name) = name() else {
+                    continue;
+                };
+                // The font file (3), big font file (4) and, in its ACAD extended data,
+                // the family (1000) of a TrueType font.
+                let font = [3, 4, 1000]
+                    .iter()
+                    .filter_map(|code| record.iter().find(|pair| pair.code == *code))
+                    .map(|pair| pair.value.trim())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                styles.text_styles.insert(name, font);
             }
         }
         Ok(styles)
@@ -357,6 +418,24 @@ impl DrawingStyles {
                 }
             }
         }
+        // A style the drawing does not define, or defines without a font, is told by its
+        // name; the default STANDARD so told, with no font switched to, is no font, so a
+        // drawing that names none keeps the older blob.
+        let font = style.font.as_ref().map_or_else(String::new, |font| {
+            let named = self
+                .text_styles
+                .get(&font.style)
+                .filter(|file| !file.is_empty())
+                .unwrap_or(&font.style);
+            if named == "STANDARD" && font.switched.is_empty() {
+                return String::new();
+            }
+            std::iter::once(named.as_str())
+                .chain(font.switched.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join("; ")
+        });
+        let width_mm = style.width * self.millimetres_per_unit;
         Ok(LineStyle {
             color,
             weight_hmm: u16::try_from(if weight < 0 {
@@ -366,6 +445,8 @@ impl DrawingStyles {
             })
             .unwrap_or(0),
             pattern_mm,
+            width_mm: if width_mm.is_finite() { width_mm } else { 0.0 },
+            font,
         })
     }
 }

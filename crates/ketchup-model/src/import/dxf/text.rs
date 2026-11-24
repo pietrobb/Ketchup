@@ -116,7 +116,7 @@ pub(super) fn parse_text(
     }
     Ok(Some(OrderedText {
         layer,
-        style: EntityStyle::default(),
+        style: EntityStyle::of_text(text_font(record, &[])?),
         text,
     }))
 }
@@ -193,7 +193,7 @@ fn parse_mtext(
     report_style("MTEXT", record, &fonts, diagnostics)?;
     Ok(OrderedText {
         layer,
-        style: EntityStyle::default(),
+        style: EntityStyle::of_text(text_font(record, &fonts)?),
         text,
     })
 }
@@ -265,6 +265,20 @@ fn unsupported_justification(
         Some(subject),
         1,
     )
+}
+
+/// The font a text's record names: its text style, STANDARD where it names none, and the
+/// fonts it switches to (R1124og-DXF-902: a text set in another font in a revision was
+/// taken as unchanged).
+fn text_font(
+    record: &[DxfPair<'_>],
+    fonts: &[String],
+) -> Result<super::style::TextFont, DxfImportError> {
+    Ok(super::style::TextFont {
+        style: parse_optional_string(record, 7)?
+            .map_or_else(|| "STANDARD".to_owned(), |style| style.to_ascii_uppercase()),
+        switched: fonts.to_vec(),
+    })
 }
 
 /// Every text is drawn in the program's font: its style's font, and any font the text

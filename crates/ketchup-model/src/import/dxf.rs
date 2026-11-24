@@ -784,7 +784,7 @@ impl ParsedEntities {
         let restyle = |own: &mut EntityStyle| {
             *own = match placed_at {
                 Some(scale) => own.within(&style, &layer, scale),
-                None => style.clone(),
+                None => style.over(own),
             };
         };
         self.loose[counts[0]..]
