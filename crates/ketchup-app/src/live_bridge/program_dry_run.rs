@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[path = "program_dry_run_tests.rs"]
 mod tests;
+use super::program_check::step_files::StepFiles;
 use super::program_check::{PROGRAM_EXACT_GRACE, ProgramCheckJob};
 use super::*;
 use crate::delivery::Deliver;
@@ -55,16 +56,24 @@ fn build(document: &mut DocumentStore, batch: CommandBatch) -> Result<(), RulePr
 /// gives its report and exact check, so both reach the same verdict.
 fn check(
     mut document: DocumentStore,
-    (source, given): (&RuleProgramSource, &[String]),
+    (source, given, files): (&RuleProgramSource, &[String], &mut StepFiles),
     container: &ContainerData,
     worker_path: Option<PathBuf>,
     cancelled: Arc<AtomicBool>,
     deadline: CheckDeadline,
 ) -> Result<Checked, RuleProgramApplyError> {
     // The request's flag ends the planner's worker too, not only the exact
-    // check (review 2026-11-02 MCP-101).
+    // check (review 2026-11-02 MCP-101). Bought parts are read from the
+    // program's folder as an apply reads them (R1124og-STEP-902). The plan
+    // takes its own time, as before; `deadline` bounds the checks after it.
     let cancel = ketchup_program::CancelToken::from(Arc::clone(&cancelled));
-    let plan = ketchup_application::plan_rule_program_cancellable(&document, source, &cancel)?;
+    let plan = ketchup_application::plan_rule_program_reading(
+        &document,
+        source,
+        files,
+        CheckDeadline::start(),
+        &cancel,
+    )?;
     super::program_check::refuse_given_overrides(&plan.evaluated.model, given)?;
     let mut report = plan.report(deadline, &cancel);
     let before = document.current();
@@ -143,19 +152,22 @@ pub(super) struct QueuedReply {
 }
 
 impl LiveBridge {
-    /// The program a check request names: a whole source or a patch of the current one.
+    /// The program a check request names, a whole source or a patch of the
+    /// current one, and the reader of its STEP files.
     fn checked_source(
+        &self,
         app: &KetchupApp,
         request: Request,
         ui_busy: bool,
-        cancelled: &AtomicBool,
-    ) -> Result<(RuleProgramSource, Vec<String>), &'static str> {
+        (cancelled, reading): (&AtomicBool, Arc<AtomicBool>),
+    ) -> Result<(RuleProgramSource, Vec<String>, StepFiles), &'static str> {
         let Request::CheckProgram {
             expected,
             source,
             edits,
             overrides,
             file_name,
+            source_folder,
         } = request
         else {
             return Err("invalid_params");
@@ -167,7 +179,7 @@ impl LiveBridge {
                 overrides,
                 file_name,
                 replace_document: false,
-                source_folder: None,
+                source_folder,
             },
             (None, Some(edits)) => Request::PatchProgram {
                 expected: expected.ok_or_else(|| {
@@ -187,8 +199,15 @@ impl LiveBridge {
                 ));
             }
         };
-        Self::program_source(app, request, ui_busy, cancelled)
-            .map(|(source, _, given, _)| (source, given))
+        let (source, _, given, folder) = Self::program_source(app, request, ui_busy, cancelled)?;
+        let files = self.program_folder.check_files(
+            folder,
+            &source.file_name,
+            Self::worker_path(app),
+            reading,
+            &app.document.current(),
+        );
+        Ok((source, given, files))
     }
 
     fn check_context(app: &KetchupApp, source: &RuleProgramSource) -> CheckContext {
@@ -206,16 +225,19 @@ impl LiveBridge {
 
     /// The synchronous check used by the in-process harness.
     pub(super) fn check_program_now(
+        &self,
         app: &KetchupApp,
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<Value, &'static str> {
-        let (source, given) = Self::checked_source(app, request, ui_busy, cancelled)?;
+        let reading = Arc::new(AtomicBool::new(false));
+        let (source, given, mut files) =
+            self.checked_source(app, request, ui_busy, (cancelled, reading))?;
         let context = Self::check_context(app, &source);
         let checked = check(
             app.document.fork_for_planning(),
-            (&source, &given),
+            (&source, &given, &mut files),
             &app.file.container_data,
             Self::worker_path(app),
             Arc::new(AtomicBool::new(false)),
@@ -253,7 +275,12 @@ impl LiveBridge {
             );
             return;
         }
-        let (source, given) = match Self::checked_source(app, request, ui_busy, &cancelled) {
+        let (source, given, mut files) = match self.checked_source(
+            app,
+            request,
+            ui_busy,
+            (&cancelled, Arc::clone(&cancelled)),
+        ) {
             Ok(source) => source,
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
@@ -272,7 +299,7 @@ impl LiveBridge {
             .spawn(move || {
                 let result = check(
                     document,
-                    (&source, &given),
+                    (&source, &given, &mut files),
                     &container,
                     worker_path,
                     worker_cancelled,

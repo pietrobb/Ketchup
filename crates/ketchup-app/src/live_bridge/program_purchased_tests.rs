@@ -97,6 +97,46 @@ fn bought_parts_from_the_programs_folder_move_with_its_parameters() {
     assert!(app.document.current_rule_program().is_some());
 }
 
+/// Review 2026-11-24 R1124og-STEP-902: `program check` had no folder, so it
+/// refused every bought part the document did not place yet. It reads them
+/// from the folder it is given, as an apply does, and keeps nothing.
+#[test]
+fn a_check_reads_new_bought_parts_from_the_programs_folder_and_keeps_nothing() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = folder();
+    let check = |folder: Option<&Path>| Request::CheckProgram {
+        expected: None,
+        source: Some(WARDROBE.to_owned()),
+        edits: None,
+        overrides: None,
+        file_name: Some("wardrobe.star".to_owned()),
+        source_folder: folder.map(|folder| folder.display().to_string()),
+    };
+    let before = app.live_bridge_stamp();
+    let checked = bridge
+        .execute(&mut app, check(Some(folder.path())), false)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    assert_eq!(checked["change"], "created", "{checked}");
+    assert_eq!(checked["check_only"], true, "{checked}");
+    let checked_text = checked.to_string();
+    assert!(
+        !checked_text.contains("import_unread") && checked_text.contains("hinge 1"),
+        "{checked}"
+    );
+    assert_eq!(app.live_bridge_stamp(), before);
+    assert!(hinges(&app).is_empty());
+    // The check kept no folder: without one, the file is not read.
+    bridge
+        .execute(&mut app, check(None), false)
+        .expect_err("a check without the folder cannot read the file");
+    let reason = take_error_details().unwrap()["reason"].to_string();
+    assert!(
+        reason.contains("apply the program from its file"),
+        "{reason}"
+    );
+}
+
 /// Five hinges of one file are one read of it, and applies after it read it
 /// again only when its bytes change: a new time of change alone is not one.
 #[test]

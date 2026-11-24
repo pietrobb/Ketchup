@@ -10,6 +10,7 @@ fn check(expected: Option<Stamp>, source: Option<&str>, edits: Option<Vec<Source
         edits,
         overrides: None,
         file_name: None,
+        source_folder: None,
     }
 }
 
@@ -206,12 +207,21 @@ fn a_cancelled_check_stops_its_program_worker() {
         overrides: BTreeMap::new(),
         variants: BTreeMap::new(),
     };
+    let cancelled = Arc::new(AtomicBool::new(true));
+    let document = DocumentStore::new();
+    let mut files = super::super::program_check::step_files::ProgramFolder::default().check_files(
+        None,
+        "check.star",
+        None,
+        Arc::clone(&cancelled),
+        &document.current(),
+    );
     let result = super::check(
-        DocumentStore::new(),
-        (&source, &[]),
+        document,
+        (&source, &[], &mut files),
         &ContainerData::default(),
         None,
-        Arc::new(AtomicBool::new(true)),
+        cancelled,
         CheckDeadline::after(Duration::from_secs(60)),
     );
     match result {

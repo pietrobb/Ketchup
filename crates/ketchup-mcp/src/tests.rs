@@ -392,7 +392,10 @@ fn program_check_sends_source_file_or_patch_to_the_dry_run() {
         ),
         (
             json!({"action":"check", "source_path":path}),
-            json!({"method":"check_program", "source":source}),
+            // A check reads bought parts' STEP files from the program's
+            // folder as an apply does (review 2026-11-24 R1124og-STEP-902).
+            json!({"method":"check_program", "source":source,
+                "source_folder":root.path().display().to_string()}),
         ),
         (
             json!({"action":"check", "expected":stamp, "edits":edits}),

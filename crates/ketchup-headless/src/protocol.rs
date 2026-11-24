@@ -1510,7 +1510,7 @@ mod tests {
         assert_eq!(error.causes, rejection.causes());
     }
 
-    fn request(server: &mut Server, method: &str, mut params: Value) -> Value {
+    pub(super) fn request(server: &mut Server, method: &str, mut params: Value) -> Value {
         if params.get("expected_revision").is_some()
             && params.get("expected_mutation_epoch").is_none()
         {

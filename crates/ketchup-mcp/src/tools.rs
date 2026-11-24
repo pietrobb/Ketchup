@@ -419,8 +419,9 @@ impl Tools {
                     }
                     let source = read_program_source(Path::new(&path))?;
                     args.insert("source".into(), source.into());
-                    // Its bought parts' STEP files are read from its folder.
-                    if let ("apply", Some(folder)) = (action, Path::new(&path).parent()) {
+                    // Its bought parts' STEP files are read from its folder,
+                    // by a check as by an apply (R1124og-STEP-902).
+                    if let Some(folder) = Path::new(&path).parent() {
                         args.insert("source_folder".into(), folder.display().to_string().into());
                     }
                 }

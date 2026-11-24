@@ -45,14 +45,28 @@ impl ProgramFolder {
         cancelled: Arc<AtomicBool>,
         snapshot: &Snapshot,
     ) -> StepFiles {
-        if let Some(folder) = given {
-            self.given = Some((file_name.to_owned(), folder));
+        if let Some(folder) = &given {
+            self.given = Some((file_name.to_owned(), folder.clone()));
         }
-        let folder = self
-            .given
-            .as_ref()
-            .filter(|(name, _)| name == file_name)
-            .map(|(_, folder)| folder.clone());
+        self.check_files(given, file_name, worker_path, cancelled, snapshot)
+    }
+
+    /// [`Self::files`] for a check, which publishes nothing and so keeps no
+    /// folder for later applies (review 2026-11-24 R1124og-STEP-902: a check
+    /// had no folder at all and refused every bought part not placed yet).
+    pub(crate) fn check_files(
+        &self,
+        given: Option<PathBuf>,
+        file_name: &str,
+        worker_path: Option<PathBuf>,
+        cancelled: Arc<AtomicBool>,
+        snapshot: &Snapshot,
+    ) -> StepFiles {
+        let folder = given.or_else(|| {
+            (self.given.as_ref())
+                .filter(|(name, _)| name == file_name)
+                .map(|(_, folder)| folder.clone())
+        });
         StepFiles::new(
             folder,
             worker_path,
