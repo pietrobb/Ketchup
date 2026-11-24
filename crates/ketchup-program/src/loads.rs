@@ -145,8 +145,8 @@ pub struct BraceAnchorage {
     pub through: String,
     /// The force across the member per millimetre it moves there, N/mm.
     pub stiffness_n_mm: f64,
-    /// The largest force across the member before a part of the path
-    /// buckles, N; none where no part carries it along its length.
+    /// The force across the member a part of the path buckles under, N: k_c f_c,0,k A here,
+    /// k_c f_c,0,d A in a member check's `held_by`; none where no part carries it along its length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity_n: Option<f64>,
     /// The part of the path that buckles first.

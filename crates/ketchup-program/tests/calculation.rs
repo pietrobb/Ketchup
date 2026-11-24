@@ -335,6 +335,14 @@ joint(\"batten {index}\", \"post {index}\", kind = \"screw\")
         "{text}"
     );
     assert!(text.contains("F_cap"), "{text}");
+    // R1124og-PG-902: a brace the check counts carries its design buckling
+    // force, not the characteristic one of the load report, and is still the
+    // same brace, not one the check dropped.
+    assert!(!text.contains("kontrola ich nezapočítala"), "{text}");
+    assert!(
+        !text.contains("Výstuhy, ich ukotvenie a spojovacie"),
+        "{text}"
+    );
     assert!(
         !text.contains("Výstuhy, ich ukotvenie a spojovacie"),
         "{text}"
