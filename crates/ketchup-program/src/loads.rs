@@ -1127,22 +1127,8 @@ fn own_loads(model: &ProgramModel, frames: &[Frame]) -> OwnLoads {
     let mut edge_on: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut unread = BTreeMap::new();
     for (item, part) in parts.iter().enumerate() {
-        if let Some(file) = part.unread_import() {
-            let loaded = !part.tags.is_disjoint(&model.weight_scope)
-                || model
-                    .area_loads
-                    .iter()
-                    .any(|load| !part.tags.is_disjoint(&load.on));
-            if loaded {
-                unread.insert(
-                    part.name.clone(),
-                    format!(
-                        "{} is read from {file:?}, which was not read yet; its load and \
-                         where it bears are not known",
-                        part.name
-                    ),
-                );
-            }
+        if part.unread_import().is_some() {
+            unread.extend(part.unread_load(model).map(|why| (part.name.clone(), why)));
             continue;
         }
         let whole = |loads_n: Loads, source: &str| Patch {
@@ -1204,8 +1190,7 @@ struct OwnLoads {
     patches: Vec<Vec<Patch>>,
     missing: Vec<BTreeSet<String>>,
     edge_on: BTreeMap<String, Vec<String>>,
-    /// Loaded parts whose file is not read yet, with why: no member's check
-    /// is complete without their load (R1124og-STEP-902).
+    /// Loaded parts whose file is not read yet, with why (R1124og-STEP-902).
     unread: BTreeMap<String, String>,
 }
 

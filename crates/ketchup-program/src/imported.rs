@@ -98,6 +98,24 @@ impl Part {
             .map(|import| import.file.as_str())
     }
 
+    /// Why no member's statics is complete while this part's file is not
+    /// read: it is weighed or under an area load, and its load and where it
+    /// bears are not known yet (R1124og-STEP-902). None when it is read or
+    /// carries no load.
+    #[must_use]
+    pub(crate) fn unread_load(&self, model: &crate::model::ProgramModel) -> Option<String> {
+        let file = self.unread_import()?;
+        let loaded = !self.tags.is_disjoint(&model.weight_scope)
+            || (model.area_loads.iter()).any(|load| !self.tags.is_disjoint(&load.on));
+        loaded.then(|| {
+            format!(
+                "{} is read from {file:?}, which was not read yet; its load and where it \
+                 bears are not known",
+                self.name
+            )
+        })
+    }
+
     /// The volume of the body the host read, mm³.
     #[must_use]
     pub fn imported_volume_mm3(&self) -> Option<f64> {
