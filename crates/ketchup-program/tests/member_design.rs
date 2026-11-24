@@ -699,10 +699,12 @@ joint(\"batten\", \"beam\", kind = \"screw\"{beam_joint})
 }
 
 /// `source` with a grounded stand on the floor beside the beam (y 800 - 1 400)
-/// up to the batten's underside less 10 mm, for an anchorage to stand on.
+/// up to the batten's underside less 10 mm, for an anchorage to stand on,
+/// screwed to it (bare, it holds no slide, R1124og-PG-901).
 fn stood(source: String) -> String {
     format!(
-        "{source}box(\"stand\", (5900, 600, 2390), at = (0, 800, 0), material = \"GL24h\", grounded = True)\n"
+        "{source}box(\"stand\", (5900, 600, 2390), at = (0, 800, 0), material = \"GL24h\", grounded = True)
+joint(\"wall\", \"stand\", kind = \"screw\")\n"
     )
 }
 
