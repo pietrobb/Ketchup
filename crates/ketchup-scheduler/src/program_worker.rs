@@ -104,10 +104,7 @@ impl CheckDeadline {
             Stopped::TimeLimit(_) if start < WORKER_START_UP_TIMEOUT => {
                 Stopped::TimeLimit(self.total)
             }
-            Stopped::TimeLimit(after) => Stopped::Failed(WorkerError::Spawn(format!(
-                "it did not answer within {} s of starting",
-                after.as_secs()
-            ))),
+            Stopped::TimeLimit(after) => Stopped::NotStarted(after),
             other => other,
         }
     }
@@ -122,6 +119,8 @@ const UNTIL_CANCELLED: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 enum Stopped {
     Cancelled,
     TimeLimit(Duration),
+    /// A new worker did not answer within its own start-up time; no request ran.
+    NotStarted(Duration),
     MemoryLimit,
     Failed(WorkerError),
 }
@@ -866,6 +865,14 @@ impl Stopped {
                     PROGRAM_WORKER_MEMORY_BYTES >> 30
                 ),
             ),
+            Self::NotStarted(after) => (
+                "worker_failed",
+                format!(
+                    "the process that evaluates programs did not answer within {} s of starting; \
+                     no program ran, so try again once the machine is less busy",
+                    after.as_secs()
+                ),
+            ),
             Self::Failed(error) => (
                 "worker_failed",
                 format!("the process that evaluates programs stopped: {error}"),
@@ -899,7 +906,9 @@ impl Stopped {
                  of memory and was stopped; too many parts overlap or touch one another",
                 PROGRAM_WORKER_MEMORY_BYTES >> 30
             ),
-            Self::Cancelled | Self::Failed(_) => return self.program_error(),
+            Self::Cancelled | Self::NotStarted(_) | Self::Failed(_) => {
+                return self.program_error();
+            }
         };
         ProgramError {
             message,
@@ -910,7 +919,7 @@ impl Stopped {
     fn dwg_error(self) -> DwgConversionError {
         match self {
             Self::Cancelled => DwgConversionError::Cancelled,
-            Self::TimeLimit(after) => {
+            Self::TimeLimit(after) | Self::NotStarted(after) => {
                 DwgConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
             }
             Self::MemoryLimit => DwgConversionError::MemoryLimit,
@@ -921,7 +930,7 @@ impl Stopped {
     fn skp_error(self) -> SkpConversionError {
         match self {
             Self::Cancelled => SkpConversionError::Cancelled,
-            Self::TimeLimit(after) => {
+            Self::TimeLimit(after) | Self::NotStarted(after) => {
                 SkpConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
             }
             Self::MemoryLimit => SkpConversionError::MemoryLimit,
@@ -932,7 +941,7 @@ impl Stopped {
     fn underlay_error(self) -> UnderlayReadError {
         match self {
             Self::Cancelled => UnderlayReadError::Cancelled,
-            Self::TimeLimit(after) => {
+            Self::TimeLimit(after) | Self::NotStarted(after) => {
                 UnderlayReadError::WorkerFailed(WorkerError::RequestTimedOut(after))
             }
             Self::MemoryLimit => UnderlayReadError::MemoryLimit,
@@ -961,7 +970,9 @@ mod tests {
             .checks_error();
         assert_eq!(error.code, "worker_failed", "{}", error.message);
         assert!(
-            error.message.contains("did not answer within 30 s"),
+            error
+                .message
+                .contains("did not answer within 30 s of starting; no program ran"),
             "{}",
             error.message
         );

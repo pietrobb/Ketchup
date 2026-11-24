@@ -173,7 +173,7 @@ pub enum ExactFeaSetupError {
         joint: usize,
     },
     /// The faces of the joint at index `joint` touch, but their meshes meet
-    /// only along a line, which would tie them into a hinge: they touch along
+    /// only along a line, which would let them turn about it: they touch along
     /// an edge, or one covers only part of the other and neither mesh has
     /// nodes where the other face ends (R1124og-FEA-900).
     MeetsAlongALine {
@@ -218,7 +218,7 @@ impl std::fmt::Display for ExactFeaSetupError {
             Self::MeetsAlongALine { joint } => write!(
                 formatter,
                 "joint {} cannot be built: its faces' meshes meet only along a line, which \
-                 would join them as a hinge. They touch along an edge, or one face covers \
+                 would let them turn about that line. They touch along an edge, or one face covers \
                  only part of the other and neither mesh has nodes where the other face \
                  ends; join faces that cover each other, or split the larger face where \
                  the smaller ends",
