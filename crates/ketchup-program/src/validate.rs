@@ -973,8 +973,14 @@ fn support<'a>(
         .filter(|item| supported[*item])
         .map(|item| root(&groups, item))
         .collect();
+    // A bought part whose file is not read yet is a point: what it touches is
+    // not known, which the statics and collisions say, not that it floats
+    // (review 2026-11-24 R1124og-STEP-902).
     for (index, part) in model.parts.iter().enumerate() {
-        if part.is_solid() && !standing.contains(&root(&groups, index)) {
+        if part.is_solid()
+            && part.unread_import().is_none()
+            && !standing.contains(&root(&groups, index))
+        {
             issues.push(Issue {
                 source_lines: Vec::new(),
                 severity: Severity::Warning,
