@@ -77,7 +77,7 @@ pub fn read_imports(
                 let body = match files.read(&key.0, key.1.as_deref()) {
                     Ok(Some(body)) => body,
                     Ok(None) => from_document(snapshot, &part.name, &key.0, key.1.as_deref())
-                        .ok_or_else(|| failed(part, &key.0, &unreadable("this Kečup has no folder of the program's file to read it from; apply the program from its file")))?,
+                        .ok_or_else(|| failed(part, &key.0, &unreadable("this Kečup has no folder of the program's file to read it from, and the document holds no body read from this file as this part; apply the program from its file")))?,
                     Err(rejection) => return Err(failed(part, &key.0, &rejection)),
                 };
                 read.insert(key, body.clone());
@@ -106,46 +106,36 @@ fn failed(part: &Part, file: &str, rejection: &Rejection) -> RuleProgramApplyErr
     }
 }
 
-/// The file's own name, the receipt's name of it.
-fn file_name(file: &str) -> &str {
-    file.rsplit(['/', '\\']).next().unwrap_or(file)
-}
-
-/// What the document holds of `file`: the body it places for the part
-/// `name`, or another body read from a file of that name.
+/// The body the document places for the part `name`, read from `file` by the
+/// path the program gives and as the assembly part `part`; none when the
+/// program now names another file, folder or part (R1124og-STEP-900): a body
+/// of a file of the same name is not that file's.
 fn from_document(
     snapshot: &Snapshot,
     name: &str,
     file: &str,
     part: Option<&str>,
 ) -> Option<ImportedBody> {
-    let bodies = snapshot.definitions().filter_map(|definition| {
+    let feature_name = feature_name(name, file, part);
+    snapshot.definitions().find_map(|definition| {
         let [feature] = definition.feature_ids() else {
             return None;
         };
-        let FeatureKind::ImportedExactBody(spec) = snapshot.feature(*feature)?.kind() else {
+        let feature = snapshot.feature(*feature)?;
+        let FeatureKind::ImportedExactBody(spec) = feature.kind() else {
             return None;
         };
         let receipt = snapshot.import_receipt(spec.import_id)?;
-        (receipt.format() == ImportFormat::Step
-            && receipt.source_name() == file_name(file)
-            && spec.source_part_index.is_some() == part.is_some())
-        .then(|| (definition.id(), body_of(spec, receipt)))
-    });
-    let mut by_file = None;
-    for (definition, body) in bodies {
         let placed_for_part = snapshot.occurrences().any(|occurrence| {
-            occurrence.definition_id() == definition && occurrence.name() == name
+            occurrence.definition_id() == definition.id() && occurrence.name() == name
         });
-        if placed_for_part {
-            return Some(body);
-        }
-        // Another part of an assembly file is another body.
-        if part.is_none() {
-            by_file.get_or_insert(body);
-        }
-    }
-    by_file
+        (receipt.format() == ImportFormat::Step
+            && definition.name() == name
+            && feature.name() == feature_name
+            && spec.source_part_index.is_some() == part.is_some()
+            && placed_for_part)
+            .then(|| body_of(spec, receipt))
+    })
 }
 
 fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBody {
@@ -170,32 +160,32 @@ fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBod
     }
 }
 
-/// The name of the feature holding `part`'s body: the part's name, its file's
-/// and the assembly part it is ([`placed_part_name`] reads it back).
-fn feature_name(part: &Part, body: &ImportedBody) -> String {
-    let named = part.imported().and_then(|import| import.part.as_deref());
-    match (body.part_index, named) {
-        (Some(_), Some(named)) => format!(
-            "{}{named}",
-            part_feature_prefix(&part.name, &body.file_name)
-        ),
-        _ => format!("{} from {}", part.name, body.file_name),
+/// The name of the feature holding the body of the part `name`: the file by
+/// the path the program gives it, and the assembly part it is, so a later
+/// apply without the folder finds the body of that file and part only
+/// ([`placed_part_name`] reads the part back).
+fn feature_name(name: &str, file: &str, part: Option<&str>) -> String {
+    match part {
+        Some(part) => format!("{name} from {file}, part {part}"),
+        None => format!("{name} from {file}"),
     }
 }
 
-fn part_feature_prefix(definition: &str, file_name: &str) -> String {
-    format!("{definition} from {file_name}, part ")
-}
-
 /// The assembly part (`part=`) a program placed as `feature`, the definition
-/// `definition` of a body read from `file_name`; none for a whole file's.
+/// `definition` of a body read from a file named `file_name` (the program's
+/// path to it may lead through folders); none for a whole file's.
 #[must_use]
 pub fn placed_part_name<'a>(
     feature: &'a str,
     definition: &str,
     file_name: &str,
 ) -> Option<&'a str> {
-    feature.strip_prefix(&part_feature_prefix(definition, file_name))
+    let path = feature.strip_prefix(definition)?.strip_prefix(" from ")?;
+    let marker = format!("{file_name}, part ");
+    path.match_indices(&marker).find_map(|(at, _)| {
+        let folders = &path[..at];
+        (folders.is_empty() || folders.ends_with(['/', '\\'])).then(|| &path[at + marker.len()..])
+    })
 }
 
 fn parser_version(body: &ImportedBody) -> &'static str {
@@ -268,7 +258,10 @@ pub(crate) fn append_imported(
     for part in parts {
         let exhausted =
             || assistant_canonical_rejection(CanonicalError::IdExhausted, "rule_part", &part.name);
-        let Some(body) = part.imported().and_then(|import| import.read.as_ref()) else {
+        let Some((import, body)) = part
+            .imported()
+            .and_then(|import| Some((import, import.read.as_ref()?)))
+        else {
             return Err(crate::diagnostics::assistant_planning_rejection(
                 "planning.import_unread",
                 "rule_part",
@@ -328,7 +321,7 @@ pub(crate) fn append_imported(
             CanonicalCommand::CreateFeature {
                 id: feature_id,
                 definition_id,
-                name: feature_name(part, body),
+                name: feature_name(&part.name, &import.file, import.part.as_deref()),
                 kind: FeatureKind::ImportedExactBody(ImportedExactBodySpec {
                     schema: IMPORTED_EXACT_BODY_SCHEMA_V3.to_owned(),
                     import_id,
