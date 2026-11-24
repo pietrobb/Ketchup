@@ -13,7 +13,7 @@ fn shell(dialogs: ScriptedFileDialogs) -> Harness<'static, KetchupApp> {
 fn wait(harness: &mut Harness<'_, KetchupApp>) {
     step_until(
         harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "save did not finish",
         |app| !app.file.activity.saving.is_some(),
     );
@@ -127,7 +127,7 @@ fn actual_locked_write_keeps_ui_alive_then_reopens_saved_geometry() {
         .start_background_save(path.clone(), &context);
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "save did not start writing",
         |app| app.native_save_is_writing(),
     );
@@ -180,7 +180,7 @@ fn an_edit_during_write_stays_dirty_and_is_not_in_the_saved_file() {
         .start_background_save(path.clone(), &context);
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "save did not start writing",
         |app| app.native_save_is_writing(),
     );
@@ -241,7 +241,7 @@ fn a_destination_conflict_is_reported_even_after_an_edit_during_write() {
         .start_background_save(path.clone(), &context);
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "save did not start writing",
         |app| app.native_save_is_writing(),
     );

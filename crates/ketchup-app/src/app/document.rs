@@ -27,10 +27,7 @@ impl std::fmt::Display for SaveFailure {
 impl KetchupApp {
     #[must_use]
     pub const fn build_version() -> &'static str {
-        match option_env!("KETCHUP_BUILD_VERSION") {
-            Some(version) => version,
-            None => env!("CARGO_PKG_VERSION"),
-        }
+        ketchup_mcp::VERSION
     }
 
     #[must_use]
@@ -76,11 +73,15 @@ impl KetchupApp {
         self.program_detach_warned = false;
         self.invalidate_pending_import_reviews();
         self.cancel_mesh_conversion();
+        // The pictures still queued are the old document's: dropping its cache leaves
+        // them undecoded (review 2026-11-13 R1113 P3).
+        self.render.cache = crate::renderer::DerivedRenderCache::default();
         self.tool_preview = None;
         self.drawings = crate::app_state::DrawingsState::default();
         // Its ids are of the document that goes; dropping its run stops it
         // (review 2026-11-04 r19 MCP-160).
         self.reviews.fea_review_dialog = None;
+        self.reviews.thermal_review_dialog = None;
         self.viewer_prep = crate::app_state::ViewerPrepState::default();
         self.push_pull.smart_proposal = None;
         self.push_pull.smart_planning = None;
@@ -150,6 +151,8 @@ impl KetchupApp {
         let live_consent_attached = self.live.consent_attached;
         let live_launch_attached = self.live.launch_attached;
         let live_client_name = self.live.client_name.take();
+        let live_previous_client = self.live.previous_client.take();
+        let live_write_log = std::mem::take(&mut self.live.write_log);
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let catalog = self.catalog.clone();
         let exact_worker_path = self.exact.worker_path.clone();
@@ -170,6 +173,8 @@ impl KetchupApp {
         self.live.consent_attached = live_consent_attached;
         self.live.launch_attached = live_launch_attached;
         self.live.client_name = live_client_name;
+        self.live.previous_client = live_previous_client;
+        self.live.write_log = live_write_log;
         self.render.wgpu_target_format = wgpu_target_format;
         self.render.wgpu_device = wgpu_device;
         self.render.wgpu_queue = wgpu_queue;
@@ -363,6 +368,7 @@ impl KetchupApp {
                 }
                 self.document = document;
                 self.file.container_data = container_data;
+                self.mark_kept_sheet_settings();
                 self.file.review_candidate = None;
                 self.file.migration_review_plan = None;
                 self.file.path = recovery_open.is_none().then(|| path.to_owned());
@@ -478,6 +484,28 @@ impl KetchupApp {
         path: &Path,
         payload: &[u8],
     ) -> Result<(), Rejection> {
+        let asked = Asked { risk, listed: &[] };
+        self.authorize_path_side_effect_listing(class, operation, title, asked, path, payload)
+    }
+
+    /// [`Self::authorize_path_side_effect`] with the lines `asked` lists shown
+    /// after the path.
+    fn authorize_path_side_effect_listing(
+        &mut self,
+        class: HighRiskClass,
+        operation: &str,
+        title: &str,
+        Asked { risk, listed }: Asked<'_>,
+        path: &Path,
+        payload: &[u8],
+    ) -> Result<(), Rejection> {
+        // Owner decision R1 (review 2026-11-19 og): a connected AI writes every export, a
+        // release to manufacturing too, without a prompt; only replacing a file asks.
+        if self.live.client_export.is_some()
+            && class == HighRiskClass::ReleaseManufacturingExportWithWarnings
+        {
+            return Ok(());
+        }
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| failed("side_effect.scope", error))?;
         let proposal = self
@@ -489,13 +517,14 @@ impl KetchupApp {
                 payload,
             )
             .map_err(|error| failed("side_effect.prepare", error))?;
-        let lines = [
-            format!("Risk: {risk}"),
-            format!("Path: {}", path.display()),
-            format!("Document revision: {}", proposal.provenance_revision()),
-            format!("Payload SHA-256: {}", proposal.payload_digest()),
-            format!("Operation digest: {}", proposal.operation_digest()),
-        ];
+        let lines = [format!("Risk: {risk}"), format!("Path: {}", path.display())]
+            .into_iter()
+            .chain(listed.iter().cloned())
+            .chain([
+                format!("Document revision: {}", proposal.provenance_revision()),
+                format!("Payload SHA-256: {}", proposal.payload_digest()),
+                format!("Operation digest: {}", proposal.operation_digest()),
+            ]);
         let Some(approving_human) = self
             .dialogs
             .confirm_high_risk(HighRiskConfirmationRequest::new(title, lines))
@@ -554,6 +583,39 @@ impl KetchupApp {
             "overwrite existing file",
             path,
             payload,
+        )
+    }
+
+    /// Asks the user before a client takes over another project's drawing set
+    /// listed at `list`, naming every file of it that is replaced (review
+    /// 2026-11-09 SEC-304: only the list was named, not its sheets). The
+    /// approval is bound to those files.
+    pub(crate) fn authorize_set_take_over(
+        &mut self,
+        list: &Path,
+        replaced: &[&Path],
+    ) -> Result<(), Rejection> {
+        self.side_effect_receipts.clear();
+        let names: Vec<String> = replaced
+            .iter()
+            .map(|path| format!("  {}", path.display()))
+            .collect();
+        let listed: Vec<String> = std::iter::once(format!(
+            "Replaces {} files of the other project's set:",
+            replaced.len()
+        ))
+        .chain(names.iter().cloned())
+        .collect();
+        self.authorize_path_side_effect_listing(
+            HighRiskClass::Overwrite,
+            "overwrite-native-document",
+            "Confirm high-risk overwrite",
+            Asked {
+                risk: "take over another project's drawing set",
+                listed: &listed,
+            },
+            list,
+            names.join("\n").as_bytes(),
         )
     }
 
@@ -1051,9 +1113,11 @@ impl KetchupApp {
             }
             AppCommand::ImportDrawingUnderlay => {
                 if let Some(path) = self.choose_dxf_import_path() {
-                    self.start_underlay_read(path, None);
+                    self.file.activity.underlay.revision_of = None;
+                    self.start_underlay_read(path, None, None);
                 }
             }
+            AppCommand::CompareUnderlayRevision => self.begin_underlay_revision(),
             AppCommand::ExportDrawingDxf => {
                 self.export_from_menu("dxf", Self::export_current_profiles_dxf_to);
             }
@@ -1102,17 +1166,33 @@ impl KetchupApp {
                 }
             }
             AppCommand::ReviewCamExport => {
-                self.reviews.cam_export_dialog =
-                    self.document
-                        .current()
-                        .cam_plans()
-                        .next()
-                        .map(|plan| CamExportDialog {
-                            plan_id: plan.id(),
+                let plan_id = self
+                    .document
+                    .current()
+                    .cam_plans()
+                    .next()
+                    .map(|plan| plan.id());
+                match (plan_id, super::cam_export::cam_dialect_choices()) {
+                    (None, _) => {
+                        self.reviews.cam_export_dialog = None;
+                        self.digest = self.catalog.text("cam-review-no-plan");
+                    }
+                    (Some(_), Err(error)) => {
+                        self.reviews.cam_export_dialog = None;
+                        self.digest = error.to_string();
+                    }
+                    (Some(plan_id), Ok(dialect_choices)) => {
+                        self.reviews.cam_export_dialog = Some(CamExportDialog {
+                            plan_id,
+                            operation: Default::default(),
+                            face: None,
+                            dialect_id: dialect_choices
+                                .first()
+                                .map_or_else(String::new, |(id, _)| id.clone()),
+                            dialect_choices,
                             review: None,
                         });
-                if self.reviews.cam_export_dialog.is_none() {
-                    self.digest = self.catalog.text("cam-review-no-plan");
+                    }
                 }
             }
             AppCommand::ReviewStaticFea => {
@@ -1160,6 +1240,10 @@ impl KetchupApp {
                     Err(error) => self.digest = error.reason_text().to_owned(),
                 }
             }
+            AppCommand::ReviewSteadyThermal => match ThermalReviewDialog::for_selection(self) {
+                Ok(dialog) => self.reviews.thermal_review_dialog = Some(dialog),
+                Err(error) => self.digest = error.reason_text().to_owned(),
+            },
             AppCommand::ReviewLocalPdm => {
                 let snapshot = self.document.current();
                 let repository = self
@@ -1203,6 +1287,9 @@ impl KetchupApp {
             }
             AppCommand::ExportHundeggerBtlx => {
                 self.export_from_menu("btlx", Self::export_current_model_btlx_to);
+            }
+            AppCommand::ExportWorkshopPackage => {
+                self.export_from_menu("workshop-zip", Self::export_current_workshop_package_to);
             }
             AppCommand::New | AppCommand::Open => {}
             _ => unreachable!("only file commands are routed here"),
@@ -1365,6 +1452,9 @@ impl KetchupApp {
         let container_data = &self.file.container_data;
         let work_recovery_identity = self.file.work_recovery_identity;
         let work_recovery_digest = self.file.work_recovery_digest.clone();
+        // As in `refresh_work_recovery_checkpoint`: while a file is read, a checkpoint
+        // (from a late exact result, say) would bring back edits the user discarded.
+        let reading = self.reading_document();
         let mut next_work_recovery_identity = work_recovery_identity;
         let mut publication_error = None;
         let result = self.document.try_canonical_transaction(
@@ -1385,6 +1475,7 @@ impl KetchupApp {
                 let Some((path, identity)) = checkpoint_target
                     .as_ref()
                     .map(|(path, identity)| (path.as_path(), *identity))
+                    .filter(|_| !reading)
                 else {
                     return Ok(());
                 };
@@ -1427,8 +1518,10 @@ impl KetchupApp {
         match result {
             Ok(value) => {
                 self.file.work_recovery_identity = next_work_recovery_identity;
-                self.file.work_recovery_digest = (self.is_dirty() && checkpoint_target.is_some())
-                    .then(|| self.document.history_digest());
+                // A skipped checkpoint stays due, for the frame after a cancelled open.
+                self.file.work_recovery_digest =
+                    (self.is_dirty() && checkpoint_target.is_some() && !reading)
+                        .then(|| self.document.history_digest());
                 if let Some(error) = &publication_error {
                     let path = checkpoint_target
                         .as_ref()
@@ -1536,8 +1629,32 @@ impl KetchupApp {
         ketchup_model::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
+        self.with_staged_container(staged_container, |app| {
+            app.commit_verified_proposal_with_work_recovery(proposal)
+        })
+    }
+
+    /// [`Self::apply_batch_with_work_recovery`] of a batch that reads blobs of
+    /// `staged_container`, the document's container with them added.
+    pub(crate) fn apply_batch_with_container_work_recovery(
+        &mut self,
+        batch: &CommandBatch,
+        staged_container: ContainerData,
+    ) -> Result<(), WorkRecoveryMutationError<CanonicalError>> {
+        self.with_staged_container(staged_container, |app| {
+            app.apply_batch_with_work_recovery(batch)
+        })
+    }
+
+    /// `mutate` with `staged_container` as the document's container, which stays unless
+    /// the mutation fails before it is published.
+    fn with_staged_container<T, E>(
+        &mut self,
+        staged_container: ContainerData,
+        mutate: impl FnOnce(&mut Self) -> Result<T, WorkRecoveryMutationError<E>>,
+    ) -> Result<T, WorkRecoveryMutationError<E>> {
         let previous_container = std::mem::replace(&mut self.file.container_data, staged_container);
-        let result = self.commit_verified_proposal_with_work_recovery(proposal);
+        let result = mutate(self);
         if result.as_ref().is_err_and(|error| {
             let published = match error {
                 WorkRecoveryMutationError::Recovery(error) => matches!(
@@ -1838,6 +1955,13 @@ impl KetchupApp {
             self.reviews.pdm_review_dialog = Some(pending);
         }
     }
+}
+
+/// What the user is asked to confirm: the risk in a few words, and lines listing
+/// what it touches beyond its path.
+struct Asked<'a> {
+    risk: &'a str,
+    listed: &'a [String],
 }
 
 fn current_unix_time_ms() -> Result<u64, Rejection> {

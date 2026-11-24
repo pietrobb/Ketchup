@@ -8,18 +8,24 @@
 //! from: it is read again, and its lines must be the underlay's.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::io::Cursor;
 use std::ops::Range;
 
 mod compare;
+mod drawn;
+mod refusal;
+mod revisions;
 
 pub use compare::Difference;
+pub use refusal::{DxfEditRefusal, EditOfObject, EditedDxfError, TextWritten};
+pub use revisions::{
+    OverlayLayers, RevisedEntity, Revision, RevisionComparison, compare_revisions, revision_overlay,
+};
 
 use super::code_page::CodePage;
 use super::text::unicode_escapes;
 use super::underlay::text_encoding;
-use super::{DxfImportError, DxfImportOptions, read_dxf_underlay};
+use super::{DxfImportOptions, read_dxf_underlay};
 use crate::import::{ImportLengthUnit, ImportUnitAuthority};
 use crate::tolerance::NEGLIGIBLE;
 use crate::underlay::UnderlayLines;
@@ -39,280 +45,6 @@ const UNITS: [ImportLengthUnit; 9] = [
     ImportLengthUnit::Yard,
     ImportLengthUnit::Mile,
 ];
-
-/// Why the edited drawing was not written.
-#[derive(Debug)]
-pub enum EditedDxfError {
-    /// The source drawing does not read as an underlay.
-    Read(DxfImportError),
-    Refused(DxfEditRefusal),
-}
-
-/// Why the changes do not go into the source drawing, with its facts as fields.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum DxfEditRefusal {
-    /// The source drawing is not the one the underlay was read from: an entity of it is
-    /// missing or of another kind.
-    NotTheSource,
-    /// The source has every entity the underlay was read from, but one moved, stretched
-    /// or copied, or every one, reads as other lines: changed in the file since, or read
-    /// differently by this Kečup than by the one that imported it (review 2026-10-29
-    /// CD-64). Entities not edited that read differently are written as the file has them
-    /// (review 2026-11-02 CD-120).
-    ReadDifferently,
-    /// The source's groups do not pair up into sections and entities.
-    Malformed,
-    /// The source is larger than its places are kept in: 4 GiB (review 2026-10-29 CD-63).
-    TooLarge,
-    /// A changed object has no handle, and its entity is not told by its order either.
-    NoHandle { object: u32 },
-    /// No entity of the source has the handle of a changed object.
-    HandleMissing { object: u32, handle: u64 },
-    /// A changed object is of a kind, or lies in a plane, that is not mapped yet.
-    NotMappable { object: u32, kind: String },
-    /// The entity of an object edited in Kečup reads otherwise in the file now (changed
-    /// there since it was imported, or read differently by this Kečup), while another
-    /// reads as it did: where it lay (`was_mm`) and lies now
-    /// (`now_mm`), in the underlay's millimetres. `object` is the one edited, `handle`
-    /// and `kind` the entity of the file that holds it, `handle` 0 in a drawing without
-    /// handles (review 2026-11-04 r19 CD-163: the
-    /// refusal named neither the object nor what to do but import again, losing every
-    /// edit).
-    ChangedInFile {
-        object: u32,
-        handle: u64,
-        kind: String,
-        edit: EditOfObject,
-        difference: Difference,
-        was_mm: Option<[i64; 2]>,
-        now_mm: Option<[i64; 2]>,
-    },
-    /// The entity of an object edited in Kečup is no longer in the file: deleted there
-    /// since the import, where it lay at `was_mm`. One not edited is left out as the file
-    /// has it (review 2026-11-04 r19 P3).
-    DeletedInFile {
-        object: u32,
-        handle: u64,
-        kind: String,
-        edit: EditOfObject,
-        was_mm: Option<[i64; 2]>,
-    },
-    /// More edits than one refused, each of the others' kinds, all named at once
-    /// (review 2026-11-06 P3: only the first was, so N of them took N rounds).
-    Several(Vec<DxfEditRefusal>),
-    /// A text of entity `kind` (`handle` 0 without one), group `code`, would be
-    /// `characters` long written with what is not ASCII as `\U+XXXX`, longer than a DXF
-    /// line holds. Only an MTEXT's text is split into pieces (review 2026-11-07 UL-220).
-    TextTooLong {
-        kind: String,
-        handle: u64,
-        code: i32,
-        characters: usize,
-    },
-}
-
-impl DxfEditRefusal {
-    /// `refusals` as one: None for none, itself for one, else [`Self::Several`].
-    fn all(mut refusals: Vec<Self>) -> Option<Self> {
-        match refusals.len() {
-            0 => None,
-            1 => refusals.pop(),
-            _ => Some(Self::Several(refusals)),
-        }
-    }
-
-    /// The objects whose edits it refuses as their entities changed in the file since,
-    /// so each edit alone can be discarded.
-    #[must_use]
-    pub fn refused_edits(&self) -> Vec<u32> {
-        match self {
-            Self::ChangedInFile { object, .. } | Self::DeletedInFile { object, .. } => {
-                vec![*object]
-            }
-            Self::Several(refusals) => refusals.iter().flat_map(Self::refused_edits).collect(),
-            _ => Vec::new(),
-        }
-    }
-}
-
-/// What was done in Kečup to an object of the underlay.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum EditOfObject {
-    Moved,
-    Stretched,
-    Removed,
-    Copied,
-}
-
-impl EditOfObject {
-    fn done(self) -> &'static str {
-        match self {
-            Self::Moved => "moved",
-            Self::Stretched => "stretched",
-            Self::Removed => "taken out",
-            Self::Copied => "copied",
-        }
-    }
-}
-
-impl Difference {
-    fn what(self) -> &'static str {
-        match self {
-            Self::Layer => "layer is another",
-            Self::Lines => "lines lie elsewhere or run otherwise",
-            Self::Text => "text lies elsewhere, reads otherwise or is set otherwise",
-            Self::Fill => "fill covers another area",
-        }
-    }
-}
-
-/// The entity of kind `kind` and handle `handle`, said.
-fn entity(kind: &str, handle: u64) -> String {
-    // A DXF handle is never 0: the drawing has none (R12).
-    if handle == 0 {
-        format!("a {kind} without a handle")
-    } else {
-        format!("the {kind} of handle {handle:X}")
-    }
-}
-
-/// `x, y` of a place in millimetres, or that it has none.
-fn at(place: Option<[i64; 2]>) -> String {
-    place.map_or_else(|| "nowhere".to_owned(), |[x, y]| format!("{x}, {y}"))
-}
-
-impl From<DxfEditRefusal> for EditedDxfError {
-    fn from(refusal: DxfEditRefusal) -> Self {
-        Self::Refused(refusal)
-    }
-}
-
-impl fmt::Display for EditedDxfError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read(error) => write!(formatter, "the source drawing does not read: {error}"),
-            Self::Refused(refusal) => refusal.fmt(formatter),
-        }
-    }
-}
-
-impl std::error::Error for EditedDxfError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Read(error) => Some(error),
-            Self::Refused(refusal) => Some(refusal),
-        }
-    }
-}
-
-impl fmt::Display for DxfEditRefusal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotTheSource => formatter.write_str(
-                "the file is not the drawing the underlay was read from: its entities differ",
-            ),
-            Self::ReadDifferently => formatter.write_str(
-                "the file has the entities the underlay was read from, but the ones moved or \
-                 copied in Kečup, or all of them, read as other lines now: either they were \
-                 changed in the file since it was imported, or this Kečup reads drawings \
-                 differently from the one that imported it; import the drawing again to \
-                 write it with changes",
-            ),
-            Self::Malformed => formatter
-                .write_str("the source drawing's groups do not pair up into sections and entities"),
-            Self::TooLarge => formatter.write_str("the source drawing is larger than 4 GiB"),
-            Self::NoHandle { object } => write!(
-                formatter,
-                "object {object} has no handle in the drawing, and its entity cannot be told by \
-                 its place among the drawing's entities"
-            ),
-            Self::HandleMissing { object, handle } => write!(
-                formatter,
-                "no entity of the drawing has the handle {handle:X} of object {object}"
-            ),
-            Self::NotMappable { object, kind } => write!(
-                formatter,
-                "object {object} is a {kind} that is not moved or copied in a DXF yet; take it \
-                 out and draw it again, or leave it where it was read"
-            ),
-            Self::ChangedInFile {
-                object,
-                handle,
-                kind,
-                edit,
-                difference,
-                was_mm,
-                now_mm,
-            } => {
-                // Where it lies is said apart from what differs (review 2026-11-06 P3).
-                let place = if was_mm == now_mm {
-                    format!("it still lies at {} mm", at(*was_mm))
-                } else {
-                    format!(
-                        "it lay at {} mm and lies at {} mm now",
-                        at(*was_mm),
-                        at(*now_mm)
-                    )
-                };
-                write!(
-                    formatter,
-                    "object {object}, of {}, was {} in Kečup, but its {} in the file now, \
-                     changed there since it was imported or read differently by this Kečup; \
-                     {place}; undo that edit of object {object} to write the drawing with the \
-                     others, or import the drawing again",
-                    entity(kind, *handle),
-                    edit.done(),
-                    difference.what(),
-                )
-            }
-            Self::DeletedInFile {
-                object,
-                handle,
-                kind,
-                edit,
-                was_mm,
-            } => write!(
-                formatter,
-                "object {object}, of {}, was {} in Kečup, but that entity is no longer in the \
-                 file, deleted there since it was imported; it lay at {} mm; undo that edit of \
-                 object {object} to write the drawing with the others, or import the drawing \
-                 again",
-                entity(kind, *handle),
-                edit.done(),
-                at(*was_mm)
-            ),
-            // The first few, as a long list reaches the status line and an MCP reply
-            // (review 2026-11-06 r23 CD-201); `refused_edits` has them all.
-            Self::Several(refusals) => {
-                write!(formatter, "{} edits are refused: ", refusals.len())?;
-                ketchup_rejection::write_listed(
-                    formatter,
-                    refusals
-                        .iter()
-                        .enumerate()
-                        .map(|(index, refusal)| format!("{}) {refusal}", index + 1)),
-                    "; ",
-                )
-            }
-            Self::TextTooLong {
-                kind,
-                handle,
-                code,
-                characters,
-            } => write!(
-                formatter,
-                "the text in group {code} of {} would be {characters} characters long written \
-                 under the code page its header names, longer than the {} a DXF line holds; \
-                 shorten that text or take it out, or save the drawing as DXF 2007 or later \
-                 and import that",
-                entity(kind, *handle),
-                super::MAX_DXF_LINE_CHARS
-            ),
-        }
-    }
-}
-
-impl std::error::Error for DxfEditRefusal {}
 
 /// A drawing written with its changes.
 #[derive(Debug)]
@@ -353,14 +85,14 @@ pub fn write_edited_dxf(
     // The read is let go before the drawing is parsed, so the two are not held at once
     // (review 2026-10-29 CD-63).
     let frame = frame_of(source, options, lines, edits)?;
-    let encoding = text_encoding(&mut Cursor::new(source)).map_err(EditedDxfError::Read)?;
+    let encoding =
+        text_encoding(&mut Cursor::new(source), options).map_err(EditedDxfError::Read)?;
     let mut drawing = Drawing::parse(source, encoding.code_page)?;
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
     drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
-    let escapes = encoding
-        .escapes_beyond_ascii()
-        .then_some(encoding.code_page);
+    drawing.escapes = encoding.escapes_beyond_ascii();
+    let escapes = drawing.escapes.then_some(encoding.code_page);
     let (frame, rebound) = match frame {
         Ok(frame) => frame,
         Err(Some(refusal)) => return Err(refusal.into()),
@@ -380,11 +112,16 @@ pub fn write_edited_dxf(
     // well, so every drawing written is held to the line limit, counted as it is read
     // (review 2026-11-07 UL-220, capability review).
     let mut read_in = drawing.code_page.filter(|_| !drawing.utf8);
+    let written = match (escapes, read_in) {
+        (Some(_), _) => TextWritten::Escaped,
+        (None, Some(_)) => TextWritten::CodePage,
+        (None, None) => TextWritten::AsRead,
+    };
     if let Some(code_page) = escapes {
         dxf = escaped_beyond_ascii(&dxf, code_page);
         read_in = None;
     }
-    let dxf = within_line_limit(dxf, read_in)?;
+    let dxf = within_line_limit(dxf, read_in, written, drawing.next_handle)?;
     Ok(EditedDxf {
         dxf,
         changed_in_file: rebound.changed,
@@ -397,13 +134,13 @@ pub fn write_edited_dxf(
 /// each character beyond ASCII written as `\U+XXXX` (each UTF-16 unit), which reads alike
 /// in any code page however few texts are left to tell the encoding by (review 2026-11-06
 /// UL-180, r23 UL-200). A byte order mark stays as it is; so does what is not UTF-8, or
-/// a drawing the code page does not read.
+/// a drawing the code page does not read. A line other than a text that escaping would
+/// make longer than a DXF line holds keeps its bytes as read, as a layer of 150 „𝔸“
+/// (review 2026-11-07 r26 P3: no save of such a drawing was written); a text is left to
+/// [`within_line_limit`], which cuts an MTEXT and names any other.
 fn escaped_beyond_ascii(dxf: &[u8], code_page: Option<CodePage>) -> Vec<u8> {
-    if let Some(code_page) = code_page {
-        return match code_page.decode(dxf) {
-            Some(text) => escaped_beyond_ascii(text.as_bytes(), None),
-            None => dxf.to_vec(),
-        };
+    if code_page.is_some_and(|page| page.decode(dxf).is_none()) {
+        return dxf.to_vec();
     }
     let (mark, rest) = match dxf.strip_prefix(super::BYTE_ORDER_MARK) {
         Some(rest) => (super::BYTE_ORDER_MARK, rest),
@@ -411,17 +148,58 @@ fn escaped_beyond_ascii(dxf: &[u8], code_page: Option<CodePage>) -> Vec<u8> {
     };
     let mut out = Vec::with_capacity(dxf.len());
     out.extend_from_slice(mark);
-    for chunk in rest.utf8_chunks() {
-        for character in chunk.valid().chars() {
-            if character.is_ascii() {
-                out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
-            } else {
-                for unit in character.encode_utf16(&mut [0; 2]) {
-                    out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+    let mut block = false;
+    let mut code = None;
+    for line in rest.split_inclusive(|byte| *byte == b'\n') {
+        let value_of = code.take();
+        if value_of.is_none() {
+            code = Some(
+                std::str::from_utf8(line)
+                    .ok()
+                    .and_then(|code| code.trim().parse::<i32>().ok()),
+            );
+        }
+        if line.is_ascii() {
+            if value_of == Some(Some(0)) {
+                block = line.trim_ascii() == b"BLOCK";
+            }
+            out.extend_from_slice(line);
+            continue;
+        }
+        let decoded;
+        let bytes = match code_page.map(|page| page.decode(line)) {
+            Some(Some(text)) => {
+                decoded = text;
+                decoded.as_bytes()
+            }
+            Some(None) => {
+                out.extend_from_slice(line);
+                continue;
+            }
+            None => line,
+        };
+        let start = out.len();
+        let mut characters = 0;
+        for chunk in bytes.utf8_chunks() {
+            characters += chunk.invalid().len();
+            for character in chunk.valid().chars() {
+                if character.is_ascii() {
+                    out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
+                    characters += usize::from(!character.is_ascii_control());
+                } else {
+                    for unit in character.encode_utf16(&mut [0; 2]) {
+                        out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+                        characters += "\\U+XXXX".len();
+                    }
                 }
             }
+            out.extend_from_slice(chunk.invalid());
         }
-        out.extend_from_slice(chunk.invalid());
+        let text = matches!(value_of, Some(Some(1))) || (value_of == Some(Some(3)) && !block);
+        if characters > super::MAX_DXF_LINE_CHARS && !text {
+            out.truncate(start);
+            out.extend_from_slice(line);
+        }
     }
     out
 }
@@ -433,9 +211,17 @@ const MTEXT_PIECE_CHARS: usize = 250;
 /// can make one (seven characters for each not ASCII): an MTEXT's text in pieces of group 3
 /// before its last, group 1, as AutoCAD writes it and the reader joins it; any other
 /// text refused, naming its entity (review 2026-11-07 UL-220: Kečup wrote a drawing it
-/// could not read back). A line holds characters as read: in `code_page`, else UTF-8; an
-/// MTEXT in a code page is cut only where it is ASCII, so no character is cut in two.
-fn within_line_limit(dxf: Vec<u8>, code_page: Option<CodePage>) -> Result<Vec<u8>, DxfEditRefusal> {
+/// could not read back), each of them at once (r26 P3: the first only). A line holds
+/// characters as read: in `code_page`, else UTF-8; an MTEXT in a code page is cut only
+/// where it is ASCII, so no character is cut in two. An entity of handle `new_from` or
+/// later was made in Kečup, drawn or copied, and is named by its text, not by a handle no
+/// file of the user's has (review 2026-11-08 CD-241).
+fn within_line_limit(
+    dxf: Vec<u8>,
+    code_page: Option<CodePage>,
+    written: TextWritten,
+    new_from: Option<u64>,
+) -> Result<Vec<u8>, DxfEditRefusal> {
     let value = |line: &[u8]| {
         let line = line.strip_suffix(b"\n").unwrap_or(line);
         line.strip_suffix(b"\r").unwrap_or(line).len()
@@ -455,6 +241,7 @@ fn within_line_limit(dxf: Vec<u8>, code_page: Option<CodePage>) -> Result<Vec<u8
         return Ok(dxf);
     }
     let mut out = Vec::with_capacity(dxf.len() + dxf.len() / MTEXT_PIECE_CHARS * 8);
+    let mut refused = Vec::new();
     let mut kind: &[u8] = b"";
     let mut handle = 0;
     let mut lines = dxf.split_inclusive(|byte| *byte == b'\n');
@@ -488,12 +275,28 @@ fn within_line_limit(dxf: Vec<u8>, code_page: Option<CodePage>) -> Result<Vec<u8
         let code = code.ok_or(DxfEditRefusal::Malformed)?;
         let cuttable = code_page.is_none() || text.is_ascii();
         if !(matches!(code, 1 | 3) && kind == b"MTEXT" && cuttable) {
-            return Err(DxfEditRefusal::TextTooLong {
+            if handle != 0 && new_from.is_some_and(|first| handle >= first) {
+                let characters = characters(text);
+                let text = match code_page {
+                    Some(page) => page.decode(text).map(|text| text.into_owned()),
+                    None => std::str::from_utf8(text).map(str::to_owned).ok(),
+                }
+                .unwrap_or_else(|| String::from_utf8_lossy(text).into_owned());
+                refused.push(DxfEditRefusal::DrawnTextTooLong {
+                    starts: unicode_escapes(&text).chars().take(20).collect(),
+                    characters,
+                    written: Some(written),
+                });
+                continue;
+            }
+            refused.push(DxfEditRefusal::TextTooLong {
                 kind: String::from_utf8_lossy(kind).into_owned(),
                 handle,
                 code,
                 characters: characters(text),
+                written,
             });
+            continue;
         }
         let end = &value_line[text.len()..];
         let pieces = mtext_pieces(text);
@@ -504,22 +307,38 @@ fn within_line_limit(dxf: Vec<u8>, code_page: Option<CodePage>) -> Result<Vec<u8
             out.extend_from_slice(end);
         }
     }
-    Ok(out)
+    match refused.len() {
+        0 => Ok(out),
+        1 => Err(refused.remove(0)),
+        _ => Err(DxfEditRefusal::Several(refused)),
+    }
 }
 
-/// `text` in pieces of [`MTEXT_PIECE_CHARS`], each cut before a backslash that starts
-/// a `\U+XXXX` or a format code across the cut, so a reader that does not join the pieces
-/// first still sees whole escapes, and never inside a character of UTF-8.
+/// `text` in pieces of [`MTEXT_PIECE_CHARS`], each cut before the format code the cut
+/// would split, `\U+XXXX` or `\fArial|b1|i0;` alike (review 2026-11-08 CD-243: only a
+/// backslash in the last seven bytes was looked for, so a font code was cut in two), and
+/// never inside a character of UTF-8. Only a code longer than a piece is cut.
 fn mtext_pieces(mut text: &[u8]) -> Vec<&[u8]> {
     let mut pieces = Vec::with_capacity(text.len() / MTEXT_PIECE_CHARS + 1);
     while text.len() > MTEXT_PIECE_CHARS {
-        let window = MTEXT_PIECE_CHARS - "\\U+XXXX".len()..MTEXT_PIECE_CHARS;
-        let mut cut = text[window.clone()]
-            .iter()
-            .rposition(|byte| *byte == b'\\')
-            .map_or(MTEXT_PIECE_CHARS, |at| window.start + at);
+        let mut cut = MTEXT_PIECE_CHARS;
+        let mut at = 0;
+        while at < MTEXT_PIECE_CHARS {
+            if text[at] != b'\\' {
+                at += 1;
+                continue;
+            }
+            let end = format_code_end(text, at);
+            if end > MTEXT_PIECE_CHARS {
+                if at > 0 {
+                    cut = at;
+                }
+                break;
+            }
+            at = end;
+        }
         // A character of UTF-8 has at most three bytes after its first.
-        let first = cut - 3;
+        let first = cut.saturating_sub(3);
         while cut > first && text[cut] & 0xC0 == 0x80 {
             cut -= 1;
         }
@@ -529,6 +348,25 @@ fn mtext_pieces(mut text: &[u8]) -> Vec<&[u8]> {
     }
     pieces.push(text);
     pieces
+}
+
+/// Where the MTEXT format code of the backslash at `at` in `text` ends: a code of
+/// arguments at its `;`, `\U+XXXX` and `\M+NXXXX` after their digits, any other (`\P`,
+/// `\\`, `\{`) after its letter.
+fn format_code_end(text: &[u8], at: usize) -> usize {
+    let code = &text[at..];
+    let length = match (code.get(1), code.get(2)) {
+        (Some(b'U'), Some(b'+')) => "\\U+XXXX".len(),
+        (Some(b'M'), Some(b'+')) => "\\M+NXXXX".len(),
+        (Some(b'f' | b'F' | b'H' | b'C' | b'c' | b'A' | b'Q' | b'T' | b'W' | b'p' | b'S'), _) => {
+            code.iter()
+                .position(|byte| *byte == b';')
+                .map_or(code.len(), |end| end + 1)
+        }
+        (Some(_), _) => 2,
+        (None, _) => 1,
+    };
+    (at + length).min(text.len())
 }
 
 /// `line`, a group code line, with its code replaced by `code`, its spaces and line end
@@ -587,6 +425,36 @@ fn frame_of(
         Err(None) => first,
         other => other,
     })
+}
+
+/// The id of the first object each edit of `edits.added` adds after the drawing's own
+/// `objects`, as read: a copy of an object takes as many ids as it is with all it placed.
+fn added_ids(objects: &[UnderlayObject], edits: &UnderlayEdits) -> Vec<u32> {
+    let mut tree = vec![1_u32; objects.len()];
+    for (index, object) in objects.iter().enumerate().rev() {
+        if let Some(parent) = object
+            .parent
+            .and_then(|parent| usize::try_from(parent).ok())
+            && parent < index
+        {
+            tree[parent] = tree[parent].saturating_add(tree[index]);
+        }
+    }
+    let mut id = u32::try_from(objects.len()).unwrap_or(u32::MAX);
+    edits
+        .added
+        .iter()
+        .map(|edit| {
+            let first = id;
+            id = id.saturating_add(
+                edit.copy_of()
+                    .and_then(|of| usize::try_from(of).ok())
+                    .and_then(|of| tree.get(of).copied())
+                    .unwrap_or(1),
+            );
+            first
+        })
+        .collect()
 }
 
 /// How the lines lie against the drawing, with what was bound again; or why not: the
@@ -650,14 +518,17 @@ fn rebinds(
     // another one in a file changed since). An object taken out is so whatever was done
     // to it before (review 2026-11-06 r23 CD-200: one moved, then taken out, was taken
     // for moved, and refused where the file had deleted it too), unless a copy of it is
-    // left, which needs its entity.
+    // left, which needs its entity; a copy taken out does not (review 2026-11-08 CD-240:
+    // a discarded edit takes its copies out so).
     let mut edited = BTreeMap::new();
     for (ids, edit) in [
         (
             edits
                 .added
                 .iter()
-                .filter_map(AddedObject::copy_of)
+                .zip(added_ids(&lines.objects().objects, edits))
+                .filter(|(_, first)| !edits.removed_objects.contains(first))
+                .filter_map(|(added, _)| added.copy_of())
                 .collect::<Vec<_>>(),
             EditOfObject::Copied,
         ),
@@ -869,6 +740,8 @@ struct Drawing<'a> {
     /// finding the entities of many objects is not quadratic (review 2026-11-04 r19
     /// CD-162).
     by_handle: BTreeMap<u64, Option<usize>>,
+    /// The first pair of the ENTITIES section past its name.
+    entities_start: usize,
     /// The pair `ENDSEC` closing the ENTITIES section.
     entities_end: usize,
     /// The value pair of `$HANDSEED`.
@@ -881,6 +754,11 @@ struct Drawing<'a> {
     lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
+    /// Whether its entities may be transparent (group 440): DXF 2010 or later.
+    transparency: bool,
+    /// Whether what it is written with beyond ASCII is then escaped `\U+XXXX`
+    /// ([`escaped_beyond_ascii`]).
+    escapes: bool,
     /// The code page its texts are read in, if any.
     code_page: Option<CodePage>,
     /// The pair of the value of `$DWGCODEPAGE`.
@@ -944,6 +822,13 @@ struct NewBlocks {
     next_dimension: u64,
 }
 
+/// The entities the edits add: those drawn under the drawing's own and those over them.
+#[derive(Default)]
+struct Added {
+    under: Vec<u8>,
+    over: Vec<u8>,
+}
+
 impl<'a> Drawing<'a> {
     fn parse(source: &'a [u8], encoding: Option<CodePage>) -> Result<Self, EditedDxfError> {
         let pairs = pairs(source)?;
@@ -970,12 +855,15 @@ impl<'a> Drawing<'a> {
             pairs: Vec::new(),
             entities: Vec::new(),
             by_handle: BTreeMap::new(),
+            entities_start: 0,
             entities_end: 0,
             handseed: None,
             next_handle: None,
             subclassed: false,
             lightweight: false,
             utf8: false,
+            transparency: false,
+            escapes: false,
             code_page: encoding,
             code_page_value: None,
             code_page_renamed: None,
@@ -1104,6 +992,7 @@ impl<'a> Drawing<'a> {
         drawing.subclassed = version.as_slice() >= b"AC1012".as_slice();
         drawing.lightweight = version.as_slice() >= b"AC1014".as_slice();
         drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
+        drawing.transparency = version.as_slice() >= b"AC1024".as_slice();
         drawing.owner = drawing.entities.iter().find_map(|entity| {
             let record =
                 &pairs[entity.pairs.start..entity.records.get(1).map_or(entity.pairs.end, |r| r.0)];
@@ -1142,6 +1031,7 @@ impl<'a> Drawing<'a> {
     ) -> Result<usize, EditedDxfError> {
         let value = |pair: &Pair| self.source[pair.value()].trim_ascii();
         let name = |pair: &Pair| String::from_utf8_lossy(value(pair)).to_ascii_uppercase();
+        self.entities_start = index;
         let mut current: Option<Entity> = None;
         while index < pairs.len() {
             let pair = &pairs[index];
@@ -1391,8 +1281,9 @@ impl<'a> Drawing<'a> {
         Ok(self.spliced(handles, objects_edits, &removed, replaced, added, blocks))
     }
 
-    /// The objects `edits` adds, copied or drawn, as entities written at the end of the
-    /// ENTITIES section.
+    /// The objects `edits` adds, copied or drawn, as entities: the fills drawn, written at
+    /// the start of the ENTITIES section so they lie under the drawing's lines, and the rest,
+    /// written at its end.
     fn added_objects(
         &self,
         read: &ReadObjects,
@@ -1401,31 +1292,9 @@ impl<'a> Drawing<'a> {
         removed: &BTreeSet<u64>,
         handles: &mut Option<u64>,
         blocks: &mut NewBlocks,
-    ) -> Result<Vec<u8>, EditedDxfError> {
-        let objects = read.objects;
-        let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
-        // How many objects each object of the drawing is with all it placed: a copy of it
-        // takes as many ids.
-        let mut tree = vec![1_u32; objects.len()];
-        for (index, object) in objects.iter().enumerate().rev() {
-            if let Some(parent) = object
-                .parent
-                .and_then(|parent| usize::try_from(parent).ok())
-                && parent < index
-            {
-                tree[parent] = tree[parent].saturating_add(tree[index]);
-            }
-        }
-        let mut added = Vec::new();
-        let mut id = read_count;
-        for edit in &edits.added {
-            let first = id;
-            id = id.saturating_add(
-                edit.copy_of()
-                    .and_then(|of| usize::try_from(of).ok())
-                    .and_then(|of| tree.get(of).copied())
-                    .unwrap_or(1),
-            );
+    ) -> Result<Added, EditedDxfError> {
+        let mut added = Added::default();
+        for (edit, first) in edits.added.iter().zip(added_ids(read.objects, edits)) {
             if edits.removed_objects.contains(&first) {
                 continue;
             }
@@ -1439,28 +1308,36 @@ impl<'a> Drawing<'a> {
                         vertices_minus_z: false,
                         follows: false,
                     };
-                    added.extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
+                    added
+                        .over
+                        .extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
                 }
                 AddedObject::Drawn { layer, shape } => {
-                    added.extend(self.drawn(layer, shape, frame, handles));
+                    let drawn = self.drawn(layer, shape, frame, handles)?;
+                    if matches!(shape, DrawnShape::Hatch { .. }) {
+                        added.under.extend(drawn);
+                    } else {
+                        added.over.extend(drawn);
+                    }
                 }
             }
         }
         Ok(added)
     }
 
-    /// The drawing with each entity `replaced` (left out where `None`), `added` after the
-    /// last entity, the new blocks and their records, and the handle seed past `handles`.
+    /// The drawing with each entity `replaced` (left out where `None`), `added` before the
+    /// first entity and after the last, the new blocks and their records, and the handle
+    /// seed past `handles`.
     fn spliced(
         &self,
         handles: Option<u64>,
         objects_edits: ObjectEdits,
         removed: &BTreeSet<u64>,
         replaced: Vec<Option<Option<Vec<u8>>>>,
-        added: Vec<u8>,
+        added: Added,
         blocks: NewBlocks,
     ) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.source.len() + added.len());
+        let mut out = Vec::with_capacity(self.source.len() + added.under.len() + added.over.len());
         let mut copied = 0;
         let mut splice = |out: &mut Vec<u8>, range: Range<usize>, with: &[u8]| {
             out.extend_from_slice(&self.source[copied..range.start]);
@@ -1484,6 +1361,10 @@ impl<'a> Drawing<'a> {
         }
         edits_at.extend(objects_edits);
         edits_at.extend(self.blocks_without(removed));
+        // Before the first entity's own edit, which starts where it goes in: the sort below
+        // keeps the order of edits starting at one place.
+        let start = self.pairs[self.entities_start].start();
+        edits_at.push((start..start, added.under));
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -1492,7 +1373,7 @@ impl<'a> Drawing<'a> {
             }
         }
         let end = self.pairs[self.entities_end].start();
-        edits_at.push((end..end, added));
+        edits_at.push((end..end, added.over));
         // A dimension's block is found only in the BLOCKS section, so when blocks were
         // added there is one.
         if let Some(index) = self.blocks_end
@@ -2577,134 +2458,51 @@ impl<'a> Drawing<'a> {
         }
     }
 
-    /// The entity of `shape`, drawn on `layer`, in the drawing's units.
-    fn drawn(
-        &self,
-        layer: &str,
-        shape: &DrawnShape,
-        frame: &Frame,
-        handles: &mut Option<u64>,
-    ) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut pair = |code: i32, value: &[u8]| {
-            out.extend_from_slice(format!("{code:>3}").as_bytes());
-            out.extend_from_slice(self.eol);
-            out.extend_from_slice(value);
-            out.extend_from_slice(self.eol);
-        };
-        let layer_bytes = self
-            .layers
-            .iter()
-            .find(|(name, _)| name == layer)
-            .map_or_else(|| self.name(layer), |(_, raw)| raw.clone());
-        // The record's head, owned by `owner`; the handle it took.
-        let owned_head = |pair: &mut dyn FnMut(i32, &[u8]),
-                          kind: &str,
-                          handles: &mut Option<u64>,
-                          owner: Option<&[u8]>| {
-            pair(0, kind.as_bytes());
-            let handle = take_handle(handles);
-            if let Some(handle) = handle {
-                pair(5, format!("{handle:X}").as_bytes());
-            }
-            if self.subclassed {
-                if let Some(owner) = owner {
-                    pair(330, owner);
+    /// How many characters `text` is as [`Self::text`] writes it, as it is read (and
+    /// escaped beyond ASCII where the drawing is).
+    fn text_characters(&self, text: &str) -> usize {
+        let percent = text.contains("%%");
+        text.chars()
+            .map(|character| match character {
+                '%' if percent => 3,
+                character if character.is_ascii() || character.is_control() || self.utf8 => 1,
+                character
+                    if !self.escapes
+                        && self
+                            .code_page
+                            .is_some_and(|page| page.encode(character).is_some()) =>
+                {
+                    1
                 }
-                pair(100, b"AcDbEntity");
-            }
-            pair(8, &layer_bytes);
-            handle
-        };
-        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
-            owned_head(pair, kind, handles, self.owner.as_deref());
-        };
-        let subclass = |pair: &mut dyn FnMut(i32, &[u8]), name: &str| {
-            if self.subclassed {
-                pair(100, name.as_bytes());
-            }
-        };
-        let point = |pair: &mut dyn FnMut(i32, &[u8]), code: i32, at: [f64; 2]| {
-            let [x, y] = frame.point(at);
-            pair(code, number(x).as_bytes());
-            pair(code + 10, number(y).as_bytes());
-            pair(code + 20, b"0");
-        };
-        let length = |value: f64| number(value / frame.mm_per_unit);
-        match shape {
-            DrawnShape::Polyline { points_mm, closed } if points_mm.len() == 2 && !closed => {
-                head(&mut pair, "LINE", handles);
-                subclass(&mut pair, "AcDbLine");
-                point(&mut pair, 10, points_mm[0]);
-                point(&mut pair, 11, points_mm[1]);
-            }
-            DrawnShape::Polyline { points_mm, closed } if self.lightweight => {
-                head(&mut pair, "LWPOLYLINE", handles);
-                subclass(&mut pair, "AcDbPolyline");
-                pair(90, points_mm.len().to_string().as_bytes());
-                pair(70, if *closed { b"1" } else { b"0" });
-                for at in points_mm {
-                    let [x, y] = frame.point(*at);
-                    pair(10, number(x).as_bytes());
-                    pair(20, number(y).as_bytes());
+                character => "\\U+XXXX".len() * character.len_utf16(),
+            })
+            .sum()
+    }
+
+    /// `text` as the drawing writes an MTEXT's text that reads back as `text`: a backslash
+    /// and braces escaped, `^` as its `\U+005E`, a line break `\P`; beyond ASCII UTF-8
+    /// from DXF 2007 on, else `\U+XXXX` for each UTF-16 unit, so that the line limit can
+    /// cut it into pieces anywhere ([`within_line_limit`]).
+    fn mtext(&self, text: &str) -> Vec<u8> {
+        let percent = text.contains("%%");
+        let mut out = Vec::with_capacity(text.len());
+        for character in text.chars() {
+            match character {
+                '%' if percent => out.extend_from_slice(b"%%%"),
+                '\\' => out.extend_from_slice(b"\\\\"),
+                '{' => out.extend_from_slice(b"\\{"),
+                '}' => out.extend_from_slice(b"\\}"),
+                '^' => out.extend_from_slice(b"\\U+005E"),
+                '\n' => out.extend_from_slice(b"\\P"),
+                character if character.is_control() => out.push(b' '),
+                character if character.is_ascii() || self.utf8 => {
+                    out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
                 }
-            }
-            DrawnShape::Polyline { points_mm, closed } => {
-                // DXF 12, or 13, which marks its records as subclasses.
-                let polyline = owned_head(&mut pair, "POLYLINE", handles, self.owner.as_deref());
-                subclass(&mut pair, "AcDb2dPolyline");
-                pair(66, b"1");
-                pair(70, if *closed { b"1" } else { b"0" });
-                point(
-                    &mut pair,
-                    10,
-                    [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
-                );
-                let owner = polyline.map(|handle| format!("{handle:X}").into_bytes());
-                for at in points_mm {
-                    owned_head(&mut pair, "VERTEX", handles, owner.as_deref());
-                    subclass(&mut pair, "AcDbVertex");
-                    subclass(&mut pair, "AcDb2dVertex");
-                    point(&mut pair, 10, *at);
+                character => {
+                    for unit in character.encode_utf16(&mut [0; 2]) {
+                        out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+                    }
                 }
-                owned_head(&mut pair, "SEQEND", handles, owner.as_deref());
-            }
-            DrawnShape::Arc {
-                center_mm,
-                radius_mm,
-                start_deg,
-                end_deg,
-            } => {
-                head(&mut pair, "ARC", handles);
-                subclass(&mut pair, "AcDbCircle");
-                point(&mut pair, 10, *center_mm);
-                pair(40, length(*radius_mm).as_bytes());
-                subclass(&mut pair, "AcDbArc");
-                pair(50, number(start_deg.rem_euclid(360.0)).as_bytes());
-                pair(51, number(end_deg.rem_euclid(360.0)).as_bytes());
-            }
-            DrawnShape::Circle {
-                center_mm,
-                radius_mm,
-            } => {
-                head(&mut pair, "CIRCLE", handles);
-                subclass(&mut pair, "AcDbCircle");
-                point(&mut pair, 10, *center_mm);
-                pair(40, length(*radius_mm).as_bytes());
-            }
-            DrawnShape::Text {
-                anchor_mm,
-                height_mm,
-                rotation_deg,
-                text,
-            } => {
-                head(&mut pair, "TEXT", handles);
-                subclass(&mut pair, "AcDbText");
-                point(&mut pair, 10, *anchor_mm);
-                pair(40, length(*height_mm).as_bytes());
-                pair(1, &self.text(text));
-                pair(50, number(rotation_deg.rem_euclid(360.0)).as_bytes());
-                subclass(&mut pair, "AcDbText");
             }
         }
         out

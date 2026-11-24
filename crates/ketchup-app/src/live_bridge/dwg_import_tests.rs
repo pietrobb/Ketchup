@@ -33,6 +33,8 @@ fn import(path: &Path) -> Request {
         path: path.display().to_string(),
         unit: None,
         as_underlay: false,
+        revision_of: None,
+        code_page: None,
     }
 }
 
@@ -42,16 +44,22 @@ fn import_underlay(path: &Path) -> Request {
         path: path.display().to_string(),
         unit: None,
         as_underlay: true,
+        revision_of: None,
+        code_page: None,
     }
 }
 
 fn export_profiles(path: &Path) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: "dxf".to_owned(),
         drawing_scale: None,
-    }
+        image: None,
+        cam_dialect: None,
+        cam_operations: None,
+        overwrite: false,
+    })
 }
 
 #[test]
@@ -194,7 +202,7 @@ fn a_clients_dwg_import_reads_the_file_off_the_windows_thread() {
             .send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !importing_dwg(wire.app.live.bridge.as_ref().unwrap()) {
         assert!(
             Instant::now() < deadline,

@@ -158,6 +158,7 @@ fn typed_angular_radius_and_diameter_dimensions_layout_export_and_tamper_fail_cl
             &snapshot,
             sheet,
             &parallel_views,
+            &Default::default(),
             &PartsListWords::default()
         ),
         Err(DrawingError::InvalidGeometry)
@@ -169,12 +170,19 @@ fn typed_angular_radius_and_diameter_dimensions_layout_export_and_tamper_fail_cl
             &snapshot,
             sheet,
             &missing_circle_views,
+            &Default::default(),
             &PartsListWords::default()
         ),
         Err(DrawingError::DimensionSourceLost)
     );
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     assert_eq!(layout.angular_dimensions[0].value_degrees, 90.0);
     assert_eq!(layout.angular_dimensions[0].label, "90 ±0.5°");
     assert_eq!(layout.circular_dimensions[0].label, "R5 mm");
@@ -323,12 +331,18 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
         circles: Vec::new(),
         polyline_curves: Vec::new(),
     }];
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     assert_eq!(layout.datum_symbols[0].label, "A");
     assert_eq!(
         layout.feature_control_frames[0].label,
-        "POSITION | DIA 0.1 MMC | A | B MMC"
+        "POSITION | Ø0.1 (M) | A | B (M)"
     );
     let stable_source_identity = "definition-1".to_owned();
     let drawing = OrthographicDrawing {
@@ -345,7 +359,36 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
     let exported = crate::drawing_export::export_drawing(&snapshot, &drawing).unwrap();
     let svg = std::str::from_utf8(exported.svg()).unwrap();
     assert!(svg.contains("sheet-12/datum-1/triangle-0"));
-    assert!(svg.contains("POSITION | DIA 0.1 MMC | A | B MMC"));
+    // Each value of the frame prints inside its own box, as wide as the
+    // sheet font makes it, with no '|' glyph beside the drawn dividers.
+    let frame = &drawing.layout.feature_control_frames[0];
+    let edges = std::iter::once(frame.frame_bounds_mm[0][0])
+        .chain(frame.separator_x_mm.iter().copied())
+        .chain([frame.frame_bounds_mm[1][0]])
+        .collect::<Vec<_>>();
+    let dxf = std::str::from_utf8(exported.dxf()).unwrap();
+    let cells = dxf_texts(dxf, "sheet-12/feature-control-frame-1");
+    assert_eq!(
+        cells.iter().map(|cell| cell.4.as_str()).collect::<Vec<_>>(),
+        ["POSITION", "Ø0.1 (M)", "A", "B (M)"]
+    );
+    for ((id, x, _, height, value), box_edges) in cells.iter().zip(edges.windows(2)) {
+        // The sheet's generous advance (SVG, DXF readers) and the PDF's
+        // embedded font both keep the value inside its box.
+        let pdf_width = crate::sheet_pdf::SheetFont::standard().advance_em(value) * height;
+        let width = (value.chars().count() as f64 * 0.7 * height).max(pdf_width);
+        assert!(
+            box_edges[0] < *x && x + width < box_edges[1],
+            "{id} '{value}' spans {x}..{} mm, outside its box {box_edges:?}",
+            x + width
+        );
+    }
+    for line in svg
+        .lines()
+        .filter(|line| line.contains("feature-control-frame-1"))
+    {
+        assert!(!line.contains('|'), "{line}");
+    }
 
     let mut missing_source_views = views;
     missing_source_views[0].visible_lines.clear();
@@ -354,6 +397,7 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
             &snapshot,
             sheet,
             &missing_source_views,
+            &Default::default(),
             &PartsListWords::default()
         ),
         Err(DrawingError::AnnotationSourceLost)
@@ -433,8 +477,14 @@ fn bom_balloon_flips_preferred_offset_inward_at_view_cell_boundary() {
         polyline_curves: Vec::new(),
     }];
 
-    let layout =
-        layout_drawing_sheet(&snapshot, &sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        &sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     let balloon = &layout.bom_balloons[0];
     assert!(balloon.circle_center_mm[0] < balloon.leader_line_mm[0][0]);
     assert_eq!(sheet.bom_balloons()[0].offset_page_mm(), [8.0, 8.0]);
@@ -455,12 +505,26 @@ fn dxf_texts(dxf: &str, prefix: &str) -> Vec<(String, f64, f64, f64, String)> {
             "40" if entity == "TEXT" => height = data.parse().unwrap(),
             "1" if entity == "TEXT" => value = data,
             "1000" if entity == "TEXT" && data.starts_with(prefix) => {
-                texts.push(((*data).to_owned(), x, y, height, value.to_owned()));
+                texts.push(((*data).to_owned(), x, y, height, dxf_unescaped(value)));
             }
             _ => {}
         }
     }
     texts
+}
+
+/// `value` as a DXF reader shows it: each `\U+XXXX` is its character.
+fn dxf_unescaped(value: &str) -> String {
+    let mut text = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("\\U+") {
+        text.push_str(&rest[..start]);
+        let code = &rest[start + 3..start + 7];
+        text.push(char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap());
+        rest = &rest[start + 7..];
+    }
+    text.push_str(rest);
+    text
 }
 
 /// The vertical extent of one R12 text line, from its descenders to its cap.
@@ -600,8 +664,14 @@ fn export_parts_list(names: [&str; 2]) -> crate::drawing_export::DrawingExportBu
         circles: Vec::new(),
         polyline_curves: Vec::new(),
     }];
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     let stable_source_identity = "assembly".to_owned();
     let drawing = OrthographicDrawing {
         schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,
@@ -658,8 +728,14 @@ fn export_notes(
         circles: Vec::new(),
         polyline_curves: Vec::new(),
     }];
-    let layout =
-        layout_drawing_sheet(&snapshot, sheet, &views, &PartsListWords::default()).unwrap();
+    let layout = layout_drawing_sheet(
+        &snapshot,
+        sheet,
+        &views,
+        &Default::default(),
+        &PartsListWords::default(),
+    )
+    .unwrap();
     let stable_source_identity = "definition-1".to_owned();
     let drawing = OrthographicDrawing {
         schema: ORTHOGRAPHIC_LINEWORK_SCHEMA_V2,

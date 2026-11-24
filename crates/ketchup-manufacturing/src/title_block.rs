@@ -1,6 +1,7 @@
 //! The title block in the lower right corner of a drawing sheet and the ISO A
 //! sheet formats with their frame.
 
+pub use ketchup_model::drawing::SheetLanguage;
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -98,39 +99,71 @@ pub struct SheetSettings {
     /// absent (review 2026-11-04 MF-141).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_level_mm: Option<i32>,
+    /// The storeys, as the designer gives them (review 2026-11-08 MF-241):
+    /// when any is given, the plans, ±0,000 and the level marks are read from
+    /// them, not from the faces of the model, which a layered floor or a
+    /// ceiling lining under the floor structure misleads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storeys: Vec<StoreyLevels>,
+    /// The altitude of ±0,000 in whole millimetres above sea level (Bpv in
+    /// Czechia and Slovakia), written beside its level mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_altitude_mm: Option<i32>,
+    /// The direction of north in the plan, in tenths of a degree
+    /// counter-clockwise from the model's +y (review 2026-11-08 §5.2): the
+    /// plans draw a north arrow and the elevations are named by the side of
+    /// the world they show; none when not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub north_tenths_deg: Option<i32>,
+    /// The revisions of the set, oldest first (review 2026-11-08 §5.3):
+    /// every sheet lists them beside its title block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<crate::revision_table::SheetRevision>,
 }
 
-/// A language the sheets can be titled in, whatever the window's: a Czech
-/// project goes to a Czech building office.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum SheetLanguage {
-    #[serde(rename = "cs")]
-    Czech,
-    #[serde(rename = "sk")]
-    Slovak,
-    #[serde(rename = "en")]
-    English,
+impl SheetSettings {
+    /// Whether a released Kečup would read these settings with fields
+    /// missing and drop them at its next Save: Kečup 0.2.0 to 0.3.1 know only
+    /// the format, the title block, the plan cut and the coarsest scale, 0.3.2
+    /// no storeys, altitude, north or revisions either (review 2026-11-10
+    /// REL-404). A document keeping them is written so that every release
+    /// refuses it as newer. A new field must be added here.
+    #[must_use]
+    pub fn lost_by_released_readers(&self) -> bool {
+        let Self {
+            format: _,
+            title_block: _,
+            plan_cut_above_floor_mm: _,
+            coarsest_scale: _,
+            language,
+            zero_level_mm,
+            storeys,
+            zero_altitude_mm,
+            north_tenths_deg,
+            revisions,
+        } = self;
+        language.is_some()
+            || zero_level_mm.is_some()
+            || !storeys.is_empty()
+            || zero_altitude_mm.is_some()
+            || north_tenths_deg.is_some()
+            || !revisions.is_empty()
+    }
+
+    /// [`Self::north_tenths_deg`] in degrees.
+    #[must_use]
+    pub fn north_deg(&self) -> Option<f64> {
+        self.north_tenths_deg.map(|tenths| f64::from(tenths) / 10.0)
+    }
 }
 
-impl SheetLanguage {
-    pub const ALL: [Self; 3] = [Self::Czech, Self::Slovak, Self::English];
-
-    /// The ISO 639-1 code it is kept and asked for by.
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::Czech => "cs",
-            Self::Slovak => "sk",
-            Self::English => "en",
-        }
-    }
-
-    #[must_use]
-    pub fn from_code(code: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|language| language.code() == code)
-    }
+/// One storey of the table of storeys, whole millimetres of the model: the
+/// top of its finished floor, which its plan is cut above, and the top of the
+/// structure the floor lies on.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StoreyLevels {
+    pub finished_floor_mm: i32,
+    pub structural_mm: i32,
 }
 
 /// The usual plan cut: at window-sill height, 1.2 m above the floor.
@@ -299,7 +332,7 @@ fn lines_in_cell(cell_height: f64, height: f64) -> usize {
 
 /// `text` broken at spaces into lines no wider than `room`; a word wider than
 /// `room` on its own is broken between its characters.
-fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
+pub(crate) fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {

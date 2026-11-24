@@ -30,22 +30,23 @@ fn tool(harness: &mut Harness<'_, KetchupApp>, command: AppCommand) {
 fn perf_frames_within_budget(what: &str, frames: &[Duration]) {
     let slowest = frames.iter().max().copied().unwrap_or_default();
     assert!(
-        slowest < FRAME_BUDGET,
+        slowest < ketchup_test_env::perf_budget(FRAME_BUDGET),
         "slowest {what} frame {slowest:?}: {frames:?}"
     );
 }
 
 fn perf_release_within_budget(what: &str, release: Duration) {
     assert!(
-        release < RELEASE_BUDGET,
+        release < ketchup_test_env::perf_budget(RELEASE_BUDGET),
         "the {what} release froze the window for {release:?}"
     );
 }
 
-fn wait_for_commit(harness: &mut Harness<'_, KetchupApp>, revision: u64, what: &str) {
+/// Waits for the commit, which the nightly perf tests hold to `COMMIT_BUDGET`.
+fn perf_wait_for_commit(harness: &mut Harness<'_, KetchupApp>, revision: u64, what: &str) {
     step_until(
         harness,
-        COMMIT_BUDGET,
+        ketchup_test_env::perf_budget(COMMIT_BUDGET),
         &format!("{what} never committed"),
         |app| app.document_revision() != revision,
     );
@@ -77,7 +78,7 @@ fn perf_drag(harness: &mut Harness<'_, KetchupApp>, from: Vec3, to: Vec3, what: 
     frames.push(press);
     perf_frames_within_budget(what, &frames);
     perf_release_within_budget(what, button(harness, last, false));
-    wait_for_commit(harness, revision, what);
+    perf_wait_for_commit(harness, revision, what);
 }
 
 /// A click whose press and release are both timed frames.
@@ -138,7 +139,7 @@ fn perf_house_scaling_a_box_beside_the_house_stays_interactive() {
     frames.extend([hover, press]);
     perf_frames_within_budget("Scale", &frames);
     perf_release_within_budget("Scale", button(&mut harness, last, false));
-    wait_for_commit(&mut harness, revision, "Scale");
+    perf_wait_for_commit(&mut harness, revision, "Scale");
 }
 
 #[test]
@@ -157,7 +158,7 @@ fn perf_house_rotating_a_box_beside_the_house_stays_interactive() {
     let press = button(&mut harness, last, true);
     perf_frames_within_budget("Rotate", &[press]);
     perf_release_within_budget("Rotate", button(&mut harness, last, false));
-    wait_for_commit(&mut harness, revision, "Rotate");
+    perf_wait_for_commit(&mut harness, revision, "Rotate");
 }
 
 #[test]
@@ -191,5 +192,5 @@ fn perf_house_filleting_a_box_edge_beside_the_house_stays_interactive() {
     );
     harness.step();
     perf_release_within_budget("Fillet confirm", started.elapsed());
-    wait_for_commit(&mut harness, revision, "Fillet");
+    perf_wait_for_commit(&mut harness, revision, "Fillet");
 }

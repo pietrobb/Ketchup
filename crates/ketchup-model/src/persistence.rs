@@ -16,9 +16,13 @@ use crate::document::{
 };
 use crate::graph::SlotResolution;
 
+mod container;
 pub(crate) mod history_chunks;
 mod legacy;
 mod pipeline;
+use container::{
+    ContainerEntry, EntryFlag, container_directory, container_entries, encode_container,
+};
 #[cfg(feature = "saved-files")]
 mod saved_files;
 mod work_recovery;
@@ -40,6 +44,7 @@ mod payload_error;
 pub(crate) mod sheet_metal_v1;
 pub(crate) mod snapshot_codec;
 mod snapshot_encoding;
+mod staged;
 
 pub use legacy::LegacyError;
 pub use payload_error::{PayloadError, PayloadLocation, PayloadSection};
@@ -56,6 +61,13 @@ const CONTAINER_SCHEMA: u16 = 1;
 /// Save writes over the newer file; the schema it checks first makes it refuse the file
 /// as newer (review 2026-10-29 proposal 5.4). Kečup 0.3.0 refuses it as newer too.
 const LARGE_CONTAINER_SCHEMA: u16 = 2;
+/// A container with an extension a released Kečup reads with fields missing and
+/// drops them at its next Save ([`ExtensionEntry::lost_by_released_readers`]),
+/// such as the storeys, north and revisions of the drawing sheets, which Kečup
+/// 0.3.2 and earlier read without (review 2026-11-10 REL-404): every release,
+/// 0.3.3 too, refuses it as newer (review 2026-11-20 ac P3). Its entries are flagged [`EntryFlag`]; a larger entry is
+/// allowed too, as in [`LARGE_CONTAINER_SCHEMA`].
+const NEWER_EXTENSION_CONTAINER_SCHEMA: u16 = 3;
 /// The largest entry Kečup 0.2.0 reads (`MAX_SNAPSHOT_BYTES`, `MAX_SIDECAR_BYTES`).
 const ENTRY_LIMIT_OF_0_2_0: usize = 32 * 1024 * 1024;
 /// Container entry holding the JSON of the program that owns the current revision.
@@ -107,6 +119,7 @@ pub struct ExtensionEntry {
     namespace: String,
     path: String,
     required: bool,
+    lost_by_released_readers: bool,
     bytes: Vec<u8>,
 }
 
@@ -125,8 +138,31 @@ impl ExtensionEntry {
             namespace,
             path,
             required,
+            lost_by_released_readers: false,
             bytes,
         })
+    }
+
+    /// This optional entry, marked as one a released Kečup reads with fields
+    /// missing and drops them at its next Save: the file is written so that
+    /// every release refuses it as newer ([`NEWER_EXTENSION_CONTAINER_SCHEMA`]).
+    #[must_use]
+    pub fn lost_by_released_readers(mut self) -> Self {
+        self.lost_by_released_readers = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn is_lost_by_released_readers(&self) -> bool {
+        self.lost_by_released_readers && !self.required
+    }
+
+    fn flag(&self) -> EntryFlag {
+        if self.is_lost_by_released_readers() {
+            EntryFlag::LostByReleasedReaders
+        } else {
+            EntryFlag::of(self.required)
+        }
     }
 
     #[must_use]
@@ -555,19 +591,12 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
     encoded
 }
 
-/// The blobs `snapshot` reads: the sources of imported bodies and the lines of underlays.
+/// The blobs `snapshot` reads: the sources of imported bodies, the pictures of meshes
+/// and the lines of underlays.
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
     snapshot
         .features()
-        .filter_map(|feature| match feature.kind() {
-            FeatureKind::ImportedExactBody(spec) => Some(
-                spec.source_sha256
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-            ),
-            _ => None,
-        })
+        .flat_map(|feature| feature.kind().blobs())
         .chain(
             snapshot
                 .underlays()
@@ -1065,14 +1094,23 @@ fn save_container_entries(
     program: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, PersistenceError> {
     let mut entries = side_entries(container_data, &imported_sources)?;
-    entries.insert("document.bin".to_owned(), (true, &document_bin.bytes[..]));
+    entries.insert(
+        "document.bin".to_owned(),
+        (EntryFlag::Required, &document_bin.bytes[..]),
+    );
     if let Some(revision_history) = &revision_history {
-        entries.insert("history.bin".to_owned(), (true, &revision_history[..]));
+        entries.insert(
+            "history.bin".to_owned(),
+            (EntryFlag::Required, &revision_history[..]),
+        );
     }
     // The program that owns the current revision belongs to the document, not
     // to its Undo steps: a history that no longer opens must not take it along.
     if let Some(program) = &program {
-        entries.insert(PROGRAM_ENTRY.to_owned(), (true, &program[..]));
+        entries.insert(
+            PROGRAM_ENTRY.to_owned(),
+            (EntryFlag::Required, &program[..]),
+        );
     }
     encode_container(entries)
 }
@@ -1084,7 +1122,7 @@ fn save_container_entries(
 fn side_entries<'a>(
     container_data: &'a ContainerData,
     imported_sources: &BTreeSet<String>,
-) -> Result<BTreeMap<String, (bool, &'a [u8])>, PersistenceError> {
+) -> Result<BTreeMap<String, (EntryFlag, &'a [u8])>, PersistenceError> {
     let mut entries = BTreeMap::new();
     if imported_sources
         .iter()
@@ -1094,53 +1132,19 @@ fn side_entries<'a>(
     }
     for (hash, bytes) in container_data.blobs.iter() {
         if !container_data.imported_source_blobs.contains(hash) || imported_sources.contains(hash) {
-            entries.insert(format!("blobs/{hash}"), (false, &bytes[..]));
+            entries.insert(format!("blobs/{hash}"), (EntryFlag::Optional, &bytes[..]));
         }
     }
     for extension in container_data.extensions.values() {
         let path = format!("extensions/{}/{}", extension.namespace, extension.path);
         if entries
-            .insert(path, (extension.required, &extension.bytes[..]))
+            .insert(path, (extension.flag(), &extension.bytes[..]))
             .is_some()
         {
             return Err(PersistenceError::DuplicateContainerEntry);
         }
     }
     Ok(entries)
-}
-
-/// `entries` (path → required, content) as a native container.
-fn encode_container(
-    entries: BTreeMap<String, (bool, impl AsRef<[u8]>)>,
-) -> Result<Vec<u8>, PersistenceError> {
-    if entries.len() > MAX_CONTAINER_ENTRIES as usize {
-        return Err(PersistenceError::ResourceLimit);
-    }
-
-    let large = entries
-        .values()
-        .any(|(_, bytes)| bytes.as_ref().len() > ENTRY_LIMIT_OF_0_2_0);
-    let mut encoded = Vec::new();
-    encoded.extend_from_slice(CONTAINER_MAGIC);
-    push_u16(
-        &mut encoded,
-        if large {
-            LARGE_CONTAINER_SCHEMA
-        } else {
-            CONTAINER_SCHEMA
-        },
-    );
-    push_u32(&mut encoded, u32_count(entries.len())?);
-    for (path, (required, bytes)) in entries {
-        let bytes = bytes.as_ref();
-        validate_container_path(&path)?;
-        push_string(&mut encoded, &path)?;
-        push_u8(&mut encoded, u8::from(required));
-        push_u64(&mut encoded, u64_len(bytes.len())?);
-        encoded.extend_from_slice(&crate::graph::sha256_bytes(bytes));
-        encoded.extend_from_slice(bytes);
-    }
-    Ok(encoded)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1269,6 +1273,7 @@ fn publish_bytes(
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
     verify_checksums(bytes).map_err(FilePersistenceError::Format)?;
+    let path = &staged::link_target(path);
     let _lock = lock_saves(path)?;
     let expected = match mode {
         Publish::Replace => None,
@@ -1293,7 +1298,7 @@ fn publish_bytes(
             return Err(FilePersistenceError::ExternalConflict);
         }
         Ok(previous) if verify_checksums(&previous).is_ok() => {
-            write_atomic(&recovery_path(path), &previous)?;
+            write_atomic(&recovery_path(path), &previous, path)?;
         }
         Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
             return Err(error);
@@ -1328,12 +1333,22 @@ fn publish_bytes(
     )
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FilePersistenceError> {
-    write_atomic_after_prepare(path, bytes, true, || Ok(()), sync_parent_directory)
+/// Writes a copy of the file at `like` with its permissions (a `.recovery`).
+fn write_atomic(path: &Path, bytes: &[u8], like: &Path) -> Result<(), FilePersistenceError> {
+    let like = fs::metadata(like).ok();
+    staged::write_staged(
+        path,
+        bytes,
+        true,
+        || Ok(()),
+        sync_parent_directory,
+        like.as_ref(),
+    )
 }
 
 /// Writes `bytes` to a temporary file beside `path` and moves it there, over an
-/// existing file only when `replace`; without it an existing `path` is a conflict.
+/// existing file (keeping its permissions) only when `replace`; without it an
+/// existing `path` is a conflict.
 fn write_atomic_after_prepare(
     path: &Path,
     bytes: &[u8],
@@ -1341,29 +1356,15 @@ fn write_atomic_after_prepare(
     before_persist: impl FnOnce() -> Result<(), FilePersistenceError>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), FilePersistenceError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file_mut().sync_all()?;
-    before_persist()?;
-    let persisted = if replace {
-        temporary.persist(path)
-    } else {
-        temporary.persist_noclobber(path)
-    };
-    persisted.map_err(|error| match error.error.kind() {
-        io::ErrorKind::AlreadyExists if !replace => FilePersistenceError::ExternalConflict,
-        _ => FilePersistenceError::Io(error.error),
-    })?;
-    sync_parent(parent).map_err(|error| FilePersistenceError::Published {
-        path: path.to_owned(),
-        identity: FileIdentity::from_bytes(bytes),
-        error,
-    })?;
-    Ok(())
+    let like = fs::metadata(path).ok();
+    staged::write_staged(
+        path,
+        bytes,
+        replace,
+        before_persist,
+        sync_parent,
+        like.as_ref(),
+    )
 }
 
 fn sync_parent_directory(parent: &Path) -> io::Result<()> {
@@ -1419,8 +1420,10 @@ fn clear_work_recovery_after_compare(
         .map_err(FilePersistenceError::Io)
 }
 
+/// The `.recovery` beside the file `path` is, through any links to it: where a
+/// save keeps the replaced file and an open looks for it.
 fn recovery_path(path: &Path) -> PathBuf {
-    let mut recovery = path.as_os_str().to_os_string();
+    let mut recovery = staged::link_target(path).into_os_string();
     recovery.push(".recovery");
     PathBuf::from(recovery)
 }
@@ -1735,99 +1738,37 @@ fn verify_checksums(bytes: &[u8]) -> Result<(), PersistenceError> {
         return load(bytes).map(drop);
     }
     match container_entries(bytes)?.get("document.bin") {
-        Some((true, _)) => Ok(()),
-        Some((false, _)) => Err(PersistenceError::DocumentEntryNotRequired),
+        Some((EntryFlag::Required, _)) => Ok(()),
+        Some(_) => Err(PersistenceError::DocumentEntryNotRequired),
         None => Err(PersistenceError::MissingDocumentEntry),
     }
 }
 
-/// The entries of a native container whose framing and checksums hold.
-fn container_entries(bytes: &[u8]) -> Result<BTreeMap<String, (bool, Vec<u8>)>, PersistenceError> {
-    let mut entries = BTreeMap::<String, (bool, Vec<u8>)>::new();
-    for entry in container_directory(bytes)? {
-        if crate::graph::sha256_bytes(entry.content) != entry.checksum {
-            return Err(PersistenceError::ContainerChecksumMismatch(entry.path));
-        }
-        if entries
-            .insert(entry.path, (entry.required, entry.content.to_vec()))
-            .is_some()
-        {
-            return Err(PersistenceError::DuplicateContainerEntry);
-        }
-    }
-    Ok(entries)
-}
-
-/// One entry of a native container as its framing names it.
-struct ContainerEntry<'a> {
-    path: String,
-    required: bool,
-    checksum: [u8; 32],
-    content: &'a [u8],
-}
-
-/// The entries of a native container whose framing holds, their checksums not
-/// verified: for bytes whose file identity was already checked.
-fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, PersistenceError> {
-    let mut reader = Reader::new(bytes);
-    if reader.take(CONTAINER_MAGIC.len())? != CONTAINER_MAGIC {
-        return Err(PersistenceError::InvalidContainerMagic);
-    }
-    let schema = reader.u16()?;
-    if schema != CONTAINER_SCHEMA && schema != LARGE_CONTAINER_SCHEMA {
-        return Err(PersistenceError::UnsupportedContainerSchema(schema));
-    }
-    let entry_count = reader.count_with_limit(MAX_CONTAINER_ENTRIES)?;
-    let mut entries = Vec::new();
-    for _ in 0..entry_count {
-        let path = reader.string()?;
-        validate_container_path(&path)?;
-        let required = reader.boolean()?;
-        let length = usize::try_from(reader.u64()?)
-            .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
-        // Every stored length fits in the rest of the file, its checksum first.
-        if length > (bytes.len() - reader.cursor).saturating_sub(32) {
-            return Err(PersistenceError::Truncated);
-        }
-        let checksum: [u8; 32] = reader
-            .take(32)?
-            .try_into()
-            .map_err(|_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated)?;
-        entries.push(ContainerEntry {
-            path,
-            required,
-            checksum,
-            content: reader.take(length)?,
-        });
-    }
-    if !reader.is_finished() {
-        return Err(PersistenceError::TrailingBytes);
-    }
-    Ok(entries)
-}
-
 fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, PersistenceError> {
     let mut entries = container_entries(bytes)?;
-    let (document_required, document) = entries
+    let (document_flag, document) = entries
         .remove("document.bin")
         .ok_or(PersistenceError::MissingDocumentEntry)?;
-    if !document_required {
+    if document_flag != EntryFlag::Required {
         return Err(PersistenceError::DocumentEntryNotRequired);
     }
     let revision_history = match entries.remove("history.bin") {
-        Some((true, content)) => Some(content),
-        Some((false, _)) => return Err(PersistenceError::HistoryEntryNotRequired),
+        Some((EntryFlag::Required, content)) => Some(content),
+        Some(_) => return Err(PersistenceError::HistoryEntryNotRequired),
         None => None,
     };
     let program = match entries.remove(PROGRAM_ENTRY) {
-        Some((true, content)) => Some(Arc::new(decode_rule_program(&content)?)),
-        Some((false, _)) => return Err(PersistenceError::ProgramEntryNotRequired),
+        Some((EntryFlag::Required, content)) => Some(Arc::new(decode_rule_program(&content)?)),
+        Some(_) => return Err(PersistenceError::ProgramEntryNotRequired),
         None => None,
     };
     let mut container_data = ContainerData::default();
-    for (path, (required, content)) in entries {
+    for (path, (flag, content)) in entries {
         if let Some(hash) = path.strip_prefix("blobs/") {
-            if required || hash.len() != 64 || crate::graph::sha256_hex(&content) != hash {
+            if flag != EntryFlag::Optional
+                || hash.len() != 64
+                || crate::graph::sha256_hex(&content) != hash
+            {
                 return Err(PersistenceError::InvalidBlobHash);
             }
             if Arc::make_mut(&mut container_data.blobs)
@@ -1840,12 +1781,17 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
             let (namespace, relative_path) = extension_path
                 .split_once('/')
                 .ok_or_else(|| PersistenceError::InvalidContainerPath(path.clone()))?;
-            container_data.insert_extension(ExtensionEntry::new(
+            let entry = ExtensionEntry::new(
                 namespace,
                 relative_path,
-                required,
+                flag == EntryFlag::Required,
                 content,
-            )?)?;
+            )?;
+            container_data.insert_extension(if flag == EntryFlag::LostByReleasedReaders {
+                entry.lost_by_released_readers()
+            } else {
+                entry
+            })?;
         } else {
             return Err(PersistenceError::UnsupportedContainerEntry(path));
         }

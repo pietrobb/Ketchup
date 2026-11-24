@@ -19,6 +19,8 @@ struct NativeRejectedShape;
 struct NativeVolumeMeshTetrahedron;
 struct NativeTopologySummary;
 struct NativePairQuery;
+struct NativeSeam;
+struct NativeControlNet;
 struct NativePoint;
 struct NativeSegment;
 struct NativeLoftSection;
@@ -102,9 +104,22 @@ std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const NativeSegment> segments, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> planar_surface_profile_native(
     rust::Slice<const NativeSegment> segments) noexcept;
+std::unique_ptr<NativeOperationResult> fill_network_surface_native(
+    rust::Slice<const NativeSegment> boundary,
+    rust::Slice<const NativeSegment> inner) noexcept;
 std::unique_ptr<NativeOperationResult> trim_surface_native(
     const NativeOperationResult& target,
     const NativeOperationResult& cutter) noexcept;
+std::unique_ptr<NativeOperationResult> blend_surfaces_native(
+    const NativeOperationResult& first, std::uint8_t first_order,
+    const NativeOperationResult& second, std::uint8_t second_order) noexcept;
+NativeSeam measure_seam_native(
+    const NativeOperationResult& first,
+    const NativeOperationResult& second) noexcept;
+NativeControlNet surface_control_net_native(const NativeOperationResult& body) noexcept;
+std::unique_ptr<NativeOperationResult> move_surface_control_point_native(
+    const NativeOperationResult& body, std::uint32_t u_index, std::uint32_t v_index,
+    NativePoint offset, double weight) noexcept;
 std::unique_ptr<NativeOperationResult> extend_planar_surface_native(
     const NativeOperationResult& target, double distance) noexcept;
 std::unique_ptr<NativeOperationResult> combine_surfaces_native(
@@ -146,6 +161,7 @@ std::unique_ptr<NativeOperationResult> loft_framed_profiles_native(
     rust::Slice<const NativeSegment> segments,
     rust::Slice<const NativePoint> spline_points,
     rust::Slice<const NativeSegment> guide_segments,
+    rust::Slice<const NativeSegment> rail_segments,
     std::uint8_t continuity,
     bool make_solid) noexcept;
 std::unique_ptr<NativeOperationResult> loft_spline_native(
@@ -158,6 +174,9 @@ std::unique_ptr<NativeOperationResult> extrude_circle_native(
     double center_x, double center_y, double radius, double height) noexcept;
 std::unique_ptr<NativeOperationResult> sweep_axial_tool_native(
     const NativeSegment& motion, double radius, double axial_length) noexcept;
+std::unique_ptr<NativeOperationResult> sweep_tipped_axial_tool_native(
+    const NativeSegment& motion, double radius, double axial_length, std::uint8_t tip_kind,
+    double tip_length) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_mixed_profile_native(
     rust::Slice<const NativeSegment> segments, double height) noexcept;
 std::unique_ptr<NativeOperationResult> extrude_planar_region_native(
@@ -212,6 +231,10 @@ std::unique_ptr<NativeOperationResult> trim_body_by_plane_native(
 std::unique_ptr<NativeOperationResult> boolean_bodies_native(
     const NativeOperationResult& target, const NativeOperationResult& tool,
     std::uint8_t operation) noexcept;
+std::unique_ptr<NativeOperationResult> cut_axial_sweeps_native(
+    const NativeOperationResult& target, rust::Slice<const NativeSegment> motions,
+    double radius, double axial_length, std::uint8_t tip_kind, double tip_length,
+    rust::Slice<const double> matrix) noexcept;
 std::unique_ptr<NativeOperationResult> named_prism_native(
     rust::Slice<const NativeSegment> segments, double base_z, double height) noexcept;
 std::unique_ptr<NativeOperationResult> named_revol_native(

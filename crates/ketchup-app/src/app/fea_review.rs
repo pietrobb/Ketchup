@@ -4,7 +4,11 @@
 //! MCP-101).
 
 use crate::*;
-use ketchup_application::fea_workflow::FeaReviewError;
+use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+use ketchup_application::fea_workflow::{
+    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
+    FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
+};
 
 pub(crate) struct FeaReviewDialog {
     /// The document the dialog's ids are of; another closes it (review
@@ -78,13 +82,11 @@ impl KetchupApp {
                 ui.label(self.catalog.text("fea-review-limits"));
                 if let Some(review) = &pending.review {
                     ui.separator();
-                    ui.label(format!(
-                        "{}: {} · {}: {}",
-                        self.catalog.text("fea-review-converged"),
-                        review.converged,
-                        self.catalog.text("fea-review-within-limits"),
-                        review.all_levels_within_declared_limits
-                    ));
+                    ui.label(verdict(&self.catalog, review));
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        self.catalog.text("fea-review-isotropic"),
+                    );
                     for (index, level) in review.levels.iter().enumerate() {
                         ui.label(format!(
                             "L{}: {} nodes · {} tetra · u={:.6} mm · σvm={:.6} MPa · qmin={:.6}",
@@ -157,6 +159,7 @@ impl KetchupApp {
                     youngs_modulus_mpa,
                     poisson_ratio,
                     yield_strength_mpa: Some(yield_strength_mpa),
+                    density_kg_per_m3: None,
                 },
                 constrained_face_ordinals,
                 face_tractions: vec![ExactFeaFaceTraction {
@@ -181,6 +184,7 @@ impl KetchupApp {
                 },
             ],
             solve_settings: FeaSolveSettings::default(),
+            mode_count: 0,
         };
         Ok(FeaStudy {
             workflow: FeaReviewWorkflow::new(Some(self.exact_worker_executable()?)),
@@ -239,6 +243,19 @@ impl KetchupApp {
         }
         true
     }
+}
+
+/// Whether the review converged and stayed within its declared limits, these
+/// said to be of an isotropic material (review 2026-11-08 PG-246: a wooden
+/// member came out "within limits" against a von Mises yield of 250 MPa).
+fn verdict(catalog: &LocaleCatalog, review: &FeaReviewSummary) -> String {
+    format!(
+        "{}: {} · {}: {}",
+        catalog.text("fea-review-converged"),
+        review.judgement.converged,
+        catalog.text("fea-review-within-limits"),
+        review.all_levels_within_declared_limits
+    )
 }
 
 /// What one FEA review needs, owned so it runs on a thread.
@@ -342,6 +359,7 @@ impl FeaReviewDialog {
 mod tests {
     use super::*;
     use crate::length_input::DecimalSeparator::{Comma, Point};
+    use ketchup_application::fea_workflow::FeaConvergenceJudgement;
 
     fn dialog(youngs_modulus_mpa: &str) -> FeaReviewDialog {
         FeaReviewDialog {
@@ -437,12 +455,47 @@ mod tests {
             units: "mm",
             solver_version: "test",
             levels: Vec::new(),
-            final_displacement_relative_change: 0.0,
-            final_energy_relative_change: 0.0,
+            judgement: FeaConvergenceJudgement {
+                final_displacement_relative_change: 0.0,
+                final_energy_relative_change: 0.0,
+                final_stress_relative_change: 0.0,
+                final_refinement_ratio: 2.0,
+                converged: true,
+            },
             required_relative_tolerance: 0.01,
-            converged: true,
             all_levels_within_declared_limits: true,
-            excluded_physics: ["", "", "", ""],
+            excluded_physics: ["", "", "", "", ""],
+            modes: None,
+        }
+    }
+
+    /// Review 2026-11-08 PG-246: a timber beam came out "within limits"
+    /// against a von Mises yield, without a word that the material is
+    /// isotropic. The verdict says so, and the warning names timber.
+    #[test]
+    fn the_fea_verdict_says_its_limits_are_of_an_isotropic_material() {
+        let app = KetchupApp::new();
+        let review = summary(&app, 1);
+        for (catalog, isotropic, timber) in [
+            (LocaleCatalog::english(), "isotropic", "timber"),
+            (LocaleCatalog::slovak(), "izotropn", "drevo"),
+        ] {
+            assert!(verdict(&catalog, &review).contains(isotropic));
+            let warning = catalog.text("fea-review-isotropic");
+            assert!(warning.contains(timber), "{warning}");
+            assert!(warning.contains("timber_design"), "{warning}");
+        }
+        // Review 2026-11-20 ac P3: no self-weight, and edge stress may not settle.
+        for (catalog, weight, edge) in [
+            (LocaleCatalog::english(), "self-weight", "need not converge"),
+            (
+                LocaleCatalog::slovak(),
+                "vlastnej tiaže",
+                "nemusí konvergovať",
+            ),
+        ] {
+            let limits = catalog.text("fea-review-limits");
+            assert!(limits.contains(weight) && limits.contains(edge), "{limits}");
         }
     }
 

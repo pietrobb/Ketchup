@@ -30,8 +30,15 @@ from happening:
    does not restore the history saves none; every release read must restore it for one
    file at least (review 2026-11-06 P3 and r23 P3).
 
+4. Extensions. A struct kept as JSON in a container extension (`EXTENSIONS`, such as the
+   sheet settings in `sheet-v1.json`) is read the same way, and a release that has it drops
+   a field it lacks at its next Save. Every field the function that marks such an entry
+   ignores must be known to each release that has the struct; any other one makes the
+   file container schema 3, which every release refuses as newer (review 2026-11-10
+   REL-404). This runs with the variants.
+
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
---depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
+--depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2 tag v0.3.3` in a shallow clone). The old crates and their
 build go to `<target>/release-<version>`; `--variants-only` skips the build.
 """
 
@@ -52,7 +59,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Not v0.1.0: it takes every newer format and a document with a program for damage,
 # so no file Save writes can be kept safe from it; the README warns against it
 # (review 2026-11-01 DOC-100: 46 of 148 saved files opened its `.recovery`).
-RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2")
+RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2", "v0.3.3")
 SAVED_CRATES = ("crates/ketchup-model", "crates/ketchup-geometry", "crates/ketchup-tolerance")
 # `ketchup-test-env` is a dev-dependency of the model: the workspace needs its manifest.
 OLD_CRATES = (*SAVED_CRATES, "crates/ketchup-test-env")
@@ -63,6 +70,10 @@ REVIEWED = {
     "v0.2.0": {
         # MD-60: `fits_format_103` writes an import in one of these units as 104.
         "ImportLengthUnit": {"Decimetre", "Kilometre", "Mile", "Yard"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.0": {
         # CD-61: `format_of` writes a document with a stretched line as 107.
@@ -70,18 +81,62 @@ REVIEWED = {
         # The program worker's answer to a drawing export, never part of a document;
         # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3), and
         # Several, every refusal of one export at once (review 2026-11-06 DXF P3), and
-        # TextTooLong, a value over the DXF line limit (review 2026-11-07 UL-220).
+        # TextTooLong, a value over the DXF line limit (review 2026-11-07 UL-220), and
+        # DrawnTextTooLong, a text drawn so into a DXF 12 drawing (r26 UL-240).
+        # DrawnHatchInDxf12, a filled area drawn so into a DXF 12 drawing (review 2026-11-08
+        # §5.3 room areas).
         "DxfEditRefusal": {
             "ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile", "Several",
-            "TextTooLong",
+            "TextTooLong", "DrawnTextTooLong", "DrawnHatchInDxf12",
         },
+        # `format_of` writes a document with a drawn hatch as 109 (review 2026-11-08 §5.3).
+        "DrawnShape": {"Hatch"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.1": {
-        "DxfEditRefusal": {"ChangedInFile", "DeletedInFile", "Several", "TextTooLong"},
+        "DxfEditRefusal": {
+            "ChangedInFile", "DeletedInFile", "Several", "TextTooLong", "DrawnTextTooLong",
+            "DrawnHatchInDxf12",
+        },
+        "DrawnShape": {"Hatch"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
     "v0.3.2": {
-        "DxfEditRefusal": {"ChangedInFile", "DeletedInFile", "Several", "TextTooLong"},
+        "DxfEditRefusal": {
+            "ChangedInFile", "DeletedInFile", "Several", "TextTooLong", "DrawnTextTooLong",
+            "DrawnHatchInDxf12",
+        },
+        "DrawnShape": {"Hatch"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
+    "v0.3.3": {
+        # Style comes only from comparing two revisions of a drawing, an answer never kept in
+        # a document; an edit's `DxfEditRefusal::ChangedInFile` never carries it (review
+        # 2026-11-10 og:R1110-UL-400).
+        "Difference": {"Style"},
+        # `format_of` writes a document with a boundary surface as 115, a blend between two
+        # surfaces as 118 and a moved control point of a surface as 119.
+        "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
+        "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
+    },
+}
+
+# Structs kept as JSON in container extensions and read without `deny_unknown_fields`: a
+# release that has the struct reads a field it lacks as absent and drops it at its next
+# Save (review 2026-11-10 REL-404). Each names its source and the function that marks the
+# entry so that every release refuses the file (container schema 3); a field that function
+# ignores (`name: _`) must be known to every release that has the struct.
+EXTENSIONS = {
+    "SheetSettings": ("crates/ketchup-manufacturing/src/title_block.rs", "lost_by_released_readers"),
 }
 
 ENUM = re.compile(
@@ -159,6 +214,68 @@ def variant_problems(
     return problems
 
 
+def struct_fields(source: str, name: str) -> set[str] | None:
+    match = re.search(rf"pub struct {name}\s*\{{", source)
+    if not match:
+        return None
+    body = re.sub(r"//[^\n]*", "", enum_body(source, match.end()))
+    return set(re.findall(r"\bpub\s+(\w+)\s*:", body))
+
+
+def ignored_fields(source: str, name: str, function: str) -> set[str]:
+    """The fields of `name` that `function` does not bind: `field: _`, those `..` leaves
+    out, and every one when it takes `self` apart nowhere (review 2026-11-20 ac P3:
+    only `field: _,` with its comma was read, so the last field of a one-line pattern,
+    `..` and a function without the pattern passed). A field bound to an unused `_name`
+    is not marked, and with several patterns one that leaves a field out is enough
+    (review 2026-11-21 ac P3: `b: _b` counted, and only the first pattern was read)."""
+    match = re.search(rf"fn {function}\s*\([^)]*\)[^{{]*\{{", source)
+    if not match:
+        sys.exit(f"HEAD: no fn {function}")
+    fields = struct_fields(source, name)
+    if fields is None:
+        sys.exit(f"HEAD: no struct {name}")
+    body = re.sub(r"//[^\n]*", "", enum_body(source, match.end()))
+    patterns = list(re.finditer(rf"\blet\s+(?:Self|{name})\s*\{{([^}}]*)\}}\s*=", body))
+    if not patterns:
+        return fields
+    ignored = set()
+    for pattern in patterns:
+        bound = set()
+        for entry in pattern.group(1).split(","):
+            taken = re.fullmatch(r"\s*(?:ref\s+)?(?:mut\s+)?(\w+)\s*(?::\s*(.*?)\s*)?", entry, re.S)
+            unused = taken and re.fullmatch(r"(?:ref\s+)?(?:mut\s+)?_\w*", taken.group(2) or "")
+            if taken and not unused:
+                bound.add(taken.group(1))
+        ignored |= fields - bound
+    return ignored
+
+
+def field_problems(name: str, function: str, head: str, old: str, release: str) -> list[str]:
+    """The fields of `name` that `function` in the source `head` leaves unmarked and the
+    release with the source `old` does not know; none when the release lacks the struct."""
+    known = struct_fields(old, name)
+    if known is None:
+        return []
+    return [
+        f"{name}::{field}: {release} drops it at its next Save; mark it in {function}"
+        for field in sorted(ignored_fields(head, name, function) - known)
+    ]
+
+
+def extension_problems(tag: str) -> list[str]:
+    problems = []
+    for name, (path, function) in EXTENSIONS.items():
+        listed = subprocess.run(
+            ["git", "cat-file", "-e", f"{tag}:{path}"], cwd=ROOT, capture_output=True, check=False
+        )
+        if listed.returncode == 0:
+            problems += field_problems(
+                name, function, git("show", f"HEAD:{path}"), git("show", f"{tag}:{path}"), version(tag)
+            )
+    return problems
+
+
 def product(expression: str) -> int:
     """The value of a constant written as a product of integers, e.g. `64 * 1024 * 1024`."""
     value = 1
@@ -180,23 +297,42 @@ def what_it_reads(tag: str) -> list[str]:
     return [newest.group(1), ",".join(schemas), str(product(limit.group(1))) if limit else "0"]
 
 
+PATH_DEPENDENCY = re.compile(r'path\s*=\s*"\.\./([\w-]+)"')
+
+
+def old_crates(tag: str) -> tuple[str, ...]:
+    """OLD_CRATES and every crate they depend on by path in the tag: 0.3.3's model
+    depends on `ketchup-rejection`, which 0.3.2's did not."""
+    crates, pending = [], list(OLD_CRATES)
+    while pending:
+        crate = pending.pop(0)
+        if crate in crates:
+            continue
+        crates.append(crate)
+        manifest = git("show", f"{tag}:{crate}/Cargo.toml")
+        pending += (f"crates/{name}" for name in PATH_DEPENDENCY.findall(manifest))
+    return tuple(crates)
+
+
 def old_workspace(tag: str, target: Path) -> Path:
     """The crates of the tag under `target`, in a workspace of their own and the reader."""
     source = target / f"release-{version(tag)}"
     commit = git("rev-parse", f"{tag}^{{commit}}").strip()
+    crates = old_crates(tag)
     marker = source / "commit"
-    if not (marker.is_file() and marker.read_text().strip() == commit):
+    stamp = "\n".join((commit, *crates))
+    if not (marker.is_file() and marker.read_text().strip() == stamp):
         shutil.rmtree(source, ignore_errors=True)
-        archive = git("archive", tag, "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", *OLD_CRATES, binary=True)
+        archive = git("archive", tag, "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", *crates, binary=True)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(source, filter="data")
         manifest = (source / "Cargo.toml").read_text(encoding="utf-8")
-        members = ", ".join(f'"{crate}"' for crate in (*OLD_CRATES, "reader"))
+        members = ", ".join(f'"{crate}"' for crate in (*crates, "reader"))
         manifest = re.sub(r"^members = \[.*?\]$", f"members = [{members}]", manifest, flags=re.M | re.S)
         manifest = re.sub(r"^exclude = .*?$\n", "", manifest, flags=re.M)
         manifest = re.sub(r"^\[patch\.crates-io\]\n(?:[^\[\n].*\n)*", "", manifest, flags=re.M)
         (source / "Cargo.toml").write_text(manifest, encoding="utf-8")
-        marker.write_text(commit)
+        marker.write_text(stamp)
     reader = source / "reader"
     (reader / "src").mkdir(parents=True, exist_ok=True)
     (reader / "Cargo.toml").write_text(
@@ -255,7 +391,7 @@ def main(arguments: list[str]) -> int:
     for tag in tags:
         problems = variant_problems(
             serde_enums(tag), serde_enums("HEAD"), REVIEWED.get(tag, {}), version(tag)
-        )
+        ) + extension_problems(tag)
         for problem in problems:
             print(f"variant: {problem}")
         if problems:
@@ -278,6 +414,12 @@ def main(arguments: list[str]) -> int:
             for tag, directory in zip(tags, resaved)
         ]
         results.append(written_by_tests)
+        # A file Save could not keep leaves a `.lost` mark naming why; the readers open only
+        # `.ketchup` files, so without this the file is missing from the reads unseen
+        # (review 2026-11-03 TST-122).
+        for mark in sorted(files.glob("*.lost")):
+            print(f"a saved file was not kept: {mark.read_text(encoding='utf-8', errors='replace')}")
+            results.append(1)
         # A release that does not restore a file's history saves none in history/, and its
         # comparison is skipped; each release read must restore one (review 2026-11-06 P3,
         # and r23 P3: one restoring it let another that stopped pass).

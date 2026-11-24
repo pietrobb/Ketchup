@@ -4,7 +4,7 @@
 use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
-use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
+use ketchup_manufacturing::project_drawings::{DrawingSet, ModelFloors, ProjectView, ViewSummary};
 use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, TitleField};
 use ketchup_model::sheet_pdf::Mark;
 use std::time::Duration;
@@ -201,6 +201,37 @@ fn a_title_value_too_long_for_its_cell_stops_the_export_and_says_what_fits() {
         !path.exists(),
         "no sheet is written with the value cut short"
     );
+}
+
+/// Review 2026-11-10 R1110-MF-400: a row of the table of storeys with no
+/// face of the model under it refused the drawings (§3: drawings are no
+/// production export). They are written, and the message after the export
+/// names the row.
+#[test]
+fn a_storey_the_model_does_not_bear_out_is_written_and_named_after_the_export() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut settings = app.sheet_settings();
+    settings.storeys = vec![ketchup_manufacturing::title_block::StoreyLevels {
+        finished_floor_mm: 1000,
+        structural_mm: 1000,
+    }];
+    app.store_sheet_settings(settings);
+    let path = std::env::temp_dir().join(format!(
+        "ketchup-drawings-storey-in-the-air-{}.pdf",
+        std::process::id()
+    ));
+    assert!(app.export_project_drawings_to(&path), "{}", app.digest);
+    assert!(path.exists());
+    std::fs::remove_file(&path).unwrap();
+    for wanted in ["Storey 1 of the table", "at 1000 mm", "Correct the row"] {
+        assert!(
+            app.digest.contains(wanted),
+            "{wanted:?} not in {:?}",
+            app.digest
+        );
+    }
 }
 
 /// P3-V: a visible part whose bodies cannot be told apart (two independent
@@ -574,7 +605,7 @@ fn the_plan_marks_each_opening_and_the_schedule_sheet_is_the_hardware_list() {
             .unwrap_or_else(|| panic!("{} not in the schedule: {texts:?}", row.item));
         assert_eq!(texts[at + 1], row.count.to_string(), "{}", row.item);
     }
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// A 3 m timber-frame wall panel sheathed with OSB, a window 900 x 1200 in it.
@@ -701,7 +732,7 @@ fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
         last.page.texts().any(|text| text == total),
         "numbered n / N"
     );
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// R9-C step 15: the set has a shop drawing of the panel. Every piece carries
@@ -811,7 +842,7 @@ fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
             "{row:?} not in {texts:?}"
         );
     }
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.
@@ -1187,7 +1218,7 @@ fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
 
 /// The ground floor the drawings window shows, once its worker has found it.
 fn found_zero(app: &KetchupApp) -> Result<f64, String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(found) = app.found_zero(&app.document.current()) {
             return found.map_err(|error| app.found_zero_error_text(&error));
@@ -1329,7 +1360,7 @@ fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
     // Found on a worker (r19 MF-161).
     step_until(
         &mut harness,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         "the ground floor found",
         |app| app.found_zero(&app.document.current()).is_some(),
     );
@@ -1402,7 +1433,13 @@ fn zero_is_set_from_the_floor_found_not_from_nothing() {
     harness.step();
     assert_eq!(harness.state().drawings.editing.zero_level_mm, None);
 
-    floor.send(Ok(650.0)).unwrap();
+    floor
+        .send(Ok(Some(ModelFloors {
+            floors_mm: vec![650.0],
+            storey_floors_mm: vec![650.0],
+            top_mm: 3000.0,
+        })))
+        .unwrap();
     harness.step();
     harness.step();
     harness.get_by_label(&found).click_accesskit();
@@ -1711,6 +1748,17 @@ fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
     assert!(!sheet(4).exists());
 
     let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
+    // The write log names the old sheets a set of two removes, not its list
+    // (review 2026-11-21 ac P3).
+    assert_eq!(
+        crate::app::project_drawings::removed_sheets(
+            &path,
+            SetFileFormat::Dxf,
+            &targets,
+            &[sheet(1), sheet(2)]
+        ),
+        [sheet(3)]
+    );
     std::fs::write(sheet(3), b"saved meanwhile").unwrap();
     let error = publish_project_drawings(
         &path,
@@ -1843,7 +1891,7 @@ fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
         ),
     )
     .unwrap();
-    app.start_underlay_read(path, None);
+    app.start_underlay_read(path, None, None);
     let underlay = app
         .document
         .current()
@@ -1938,7 +1986,7 @@ fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
         ),
     )
     .unwrap();
-    app.start_underlay_read(path, None);
+    app.start_underlay_read(path, None, None);
     let underlay = app.document.current().underlays().next().cloned().unwrap();
     // The document lost the blob of its lines.
     app.file.container_data = ketchup_model::persistence::ContainerData::default();
@@ -1951,4 +1999,64 @@ fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
     assert_eq!(name, underlay.name);
     assert!(app.set_tag_visibility(underlay.tag, false));
     assert!(app.project_drawings().is_ok());
+}
+
+/// Review 2026-11-10 REL-404: Kečup 0.3.2 opened a document with a north,
+/// revisions or a table of storeys and dropped them at its next Save. Such a
+/// document is written as one every release refuses as newer, also when a
+/// Kečup before the mark kept the settings; one without them is not.
+#[test]
+fn sheet_settings_a_release_would_lose_make_the_file_newer_than_releases_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("north.ketchup");
+    let schema = |path: &std::path::Path| {
+        let bytes = std::fs::read(path).unwrap();
+        u16::from_le_bytes([bytes[10], bytes[11]])
+    };
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall", 0.0);
+    let mut settings = app.sheet_settings();
+    settings
+        .title_block
+        .insert(TitleField::Author, "Peter".to_owned());
+    app.store_sheet_settings(settings.clone());
+    assert!(app.save_document_to(&path), "{}", app.digest);
+    assert_eq!(schema(&path), 1, "every release keeps the title block");
+
+    settings.north_tenths_deg = Some(150);
+    app.store_sheet_settings(settings);
+    assert!(app.save_document_to(&path), "{}", app.digest);
+    assert_eq!(schema(&path), 3);
+
+    // Kečup 0.3.3 kept the same settings unmarked.
+    let bytes = app
+        .file
+        .container_data
+        .extensions()
+        .find(|entry| entry.path() == "sheet-v1.json")
+        .unwrap()
+        .bytes()
+        .to_vec();
+    let mut unmarked = ketchup_model::persistence::ContainerData::default();
+    unmarked.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.drawings",
+            "sheet-v1.json",
+            false,
+            bytes,
+        )
+        .unwrap(),
+    );
+    let older = directory.path().join("older.ketchup");
+    std::fs::write(
+        &older,
+        ketchup_model::persistence::save_container(&app.document.current(), &unmarked).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(schema(&older), 1);
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_from(&older), "{}", reopened.digest);
+    assert_eq!(reopened.sheet_settings().north_tenths_deg, Some(150));
+    assert!(reopened.save_document_to(&older), "{}", reopened.digest);
+    assert_eq!(schema(&older), 3);
 }

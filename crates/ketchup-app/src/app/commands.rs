@@ -345,6 +345,7 @@ impl KetchupApp {
             | AppCommand::ImportMeshStl
             | AppCommand::ImportDrawingDxf
             | AppCommand::ImportDrawingUnderlay
+            | AppCommand::CompareUnderlayRevision
             | AppCommand::ImportExactStep
             | AppCommand::ImportExactIges
             | AppCommand::ImportSketchupScene
@@ -364,11 +365,14 @@ impl KetchupApp {
             | AppCommand::ExportHomagMpr
             | AppCommand::ReviewCamExport
             | AppCommand::ReviewStaticFea
+            | AppCommand::ReviewSteadyThermal
             | AppCommand::ReviewLocalPdm
-            | AppCommand::ExportHundeggerBtlx => {
+            | AppCommand::ExportHundeggerBtlx
+            | AppCommand::ExportWorkshopPackage => {
                 self.dispatch_file_command(id);
             }
             AppCommand::OpenViewerComments => self.open_viewer_comments(),
+            AppCommand::ExportPresentationImage => self.open_presentation_dialog(),
             AppCommand::Undo => {
                 if self.undo() {
                     self.digest = self.catalog.text("digest-undo");

@@ -20,6 +20,8 @@ const MEMORY_PROBE_MIN_OBSERVED_BYTES: u64 = MEMORY_PROBE_ALLOCATION_BYTES / 2;
 const MEMORY_PROBE_CHILD_HANG_GUARD: Duration = Duration::from_secs(300);
 const MEMORY_PROBE_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE";
 const MEMORY_PROBE_READY_ENV: &str = "KETCHUP_MEMORY_HIGH_WATER_PROBE_READY";
+/// Where the corpus child writes its metrics; set only for that child.
+const CORPUS_CHILD_METRICS_ENV: &str = "KETCHUP_PRODUCTION_CORPUS_METRICS";
 
 #[derive(Clone, Copy)]
 struct CorpusEntry {
@@ -90,22 +92,76 @@ fn exact_worker_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
+/// An open system handle, closed once when dropped.
+#[cfg(windows)]
+struct Handle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the handle was opened by the system, is valid and is closed
+        // only here, once.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// The peak commit (`PeakPagedMemorySize64` in .NET) of process `pid`, asked
+/// of the system in this process: the PowerShell and WMI query it replaces
+/// could hang a CI job until its timeout (review 2026-11-08 CI-251). `None`
+/// once the process has exited.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_memory_high_water_bytes(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    // SAFETY: takes no pointers; a null handle is checked below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let process = Handle(process);
+    let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: size,
+        ..PROCESS_MEMORY_COUNTERS::default()
+    };
+    // SAFETY: the process handle is open and `counters` is owned here with its size set.
+    let read = unsafe { GetProcessMemoryInfo(process.0, &mut counters, size) } != 0;
+    read.then(|| u64::try_from(counters.PeakPagefileUsage).ok())
+        .flatten()
+}
+
+/// When process `pid` started, in 100 ns ticks; `None` once it has exited.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_process_start(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: takes no pointers; a null handle is checked below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let process = Handle(process);
+    let [mut creation, mut exit, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the process handle is open and the four times are owned here.
+    let read =
+        unsafe { GetProcessTimes(process.0, &mut creation, &mut exit, &mut kernel, &mut user) }
+            != 0;
+    read.then(|| (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
 #[cfg(windows)]
 fn process_memory_high_water_bytes() -> u64 {
-    let command = format!(
-        "[Console]::Write((Get-Process -Id {}).PeakPagedMemorySize64)",
-        std::process::id()
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .output()
-        .expect("PowerShell must measure memory high-water");
-    assert!(output.status.success(), "memory high-water query failed");
-    String::from_utf8(output.stdout)
-        .expect("memory high-water must be UTF-8 digits")
-        .trim()
-        .parse()
-        .expect("memory high-water must be numeric")
+    windows_memory_high_water_bytes(std::process::id())
+        .expect("the system must report this process's memory high-water")
 }
 
 /// Total of [`process_tree_memory_high_waters`]; descendants of concurrent
@@ -120,59 +176,71 @@ fn process_tree_memory_high_water_bytes() -> u64 {
         })
 }
 
-/// Memory high-water of this process and of every live descendant, by PID.
+/// Memory high-water of this process and of every live descendant, by PID,
+/// from a system snapshot of the processes and their parents.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
-    let command = format!(
-        r#"$ErrorActionPreference = 'Stop'
-$root = [uint32]{}
-$self = [uint32]$PID
-$processes = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
-$pending = [System.Collections.ArrayList]::new()
-[void]$pending.Add($root)
-$ids = [System.Collections.ArrayList]::new()
-while ($pending.Count -gt 0) {{
-    $id = [uint32]$pending[0]
-    $pending.RemoveAt(0)
-    if ($id -eq $self) {{ continue }}
-    [void]$ids.Add($id)
-    foreach ($child in $processes) {{
-        if ([uint32]$child.ParentProcessId -eq $id) {{
-            [void]$pending.Add([uint32]$child.ProcessId)
-        }}
-    }}
-}}
-foreach ($id in $ids) {{
-    # A descendant that exited after the listing no longer holds memory.
-    $process = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($null -ne $process) {{
-        [Console]::WriteLine("$id $([uint64]$process.PeakPagedMemorySize64)")
-    }}
-}}
-# The exit code would otherwise be that of the last Get-Process, which fails
-# quietly for a descendant that just exited.
-exit 0"#,
-        std::process::id()
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .output()
-        .expect("PowerShell must measure process-tree memory high-water");
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: takes no pointers; an invalid handle is checked below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     assert!(
-        output.status.success(),
-        "process-tree memory high-water query failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        snapshot != INVALID_HANDLE_VALUE,
+        "the system must list the processes: {}",
+        std::io::Error::last_os_error()
     );
-    String::from_utf8(output.stdout)
-        .expect("process-tree memory high-water must be UTF-8 digits")
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            line.trim()
-                .split_once(' ')
-                .and_then(|(pid, bytes)| Some((pid.parse().ok()?, bytes.parse().ok()?)))
-                .unwrap_or_else(|| panic!("process-tree memory high-water line {line:?}"))
-        })
+    let snapshot = Handle(snapshot);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap(),
+        ..PROCESSENTRY32W::default()
+    };
+    let mut relationships = Vec::new();
+    // SAFETY: the snapshot is open and `entry` is owned here with its size set.
+    let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
+    while more {
+        relationships.push((entry.th32ProcessID, entry.th32ParentProcessID));
+        // SAFETY: as for Process32FirstW.
+        more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
+    }
+    // A listed parent ID is not cleared when the parent exits, and Windows
+    // reuses IDs: a process started before the one now holding its parent's
+    // ID was not started by it, and counting it once added gigabytes of
+    // unrelated processes to the corpus on a CI runner.
+    let mut started = std::collections::HashMap::new();
+    let mut started_at = |pid: u32| {
+        *started
+            .entry(pid)
+            .or_insert_with(|| windows_process_start(pid))
+    };
+    let mut descendants = HashSet::from([std::process::id()]);
+    loop {
+        let previous_len = descendants.len();
+        for &(pid, parent) in &relationships {
+            // PID 0 lists itself as its own parent.
+            if pid != parent
+                && descendants.contains(&parent)
+                && !descendants.contains(&pid)
+                && matches!(
+                    (started_at(parent), started_at(pid)),
+                    (Some(parent_start), Some(child_start)) if child_start >= parent_start
+                )
+            {
+                descendants.insert(pid);
+            }
+        }
+        if descendants.len() == previous_len {
+            break;
+        }
+    }
+    // A descendant that exited after the listing no longer holds memory.
+    descendants
+        .into_iter()
+        .filter_map(|pid| windows_memory_high_water_bytes(pid).map(|bytes| (pid, bytes)))
         .collect()
 }
 
@@ -367,8 +435,8 @@ fn memory_high_water_probe_child() {
     std::fs::write(&staged_path, high_water_before.to_string())
         .expect("stage memory probe baseline");
     std::fs::rename(&staged_path, &ready_path).expect("publish memory probe readiness");
-    // Held until the parent closes stdin after its process-tree query, however
-    // long that takes; the pipe also closes if the parent exits.
+    // Held until the parent ends this process after its process-tree query,
+    // however long that takes; the pipe also closes if the parent exits.
     std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new())
         .expect("wait for memory probe release");
     std::hint::black_box(&allocation);
@@ -381,6 +449,11 @@ fn memory_high_water_probe_child() {
 fn verify_memory_high_water_observes_child_allocation() {
     let directory = tempfile::tempdir().expect("memory probe directory");
     let ready_path = directory.path().join("ready");
+    // Files, not pipes: waiting for a pipe's end also waits for every process
+    // that inherited it (review 2026-11-08 CI-251).
+    let output_file = |name: &str| {
+        std::fs::File::create(directory.path().join(name)).expect("memory probe output file")
+    };
     let mut child = Command::new(std::env::current_exe().expect("test executable path"))
         .args([
             "--exact",
@@ -390,8 +463,8 @@ fn verify_memory_high_water_observes_child_allocation() {
         .env(MEMORY_PROBE_ENV, "1")
         .env(MEMORY_PROBE_READY_ENV, &ready_path)
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(output_file("stdout"))
+        .stderr(output_file("stderr"))
         .spawn()
         .expect("spawn isolated child memory high-water probe");
     // Wait for the child's answer, ready or exited, not for a fixed time: on
@@ -406,22 +479,25 @@ fn verify_memory_high_water_observes_child_allocation() {
     }
     let ready = ready_path.is_file();
     let hung = !ready && child.try_wait().expect("poll memory probe child").is_none();
-    if hung {
-        child.kill().expect("end hung memory probe child");
-    }
     let child_id = child.id();
     let child_in_tree = process_tree_memory_high_waters()
         .into_iter()
         .find_map(|(pid, bytes)| (pid == child_id).then_some(bytes));
-    drop(child.stdin.take()); // releases the child
-    let output = child
-        .wait_with_output()
+    // Ended, not released by closing its stdin: a copy of the pipe another
+    // process inherited would keep it waiting, and this test with it (review
+    // 2026-11-08 CI-251). Ready means its own check already passed.
+    child.kill().expect("end memory probe child");
+    let status = child
+        .wait()
         .expect("wait for child memory high-water probe");
+    drop(child.stdin.take());
+    let output =
+        |name: &str| std::fs::read_to_string(directory.path().join(name)).unwrap_or_default();
     assert!(
-        ready && output.status.success(),
-        "isolated child memory high-water probe failed (ready={ready}, hung={hung}):\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        ready,
+        "isolated child memory high-water probe failed (status={status}, hung={hung}):\n{}\n{}",
+        output("stdout"),
+        output("stderr")
     );
     let child_before: u64 = std::fs::read_to_string(&ready_path)
         .expect("read memory probe baseline")
@@ -444,7 +520,7 @@ fn process_tree_memory_high_water_observes_child_allocation() {
 
 #[test]
 fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_parity_claims() {
-    corpus_metrics();
+    isolated_corpus_metrics();
 }
 
 /// The time budgets of the corpus hold in release, nightly; the test above
@@ -452,24 +528,79 @@ fn realistic_heterogeneous_corpus_measures_open_exact_ui_and_memory_without_pari
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
 fn perf_realistic_corpus_opens_rebuilds_and_draws_within_budget() {
-    for fixture in corpus_metrics().fixtures {
-        let name = fixture.name;
-        let open = fixture.cold_open_ms;
+    let metrics = isolated_corpus_metrics();
+    for fixture in metrics["fixtures"].as_array().expect("corpus fixtures") {
+        let name = fixture["name"].as_str().expect("fixture name");
+        let measured = |field: &str| fixture[field].as_f64().expect("fixture time in ms");
+        let open = measured("cold_open_ms");
         assert!(
-            open < milliseconds(OPEN_BUDGET),
+            open < milliseconds(ketchup_test_env::perf_budget(OPEN_BUDGET)),
             "{name} cold open took {open} ms"
         );
-        let rebuild = fixture.exact_rebuild_ms;
+        let rebuild = measured("exact_rebuild_ms");
         assert!(
-            rebuild < milliseconds(EXACT_REBUILD_BUDGET),
+            rebuild < milliseconds(ketchup_test_env::perf_budget(EXACT_REBUILD_BUDGET)),
             "{name} exact rebuild took {rebuild} ms"
         );
-        let frames = fixture.offscreen_ui_20_frames_ms;
+        let frames = measured("offscreen_ui_20_frames_ms");
         assert!(
-            frames < milliseconds(UI_FRAME_BUDGET),
+            frames < milliseconds(ketchup_test_env::perf_budget(UI_FRAME_BUDGET)),
             "{name} twenty offscreen UI frames took {frames} ms"
         );
     }
+}
+
+/// Runs the corpus for [`isolated_corpus_metrics`] in a process of its own.
+#[test]
+fn production_corpus_child() {
+    let Some(metrics_path) = std::env::var_os(CORPUS_CHILD_METRICS_ENV) else {
+        return;
+    };
+    let json = serde_json::to_string(&corpus_metrics()).unwrap();
+    std::fs::write(metrics_path, json).expect("write corpus metrics for the parent test");
+}
+
+/// The corpus in a child process of this test binary, as its metrics. The
+/// memory high-water of this process also holds every test running beside
+/// it: in CI run 44625008317 the corpus "grew" by 2.59 GB that way.
+fn isolated_corpus_metrics() -> serde_json::Value {
+    // One corpus at a time: an open session locks its document, and the
+    // tests of one file run side by side.
+    static CORPUS_RUN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_corpus = CORPUS_RUN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _turn = crate::integration_support::file_turn();
+    let directory = tempfile::tempdir().expect("corpus child directory");
+    let metrics_path = directory.path().join("metrics.json");
+    // Files, not pipes: waiting for a pipe's end also waits for every process
+    // that inherited it, here the exact workers (review 2026-11-08 CI-251).
+    let output_file = |name: &str| {
+        std::fs::File::create(directory.path().join(name)).expect("corpus child output file")
+    };
+    let status = Command::new(std::env::current_exe().expect("test executable path"))
+        .args([
+            "--exact",
+            &crate::integration_support::test_name(module_path!(), "production_corpus_child"),
+            "--nocapture",
+        ])
+        .env(CORPUS_CHILD_METRICS_ENV, &metrics_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(output_file("stdout"))
+        .stderr(output_file("stderr"))
+        .status()
+        .expect("run the corpus in a process of its own");
+    let output =
+        |name: &str| std::fs::read_to_string(directory.path().join(name)).unwrap_or_default();
+    eprint!("{}", output("stderr"));
+    // A child that ran no test also exits successfully, without metrics.
+    let metrics = std::fs::read_to_string(&metrics_path);
+    assert!(
+        status.success() && metrics.is_ok(),
+        "the corpus failed in its own process (status={status}):\n{}",
+        output("stdout")
+    );
+    serde_json::from_str(&metrics.unwrap()).expect("corpus metrics are JSON")
 }
 
 /// Opens, rebuilds and draws each document of the corpus, checks what each
@@ -642,7 +773,7 @@ fn corpus_metrics() -> CorpusMetrics {
             "timings are wall-clock samples from one local run, not a cross-product benchmark",
             "UI samples are deterministic offscreen egui frames and do not claim native-window or hardware-GPU latency",
             "legacy documents with unsupported producers report exact incompleteness instead of being skipped",
-            "memory is the live process-tree OS high-water sum: peak page-file usage on Windows and VmHWM on Linux",
+            "memory is the live process-tree OS high-water sum of a test process running only the corpus: peak page-file usage on Windows and VmHWM on Linux",
             "regression budgets are generous failure ceilings, not advertised performance targets",
         ],
     };
@@ -667,7 +798,7 @@ fn one_move_among_the_largest_indexed_model_commits() {
 fn perf_one_move_among_the_largest_indexed_model_commits_within_budget() {
     let fastest = fastest_move_among_the_largest_indexed_model();
     assert!(
-        fastest < ONE_EDIT_BUDGET,
+        fastest < ketchup_test_env::perf_budget(ONE_EDIT_BUDGET),
         "one move among the largest indexed model took {fastest:?}"
     );
 }

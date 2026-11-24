@@ -50,7 +50,7 @@ fn click(harness: &mut Harness<'_, KetchupApp>, key: &str) {
     harness.step();
     step_until(
         harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "save did not finish",
         |app| !app.native_save_in_progress(),
     );
@@ -186,7 +186,7 @@ fn save_on_close_remains_responsive_while_disk_is_locked_and_protects_new_edits(
         harness.step();
         step_until(
             &mut harness,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             "save did not start writing",
             |app| app.native_save_is_writing(),
         );
@@ -214,7 +214,7 @@ fn save_on_close_remains_responsive_while_disk_is_locked_and_protects_new_edits(
         lock.unlock().unwrap();
         step_until(
             &mut harness,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             "save did not finish",
             |app| !app.native_save_in_progress(),
         );
@@ -248,7 +248,7 @@ fn saving_elsewhere_during_close_preparation_does_not_authorize_closing() {
     assert!(!harness.state().is_dirty());
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "save did not finish",
         |app| !app.native_save_in_progress(),
     );

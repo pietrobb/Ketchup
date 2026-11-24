@@ -26,8 +26,9 @@ pub enum ExportBlock {
     /// A copy is placed by a transform other than a rotation and a move, or
     /// resolves to another definition than its row.
     UnusablePlacement,
-    /// A pin joint drills a piece the export does not make.
-    UnmadePinHole,
+    /// The copies of a part one program machines are drilled for pin joints
+    /// at different places.
+    CopiesDrilledApart,
     /// A dimension, count or name is out of what the format can write.
     ValueOutOfRange,
     /// Two pieces would be written under one name (instance, production code
@@ -60,8 +61,8 @@ impl fmt::Display for ExportBlock {
             Self::UnusablePlacement => {
                 "a copy is not placed by a rotation and a move alone, or is no longer a copy of this part; evaluate the model again"
             }
-            Self::UnmadePinHole => {
-                "a pin joint drills a piece this file does not make (a purchased or site-built part, or one outside the production scope); make that part or remove the pin joint"
+            Self::CopiesDrilledApart => {
+                "its copies are drilled for pin joints at different places, and one program machines every copy; export the HOMAG production package, which writes a program for each copy"
             }
             Self::ValueOutOfRange => {
                 "a dimension, count or name is out of what the file can write (zero, too large, or not plain ASCII)"
@@ -288,7 +289,7 @@ impl fmt::Display for GeneralFabricationError {
             }
             Self::BtlxProfileRequestUnsupported { part } => write!(
                 formatter,
-                "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling takes only rectangular line contours with at most 32 intermediate cuts; choose the portable FreeContour strategy for this part",
+                "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling saws only rectangles, with at most 32 intermediate cuts, and mills a contour with an arc whole; any other straight-edged contour is a saw cut it does not lay out; choose the portable FreeContour strategy for this part",
             ),
             Self::ScaledPlacement(error) => write!(formatter, "a part cannot be fabricated: {error}"),
             Self::PartExportBlocked { part, reason } => write!(

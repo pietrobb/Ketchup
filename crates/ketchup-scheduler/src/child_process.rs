@@ -58,6 +58,33 @@ pub(crate) fn keep_memory_limit() {
     }
 }
 
+/// The worker's test hook for memory: one block of `bytes`, written so it counts in
+/// what the worker uses, held until the next one, and `hold` before the answer, so the
+/// worker holds it in the middle of a request. A refused block is held `hold` too
+/// before the worker ends, as abort() holds it on Windows.
+pub(crate) fn hold_block(bytes: u64, hold: std::time::Duration) {
+    static HELD: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+    let mut held = HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The block before is given back first.
+    *held = Vec::new();
+    let length = usize::try_from(bytes).unwrap_or(usize::MAX);
+    if held.try_reserve_exact(length).is_err() {
+        // A refused block ends the worker as a failed allocation does, with the same
+        // message, but without abort(): on Windows that files an error report first
+        // and holds the process for seconds, past the request's deadline on a loaded
+        // machine (idea #170). A worker sets no log file, so the line goes to the
+        // standard error the client reads for that message.
+        ketchup_rejection::log!("memory allocation of {bytes} bytes failed");
+        std::thread::sleep(hold);
+        std::process::exit(1);
+    }
+    held.resize(length, 1);
+    std::hint::black_box(&*held);
+    std::thread::sleep(hold);
+}
+
 /// Ends this process at once. `process::exit` would first run the exit
 /// handlers and static destructors, OCCT's among them, while the main thread
 /// may still be inside OCCT, so the worker could crash or hang instead of

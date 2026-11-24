@@ -545,9 +545,18 @@ fn large_house_every_load_of_the_house_reaches_something_that_carries_it() {
 
 #[test]
 #[ignore = "large-house: runs in full suite"]
-fn large_house_every_member_of_the_house_carries_its_loads_once_the_site_snow_is_given() {
+fn large_house_every_member_of_the_house_carries_its_loads_with_the_site_snow() {
     let without = report(HOUSE, &[]);
     let with = report(HOUSE, &[("snow_sk", 1.0)]);
+    // Review 2026-11-08 PG-241: a kind qualified by side or product ("krokvová
+    // spojka ľavá") is the catalogue's kind, not an unknown one.
+    let unknown = with
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == ketchup_program::loads::JOINT_KIND_UNKNOWN)
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(unknown, Vec::<&str>::new());
     assert!(
         with.loads.members.len() > 200,
         "{}",
@@ -564,20 +573,26 @@ fn large_house_every_member_of_the_house_carries_its_loads_once_the_site_snow_is
             member.part
         );
     }
-    // Without the site's snow every rafter says what it lacks.
-    for member in without
-        .loads
-        .members
-        .iter()
-        .filter(|member| member.part.contains("/krokva "))
-    {
-        assert_eq!(
-            member.missing,
-            ["sneh (snow) has no value"],
-            "{}",
-            member.part
-        );
+    // Review 2026-11-08 §5.3: by default the house stands in Senec, 150 m, snow zone 1
+    // of the STN EN 1991-1-3/NA1 map, so site() gives s_k = 0.454 + 150/970 = 0.609 and
+    // no member lacks its snow.
+    assert!(
+        without
+            .design
+            .basis
+            .iter()
+            .any(|line| line.contains("s_k = 0.609 kN/m²")),
+        "{:?}",
+        without.design.basis
+    );
+    for member in &without.loads.members {
+        assert_eq!(member.missing, Vec::<String>::new(), "{}", member.part);
     }
+    let default_rafter = member(&without, "konštrukcia/strecha južná/krokva 3");
+    close(
+        default_rafter.loads_n["snow"],
+        default_rafter.loads_n["roof"] / 400.0 * 0.8 * 20.0 / 30.0 * 609.0,
+    );
     // The hangers get their loads; only their rating is missing.
     assert!(with.joints.len() >= 20);
     for check in &with.joints {

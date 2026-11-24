@@ -24,7 +24,7 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 | Way | Command |
 |---|---|
 | Command line, no OCCT or GUI needed | `ketchup-program check cabinet.star --set width=700` |
-| Quick check of a large program or an edited prelude, no build | `ketchup-program check house.star --summary --prelude crates/ketchup-program/library/prelude.star` (parts per layer, statics, issues grouped by kind); `--diff saved.json` lists what changed against a summary saved earlier |
+| Quick check of a large program or an edited prelude, no build | `ketchup-program check house.star --summary --prelude crates/ketchup-program/library/prelude.star` (parts per layer, statics, issues grouped by kind); `--diff saved.json` lists what changed against a summary saved earlier; `--calculation sk` (or `cz`) prints the printable structural calculation as A4 HTML instead |
 | Headless protocol | `program_check` (report only), `program_apply` (replace the document, one undo step) |
 | Python SDK | `session.check_program(source, params={...})`, `session.program_document(source, ...)` |
 | AI agent (MCP, `ketchup-app --mcp`) | `program` with `action=apply` in the open window; `action=docs` lists the library topics, `name=<topic>` returns one |
@@ -32,7 +32,10 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 `ketchup-program check` exits with 0 when the program has no error-level issue and its
 statics, if it has any, are verified; 1 for an error-level issue or a failing member or
 joint; 3 when nothing fails but a member or joint is not verified or a load reaches no
-member (`statics_verdict` in the summary); 2 when the program cannot be evaluated.
+member (`statics_verdict` in the summary); 2 when the program cannot be evaluated, or
+not as asked: a `--set` name the program has no `param()` of is listed in
+`unused_overrides` and said on stderr with the parameter it likely means, in any case
+(`--set Snow_SK: the program has no parameter Snow_SK; did you mean snow_sk?`).
 
 The CLI/headless run returns the report below. MCP apply/patch returns a concise
 source diff, summary counts and bounded issue/relation previews. Retrieve complete
@@ -82,7 +85,8 @@ Full report fields:
   (edge or corner only), `overlap` (`depth_mm` and `status`: `subtracted`
   with `cut_in` naming the part that holds the socket and `depth_mm` how far
   the other reaches in at its deepest; `removed`, `pocket`, `joint`,
-  `collision`, `unverified`, `boxes_only`) or `gap` (`gap_mm`); `direction`
+  `collision`, `unverified`, `boxes_only`, `purchased_assembly`) or `gap`
+  (`gap_mm`); `direction`
   is the world unit vector from the first part towards the second; `joint`
   names a declared joint; `approx` marks a pair measured on the box of a
   profile body or an intersected part. MCP previews at most 8; report pages retrieve every relation.
@@ -108,6 +112,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 |---|---|
 | `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, an int in the program even with a default written `3.0`, whose fraction stops the program at `param()`, naming the parameter. An override outside `min`/`max`, or one with a fraction (or of 1e9 or more) for a `whole=True` count, is not used: the program is built with the default and reports `param_out_of_range`, so a document saved before its program narrowed still opens. The window's field, MCP `set_params` and program `apply`/`check` with `overrides` refuse such a value outright; a default outside `min`/`max` is reported as `param_out_of_range` |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there, and `"material:axis"`, the axis the cut list keeps its blank square to; an extrusion turned in its profile's plane needs that one to keep it) |
+| `imported(name, file, part=, at=, material=, color=, attributes=, tags=, grounded=False)` | a part whose body is the STEP file `file` (`.step` or `.stp`), given relative to the folder of the program's own file and inside it (an absolute path, a drive or a `..` out of that folder is refused). `part=` takes one part of an assembly file, by its name or by the name of its placement there; without it the whole file. The file's origin and axes are the part's own, so `at=`, `move`, `rotate` and `place` move it like any part. The host reads the file after the evaluation, so the program does not know the body's size, and the part takes no operation (hole, pocket, cut, boolean) and is no tool: shape the parts it fits instead. Bought parts use the library's `purchased()` |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
 | `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, through=False, id=)` | a hole drilled along the face's inward normal; returns an operation reference for `joint_link`; `face` is a name or a `face()` value; on a round face `at=(angle, v)` |
@@ -130,6 +135,8 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `slide(axis, min, max)`, `rotate_motion(axis, min, max, pivot=)`, `assembly_step(motion, start=, end=)`, `tool_access(name, envelope=, motion=, start=, end=)` | a motion for `joint(kind="motion")` in mm or degrees; an insertion in source order; a tool envelope's approach, checked by the `assembly_path` and `tool_access` validators |
 | `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], fixed=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down (a part leaning on or hanging from them needs a `joint()` or a `fixed` tag) |
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
+| `site(country, municipality=, altitude=, snow_zone=, sk=, source=)` | the building site, "SK" or "CZ": `.sk` the snow load on the ground from the national annex map (a Czech `snow_zone`, a Slovak `snow_zone` 1–5 with `altitude` by STN EN 1991-1-3/NA1 table NA.1, else `sk=` with `source=`), `.source`; altitude above 1000 m gives snow psi0 0.7; the design basis names it |
+| `thermal_check(name, layers=, element=, theta_e=, theta_i=20, phi_i=50, phi_e=84)` | the thermal check of a build-up (`buildup()` layers, inside first, with `lambda` or `r` and `mu` or `sd`, a framed layer's `infill_lambda`, `infill_mu`; layers from a `ventilated` one outward left out) as `element` (wall, steep_roof, roof, floor_over_exterior, ceiling_under_unheated, floor_on_ground) to the Slovak STN 73 0540-2 or the Czech CSN 73 0540-2 by `site()`: report section `thermal` with U (EN ISO 6946) against the requirement, the inner surface's f_Rsi against mould and condensation in the design winter state at `theta_e`; returns `.u`, `.r` |
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
 | `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=, rho_k=, product=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design`; `product` (solid, glulam, lvl, plywood, osb2, osb3, osb4, particleboard_p5/p6/p7) picks its kmod, kdef and gamma_M; without it (and not `glulam`) the material's members are not verified |
 | `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting`. `along` declares which part attribute names the local axis (`"x"`, `"y"`) that runs along a sheet's length, e.g. the library's `"grain"`; for parts of that material only that attribute keeps the blank square to the axis, so name a direction attribute, never one such as `grid` |
@@ -145,6 +152,57 @@ what measures a box's sides from its minimum corner. A boolean leaves
 `<operation>.<tool face>`. `face()` gives each face's frame, and faces follow
 `push_pull`, `mirror`, `rotate` and `place`, so holes and pockets work in any
 order with them.
+
+## Exact drawing sheets
+
+`drawing_sheet(name, source=part_name, hole_callouts=False)` declares a sheet of one
+existing program part. `sheet_annotation(name, sheet=sheet_name, view="front", mark={...})`
+adds a typed mark to an already declared sheet. Names are unique per sheet. The library
+helpers in topic `sheet_annotations` provide the mark dictionaries and their defaults:
+
+- `sheet_angular(name, sheet, view, lines, arc_radius_page_mm=8, tolerance=None)`:
+  two visible line selectors and an arc radius in paper millimetres.
+- `sheet_radius(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None)`
+  and `sheet_diameter(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None)`:
+  one exact circular-edge selector, a leader angle and a paper offset.
+- `sheet_datum(name, sheet, view, line, label, offset_page_mm=[0, -8])`:
+  a datum symbol attached to one visible line.
+- `sheet_feature_control_frame(name, sheet, view, line, characteristic, tolerance_mm, offset_page_mm=[10, -12], datum_labels=[], diameter_zone=False, material_condition="None")`:
+  a GD&T frame, e.g. `characteristic="flatness"` or `"position"`. Referenced datum
+  labels must exist on the sheet; material condition is `"None"`, `"MaximumMaterial"`
+  or `"LeastMaterial"`. This declares a tolerance, not a geometric conformance check.
+
+Line selectors are `{"direction": [dx, dy], "through_mm": [x, y]}`; circle selectors
+are `{"center_mm": [x, y], "radius_mm": r}`. Coordinates are model millimetres in the
+projected view, not paper coordinates. A selector must match exactly one edge; for
+parallel lines, choose a point on the intended segment. `view` is `front`, `top`,
+`right`, `back`, `bottom` or `left`. Dimension `tolerance` is a symmetric deviation
+in degrees for angular dimensions and millimetres for radius/diameter dimensions.
+
+```python
+box("bracket", (40, 30, 10))
+drawing_sheet("Detail", source="bracket")
+sheet_datum("base", sheet="Detail", view="front",
+    line={"direction": [1, 0], "through_mm": [20, 0]}, label="A")
+sheet_angular("corner", sheet="Detail", view="front",
+    lines=[{"direction": [1, 0], "through_mm": [20, 0]},
+           {"direction": [0, 1], "through_mm": [0, 5]}], tolerance=0.5)
+```
+
+`hole_callouts=True` groups equal intact circular Pad/Boolean cuts and cosmetic
+metric threads, including quantities such as `4×`. Depth is the finished cylinder's
+axial span, not cutter travel or proof of a blind/through hole. Each callout has a
+leader to one of its holes in a sheet view that shows the hole as a circle; holes no
+view shows that way are refused. The text is read from the finished exact faces:
+through or a flat or drilled bottom, counterbores, a countersink, and a cosmetic or
+modeled thread (called out like a cosmetic one). Threads require sufficient
+blind-hole runout; a hole whose wall another cut breaks, that widens below its entry
+or that has two threads, and unsupported cut provenance, are refused with the cut's
+name and the reason rather than silently omitted. Reapplying the program
+regenerates its sheets; removing a declaration removes its sheet. Manual sheets are
+preserved and ambiguous name collisions are refused. Geometry and sheets publish in
+one Undo step and survive Save/Open. Export the resulting sheet as SVG, DXF or PDF
+from Drawings or MCP `file action=export_drawings` with its `sheet_id`.
 
 ## Library (Starlark, `crates/ketchup-program/library/prelude.star`)
 
@@ -171,13 +229,68 @@ parts that hold the compressed edge (the top under sagging, the bottom under
 hogging), bear on a part declared `grounded=True` beside the beam (across it,
 beyond its side) and are fastened to both by `joint()`;
 `loads.members[].braced_by` lists them. A grounded part must be stiff sideways
-(a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
-`none`, `contact`, `friction`, `unfastened`, `loose`, `free` and `rests`; a load
+(a wall, not a hinged stud). A joint's `kind` is read against a closed catalogue
+in English, Slovak, Czech and German (`ketchup-program/src/joint_kind.rs`), in any
+case, with `_` and `-` read as spaces, by its leading words, so a side, size or
+product after them counts as it does (`vrut 6x120`, `Schraube links`, `Arunda 80 B`;
+one character alone after a kind, as `screw y` or `screw ½`, is no size). Kinds such
+as `none`, `contact`, `friction`, `unfastened`, `loose`, `free`, `rests`, `volne`,
+`kontakt`, `dotyk`, `lose`, `frei`, `nichts` or `contact adhesive` fasten nothing;
+when a kind starts with words of both catalogues (`lose Schraube`), it fastens
+nothing. Kinds such as `screw`, `hanger`, `structural adhesive`, `vrut`, `spojka` or
+`Balkenschuh` fasten; `glue`, `adhesive` or `lepidlo` alone say no structural
+adhesive (EN 1995-1-1 3.6) and are unknown. A kind of neither is
+taken to fasten and reported as `joint_kind_unknown`, and every check standing on
+it (the members it joins or braces, its joint check) is `not_verified`. A load
 path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
 empty; one of five letters or more that reads like a slip of a kind fastening
 nothing (`contcat`, `contacts`) fastens and is reported as `joint_kind_doubtful`.
+A brace holds the beam only when its material has a timber strength class
+(`timber_design` or `timber_strength`, OSB with `product="osb3"`); one of mineral
+wool or any undeclared material holds nothing, and the not-verified reason names
+it. `design.members[].bracing` gives, for each edge something braces, what each
+brace must take after EN 1995-1-1 9.2.5.2: `axial_n` = (1 - kcrit) M_d / h with
+kcrit of the beam unbraced, `force_n` = N_d / 60 (solid timber) or / 80 (glulam)
+and `stiffness_n_mm` = 4 N_d / a over the longest free stretch. The braces, their
+anchorage and their fasteners are not checked against it, nor a bracing of
+several members (9.2.5.3); the design basis says so.
+Two declarations say what the geometry cannot. `diaphragm(sheets,
+anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
+its joists, one stiff plane anchored to grounded parts: when every anchor is
+declared grounded and fastened where it touches one of the sheets, each sheet that
+reaches an anchor through sheets fastened to each other where they touch (sheets that only touch, as a loose board over a butt joint, hold nothing; a contact ties them only under a fastener the joint names or, when it names none, as long as the thinner sheet is thick and half as wide) holds the members it is
+fastened to on the edge it lies on. It holds a member only where an anchor holds
+it across the member beyond its side, at places farther apart than the member is
+deep (a joint naming no fasteners holds along its whole contact); a diaphragm
+anchored in line with a member, on its own posts or at one small pin holds
+nothing of it, nor of a member named among its own sheets. `brace(members, by=[...], edge="top",
+spacing=None)` says which edge the parts `by` hold where they touch each member
+(a lath on a beam's side nearer its middle than that edge holds no edge, declared or not), every `spacing`
+mm (at least 10) along the contact or at the joint's fasteners there. Where the
+geometry reads the other edge (a lath under the beam), that edge holds. Each
+brace must still be fastened to the member and anchored: declared grounded and
+reaching across the member beyond its side, mostly beside its width (a grounded
+block on its top, even a little wider than it, sways with it), a sheet of a diaphragm that holds the member, or fastened to a grounded
+part where they touch and across the member beyond its side. A declaration the geometry contradicts or
+that holds nothing is reported as `declared_bracing_ignored` with the reason; a
+joint of an unknown kind anywhere from the member through its braces to the
+ground leaves the member not verified. A part's `"length_axis"` attribute names
+the local axis its grain runs along (`"x"`, `"y"` or `"z"`, another value is
+refused); one naming an axis ten times shorter than the part's longest side, or
+one across which the part's bearings lie farther apart than the part is long
+along it, leaves it not verified.
 A brace anchored to a grounded part smaller across the member than the member
-is deep is reported as `anchorage_small`. A brace holds the beam at its
+is deep, through a diaphragm too, is reported as `anchorage_small` and leaves the
+member not verified. An anchorage holds only standing on the ground by a path
+of its own: parts touching face to face (not at an edge or a corner) from it to
+a grounded part standing on the floor, through no `load_path()` member, the
+brace or the diaphragm's own sheets, each part on the way as deep across the
+member as the member and none of them, the anchorage and the grounded part
+included, slender: a bar no longer, a flat part (at least four times as wide as
+thick) no wider, than 60 times its thinnest side. A free part on the floor, a
+grounded rod, a nub, a second beam on its
+posts or a part resting on the member is no ground, and a grounded part
+standing on nothing modelled holds nothing, saying so. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts
 and no deeper from it than the thinner part is thick (others are reported as
 `fastener_off_contact` and hold nothing), or at the middle of each place they
@@ -294,6 +407,188 @@ and subtract a bar or rod cast into concrete from the concrete.
 anchors a timber beam to a reinforced footing with threaded rods, washers, nuts
 and bolts.
 
+`bearing_dimensions(designation)` supplies the published mounting dimensions of
+the deep-groove ball bearing series 60 and 62 from `6000`/`6200` (10 mm bore) to
+`6012`/`6212` (60 mm bore), with bore, outside diameter and width in
+millimetres, the `maker` whose catalogue gives them (SKF product pages for
+`6000`, `6001`, `6004`, `6201` and `6204`, the NSK bearing tables for the rest)
+and the catalogue URL and page in `source`. The BOM item is the maker and
+designation, for example `NSK 6206`. Unlisted designations are refused as **not specified**; ball
+diameter and count remain `None`, not estimated from the outside dimensions.
+`bearing_envelope(name, designation, at=(0,0,0), axis=(0,0,1), tags=None)`
+creates an exact annular **mounting envelope**, seated at `at` along `axis`.
+It is a purchased item with its source and geometry limitation in the BOM,
+not a detailed bearing, material-volume model, mass estimate or load rating.
+Use `component("bearing unit", [bearing_envelope("body", "6204")])` and
+`instance()` for repeated placements. Raceway, cage, ball and chamfer geometry
+are not specified by this library; use a supplier model when they are needed.
+
+`purchased(name, step, article, supplier, at=(0,0,0), z=(0,0,1), x=(1,0,0),
+part=None, qty=1, tags=None)` places a supplier's STEP model (a hinge, a
+runner, a push-to-open unit) as a bought part. `step` follows the rules of
+`imported()`: relative to the folder of the program's file and inside it. The
+file's origin goes to `at`, its z axis along `z` and its x axis along `x`, so
+the part follows the parameters it is placed by. `part=` takes one part of an
+assembly file by its name or by the name of its placement in the assembly, and
+sits where that assembly places it. The part is listed in `bom.hardware` as
+`"<supplier> <article>"` with `article` and `supplier` attributes, counted once
+per call (`qty` pieces), so five calls with one article are one row of 5; it is
+never in the cut list, CNC or BTLx output. An empty `article` or `supplier`, or
+a `qty` below 1, stops the program. On apply the host reads each file once,
+however many parts use it; a file it cannot read stops the apply with
+`program_import_failed` naming the part, the file and why. Applying by source
+alone, without the program's file, reuses the bodies the document already
+holds. Bought parts take part in the collision check like any other part; two
+parts of one assembly file that overlap where that file places them are a
+`purchased_assembly_contact` warning, not a collision.
+
+```python
+door_h = param("door_h", 2000, min = 1200, max = 2600)
+board("door", (600, 18, door_h))
+for (i, z) in enumerate([100, door_h - 100]):
+    purchased("hinge %d" % i, "hettich/9237903.stp", "9237903", "Hettich",
+              at = (18, 0, z), z = (-1, 0, 0), x = (0, 0, 1))
+```
+
+`ball_screw_nut_dimensions(designation)` returns the DIN 69051-5 form B single
+flange nut dimensions of the [HIWIN Italy ground ballscrew catalogue](https://www.hiwin.it/images/download/documenti/ENG/catalogo%20viti.pdf),
+table 6.7 on page 51, for `R16-5T3-FSI` up to `R50-10K6-FSC`: screw diameter
+and lead, nut diameter and length, flange diameter, thickness and flats, and
+the bolt circle, hole diameter and hole pattern (type 1 with 6 holes or type 2
+with 8). Unlisted designations are refused as **not specified**; `raceway` and
+`mass_kg` remain `None`. `ball_screw_nut(name, designation, at=(0,0,0),
+axis=(0,0,1), tags=None)` creates the exact flange with its flats and mounting
+holes and the nut body, with `at` on the back face of the flange and `axis`
+pointing along the body. The bore is the nominal screw diameter, an envelope
+rather than the raceway; the g6 pilot tolerance, seals and greasing hole are
+not modelled. The nut is a purchased item in the BOM with its source.
+
+`ball_screw_shaft_dimensions(designation)` returns the ground stock shaft for
+the same table 6.7 designations: nominal diameter, lead, ball diameter, maximum
+shaft and thread length (as printed; the `R32-10T5-FSI` row prints a thread
+longer than the shaft), the 3 mm maximum incomplete thread, and the pitch
+circle and core diameters from table 6.5 on pages 52-53. `raceway` and
+`mass_kg` remain `None`. `ball_screw_shaft(name, designation, length,
+thread_length, thread_start=None, at=(0,0,0), axis=(0,0,1), tags=None)` creates
+the shaft as a cylinder at nominal diameter over its whole length, starting at
+`at` and running along `axis`, like the catalogue's stock shaft drawing. The
+thread zone, from `thread_start` over `thread_length`, is recorded with its
+core diameter, but the helical raceway is not modelled. `thread_start` is not
+in the catalogue, so it must be supplied. Lengths above the stock limits and a
+thread zone outside the shaft are refused. The shaft is a purchased item in the
+BOM named with its length, so a nut and its shaft can form one component.
+
+`stepper_motor_dimensions("17HS19-2004S1")` returns dimensions from the
+[STEPPERONLINE supplier drawing](https://www.omc-stepperonline.com/download/17HS19-2004S1.pdf),
+not dimensions inferred from the NEMA 17 frame designation. `stepper_motor(name,
+designation, at=(0,0,0), axis=(0,0,1), tags=None, mount_drill_depth=None)` builds the mounting geometry:
+a maximum 42.3 × 42.3 × 48 mm housing envelope, Ø22 × 2 mm pilot, Ø5 shaft
+extending 24 mm from the front with a 15 mm long flat (4.5 mm total thickness),
+and four blind M3 mounting holes on a 31 mm square. `at` is the centre of the
+**rear housing face**; `axis` points from the rear towards the output shaft.
+The holes use the library's M3 tap drill and a **cosmetic** thread at the drawing's
+minimum 4.5 mm threaded depth. The drill-bottom depth is **not specified**:
+`mount_drill_depth` must be supplied from verified information; otherwise the
+helper refuses to create the model. The existing blind-hole runout check still
+applies. The BOM labels this depth as caller-supplied, not supplier data.
+The same helpers accept `23HS22-2804S` (NEMA 23), from its
+[STEPPERONLINE drawing](https://www.omc-stepperonline.com/download/23HS22-2804S.pdf):
+a maximum 57.3 × 57.3 × 56 mm housing envelope, Ø38.1 × 1.6 mm pilot,
+Ø6.35 shaft extending 21 mm with a 15 mm flat (5.85 mm total thickness),
+and four **clearance** Ø5.2 mm holes on a 47.14 mm square, without threads.
+Their termination/flange thickness is not dimensioned: `mount_drill_depth`
+is required here too; the model does not assume holes through the whole motor.
+For both motors, supplied depth defines a blind cylindrical cut in the housing
+**envelope**, not a claim about the manufacturer's internal flange geometry.
+Nominal shaft/pilot values are used; this is not a tolerance-fit check.
+Unspecified housing corner cuts, recesses, internals, cable/connector geometry
+and mass are not modeled or estimated. The part's `geometry_basis`, `mass_basis`
+and drawing `source` travel into the hardware BOM. Unknown designations, including
+bare `NEMA17`/`NEMA23`, are refused; missing catalogue detail remains `None`.
+Use `component("drive", [stepper_motor("motor", "17HS19-2004S1",
+mount_drill_depth=verified_depth)])` with `instance()` for repeated drives;
+native Save/Open and exact STEP retain their
+placement and geometry. This is a dimensioned interface model, not a complete
+motor manufacturing model.
+
+`linear_rail_dimensions("MGNR09R" | "MGNR12R" | "MGNR15R")` returns HIWIN rail
+mounting dimensions from
+[MG catalogue table 3.81, page 4](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf).
+MGNR12R: 12 mm width, 8 mm height, Ø3.5 through holes with Ø6 × 4.5 mm
+counterbores at 25 mm pitch, 35–2000 mm cut length, and 5–20 mm end distances.
+MGNR09R: 9 × 6.5 mm, Ø6 × 3.5 counterbores at 20 mm pitch, 30–1200 mm, ends
+5–15 mm. MGNR15R: 15 × 10 mm, Ø6 × 4.5 counterbores at 40 mm pitch,
+52–2000 mm, ends 6–34 mm. MGNR07R and smaller use M2 screws and are not
+included. The raceway
+`section` remains `None`: the drawing does not dimension its curves, and the
+[HIWIN terms of use](https://www.hiwinsupport.com/cad_download/) do not allow
+its CAD models to be published, so the library cannot ship the section.
+`linear_rail(name, designation, length, first_hole=None, section=None,
+section_source=None, top_face="top", at=(0,0,0), axis=(0,0,1), tags=None)`
+requires an explicitly supplied closed section and nonempty source reference,
+not an invented rectangular replacement. The caller is responsible for the
+section's fidelity; a source string is provenance, not independent certification.
+The section lies in local XY, x from −W_R/2 to +W_R/2 and y from 0 to H_R; the named
+planar top face must point along +Y. Extrusion follows +Z from the base centre
+at the first cut end. `first_hole` is an explicit distance from that end; both
+end distances must satisfy the catalogue. Holes and counterbores are applied
+before placement along `axis`. The purchased-item BOM retains length, hole
+layout, catalogue source and caller's section source separately. A changed cut
+length recomputes the hole count. Use `component()`/`instance()` for repeats;
+Save/Open and STEP retain the exact supplied section and mounting cuts.
+This helper does not supply a verified raceway profile.
+
+`linear_carriage_dimensions("MGN09C" | "MGN09H" | "MGN12C" | "MGN12H" |
+"MGN15C" | "MGN15H")` returns HIWIN block dimensions
+from [MG catalogue table 3.79, page 2](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf),
+for example MGN12: height H 13, clearance H1 3, width W 27, length L 34.7 / 45.4,
+mounting pattern B 20 × C 15 / 20 with M3 × 3.5 threads, load ratings and
+catalogue weight. MGN09 (H 10, W 20, L 28.9 / 39.9, M3 × 3) runs on MGNR09R
+and MGN15 (H 16, W 32, L 42.1 / 58.8, M3 × 4) on MGNR15R. `raceway_section` and `mount_drill_depth_mm` remain `None`.
+`linear_carriage(name, designation, at=(0,0,0), axis=(0,0,1), tags=None,
+mount_drill_depth=None)` places the block on the `linear_rail` datum: `at` is
+the rail base centre under the block's first end and the block runs L along
+`axis`. The solid is the catalogue envelope W × (H − H1) × L less the rail's
+W_R × H_R envelope, so it never overlaps its rail. The four tapped mounts are
+cosmetic threads; the drill depth is not published, so a verified value must
+be supplied and must leave the DIN 76 tap runout. Raceways, balls, end seals and
+the lubrication port are not modelled; the BOM keeps the rail, ratings,
+catalogue weight and the caller-supplied drill depth with its basis.
+
+`slot_profile_dimensions("Motedis-20x20-I5")` and
+`slot_profile(name, designation, length, at=(0,0,0), axis=(0,0,1), tags=None)`
+use the [Motedis supplier STEP](https://www.motedis.com/shop/products_files/Motedis_Profile%2020x20%20I-Type%20slot%205.zip)
+(P20_N5_I, dated 2012-11-22), not an approximate square with rectangular slots.
+The 20 × 20 mm section retains all 72 line/circle edges, slot lips, fillets and
+Ø4.3 mm bore; section area is about 181.93618 mm². STEP end-face coordinates
+are centred on XY and rounded to 1e-9 mm, without polygon tessellation.
+These are nominal CAD dimensions, not manufacturing tolerance guarantees.
+`length` must be positive; `at` is the centre of the first cut end and `axis`
+is the extrusion direction. Use `component()` and `instance()` for repeats.
+The purchased-item BOM carries designation, cut length and supplier source;
+Save/Open and exact STEP retain the section and placement. Other designations
+are rejected as unspecified, not scaled from this one. A planar profile loop may contain up to 256 segments;
+the independent path limit remains 64 and the total per planar region remains
+4096 segments. Sketches without constraints retain their validated coordinates
+without numerical solving (up to the existing 4096-entity limit); the solver's
+512-degree-of-freedom budget still applies to sketches with constraints.
+
+`slot_profile_dimensions("Motedis-30x30L-I6")` uses the separate
+[Motedis 019597 supplier STEP](https://www.motedis.com/shop/products_files/Motedis_019597.zip)
+(dated 2026-04-22), not a scaled 20 mm section. Its 30 × 30 mm outline retains
+120 line/circle edges, the Ø4.9 mm bore and all four corner cavities (eight
+edges each); net section area is about 335.18623 mm². The same cut-length,
+placement, component, BOM and STEP operations apply. These are nominal supplier
+CAD curves, not manufacturing tolerances or a claim of interchangeability
+with other suppliers' 30 mm profiles.
+
+`slot_profile_dimensions("Motedis-40x40L-I8")` uses the
+[Motedis 40x40L I-Type slot 8 supplier STEP](https://www.motedis.com/shop/products_files/40x40L%20I-Type%20slot%208.zip)
+(P40L_N8_I, dated 2013-03-20). Its 40 × 40 mm outline retains 112 line/circle
+edges, the Ø6.8 mm bore and all four corner cavities (eight edges each); net
+section area is about 657.09717 mm². Cut length, placement, components, BOM and
+STEP work as for the 20 and 30 mm sections; the same nominal-CAD caveat applies.
+
 Every made part needs a fabrication role (attribute `FABRICATION_ROLE`); the
 production export refuses a part without one and names it. The roles are
 `TIMBER_MEMBER` (a bar cut and machined from timber stock: BTLx and the bar
@@ -373,6 +668,7 @@ outside it.
 | `production_leaves_out_ordered_parts` | warning | bought parts (`designation`) or bars (`cut_length_mm`) carry none of the `production()` tags, so they reach no hardware list or bar schedule; `tag()` them to order them |
 | `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
 | `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured |
+| `purchased_assembly_contact` | warning | the solids of two different parts of one STEP assembly file overlap where that file places them (both `part=` of the same file, placed from the same frame): the maker assembled them so, and it is no collision |
 | `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |
 | `checks_unverified` | warning | the checks did not finish within the program worker's time, memory or size limit; the edit is still applied, and no collision, relation, joint or load was checked |
 | `report_truncated` | error or warning | the whole report did not fit one reply of the program worker, so it lists only its first issues (errors first) and relations; an error when an error was left out |

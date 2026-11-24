@@ -167,6 +167,7 @@ impl LiveBridge {
                 overrides,
                 file_name,
                 replace_document: false,
+                source_folder: None,
             },
             (None, Some(edits)) => Request::PatchProgram {
                 expected: expected.ok_or_else(|| {
@@ -187,7 +188,7 @@ impl LiveBridge {
             }
         };
         Self::program_source(app, request, ui_busy, cancelled)
-            .map(|(source, _, given)| (source, given))
+            .map(|(source, _, given, _)| (source, given))
     }
 
     fn check_context(app: &KetchupApp, source: &RuleProgramSource) -> CheckContext {

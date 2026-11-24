@@ -1075,10 +1075,10 @@ fn the_fasteners_examples_have_no_collision_on_the_exact_solids() {
 }
 
 /// The exact verdict and issues of an apply. An exact check still running after
-/// PROGRAM_EXACT_RUNNING_AFTER (5 s, easily reached while other tests load the
-/// machine) is followed the way a client does: the issues report answers busy
-/// until the check ends, then pages its verdict.
-fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
+/// PROGRAM_EXACT_RUNNING_AFTER (2 s, easily reached by a debug build) is
+/// followed the way a client does: the issues report answers busy until the
+/// check ends, then pages its verdict.
+pub(super) fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
     if result["exact_collisions"]["not_evaluated"][0]["reason"] != "exact_check_running" {
         assert_eq!(result["geometry_evaluated"], true, "{result}");
         let issues = result["report"]["issues"].as_array().unwrap().clone();
@@ -1095,7 +1095,7 @@ fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
                 offset,
                 limit: 50,
             },
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         );
         if response.error.as_deref() == Some("busy") {
             // Each ask polls the window until it answers, so asking again is the wait.

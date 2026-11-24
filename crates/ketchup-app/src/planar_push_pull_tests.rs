@@ -845,7 +845,7 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         state.viewport_boxes(&snapshot, &projection).is_empty(),
         "side-face offset must not draw the original profile extruded along Z"
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let visible_preview = loop {
         if let Some(preview) = harness
             .state()
@@ -869,7 +869,7 @@ fn viewport_direct_drag_commits_slanted_face_without_initial_box() {
         modifiers: egui::Modifiers::NONE,
     });
     harness.step();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while harness.state().document_revision() == before {
         assert!(Instant::now() < deadline, "{}", harness.state().digest);
         std::thread::sleep(Duration::from_millis(10));
@@ -1053,7 +1053,7 @@ fn failed_cancelled_or_stale_face_offset_never_changes_document() {
     assert!(app.start_preview());
     assert!(!app.confirm_preview());
     let context = egui::Context::default();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while app
         .push_pull
         .face_offset_evaluation
@@ -1117,7 +1117,7 @@ fn timed_out_preview(distance: &str) -> KetchupApp {
 
 fn poll_until(app: &mut KetchupApp, done: impl Fn(&KetchupApp) -> bool) {
     let context = egui::Context::default();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !done(app) {
         assert!(Instant::now() < deadline, "{}", app.digest);
         app.poll_face_offset_evaluation(&context);

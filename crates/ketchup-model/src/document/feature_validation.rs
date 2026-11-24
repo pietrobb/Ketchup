@@ -1,6 +1,8 @@
 use super::*;
 use ketchup_geometry::linalg::normalize_within;
 use ketchup_tolerance::limits;
+pub(super) mod feature_input;
+pub use feature_input::{FeatureInputError, FeatureInputField};
 
 pub(super) const MAX_STABLE_SUBSHAPE_ROLE_BYTES: usize = 128;
 
@@ -1119,10 +1121,7 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::SurfaceTrim { target, cutter } => {
-            if target == cutter {
-                return Err(CanonicalError::InvalidFeatureOwnership(*target));
-            }
-            Ok(())
+            feature_input::surface_trim(*target, *cutter)
         }
         FeatureKind::SurfaceThicken { thickness, .. } => {
             Dimension::new(thickness.source_token(), thickness.millimetres()).map(|_| ())?;
@@ -1167,38 +1166,24 @@ pub(super) fn validate_feature_kind(
             Ok(())
         }
         FeatureKind::SheetMetal(spec) => spec.validate().map_err(CanonicalError::InvalidSheetMetal),
-        FeatureKind::SurfaceBody(SurfaceBodySpec::Planar { .. }) => Ok(()),
+        FeatureKind::SurfaceBody(
+            spec @ (SurfaceBodySpec::Planar { .. }
+            | SurfaceBodySpec::Blend { .. }
+            | SurfaceBodySpec::ControlPoint { .. }
+            | SurfaceBodySpec::Boundary { .. }),
+        ) => feature_input::surface_body(spec, tolerance_mm),
         FeatureKind::Loft {
             sections,
             guide,
             continuity,
+            rail,
         }
         | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
             sections,
             guide,
             continuity,
-        }) => {
-            if !(2..=limits::LOFT_SECTIONS).contains(&sections.len())
-                || (guide.is_some() && *continuity == LoftContinuity::Curvature)
-                || sections.windows(2).any(|pair| {
-                    pair[0].elevation_mm >= pair[1].elevation_mm
-                        || pair[0].profile == pair[1].profile
-                })
-                || sections.iter().any(|section| {
-                    !section.elevation_mm.is_finite()
-                        || section.elevation_mm.abs() > MAX_COORDINATE_MM
-                })
-                || sections
-                    .iter()
-                    .map(|section| section.profile)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != sections.len()
-            {
-                return Err(CanonicalError::InvalidLoft);
-            }
-            Ok(())
-        }
+            rail,
+        }) => feature_input::loft(sections, *guide, *continuity, *rail),
         FeatureKind::Boolean { .. } => Ok(()),
     }
 }
@@ -1295,7 +1280,12 @@ pub(super) fn validate_imported_exact_body(
     if spec.import_id.0 == 0 {
         return reject(ImportContractError::InvalidIdentity);
     }
+    // A placement moves an assembly part only, and keeps its size.
+    let placement_valid = spec.source_placement.is_none_or(|placement| {
+        typed_body && spec.source_part_index.is_some() && placement.is_rigid()
+    });
     if (!legacy_solid && !typed_body)
+        || !placement_valid
         || spec.source_byte_len == 0
         || spec.source_sha256.iter().all(|byte| *byte == 0)
     {
@@ -1329,15 +1319,24 @@ pub(super) fn validate_imported_exact_body(
 pub(super) const MESH_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
 pub(super) const MESH_VOLUME_EPSILON: f64 = APPROXIMATION;
 
+/// A closed, consistently oriented mesh of positive volume, or a sheet: the
+/// same triangles, open (an edge of one or of several triangles) and of no volume.
 pub(crate) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
-    if spec.schema != MESH_BODY_SCHEMA_V1
-        || !(4..=limits::MESH_VERTICES).contains(&spec.vertices_mm.len())
-        || !(4..=limits::MESH_TRIANGLES).contains(&spec.triangles.len())
+    let sheet = spec.is_sheet();
+    // A sheet can be a single triangle; a solid has at least four.
+    let least = if sheet { (3, 1) } else { (4, 4) };
+    if !(sheet || spec.schema == MESH_BODY_SCHEMA_V1)
+        || !(least.0..=limits::MESH_VERTICES).contains(&spec.vertices_mm.len())
+        || !(least.1..=limits::MESH_TRIANGLES).contains(&spec.triangles.len())
         || spec
             .vertices_mm
             .iter()
             .flatten()
             .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+        || spec
+            .look
+            .as_ref()
+            .is_some_and(|look| look.validate(spec.triangles.len()).is_err())
     {
         return Err(CanonicalError::InvalidMeshBody);
     }
@@ -1436,6 +1435,9 @@ pub(crate) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalErr
             entry.1 += if from < to { 1 } else { -1 };
             entry.2.push(triangle_index);
         }
+    }
+    if sheet {
+        return Ok(());
     }
     if edges
         .values()
@@ -2143,6 +2145,139 @@ pub fn is_valid_sweep_path(segments: &[ProfileSegment], tolerance_mm: f64) -> bo
     })
 }
 
+/// The length of one spatial segment and its unit tangents at start and end, or
+/// `None` when the segment is degenerate or out of range.
+fn spatial_segment_metrics(
+    segment: &SpatialPathSegment,
+    tolerance_mm: f64,
+) -> Option<(f64, [f64; 3], [f64; 3])> {
+    use ketchup_geometry::linalg::{cross, dot, length, normalize_within as unit, sub};
+    let start = segment.start_mm();
+    let end = segment.end_mm();
+    if [start, end]
+        .into_iter()
+        .flatten()
+        .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+    {
+        return None;
+    }
+    match segment {
+        SpatialPathSegment::Line { .. } => {
+            let direction = sub(end, start);
+            let tangent = unit(direction, tolerance_mm)?;
+            Some((length(direction), tangent, tangent))
+        }
+        SpatialPathSegment::CircularArc {
+            center_mm,
+            normal,
+            clockwise,
+            ..
+        } => {
+            if [*center_mm, *normal]
+                .into_iter()
+                .flatten()
+                .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+            {
+                return None;
+            }
+            let normal_length = length(*normal);
+            if (normal_length - 1.0).abs() > PROFILE_EPSILON_MM {
+                return None;
+            }
+            let normal = unit(*normal, tolerance_mm)?;
+            let start_radius = sub(start, *center_mm);
+            let end_radius = sub(end, *center_mm);
+            let radius = length(start_radius);
+            let end_radius_length = length(end_radius);
+            if radius <= tolerance_mm
+                || (radius - end_radius_length).abs() > PROFILE_EPSILON_MM
+                || dot(start_radius, normal).abs() > PROFILE_EPSILON_MM
+                || dot(end_radius, normal).abs() > PROFILE_EPSILON_MM
+                || start == end
+            {
+                return None;
+            }
+            let signed =
+                dot(normal, cross(start_radius, end_radius)).atan2(dot(start_radius, end_radius));
+            let angle = if *clockwise {
+                (-signed).rem_euclid(std::f64::consts::TAU)
+            } else {
+                signed.rem_euclid(std::f64::consts::TAU)
+            };
+            if radius * angle <= tolerance_mm {
+                return None;
+            }
+            let sign = if *clockwise { -1.0 } else { 1.0 };
+            let start_tangent = unit(cross(normal, start_radius).map(|v| sign * v), tolerance_mm)?;
+            let end_tangent = unit(cross(normal, end_radius).map(|v| sign * v), tolerance_mm)?;
+            Some((radius * angle, start_tangent, end_tangent))
+        }
+        SpatialPathSegment::CubicBezier {
+            control_1_mm,
+            control_2_mm,
+            ..
+        } => {
+            if [*control_1_mm, *control_2_mm]
+                .into_iter()
+                .flatten()
+                .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+            {
+                return None;
+            }
+            let chord = sub(end, start);
+            let first = sub(*control_1_mm, start);
+            let middle = sub(*control_2_mm, *control_1_mm);
+            let last = sub(end, *control_2_mm);
+            let chord_squared = dot(chord, chord);
+            let first_length = length(first);
+            let last_length = length(last);
+            let projection_1 = dot(first, chord);
+            let projection_2 = dot(sub(*control_2_mm, start), chord);
+            if projection_1 <= 0.0 || projection_2 < projection_1 || projection_2 >= chord_squared {
+                return None;
+            }
+            Some((
+                first_length + length(middle) + last_length,
+                unit(first, tolerance_mm)?,
+                unit(last, tolerance_mm)?,
+            ))
+        }
+    }
+}
+
+/// Whether `segments` form one closed loop a boundary surface can span: 2 to
+/// [`limits::PATH_SEGMENTS`] bounded lines, arcs and cubic Beziers, each ending
+/// where the next starts and the last where the first starts. Unlike a sweep
+/// path, the loop may turn at corners.
+pub fn is_valid_boundary_loop(segments: &[SpatialPathSegment], tolerance_mm: f64) -> bool {
+    let Some(metrics) = segments
+        .iter()
+        .map(|segment| spatial_segment_metrics(segment, tolerance_mm))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    let total_length = metrics.iter().map(|metric| metric.0).sum::<f64>();
+    (2..=limits::PATH_SEGMENTS).contains(&segments.len())
+        && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&total_length)
+        && segments
+            .iter()
+            .zip(segments.iter().cycle().skip(1))
+            .all(|(segment, next)| segment.end_mm() == next.start_mm())
+}
+
+/// Whether `curves` can be the inner curves of a surface network: at most
+/// [`limits::PATH_SEGMENTS`] bounded lines, arcs and cubic Beziers, each on
+/// its own, so they need not meet.
+pub fn are_valid_network_curves(curves: &[SpatialPathSegment], tolerance_mm: f64) -> bool {
+    curves.len() <= limits::PATH_SEGMENTS
+        && curves.iter().all(|curve| {
+            spatial_segment_metrics(curve, tolerance_mm).is_some_and(|(length, ..)| {
+                (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(&length)
+            })
+        })
+}
+
 pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm: f64) -> bool {
     use ketchup_geometry::linalg::{cross, dot, length, normalize_within as unit, sub};
     fn arc_angle(segment: &SpatialPathSegment, tolerance_mm: f64) -> Option<f64> {
@@ -2205,111 +2340,6 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
         };
         left_is_behind && right_is_ahead
     }
-    fn metrics(
-        segment: &SpatialPathSegment,
-        tolerance_mm: f64,
-    ) -> Option<(f64, [f64; 3], [f64; 3])> {
-        let start = segment.start_mm();
-        let end = segment.end_mm();
-        if [start, end]
-            .into_iter()
-            .flatten()
-            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
-        {
-            return None;
-        }
-        match segment {
-            SpatialPathSegment::Line { .. } => {
-                let direction = sub(end, start);
-                let tangent = unit(direction, tolerance_mm)?;
-                Some((length(direction), tangent, tangent))
-            }
-            SpatialPathSegment::CircularArc {
-                center_mm,
-                normal,
-                clockwise,
-                ..
-            } => {
-                if [*center_mm, *normal]
-                    .into_iter()
-                    .flatten()
-                    .any(|coordinate| {
-                        !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM
-                    })
-                {
-                    return None;
-                }
-                let normal_length = length(*normal);
-                if (normal_length - 1.0).abs() > PROFILE_EPSILON_MM {
-                    return None;
-                }
-                let normal = unit(*normal, tolerance_mm)?;
-                let start_radius = sub(start, *center_mm);
-                let end_radius = sub(end, *center_mm);
-                let radius = length(start_radius);
-                let end_radius_length = length(end_radius);
-                if radius <= tolerance_mm
-                    || (radius - end_radius_length).abs() > PROFILE_EPSILON_MM
-                    || dot(start_radius, normal).abs() > PROFILE_EPSILON_MM
-                    || dot(end_radius, normal).abs() > PROFILE_EPSILON_MM
-                    || start == end
-                {
-                    return None;
-                }
-                let signed = dot(normal, cross(start_radius, end_radius))
-                    .atan2(dot(start_radius, end_radius));
-                let angle = if *clockwise {
-                    (-signed).rem_euclid(std::f64::consts::TAU)
-                } else {
-                    signed.rem_euclid(std::f64::consts::TAU)
-                };
-                if radius * angle <= tolerance_mm {
-                    return None;
-                }
-                let sign = if *clockwise { -1.0 } else { 1.0 };
-                let start_tangent =
-                    unit(cross(normal, start_radius).map(|v| sign * v), tolerance_mm)?;
-                let end_tangent = unit(cross(normal, end_radius).map(|v| sign * v), tolerance_mm)?;
-                Some((radius * angle, start_tangent, end_tangent))
-            }
-            SpatialPathSegment::CubicBezier {
-                control_1_mm,
-                control_2_mm,
-                ..
-            } => {
-                if [*control_1_mm, *control_2_mm]
-                    .into_iter()
-                    .flatten()
-                    .any(|coordinate| {
-                        !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM
-                    })
-                {
-                    return None;
-                }
-                let chord = sub(end, start);
-                let first = sub(*control_1_mm, start);
-                let middle = sub(*control_2_mm, *control_1_mm);
-                let last = sub(end, *control_2_mm);
-                let chord_squared = dot(chord, chord);
-                let first_length = length(first);
-                let last_length = length(last);
-                let projection_1 = dot(first, chord);
-                let projection_2 = dot(sub(*control_2_mm, start), chord);
-                if projection_1 <= 0.0
-                    || projection_2 < projection_1
-                    || projection_2 >= chord_squared
-                {
-                    return None;
-                }
-                Some((
-                    first_length + length(middle) + last_length,
-                    unit(first, tolerance_mm)?,
-                    unit(last, tolerance_mm)?,
-                ))
-            }
-        }
-    }
-
     let (Some((first, last)), true) = (
         segments.first().zip(segments.last()),
         segments.len() <= limits::PATH_SEGMENTS,
@@ -2318,7 +2348,7 @@ pub fn is_valid_spatial_sweep_path(segments: &[SpatialPathSegment], tolerance_mm
     };
     let Some(metrics) = segments
         .iter()
-        .map(|segment| metrics(segment, tolerance_mm))
+        .map(|segment| spatial_segment_metrics(segment, tolerance_mm))
         .collect::<Option<Vec<_>>>()
     else {
         return false;

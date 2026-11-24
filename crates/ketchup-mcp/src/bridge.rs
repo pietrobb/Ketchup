@@ -23,7 +23,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct Connection {
-    stream: TcpStream,
+    /// Shared with [`Cancel`], which ends this very socket: on Windows a
+    /// duplicate (`try_clone`) of a socket connected with a timeout can stay
+    /// "not connected", so ending it ended nothing and a cancelled call
+    /// waited for the window to the end.
+    stream: Arc<TcpStream>,
     token: String,
     last_id: u64,
     /// The window has answered a request on this connection.
@@ -74,10 +78,7 @@ struct Armed {
     /// The client has gone: every call from now on is cancelled.
     closed: bool,
     /// The connection of the request being waited for.
-    stream: Option<TcpStream>,
-    /// The next [`Cancel::arm`] fails as if the system refused to duplicate the socket.
-    #[cfg(test)]
-    refuse_clone: bool,
+    stream: Option<Arc<TcpStream>>,
 }
 
 impl Cancel {
@@ -112,24 +113,13 @@ impl Cancel {
 
     /// Lets [`Self::cancel`] end `connection` until [`Self::disarm`]; false
     /// when the call was cancelled already and the request must not be sent.
-    pub fn arm(&self, connection: &Connection) -> io::Result<bool> {
+    pub fn arm(&self, connection: &Connection) -> bool {
         let mut armed = self.armed();
         if armed.cancelled {
-            return Ok(false);
+            return false;
         }
-        #[cfg(test)]
-        if std::mem::take(&mut armed.refuse_clone) {
-            return Err(io::Error::other(
-                "the system refused to duplicate the socket",
-            ));
-        }
-        armed.stream = Some(connection.stream.try_clone()?);
-        Ok(true)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn refuse_next_clone(&self) {
-        self.armed().refuse_clone = true;
+        armed.stream = Some(Arc::clone(&connection.stream));
+        true
     }
 
     pub fn disarm(&self) {
@@ -147,7 +137,7 @@ impl Connection {
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
         Ok(Self {
-            stream,
+            stream: Arc::new(stream),
             token,
             last_id: 0,
             authenticated: false,
@@ -173,7 +163,7 @@ impl Connection {
         self.last_id = id;
         let mut frame = (body.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(&body);
-        self.stream
+        (&*self.stream)
             .write_all(&frame)
             .map_err(BridgeError::Transport)?;
         let reply = self.read_reply(wait).map_err(BridgeError::Transport)?;
@@ -254,7 +244,7 @@ impl Connection {
     fn read_reply(&mut self, wait: Duration) -> io::Result<Value> {
         self.stream.set_read_timeout(Some(wait))?;
         let mut header = [0_u8; 4];
-        self.stream.read_exact(&mut header)?;
+        (&*self.stream).read_exact(&mut header)?;
         let length = u32::from_be_bytes(header) as usize;
         if length == 0 || length > MAX_REPLY_BYTES {
             return Err(io::Error::new(
@@ -263,7 +253,7 @@ impl Connection {
             ));
         }
         let mut body = vec![0_u8; length];
-        self.stream.read_exact(&mut body)?;
+        (&*self.stream).read_exact(&mut body)?;
         Ok(serde_json::from_slice(&body)?)
     }
 }

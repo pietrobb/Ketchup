@@ -20,9 +20,21 @@ sha2 = "0.10.9"
 [dev-dependencies]
 ed25519-dalek = "2.2.0"
 
-[lints]
-workspace = true
+[lints.rust]
+# Denied rather than forbidden: the `fea_memory` test counts allocations with an
+# allocator of its own. The library itself forbids `unsafe` (src/lib.rs).
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
 
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[[test]]
+name = "fea_memory"
+path = "tests/fea_memory.rs"

@@ -6,7 +6,7 @@ use ketchup_application::measurement::{FaceTarget, SelectedFaceMeasurement};
 use ketchup_rejection::Rejection;
 #[cfg(test)]
 #[path = "measurement_tests.rs"]
-pub(super) mod tests;
+pub(crate) mod tests;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +15,37 @@ pub enum MeasurementMode {
     SupportingPlanes,
 }
 
+/// Which read-only exact-worker answer a [`MeasurementJob`] waits for.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum WorkerRead {
+    Faces,
+    ControlNet,
+}
+
+impl WorkerRead {
+    /// The request and why the window is busy, as a busy refusal names them.
+    pub(super) fn busy(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Faces => ("measure_faces", "A face measurement is running."),
+            Self::ControlNet => (
+                "surface_control_net",
+                "A surface's control net is being read.",
+            ),
+        }
+    }
+
+    fn timed_out(self) -> &'static str {
+        match self {
+            Self::Faces => "Face measurement timed out; the document was not changed.",
+            Self::ControlNet => {
+                "Reading the surface's control net timed out; the document was not changed."
+            }
+        }
+    }
+}
+
 pub(super) struct MeasurementJob {
+    pub(super) kind: WorkerRead,
     id: u64,
     reply: mpsc::SyncSender<Response>,
     pub(super) cancelled: Arc<AtomicBool>,
@@ -24,7 +54,7 @@ pub(super) struct MeasurementJob {
     receiver: mpsc::Receiver<Result<Value, Rejection>>,
 }
 
-fn code(error: Rejection) -> &'static str {
+pub(super) fn code(error: Rejection) -> &'static str {
     let code = match error.code() {
         "entity_not_found" => "entity_not_found",
         "stale_document" => "stale_document",
@@ -70,6 +100,46 @@ fn evaluate(
             )
         }
     }
+}
+
+/// Which surface's control net to read, and from which point on.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlNetRequest {
+    #[serde(default)]
+    pub(super) expected: Option<Stamp>,
+    definition_id: u64,
+    feature_id: u64,
+    #[serde(default)]
+    offset: usize,
+}
+
+/// Records that the background-check slot is taken and returns the code.
+fn check_slot_busy() -> &'static str {
+    failure(
+        "busy",
+        "Another geometry check is running.",
+        json!({"canonical_mutation":false}),
+    )
+}
+
+/// The control net a [`ControlNetRequest`] names, read from `snapshot`.
+pub(super) fn control_net(
+    snapshot: Snapshot,
+    net: ControlNetRequest,
+    path: Option<PathBuf>,
+    container: ketchup_model::persistence::ContainerData,
+    cancelled: Arc<AtomicBool>,
+) -> Result<Value, Rejection> {
+    ketchup_application::surface_control_net::surface_control_net_with_worker(
+        &snapshot,
+        ketchup_model::document::DefinitionId(net.definition_id),
+        ketchup_model::document::FeatureId(net.feature_id),
+        net.offset,
+        path.as_deref(),
+        container.blobs(),
+        &cancelled,
+    )
 }
 
 impl LiveBridge {
@@ -178,16 +248,12 @@ impl LiveBridge {
         direction: Option<[f64; 3]>,
     ) {
         take_error_details();
-        let prepared = Self::require_request_authority(&cancelled).and_then(|()| {
-            if self.program_check_job.is_some() {
-                return Err(failure(
-                    "busy",
-                    "Another geometry check is running.",
-                    json!({"canonical_mutation":false}),
-                ));
-            }
-            self.prepare_measurement(app, &expected, faces)
-        });
+        let prepared = Self::require_request_authority(&cancelled)
+            .and_then(|()| match self.program_check_job {
+                Some(_) => Err(check_slot_busy()),
+                None => Ok(()),
+            })
+            .and_then(|()| self.prepare_measurement(app, &expected, faces));
         let measurement = match prepared {
             Ok(measurement) => measurement,
             Err(error) => {
@@ -198,22 +264,113 @@ impl LiveBridge {
         let snapshot = app.document.current();
         let container = app.file.container_data.clone();
         let path = Self::worker_path(app);
+        let read = move |cancelled| {
+            evaluate(
+                measurement,
+                snapshot,
+                mode,
+                direction,
+                path,
+                container,
+                cancelled,
+            )
+        };
+        self.start_worker_read(
+            context,
+            app,
+            WorkerRead::Faces,
+            (id, reply, cancelled),
+            expected,
+            read,
+        );
+    }
+
+    /// Starts a queued face measurement or control-net read in the
+    /// background-check slot, so the window keeps drawing meanwhile.
+    pub(super) fn start_exact_read(
+        &mut self,
+        app: &KetchupApp,
+        context: &egui::Context,
+        (id, reply, cancelled): (u64, mpsc::SyncSender<Response>, Arc<AtomicBool>),
+        request: Request,
+    ) {
+        match request {
+            Request::MeasureFaces {
+                expected,
+                faces,
+                mode,
+                direction,
+            } => self.start_measurement(
+                app, context, id, reply, cancelled, expected, faces, mode, direction,
+            ),
+            Request::SurfaceControlNet(net) => {
+                self.start_surface_control_net(app, context, (id, reply, cancelled), net);
+            }
+            _ => Self::reply(
+                app,
+                id,
+                &reply,
+                Err(failure(
+                    "invalid_request",
+                    "only a face measurement or a control-net read runs in the exact worker here",
+                    json!({"canonical_mutation": false}),
+                )),
+            ),
+        }
+    }
+
+    fn start_surface_control_net(
+        &mut self,
+        app: &KetchupApp,
+        context: &egui::Context,
+        (id, reply, cancelled): (u64, mpsc::SyncSender<Response>, Arc<AtomicBool>),
+        net: ControlNetRequest,
+    ) {
+        take_error_details();
+        let admitted = Self::require_request_authority(&cancelled)
+            .and_then(|()| match self.program_check_job {
+                Some(_) => Err(check_slot_busy()),
+                None => Ok(()),
+            })
+            .and_then(|()| Self::guard(app, &net.expected));
+        if let Err(error) = admitted {
+            Self::reply(app, id, &reply, Err(error));
+            return;
+        }
+        let snapshot = app.document.current();
+        let container = app.file.container_data.clone();
+        let path = Self::worker_path(app);
+        let before = net
+            .expected
+            .clone()
+            .unwrap_or_else(|| app.live_bridge_stamp());
+        let read = move |cancelled| control_net(snapshot, net, path, container, cancelled);
+        self.start_worker_read(
+            context,
+            app,
+            WorkerRead::ControlNet,
+            (id, reply, cancelled),
+            before,
+            read,
+        );
+    }
+
+    fn start_worker_read(
+        &mut self,
+        context: &egui::Context,
+        app: &KetchupApp,
+        kind: WorkerRead,
+        (id, reply, cancelled): (u64, mpsc::SyncSender<Response>, Arc<AtomicBool>),
+        expected: Stamp,
+        read: impl FnOnce(Arc<AtomicBool>) -> Result<Value, Rejection> + Send + 'static,
+    ) {
         let worker_cancelled = cancelled.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
         let spawn = std::thread::Builder::new()
-            .name("ketchup-measure-faces".into())
+            .name(format!("ketchup-{}", kind.busy().0.replace('_', "-")))
             .spawn(move || {
-                let result = evaluate(
-                    measurement,
-                    snapshot,
-                    mode,
-                    direction,
-                    path,
-                    container,
-                    worker_cancelled,
-                );
-                sender.deliver(result);
+                sender.deliver(read(worker_cancelled));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {
@@ -226,6 +383,7 @@ impl LiveBridge {
             return;
         }
         self.program_check_job = Some(ProgramCheckJob::Measuring(MeasurementJob {
+            kind,
             id,
             reply,
             cancelled,
@@ -252,7 +410,7 @@ impl LiveBridge {
             job.cancelled.store(true, Ordering::Release);
             Err(failure(
                 "job_worker_unavailable",
-                "Face measurement timed out; the document was not changed.",
+                job.kind.timed_out(),
                 json!({"canonical_mutation": false}),
             ))
         } else {

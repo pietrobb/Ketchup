@@ -1,8 +1,8 @@
 //! In-window consent broker for attaching to an already-open Ketchup window.
 //!
 //! Attach requires a random bootstrap from the OS-protected per-user registry.
-//! Only authenticated requests reach the UI and can replace a previous client.
-//! No manual token entry or additional confirmation is needed.
+//! Only authenticated requests reach the UI. No manual token entry is needed;
+//! the last AI to attach takes the window over unasked (owner decision R2).
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
 use crate::delivery::Deliver;
@@ -79,6 +79,8 @@ pub(crate) struct PendingConsent {
     /// Set once the requester stopped waiting. The window holds the lock from
     /// the check to the grant, so it never acts on a request nobody waits for.
     abandoned: Arc<Mutex<bool>>,
+    /// The name the asking AI gives itself, as the window shows it.
+    client: Option<String>,
 }
 
 enum ConsentDecision {
@@ -106,6 +108,10 @@ struct AttachRequest {
     /// which itself never crosses the socket.
     #[serde(default)]
     proof: String,
+    /// The name the AI gives itself (review 2026-11-09 MCP-305), shown in the
+    /// status line once it attached; unverified, like `hello`'s.
+    #[serde(default)]
+    client: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -221,6 +227,11 @@ impl KetchupApp {
         self.answer_live_consent(context, request);
     }
 
+    /// The last AI to attach takes the window over, unasked (owner decision
+    /// R2 of review 2026-11-19 og): one user's AI clients on one computer, and
+    /// the question the window asked since review 2026-11-08 MCP-240 only got
+    /// in the way. The status line and the Connect tab name the AI the window
+    /// was taken from.
     fn answer_live_consent(&mut self, context: &egui::Context, request: PendingConsent) {
         let abandoned = Arc::clone(&request.abandoned);
         let Ok(abandoned) = abandoned.lock() else {
@@ -230,14 +241,26 @@ impl KetchupApp {
             // Nobody waits for this grant: the current client keeps the window.
             return;
         }
-        if self.live.consent_attached || self.live.launch_attached {
-            // The previous client may be gone or forgotten without disconnecting;
-            // a new local attach takes over with a fresh credential.
+        let previous = if self.live.consent_attached || self.live.launch_attached {
+            // The new client gets a fresh credential; the old one's ends.
             self.live.consent_attached = false;
             self.live.launch_attached = false;
             self.supersede_live_bridge();
-        }
+            Some(
+                self.live
+                    .client_name
+                    .take()
+                    .unwrap_or_else(|| self.catalog.text("ai-previous-unnamed")),
+            )
+        } else {
+            None
+        };
+        let client = request.client.clone();
         self.allow_live_consent(context, request);
+        if self.live.consent_attached {
+            self.live.client_name = client;
+            self.live.previous_client = previous;
+        }
     }
 
     fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {
@@ -323,6 +346,7 @@ impl KetchupApp {
     pub(crate) fn disconnect_ai(&mut self) {
         self.live.launch_attached = false;
         self.live.client_name = None;
+        self.live.previous_client = None;
         self.revoke_live_consent();
     }
 }
@@ -415,6 +439,27 @@ fn publish_registry_entry_before_publish(
     bootstrap: &str,
     before_publish: impl FnOnce(),
 ) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
+    as_runtime_folder_owner(root, || {
+        publish_as_found(root, instance_id, address, bootstrap, before_publish)
+    })
+}
+
+/// Under `sudo`, as the user whose runtime folder `root` is, both publishing and
+/// removing the entry (reviews 2026-11-13 r95 and 2026-11-20 ac P3: root wrote,
+/// then removed, the register there through the path).
+fn as_runtime_folder_owner<T>(root: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let base = root.ancestors().nth(2).unwrap_or(root).to_owned();
+    ketchup_user_files::UserFolder::at(base, root.to_owned()).as_owner(work)
+}
+
+/// [`publish_registry_entry_before_publish`] as this process is.
+fn publish_as_found(
+    root: &Path,
+    instance_id: &str,
+    address: SocketAddr,
+    bootstrap: &str,
+    before_publish: impl FnOnce(),
+) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
     prepare_discovery_root(root)?;
     let path = root.join(format!("{instance_id}.json"));
     let bytes = serde_json::to_vec(&RegistryEntry {
@@ -444,11 +489,17 @@ fn remove_registry_entry_if_unchanged(
     path: &Path,
     expected: ketchup_model::persistence::FileIdentity,
 ) -> io::Result<bool> {
-    ketchup_model::persistence::remove_regular_file_if_unchanged(
-        path,
-        expected,
-        MAX_CONSENT_BYTES as u64,
-    )
+    let remove = || {
+        ketchup_model::persistence::remove_regular_file_if_unchanged(
+            path,
+            expected,
+            MAX_CONSENT_BYTES as u64,
+        )
+    };
+    match path.parent() {
+        Some(root) => as_runtime_folder_owner(root, remove),
+        None => remove(),
+    }
 }
 
 fn start(
@@ -639,6 +690,7 @@ fn serve(
         let pending = PendingConsent {
             decision,
             abandoned: Arc::clone(&abandoned),
+            client: request.client.as_deref().and_then(shown_client_name),
         };
         // Only a nonce the window was handed is remembered: a busy answer asks
         // nobody, so a requester answered busy again and again no longer grows
@@ -1070,7 +1122,7 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_millis(20)))
                 .unwrap();
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut response = Vec::new();
         'answered: while Instant::now() < deadline {
             for stream in &mut streams {
@@ -1211,7 +1263,7 @@ mod tests {
         let nonces = ["5".repeat(64), "6".repeat(64)];
         let mut streams = [attach(&nonces[0]), attach(&nonces[1])];
         // One waits in the window's queue, the other is answered busy at once.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let busy = 'answered: loop {
             assert!(Instant::now() < deadline, "no attach was answered busy");
             for (index, stream) in streams.iter_mut().enumerate() {
@@ -1248,6 +1300,7 @@ mod tests {
         let pending = PendingConsent {
             decision,
             abandoned: Arc::new(Mutex::new(false)),
+            client: None,
         };
         app.allow_live_consent_with(&context, pending, |_| {
             Err(io::Error::new(
@@ -1268,25 +1321,31 @@ mod tests {
     }
 
     /// #2687 P1 (points 4, 9, 10): the window names the attached AI as it names
-    /// itself, forgets the name when the next one attaches, and Disconnect
-    /// ends the credential.
+    /// itself, and Disconnect ends the credential. Owner decision R2 of review
+    /// 2026-11-19 og: the next AI takes the window over without a question
+    /// (review 2026-11-08 MCP-240 had the window ask), and the window names
+    /// the one it was taken from.
     #[test]
-    fn the_window_names_the_attached_ai_until_the_next_attach_or_disconnect() {
+    fn the_next_ai_takes_the_window_over_unasked_and_the_window_names_both() {
         let context = egui::Context::default();
-        let mut app = KetchupApp::new();
-        let attach = |app: &mut KetchupApp| {
+        let dialogs = crate::dialogs::ScriptedFileDialogs::new();
+        let probe = dialogs.clone();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        let attach = |app: &mut KetchupApp, client: Option<&str>| {
             let (decision, receiver) = mpsc::sync_channel(1);
             let pending = PendingConsent {
                 decision,
                 abandoned: Arc::new(Mutex::new(false)),
+                client: client.map(str::to_owned),
             };
             app.answer_live_consent(&context, pending);
             assert!(matches!(
-                receiver.try_recv(),
-                Ok(ConsentDecision::Allow { .. })
+                receiver.try_recv().unwrap(),
+                ConsentDecision::Allow { .. }
             ));
         };
-        attach(&mut app);
+        attach(&mut app, None);
+        assert_eq!(app.live.previous_client, None, "no AI held the window");
         let hello = |client: &str| super::super::Request::Hello {
             client: client.to_owned(),
         };
@@ -1298,17 +1357,24 @@ mod tests {
         app.live.bridge = Some(bridge);
         assert_eq!(app.live.client_name.as_deref(), Some("Claude Code"));
 
-        attach(&mut app);
+        let held = app.live_bridge_credentials().unwrap();
+        attach(&mut app, Some("Codex"));
+        assert!(probe.high_risk_prompts().is_empty(), "nothing is asked");
         assert!(app.ai_attached());
-        assert_eq!(
-            app.live.client_name, None,
-            "the next AI did not say its name"
-        );
+        let now = app.live_bridge_credentials().unwrap();
+        assert_ne!(now.token, held.token, "the old AI's credential ended");
+        assert_eq!(app.live.client_name.as_deref(), Some("Codex"));
+        assert_eq!(app.live.previous_client.as_deref(), Some("Claude Code"));
 
-        app.live.client_name = Some("Codex".to_owned());
+        // One that gives no name, taking over from Codex.
+        attach(&mut app, None);
+        assert_eq!(app.live.client_name, None);
+        assert_eq!(app.live.previous_client.as_deref(), Some("Codex"));
+
         app.disconnect_ai();
         assert!(!app.ai_attached());
         assert_eq!(app.live.client_name, None);
+        assert_eq!(app.live.previous_client, None);
         assert!(app.live_bridge_credentials().is_none());
     }
 
@@ -1361,7 +1427,7 @@ mod tests {
         let request = take_request(&app);
         gone.shutdown(std::net::Shutdown::Both).unwrap();
         drop(gone);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !*request.abandoned.lock().unwrap() {
             assert!(
                 Instant::now() < deadline,
@@ -1378,6 +1444,35 @@ mod tests {
             (current.address, current.token),
             "the current client must keep its connection and token"
         );
+    }
+
+    /// The name an AI gives when it attaches reaches the window shown as it
+    /// is shown in the status line, and names it there once it took over.
+    #[test]
+    fn the_name_an_attaching_ai_gives_names_it_in_the_window() {
+        let directory = private_tempdir();
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        app.enable_live_consent_broker_in(&context, directory.path())
+            .unwrap();
+        app.live.client_name = Some("Claude Code".to_owned());
+        let broker = app.live.consent_broker.as_ref().unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let mut asking = TcpStream::connect(broker.address).unwrap();
+        let mut line = attach_line(&registry, "8".repeat(64));
+        line["client"] = serde_json::json!(" Codex\u{1b}");
+        writeln!(asking, "{line}").unwrap();
+        let request = broker
+            .requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("attach was not received");
+        assert_eq!(request.client.as_deref(), Some("Codex"));
+        app.answer_live_consent(&context, request);
+        assert!(app.live_consent_attached());
+        assert_eq!(app.live.client_name.as_deref(), Some("Codex"));
     }
 
     #[test]

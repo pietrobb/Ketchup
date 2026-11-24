@@ -563,11 +563,21 @@ fn entity_constraint_and_solver_dof_limits_fail_closed() {
     };
     assert_eq!(constraint_limited.solve(), Err(SketchError::ResourceLimit));
 
-    let solver_limited = SketchSpec {
+    let mut solver_limited = SketchSpec {
         workplane: XY,
         entities: (1..=129).map(line).collect(),
         constraints: Vec::new(),
     };
+    assert_eq!(
+        solver_limited.solve().unwrap().status,
+        SketchSolveStatus::UnderConstrained { remaining_dof: 516 }
+    );
+    solver_limited.constraints.push(SketchConstraint {
+        id: SketchConstraintId(1),
+        kind: SketchConstraintKind::Vertical {
+            entity: SketchEntityId(1),
+        },
+    });
     assert_eq!(solver_limited.solve(), Err(SketchError::ResourceLimit));
 }
 

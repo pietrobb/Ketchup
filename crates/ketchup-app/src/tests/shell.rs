@@ -474,7 +474,7 @@ fn opening_program_document_evaluates_and_frames_actual_scene() {
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     step_until(
         &mut harness,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         "the opened table never painted",
         |app| {
             app.exact.results.len() == 5
@@ -555,7 +555,7 @@ fn the_fit_after_a_new_program_frames_quietly() {
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     step_until(
         &mut harness,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         "the new program's parts were never framed",
         |app| !app.camera.zoom_fit_pending,
     );

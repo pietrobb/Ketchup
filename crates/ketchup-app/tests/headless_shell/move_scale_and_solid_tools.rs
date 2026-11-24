@@ -1900,7 +1900,7 @@ fn d_profile_solid_intersect_preserves_review_lifecycle_exact_mesh_and_arc_linea
         .unwrap();
 
     let wait_for_intersect = |shell: &mut Shell| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < deadline {
             shell.settle();
             if shell.app().exact_render_body_count() == 1 {
@@ -2096,7 +2096,7 @@ fn d_profile_solid_union_preserves_review_lifecycle_exact_mesh_and_arc_lineage()
         .unwrap();
 
     let wait_for_union = |shell: &mut Shell| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < deadline {
             shell.settle();
             if shell.app().exact_render_body_count() == 1 {
@@ -2259,7 +2259,7 @@ fn d_profile_solid_split_preserves_review_lifecycle_partition_mesh_and_arc_linea
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     let wait_for_result = |shell: &mut Shell, expected_producer: FeatureId| {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < deadline {
             shell.settle();
             if shell

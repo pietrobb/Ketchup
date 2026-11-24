@@ -56,6 +56,7 @@ impl KetchupApp {
         ] {
             self.show_step(ui, key, done);
         }
+        self.show_written_files(ui);
         self.show_harnesses(ui, Path::new(&server));
         ui.add_space(6.0);
         // Copying is the fallback for a client Connect does not know.
@@ -79,22 +80,56 @@ impl KetchupApp {
             });
     }
 
+    /// The answer of the rows' work, once it came: the rows read, or the row
+    /// of a client just set up.
+    pub(crate) fn take_harness_answer(&mut self) {
+        let Some(work) = &self.live.harness_work else {
+            return;
+        };
+        let answer = match work.answer.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ketchup_rejection::log!("the Connect AI rows' worker ended without an answer");
+                HarnessAnswer::Rows(Vec::new())
+            }
+        };
+        self.live.harness_work = None;
+        match answer {
+            HarnessAnswer::Rows(rows) => self.live.harnesses = Some(rows),
+            HarnessAnswer::SetUp(rows) => {
+                for (index, row) in rows {
+                    if let Some(slot) = self
+                        .live
+                        .harnesses
+                        .as_mut()
+                        .and_then(|rows| rows.get_mut(index))
+                    {
+                        *slot = row;
+                    }
+                }
+            }
+        }
+    }
+
     /// One line per configuration file of a harness (one per Supervisor
     /// instance): what it starts as `ketchup`, and Set up when that is not
     /// this Kečup. The environment, which lists the running Supervisors, is
-    /// read only when the rows are, not every frame.
+    /// read only when the rows are, not every frame, and off the window's
+    /// thread (review 2026-11-08 UI-240).
     fn show_harnesses(&mut self, ui: &mut egui::Ui, executable: &Path) {
-        let rows = match &self.live.harnesses {
-            Some(rows) => rows.clone(),
-            None => {
-                let Some(environment) = Environment::current() else {
-                    return;
-                };
-                self.live
-                    .harnesses
-                    .insert(environment.rows(executable))
-                    .clone()
+        self.take_harness_answer();
+        if self.live.harnesses.is_none() && self.live.harness_work.is_none() {
+            let (read, executable) = (self.live.harness_rows, executable.to_owned());
+            self.live.harness_work =
+                HarnessWork::start(ui.ctx(), move || HarnessAnswer::Rows(read(&executable)));
+            if self.live.harness_work.is_none() {
+                self.live.harnesses = Some(Vec::new());
             }
+        }
+        let Some(rows) = self.live.harnesses.clone() else {
+            ui.weak(self.catalog.text("connect-ai-checking"));
+            return;
         };
         let mut set_up = None;
         for (index, row) in rows.iter().enumerate() {
@@ -130,7 +165,9 @@ impl KetchupApp {
                 );
             }
         }
-        if ui
+        if self.live.harness_work.is_some() {
+            ui.weak(self.catalog.text("connect-ai-checking"));
+        } else if ui
             .small_button(self.catalog.text("connect-ai-check-again"))
             .clicked()
         {
@@ -147,19 +184,43 @@ impl KetchupApp {
             );
         }
         if let Some(index) = set_up
-            && let Some(environment) = Environment::current()
+            && self.live.harness_work.is_none()
         {
-            let row = &rows[index];
-            let row = environment.set_up_in(row.harness, row.file.clone(), executable);
-            if let Some(slot) = self
-                .live
-                .harnesses
-                .as_mut()
-                .and_then(|rows| rows.get_mut(index))
-            {
-                *slot = row;
-            }
+            self.set_up_harnesses(ui.ctx(), &[index], executable);
         }
+    }
+
+    /// Set up the clients at `indices` of the rows to start `executable`, off
+    /// the window's thread; a row stays as it was when the environment is unknown.
+    pub(crate) fn set_up_harnesses(
+        &mut self,
+        context: &egui::Context,
+        indices: &[usize],
+        executable: &Path,
+    ) {
+        let Some(rows) = &self.live.harnesses else {
+            return;
+        };
+        let chosen: Vec<(usize, HarnessRow)> = indices
+            .iter()
+            .filter_map(|&index| Some((index, rows.get(index)?.clone())))
+            .collect();
+        let executable = executable.to_owned();
+        self.live.harness_work = HarnessWork::start(context, move || {
+            let environment = Environment::current();
+            HarnessAnswer::SetUp(
+                chosen
+                    .into_iter()
+                    .map(|(index, row)| match &environment {
+                        Some(environment) => (
+                            index,
+                            environment.set_up_in(row.harness, row.file, &executable),
+                        ),
+                        None => (index, row),
+                    })
+                    .collect(),
+            )
+        });
     }
 
     /// One numbered step, marked done or not from what the window sees.
@@ -181,14 +242,80 @@ impl KetchupApp {
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &spoken));
     }
 
-    /// "Connected AI: <name>" while an AI holds the window.
+    /// "Connected AI: <name>" while an AI holds the window, "(before: <name>)"
+    /// after it when it took the window over from another (owner decision R2).
     fn connected_ai_text(&self) -> Option<String> {
-        self.ai_attached().then(|| match &self.live.client_name {
+        if !self.ai_attached() {
+            return None;
+        }
+        let connected = match &self.live.client_name {
             Some(name) => self
                 .catalog
                 .format("ai-connected", &BTreeMap::from([("client", name.clone())])),
             None => self.catalog.text("ai-connected-unnamed"),
+        };
+        Some(match &self.live.previous_client {
+            Some(previous) => self.catalog.format(
+                "ai-connected-after",
+                &BTreeMap::from([("connected", connected), ("previous", previous.clone())]),
+            ),
+            None => connected,
         })
+    }
+
+    /// What the AI wrote, the newest first: when, how big, where, and Open
+    /// folder (owner decision R1: a list instead of a question before each).
+    fn show_written_files(&mut self, ui: &mut egui::Ui) {
+        let files = self.live.write_log.files();
+        let mut shown = None;
+        egui::CollapsingHeader::new(self.catalog.format(
+            "connect-ai-written",
+            &BTreeMap::from([("count", files.len().to_string())]),
+        ))
+        .id_salt("connect-ai-written")
+        .default_open(true)
+        .show(ui, |ui| {
+            if files.is_empty() {
+                ui.weak(self.catalog.text("connect-ai-written-none"));
+            }
+            for file in &files {
+                ui.horizontal(|ui| {
+                    let size = if file.removed {
+                        self.catalog.text("connect-ai-written-removed")
+                    } else {
+                        file.bytes.map_or_else(
+                            || self.catalog.text("connect-ai-written-folder"),
+                            crate::live_bridge::write_log::shown_size,
+                        )
+                    };
+                    ui.label(egui::RichText::new(format!("{}  {size}", file.at)).small());
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(file.path.display().to_string())
+                                .monospace()
+                                .small(),
+                        )
+                        .wrap(),
+                    );
+                    if ui
+                        .small_button(self.catalog.text("connect-ai-open-folder"))
+                        .clicked()
+                    {
+                        shown = Some(file.path.clone());
+                    }
+                });
+            }
+        });
+        if let Some(path) = shown {
+            let folder = if path.is_dir() {
+                path
+            } else {
+                path.parent().map_or(path.clone(), Path::to_path_buf)
+            };
+            if let Err(error) = self.dialogs.show_folder(&folder) {
+                self.digest = self.catalog.text_because("connect-ai-open-folder", error);
+            }
+        }
     }
 
     /// The status line's always visible part of the connection: which AI holds
@@ -206,7 +333,7 @@ impl KetchupApp {
         }
     }
 
-    fn harness_state(&self, row: &HarnessRow) -> String {
+    pub(crate) fn harness_state(&self, row: &HarnessRow) -> String {
         match &row.registration {
             Registration::NotInstalled => self.catalog.text("connect-ai-not-installed"),
             Registration::NotSetUp => self.catalog.text("connect-ai-not-set-up"),
@@ -234,10 +361,56 @@ impl KetchupApp {
     }
 }
 
+/// The rows of the clients here: what each starts as `ketchup`, read from
+/// their files and the running Supervisors.
+pub(crate) fn read_harness_rows(executable: &Path) -> Vec<HarnessRow> {
+    Environment::current().map_or_else(Vec::new, |environment| environment.rows(executable))
+}
+
+/// The Connect AI rows read, or a client set up, on a thread of their own
+/// (review 2026-11-08 UI-240): listing the running programs and looking at
+/// each command's file, one on `\\nas\` too, held the window as long as the
+/// share took to answer.
+pub(crate) struct HarnessWork {
+    pub(crate) answer: std::sync::mpsc::Receiver<HarnessAnswer>,
+}
+
+pub(crate) enum HarnessAnswer {
+    Rows(Vec<HarnessRow>),
+    /// The rows of the clients just set up, by their index.
+    SetUp(Vec<(usize, HarnessRow)>),
+}
+
+impl HarnessWork {
+    /// `work` on its own thread, the window repainted when it ends; none,
+    /// logged, when no thread starts.
+    pub(crate) fn start(
+        context: &egui::Context,
+        work: impl FnOnce() -> HarnessAnswer + Send + 'static,
+    ) -> Option<Self> {
+        use crate::delivery::Deliver as _;
+        let (sender, answer) = std::sync::mpsc::sync_channel(1);
+        let repaint = context.clone();
+        let started = std::thread::Builder::new()
+            .name("ketchup-connect-ai".into())
+            .spawn(move || {
+                sender.deliver(work());
+                repaint.request_repaint();
+            });
+        match started {
+            Ok(_) => Some(Self { answer }),
+            Err(error) => {
+                ketchup_rejection::log!("the Connect AI rows are not read: {error}");
+                None
+            }
+        }
+    }
+}
+
 /// The program an MCP client starts: this executable in server mode, or in a
 /// development checkout its server script. The error says why it is unknown
 /// (review 2026-11-04 P3: the window said only that it was).
-fn mcp_server_command() -> std::io::Result<String> {
+pub(crate) fn mcp_server_command() -> std::io::Result<String> {
     let program = entry_point(&std::env::current_exe()?);
     program.into_os_string().into_string().map_err(|program| {
         std::io::Error::new(
@@ -283,14 +456,93 @@ mod tests {
         let mut harness = Kittest::builder()
             .with_size(egui::Vec2::new(1600.0, 1000.0))
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        harness.step();
+        // The empty document's exact evaluation repaints the window and shows
+        // its progress until it ends; wait for it so it neither exceeds a
+        // `run` nor moves the tab's rows under a click.
+        crate::tests::shell::step_until(
+            &mut harness,
+            std::time::Duration::from_secs(60),
+            "the empty document's exact evaluation never ended",
+            |app| app.exact.task.is_none(),
+        );
         harness.run();
         crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Ai);
         harness
     }
 
+    /// Frames until the rows are read and no client is being set up.
+    fn settle(harness: &mut Kittest<'_, KetchupApp>) {
+        while let Some(work) = harness.state_mut().live.harness_work.take() {
+            // The answer, waited for, goes back for the next frame to take.
+            let answer = work
+                .answer
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the rows' work did not end");
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            sender.send(answer).unwrap();
+            harness.state_mut().live.harness_work = Some(super::HarnessWork { answer: receiver });
+            harness.run();
+        }
+        assert!(harness.state().live.harnesses.is_some());
+    }
+
+    /// Review 2026-11-08 UI-240: the rows were read on the window's thread,
+    /// which lists every running program and looks at each command's file, so
+    /// a command on `\\nas\` held the window as long as the share took. They
+    /// are read on a thread of their own; the window draws meanwhile.
+    #[test]
+    fn the_rows_are_read_off_the_windows_thread_while_it_draws() {
+        use std::sync::{Mutex, PoisonError};
+        // The share answers once the test lets go of it.
+        static SHARE: Mutex<()> = Mutex::new(());
+        fn slow_share(_: &std::path::Path) -> Vec<HarnessRow> {
+            drop(SHARE.lock().unwrap_or_else(PoisonError::into_inner));
+            vec![HarnessRow {
+                harness: Harness::Codex,
+                file: None,
+                registration: Registration::NotSetUp,
+                setup_error: None,
+            }]
+        }
+        let held = SHARE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut app = KetchupApp::new();
+        app.live.harness_rows = slow_share;
+        let mut harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        for _ in 0..5 {
+            harness.step();
+        }
+        harness.get_by_label(&catalog.text("connect-ai-checking"));
+        assert!(harness.state().live.harnesses.is_none());
+        drop(held);
+        settle(&mut harness);
+        assert!(
+            harness
+                .query_by_label(&catalog.text("connect-ai-checking"))
+                .is_none()
+        );
+        harness.get_by_label(&catalog.text("connect-ai-set-up"));
+    }
+
+    /// Review 2026-11-19 CI-808: the click goes where the header was drawn
+    /// last frame. The rows were read from this machine and could come in
+    /// between, push the header down and take the click from it; the rows are
+    /// fixed and read before the click.
     #[test]
     fn the_section_shows_the_status_and_folds_away_three_set_ups_to_copy() {
-        let mut harness = open_section(KetchupApp::new());
+        fn one_row(_: &std::path::Path) -> Vec<HarnessRow> {
+            vec![HarnessRow {
+                harness: Harness::Codex,
+                file: None,
+                registration: Registration::NotSetUp,
+                setup_error: None,
+            }]
+        }
+        let mut app = KetchupApp::new();
+        app.live.harness_rows = one_row;
+        let mut harness = open_section(app);
+        settle(&mut harness);
         let waiting = harness.state().catalog.text("connect-ai-waiting");
         harness.get_by_label(&waiting);
         let copy = harness.state().catalog.text("connect-ai-copy");
@@ -369,6 +621,71 @@ mod tests {
         harness.get_by_label(&catalog.text("connect-ai-waiting"));
     }
 
+    /// Owner decision R2 of review 2026-11-19 og: an AI that took the window
+    /// over unasked is named with the one it took it from, in the status line
+    /// and the AI tab.
+    #[test]
+    fn an_ai_that_took_the_window_over_is_named_with_the_one_before() {
+        let mut app = KetchupApp::new();
+        app.live.consent_attached = true;
+        app.live.client_name = Some("Claude Code".to_owned());
+        app.live.previous_client = Some("Codex".to_owned());
+        app.live.harnesses = Some(Vec::new());
+        let harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        let connected = catalog.format(
+            "ai-connected",
+            &std::collections::BTreeMap::from([("client", "Claude Code".to_owned())]),
+        );
+        let named = catalog.format(
+            "ai-connected-after",
+            &std::collections::BTreeMap::from([
+                ("connected", connected),
+                ("previous", "Codex".to_owned()),
+            ]),
+        );
+        assert_eq!(named, "Connected AI: Claude Code (before: Codex)");
+        assert_eq!(
+            harness.get_all_by_label(&named).count(),
+            2,
+            "status line and AI tab"
+        );
+    }
+
+    /// Owner decision R1 of review 2026-11-19 og: instead of a question before
+    /// each write, the AI tab lists what the AI wrote, when and how big, and
+    /// Open folder shows the folder it is in.
+    #[test]
+    fn the_ai_tab_lists_the_files_the_ai_wrote_with_open_folder() {
+        let folder = tempfile::tempdir().unwrap();
+        let written = folder.path().join("house.dxf");
+        std::fs::write(&written, vec![b'x'; 2_048]).unwrap();
+        let dialogs = crate::dialogs::ScriptedFileDialogs::new();
+        let probe = dialogs.clone();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        app.live.harnesses = Some(Vec::new());
+        let mut harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        harness.get_by_label(&catalog.text("connect-ai-written-none"));
+
+        harness.state().live.write_log.record(&written);
+        harness.run();
+        harness.get_by_label(&catalog.format(
+            "connect-ai-written",
+            &std::collections::BTreeMap::from([("count", "1".to_owned())]),
+        ));
+        harness.get_by_label(&written.display().to_string());
+        harness.get_by_label_contains("2.0 kB");
+        // By the button's id, not its place: on the Windows runner the tab's
+        // rows moved after the frame the place was read in, and the click
+        // missed (twice in CI, on #138 and #150).
+        harness
+            .get_by_label(&catalog.text("connect-ai-open-folder"))
+            .click_accesskit();
+        harness.run();
+        assert_eq!(probe.shown_folders(), [folder.path().to_path_buf()]);
+    }
+
     /// #2687 P1 (point 3): before anything is set up the AI tab lists steps
     /// 1, 2, 3 top to bottom, each heard as not done.
     #[test]
@@ -443,7 +760,10 @@ mod tests {
     /// frame: rows already read stay as they are while the tab repaints.
     #[test]
     fn the_rows_are_read_once_and_on_check_again_not_every_frame() {
-        let mut harness = open_section(KetchupApp::new());
+        let mut app = KetchupApp::new();
+        app.live.harness_rows = |_| Vec::new();
+        let mut harness = open_section(app);
+        settle(&mut harness);
         assert!(harness.state().live.harnesses.is_some());
         let marker = std::path::PathBuf::from(r"C:\not-read-from-disk\config.toml");
         harness.state_mut().live.harnesses = Some(vec![HarnessRow {
@@ -492,6 +812,7 @@ mod tests {
             .get_by_label(&catalog.text("connect-ai-set-up"))
             .click();
         harness.run();
+        settle(&mut harness);
         assert_eq!(
             ketchup_mcp::chosen_window(&discovery).unwrap().as_deref(),
             Some(id.as_str())

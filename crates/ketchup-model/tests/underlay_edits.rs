@@ -6,8 +6,8 @@ use ketchup_model::document::{CanonicalCommand, CommandBatch, DocumentStore};
 use ketchup_model::import::{DxfImportOptions, read_dxf_underlay};
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use ketchup_model::underlay::edits::{
-    UnderlayEdits, UnderlayObjectError, plan_underlay_drawing, plan_underlay_object_removal,
-    plan_underlay_object_transform,
+    UnderlayEdits, UnderlayObjectError, plan_underlay_drawing, plan_underlay_edit_discard,
+    plan_underlay_object_removal, plan_underlay_object_transform,
 };
 use ketchup_model::underlay::line_edit::{LineEdit, plan_underlay_line_edit};
 use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
@@ -180,6 +180,7 @@ fn document() -> (DocumentStore, UnderlayId) {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -282,6 +283,87 @@ fn drawn_shapes_are_new_objects_after_the_drawings_own() {
     document.undo().unwrap();
     document.undo().unwrap();
     assert!(document.current().underlay(id).unwrap().edits.is_empty());
+}
+
+/// Review 2026-11-08 CD-240: discarding the edit of a copied object took its copy out of
+/// the edits, so the objects drawn after it got other ids: the one removed came back and
+/// another went, with no word.
+#[test]
+fn discarding_a_copied_objects_edit_keeps_the_objects_added_after_its_copy() {
+    let (mut document, id) = document();
+    let lines = lines();
+    let original = id_of(&lines, 0x30);
+    let snapshot = document.current();
+    let copy = plan_underlay_object_transform(
+        &snapshot,
+        id,
+        &lines,
+        &drawn(&document, id),
+        &[original],
+        &moving([0.0, 500.0]),
+        true,
+    )
+    .unwrap();
+    document.apply_batch(&copy).unwrap();
+    let text = |at: f64, text: &str| DrawnShape::Text {
+        anchor_mm: [at, 800.0],
+        height_mm: 10.0,
+        rotation_deg: 0.0,
+        text: text.into(),
+    };
+    let snapshot = document.current();
+    let shapes = vec![
+        text(0.0, "KEEP-1"),
+        text(100.0, "DELETED"),
+        text(200.0, "KEEP-2"),
+    ];
+    document
+        .apply_batch(&plan_underlay_drawing(&snapshot, id, "notes", shapes).unwrap())
+        .unwrap();
+    let edited = drawn(&document, id);
+    let deleted = ObjectIndex::new(&edited)
+        .find(&ObjectFilter::default())
+        .into_iter()
+        .find(|object| {
+            ObjectIndex::new(&edited)
+                .own_texts(*object)
+                .iter()
+                .any(|own| own.text == "DELETED")
+        })
+        .unwrap();
+    let snapshot = document.current();
+    document
+        .apply_batch(&plan_underlay_object_removal(&snapshot, id, &edited, &[deleted]).unwrap())
+        .unwrap();
+    let texts = |lines: &UnderlayLines| {
+        let mut texts = lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|drawn| drawn.text.clone())
+            .collect::<Vec<_>>();
+        texts.sort();
+        texts
+    };
+    assert_eq!(
+        texts(&drawn(&document, id)),
+        ["D-01", "KEEP-1", "KEEP-2", "WC", "WC"]
+    );
+
+    let snapshot = document.current();
+    let discard =
+        plan_underlay_edit_discard(&snapshot, id, &drawn(&document, id), &[original]).unwrap();
+    document.apply_batch(&discard).unwrap();
+    let after = drawn(&document, id);
+    assert_eq!(texts(&after), ["D-01", "KEEP-1", "KEEP-2", "WC"]);
+    assert_eq!(text_at(&after, "WC"), [[50.0, 50.0]]);
+    assert_eq!(text_at(&after, "KEEP-2"), [[200.0, 800.0]]);
+    // An object with no edit is not found.
+    let snapshot = document.current();
+    assert_eq!(
+        plan_underlay_edit_discard(&snapshot, id, &after, &[id_of(&lines, 0x10)]).unwrap_err(),
+        UnderlayObjectError::NotFound(id_of(&lines, 0x10))
+    );
 }
 
 #[test]
@@ -486,6 +568,7 @@ fn a_removal_is_one_undo_step_that_names_new_lines() {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -962,6 +1045,7 @@ fn trim_and_extend_stop_only_at_shown_lines_of_the_drawing() {
         &read.hidden_layers,
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();

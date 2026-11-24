@@ -2,6 +2,12 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod fea;
+mod fea_bar;
+mod fea_coupling;
+mod fea_frame;
+mod fea_modal;
+mod fea_sparse;
+mod fea_thermal;
 mod signed_validator_packages;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

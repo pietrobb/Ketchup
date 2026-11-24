@@ -1186,7 +1186,7 @@ fn a_late_shared_download_never_replaces_the_package_opened_since() {
 /// package written on its own thread is on disk and its comments follow it.
 fn keep_all(keeper: &mut SessionKeeper, app: &mut ViewerApp) -> Result<(), Rejection> {
     keeper.keep(app)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while keeper.writing() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1343,7 +1343,7 @@ fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
     // The process ends: no further keep, only the package writer finishes.
     drop(keeper);
     let package = dir.join("session.ketchup-view");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !package.exists() {
         assert!(
             std::time::Instant::now() < deadline,

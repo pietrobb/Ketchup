@@ -216,6 +216,85 @@ fn repoint_pin_joint_pockets(
     Ok(())
 }
 
+fn remap_surface_body(
+    spec: &SurfaceBodySpec,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<SurfaceBodySpec, CanonicalError> {
+    Ok(match spec {
+        SurfaceBodySpec::Planar { profile } => SurfaceBodySpec::Planar {
+            profile: remapped(mapping, profile)?,
+        },
+        SurfaceBodySpec::Loft {
+            sections,
+            guide,
+            continuity,
+            rail,
+        } => SurfaceBodySpec::Loft {
+            sections: remap_loft_sections(sections, mapping)?,
+            guide: remap_optional_feature(*guide, mapping)?,
+            continuity: *continuity,
+            rail: remap_optional_feature(*rail, mapping)?,
+        },
+        boundary @ SurfaceBodySpec::Boundary { .. } => boundary.clone(),
+        SurfaceBodySpec::Blend {
+            first,
+            first_continuity,
+            second,
+            second_continuity,
+        } => SurfaceBodySpec::Blend {
+            first: remapped(mapping, first)?,
+            first_continuity: *first_continuity,
+            second: remapped(mapping, second)?,
+            second_continuity: *second_continuity,
+        },
+        SurfaceBodySpec::ControlPoint {
+            target,
+            u_index,
+            v_index,
+            from_mm,
+            offset_mm,
+            weight,
+            keep,
+        } => SurfaceBodySpec::ControlPoint {
+            target: remapped(mapping, target)?,
+            u_index: *u_index,
+            v_index: *v_index,
+            from_mm: *from_mm,
+            offset_mm: *offset_mm,
+            weight: *weight,
+            keep: keep
+                .iter()
+                .map(|seam| {
+                    Ok(SurfaceSeam {
+                        surface: remapped(mapping, &seam.surface)?,
+                        continuity: seam.continuity,
+                    })
+                })
+                .collect::<Result<_, CanonicalError>>()?,
+        },
+    })
+}
+
+/// The Loft `kind` through the cloned sections, guide and rail.
+fn remap_loft(
+    kind: &FeatureKind,
+    mapping: &BTreeMap<FeatureId, FeatureId>,
+) -> Result<FeatureKind, CanonicalError> {
+    let mut kind = kind.clone();
+    if let FeatureKind::Loft {
+        sections,
+        guide,
+        rail,
+        ..
+    } = &mut kind
+    {
+        *sections = remap_loft_sections(sections, mapping)?;
+        *guide = remap_optional_feature(*guide, mapping)?;
+        *rail = remap_optional_feature(*rail, mapping)?;
+    }
+    Ok(kind)
+}
+
 pub(super) fn clone_definition_and_repoint(
     product: &mut ProductModel,
     plan: &CloneDefinitionPlan,
@@ -403,20 +482,9 @@ pub(super) fn clone_definition_and_repoint(
                 policy: spec.policy,
                 primary: spec.primary,
             }),
-            FeatureKind::SurfaceBody(spec) => FeatureKind::SurfaceBody(match spec {
-                SurfaceBodySpec::Planar { profile } => SurfaceBodySpec::Planar {
-                    profile: remapped(&mapping, profile)?,
-                },
-                SurfaceBodySpec::Loft {
-                    sections,
-                    guide,
-                    continuity,
-                } => SurfaceBodySpec::Loft {
-                    sections: remap_loft_sections(sections, &mapping)?,
-                    guide: remap_optional_feature(*guide, &mapping)?,
-                    continuity: *continuity,
-                },
-            }),
+            FeatureKind::SurfaceBody(spec) => {
+                FeatureKind::SurfaceBody(remap_surface_body(spec, &mapping)?)
+            }
             FeatureKind::SurfaceTrim { target, cutter } => FeatureKind::SurfaceTrim {
                 target: remapped(&mapping, target)?,
                 cutter: remapped(&mapping, cutter)?,
@@ -451,15 +519,7 @@ pub(super) fn clone_definition_and_repoint(
                 tolerance: tolerance.clone(),
                 make_solid: *make_solid,
             },
-            FeatureKind::Loft {
-                sections,
-                guide,
-                continuity,
-            } => FeatureKind::Loft {
-                sections: remap_loft_sections(sections, &mapping)?,
-                guide: remap_optional_feature(*guide, &mapping)?,
-                continuity: *continuity,
-            },
+            loft @ FeatureKind::Loft { .. } => remap_loft(loft, &mapping)?,
             FeatureKind::SheetMetal(spec) => FeatureKind::SheetMetal(spec.clone()),
             FeatureKind::ImportedExactBody(spec) => FeatureKind::ImportedExactBody(spec.clone()),
             kind @ (FeatureKind::RigidTransform { target, .. }
@@ -856,6 +916,7 @@ pub(super) fn remap_exact_solid_tool_feature_kind(
             sections,
             guide,
             continuity,
+            rail,
         } => Ok(FeatureKind::Loft {
             sections: sections
                 .iter()
@@ -868,6 +929,7 @@ pub(super) fn remap_exact_solid_tool_feature_kind(
                 .collect::<Result<Vec<_>, CanonicalError>>()?,
             guide: guide.map(|guide| mapped(&guide)).transpose()?,
             continuity: *continuity,
+            rail: rail.map(|rail| mapped(&rail)).transpose()?,
         }),
         FeatureKind::SheetMetal(spec) => Ok(FeatureKind::SheetMetal(spec.clone())),
         FeatureKind::ImportedExactBody(spec) => Ok(FeatureKind::ImportedExactBody(spec.clone())),
@@ -1035,7 +1097,8 @@ pub(super) fn apply_graph_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -1362,7 +1425,8 @@ pub(super) fn apply_mixed_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]
@@ -1515,7 +1579,8 @@ pub(super) fn apply_imported_exact_solid_tool(
         }),
     );
     for feature in features {
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         product.features.insert(feature.id, Arc::new(feature));
     }
     let mut result_definition = product.definitions[&plan.result_definition_id]

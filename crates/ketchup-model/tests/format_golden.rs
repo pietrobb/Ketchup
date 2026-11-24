@@ -10,8 +10,11 @@
 //! `KETCHUP_UPDATE_GOLDEN=1`.
 use ketchup_model::annotation::{Annotation, AnnotationMark};
 use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DocumentStore, GroupId, TagId, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind, GroupId,
+    MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, MeshImage, MeshLook, OccurrenceId, TagId,
+    TexturedTriangle, Transform,
 };
+use ketchup_model::import::DxfCodePage;
 use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeSet;
@@ -70,10 +73,35 @@ const SAVED_107: &str = concat!(
     "/tests/fixtures/persistence/format107.bin"
 );
 
+/// Format 108 as Save wrote it: the format 107 file with a logical group.
+const SAVED_108: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format108.bin"
+);
+
+/// Format 109 as Save wrote it: the format 108 file with a room's fill drawn.
+const SAVED_109: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format109.bin"
+);
+
+/// Format 110 as Save wrote it: the format 109 file with its drawing read in a code
+/// page the user chose.
+const SAVED_110: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format110.bin"
+);
+
+/// Format 111 as Save wrote it: the format 110 file with one mesh sheet placed.
+const SAVED_111: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format111.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format108.bin"
+    "/tests/fixtures/persistence/format112.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -84,6 +112,10 @@ const DIGEST_105: &str = "fdcd5e8c616c1323";
 const DIGEST_106: &str = "29680d90129178f6";
 const DIGEST_107: &str = "294cafaafcee8159";
 const DIGEST_108: &str = "e83d7833a1941e55";
+const DIGEST_109: &str = "64387e679e6cc938";
+const DIGEST_110: &str = "78f4d25425866c66";
+const DIGEST_111: &str = "fd8ea7b25e0aaff5";
+const DIGEST_112: &str = "a14ed23015b00aba";
 const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
@@ -187,7 +219,9 @@ fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same()
 /// in the oldest format that holds it: without underlays and annotations as format 103,
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
 /// annotations 105; with an edited underlay 106; with a stretched line 107; with a
-/// logical group 108 (the golden).
+/// logical group 108; with a fill drawn into a drawing 109; with a drawing read in a code
+/// page the user chose 110; with a mesh sheet 111; with a mesh that shows a picture 112
+/// (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -197,6 +231,10 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (SAVED_105, 105, DIGEST_105),
         (SAVED_106, 106, DIGEST_106),
         (SAVED_107, 107, DIGEST_107),
+        (SAVED_108, 108, DIGEST_108),
+        (SAVED_109, 109, DIGEST_109),
+        (SAVED_110, 110, DIGEST_110),
+        (SAVED_111, 111, DIGEST_111),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -364,12 +402,11 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("edited-underlay", SAVED_106, 106, DIGEST_106),
         ("release-0.3.0", RELEASE_0_3_0, 106, DIGEST_RELEASE_0_3_0),
         ("stretched-line", SAVED_107, 107, DIGEST_107),
-        (
-            "logical-group",
-            GOLDEN,
-            persistence::CURRENT_SCHEMA,
-            DIGEST_108,
-        ),
+        ("logical-group", SAVED_108, 108, DIGEST_108),
+        ("drawn-fill", SAVED_109, 109, DIGEST_109),
+        ("chosen-code-page", SAVED_110, 110, DIGEST_110),
+        ("mesh-sheet", SAVED_111, 111, DIGEST_111),
+        ("textured-mesh", GOLDEN, 112, DIGEST_112),
     ] {
         let (document, container) = opened(path, schema, digest);
         files.push((name.to_owned(), document, container, schema));
@@ -551,14 +588,14 @@ fn a_format_106_document_with_a_stretched_line_saves_the_format_107_file() {
     assert_eq!(reopened.current().annotations(), annotations());
 }
 
-/// The group of the format 108 golden, logical.
+/// The group of the format 108 file, logical.
 const LOGICAL_GROUP: GroupId = GroupId(900);
 
 /// Format 108 adds logical groups (Měchenice MECH-8): Kečup 0.3.1 reads 107 and would
 /// drop the mark, so the group would be checked for contact again after its next Save.
 /// The format 107 file with a logical group of kerbs.
 #[test]
-fn a_format_107_document_with_a_logical_group_saves_the_golden() {
+fn a_format_107_document_with_a_logical_group_saves_the_format_108_file() {
     let (mut document, container) = opened(SAVED_107, 107, DIGEST_107);
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -576,22 +613,297 @@ fn a_format_107_document_with_a_logical_group_saves_the_golden() {
         .unwrap();
     assert_eq!(document.current().canonical_digest(), DIGEST_108);
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(saved, std::fs::read(SAVED_108).unwrap());
+    let (reopened, _) = opened(SAVED_108, 108, DIGEST_108);
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+    assert_eq!(reopened.current().annotations(), annotations());
+}
+
+/// The fill of a room drawn into the format 108 file's drawing.
+fn drawn_fill(layer: &str) -> AddedObject {
+    AddedObject::Drawn {
+        layer: layer.to_owned(),
+        shape: DrawnShape::Hatch {
+            rings_mm: vec![
+                vec![[0.0, 0.0], [4000.0, 0.0], [4000.0, 3000.0], [0.0, 3000.0]],
+                vec![
+                    [1000.0, 1000.0],
+                    [1000.0, 1500.0],
+                    [1500.0, 1500.0],
+                    [1500.0, 1000.0],
+                ],
+            ],
+        },
+    }
+}
+
+/// Format 109 adds solid fills drawn into a drawing, the areas of rooms (review
+/// 2026-11-08 §5.3): Kečup 0.3.2 reads 108 and does not know the shape. The format 108
+/// file with a room's fill drawn, a column left out of it.
+#[test]
+fn a_format_108_document_with_a_drawn_fill_saves_the_format_109_file() {
+    let (mut document, container) = opened(SAVED_108, 108, DIGEST_108);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    underlay
+        .edits
+        .added
+        .push(drawn_fill(&underlay.layers[0].name));
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay.clone(),
+        )]))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_109);
+    assert_eq!(saved, std::fs::read(SAVED_109).unwrap());
+    let (reopened, _) = opened(SAVED_109, 109, DIGEST_109);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+}
+
+/// Format 110 adds the code page the user chose to read an underlay's drawing in (review
+/// 2026-11-09 UL-303): Kečup 0.3.2 reads 109 and would drop it, so the drawing would be
+/// read and written back in the code page its header names again. The format 109 file
+/// with its drawing read in Central European.
+#[test]
+fn a_format_109_document_with_a_chosen_code_page_saves_the_format_110_file() {
+    let (mut document, container) = opened(SAVED_109, 109, DIGEST_109);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    underlay.code_page = DxfCodePage::parse("ANSI_1250");
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay.clone(),
+        )]))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_110);
+    assert_eq!(saved, std::fs::read(SAVED_110).unwrap());
+    let (reopened, _) = opened(SAVED_110, 110, DIGEST_110);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+}
+
+/// The commands placing one mesh sheet, a single open triangle, in a document.
+fn sheet_commands() -> Vec<CanonicalCommand> {
+    let definition_id = DefinitionId(9_001);
+    vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: "Pane".to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(9_001),
+            definition_id,
+            name: "Pane".to_owned(),
+            kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: None,
+                schema: MESH_SHEET_SCHEMA_V1.to_owned(),
+                vertices_mm: vec![[0.0, 0.0, 0.0], [600.0, 0.0, 0.0], [0.0, 400.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+                authority: MeshAuthority::Authored {
+                    provenance: "format golden".to_owned(),
+                },
+            }),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(9_001),
+            definition_id,
+            name: "Pane".to_owned(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: BTreeSet::new(),
+            visible: true,
+        },
+    ]
+}
+
+/// Format 111 adds the mesh sheet, an open mesh such as an imported SketchUp face (U4c):
+/// Kečup 0.3.2 reads 110 and refuses the whole file as an invalid mesh body. The format
+/// 110 file with one sheet placed.
+#[test]
+fn a_format_110_document_with_a_mesh_sheet_saves_the_format_111_file() {
+    let (mut document, container) = opened(SAVED_110, 110, DIGEST_110);
+    document
+        .apply_batch(&CommandBatch::new(sheet_commands()))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_111);
+    assert_eq!(saved, std::fs::read(SAVED_111).unwrap());
+    let (reopened, _) = opened(SAVED_111, 111, DIGEST_111);
+    assert!(matches!(
+        reopened.current().feature(FeatureId(9_001)).unwrap().kind(),
+        FeatureKind::MeshBody(mesh) if mesh.is_sheet()
+    ));
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+}
+
+/// A 1 × 1 PNG, the picture of the textured golden.
+const PICTURE_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+
+/// The commands placing one mesh sheet that shows the picture of blob `blob`.
+fn textured_commands(blob: String) -> Vec<CanonicalCommand> {
+    let definition_id = DefinitionId(9_002);
+    vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: "Painted pane".to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(9_002),
+            definition_id,
+            name: "Painted pane".to_owned(),
+            kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: Some(MeshLook {
+                    images: vec![MeshImage {
+                        blob,
+                        mime_type: "image/png".to_owned(),
+                    }],
+                    triangles: vec![Some(TexturedTriangle {
+                        image: 0,
+                        uv: [[0.0, 0.0], [2.0, 0.0], [0.0, 1.5]],
+                    })],
+                }),
+                schema: MESH_SHEET_SCHEMA_V1.to_owned(),
+                vertices_mm: vec![[0.0, 0.0, 0.0], [600.0, 0.0, 0.0], [0.0, 400.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+                authority: MeshAuthority::Authored {
+                    provenance: "format golden".to_owned(),
+                },
+            }),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(9_002),
+            definition_id,
+            name: "Painted pane".to_owned(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: BTreeSet::new(),
+            visible: true,
+        },
+    ]
+}
+
+/// Format 112 adds the picture a mesh shows, an imported SketchUp texture (U4e): Kečup
+/// writing 111 would drop it. The format 111 file with one textured sheet placed, its
+/// picture saved with it.
+#[test]
+fn a_format_111_document_with_a_textured_mesh_saves_the_golden() {
+    let (mut document, mut container) = opened(SAVED_111, 111, DIGEST_111);
+    let blob = container.insert_blob(PICTURE_PNG.to_vec()).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(textured_commands(blob.clone())))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
     }
+    assert_eq!(document.current().canonical_digest(), DIGEST_112);
     let golden = std::fs::read(GOLDEN).unwrap();
     assert_eq!(
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_108);
-    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
-    assert_eq!(reopened.current().annotations(), annotations());
+    let (reopened, container) = opened(GOLDEN, 112, DIGEST_112);
+    let current = reopened.current();
+    let FeatureKind::MeshBody(mesh) = current.feature(FeatureId(9_002)).unwrap().kind() else {
+        panic!("the textured sheet is a mesh body")
+    };
+    let look = mesh.look.as_ref().expect("the sheet keeps its picture");
+    assert_eq!(look.images[0].blob, blob);
+    assert_eq!(look.triangles[0].unwrap().uv[1], [2.0, 0.0]);
+    assert_eq!(
+        container.blobs().get(&blob).map(|bytes| bytes.as_slice()),
+        Some(PICTURE_PNG)
+    );
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
     );
+}
+
+/// Only a mesh that shows a picture needs format 112: the format 111 file stays 111
+/// until one is placed.
+#[test]
+fn a_textured_mesh_needs_format_112() {
+    let (mut document, mut container) = opened(SAVED_111, 111, DIGEST_111);
+    let format = |document: &DocumentStore| {
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(format(&document), 111);
+    let blob = container.insert_blob(PICTURE_PNG.to_vec()).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(textured_commands(blob)))
+        .unwrap();
+    assert_eq!(format(&document), 112);
+}
+
+/// Only a mesh sheet needs format 111: the format 110 file stays 110 until one is placed.
+#[test]
+fn a_mesh_sheet_needs_format_111() {
+    let (mut document, _) = opened(SAVED_110, 110, DIGEST_110);
+    let format = |document: &DocumentStore| {
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(format(&document), 110);
+    document
+        .apply_batch(&CommandBatch::new(sheet_commands()))
+        .unwrap();
+    assert_eq!(format(&document), 111);
+}
+
+/// Only a chosen code page needs format 110: the format 109 file stays 109 until one is.
+#[test]
+fn a_chosen_code_page_needs_format_110() {
+    let (mut document, _) = opened(SAVED_109, 109, DIGEST_109);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    let mut saved_format = |code_page: Option<DxfCodePage>| {
+        underlay.code_page = code_page;
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+                underlay.clone(),
+            )]))
+            .unwrap();
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(saved_format(DxfCodePage::parse("DOS852")), 110);
+    assert_eq!(saved_format(None), 109);
+}
+
+/// Only a drawn fill needs format 109: a drawn line keeps the format 108 file at 108.
+#[test]
+fn a_drawn_fill_needs_format_109_and_a_drawn_line_does_not() {
+    let (mut document, _) = opened(SAVED_108, 108, DIGEST_108);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    let layer = underlay.layers[0].name.clone();
+    let mut saved_format = |added: AddedObject| {
+        underlay.edits.added.push(added);
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+                underlay.clone(),
+            )]))
+            .unwrap();
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    let line = AddedObject::Drawn {
+        layer: layer.clone(),
+        shape: DrawnShape::Polyline {
+            points_mm: vec![[0.0, 0.0], [100.0, 0.0]],
+            closed: false,
+        },
+    };
+    assert_eq!(saved_format(line), 108);
+    assert_eq!(saved_format(drawn_fill(&layer)), 109);
 }
 
 /// Only a logical group needs format 108: the format 107 file with a group saves as 107,
@@ -666,8 +978,10 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
 /// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
 /// `edits` and `view` with 106, its `stretched_objects` with 107, a group's `logical`
-/// with 108.
+/// with 108; a drawn fill is a new shape, not a field, and came with 109; an underlay's
+/// `code_page` with 110.
 const OPTIONAL_FIELDS: &[&str] = &[
+    "cam.rs: point_angle_deg", // Format 120.
     "document.rs: annotations",
     "document.rs: contact_joints",
     "document.rs: floor_z_mm",
@@ -678,19 +992,31 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: shaft_threads",
     "document.rs: tolerance",
     "document.rs: underlays",
+    "document/entities.rs: inner", // Format 117.
+    "document/entities.rs: keep",  // Format 119.
     "document/entities.rs: logical",
+    "document/entities.rs: look",
     "document/entities.rs: modeled",
+    "document/entities.rs: rail", // Format 116.
+    "document/entities.rs: rail", // Format 116.
     "document/entities.rs: section",
+    "document/entities.rs: source_placement", // Format 121.
     "document/entities.rs: up",
+    "document/entities.rs: weight", // Format 119.
     "document/revision.rs: variants",
+    "drawing.rs: generated_hole_callout", // Format 113.
     "exact_brep_graph.rs: chamfer_edge_sides",
     "exact_brep_graph.rs: crest_bits",
     "exact_brep_graph.rs: fillet_radius_stations",
     "exact_brep_graph.rs: guide",
     "exact_brep_graph.rs: guide",
+    "exact_brep_graph.rs: inner",
+    "exact_brep_graph.rs: keep",
     "exact_brep_graph.rs: name",
     "exact_brep_graph.rs: profile_edges",
     "exact_brep_graph.rs: profile_faces",
+    "exact_brep_graph.rs: rail",
+    "exact_brep_graph.rs: rail",
     "exact_brep_graph.rs: segment_entity_ids",
     "exact_brep_graph.rs: source_format",
     "exact_brep_graph.rs: source_part_index",
@@ -700,6 +1026,12 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: tool_name",
     "exact_brep_graph.rs: trim_bits",
     "exact_brep_graph.rs: up_bits",
+    "exact_brep_graph.rs: weight_bits",
+    // A refusal is sent to the AI and the window, never saved in the document.
+    "import/dxf/rewrite/refusal.rs: written",
+    // The comparison of two revisions answers the AI; it is never saved.
+    "import/dxf/rewrite/revisions.rs: difference",
+    "underlay.rs: code_page",
     "underlay.rs: edits",
     "underlay.rs: placement",
     "underlay.rs: view",
@@ -769,5 +1101,144 @@ fn no_optional_field_is_added_without_a_new_format_number() {
         "the optional fields of the model changed. A field of the saved document left out \
          at its default still needs a new format number, because Kečup 0.1.0 would drop it \
          (see the snapshot_codec module comment); list a field outside the document here"
+    );
+}
+
+/// The format Save writes for a document with one sketch of `entities` and `constraints`.
+fn saved_format_of_a_sketch(
+    entities: Vec<ketchup_geometry::sketch::SketchEntity>,
+    constraints: Vec<ketchup_geometry::sketch::SketchConstraint>,
+) -> u16 {
+    use ketchup_geometry::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Sketch".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: FeatureId(1),
+                    entities,
+                    constraints,
+                }),
+            },
+        ]))
+        .unwrap();
+    let snapshot = persistence::save(&document.current());
+    u16::from_le_bytes([snapshot[10], snapshot[11]])
+}
+
+/// PR #109 CI (release reads): Kečup 0.3.3 and every release before it took a sketch
+/// for damaged when it had no constraints and more than 512 unknowns, or two arcs of
+/// one circle, both of which a standard part's profile now draws; it opened its older
+/// `.recovery` instead and overwrote the file at its next Save. Such a sketch makes the
+/// file 114, which they refuse as newer; one they read stays 103.
+#[test]
+fn a_sketch_released_versions_take_for_damaged_needs_format_114() {
+    use ketchup_geometry::sketch::{
+        SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
+    };
+    let lines = |count: u64| {
+        (1..=count)
+            .map(|index| SketchEntity::Line {
+                id: SketchEntityId(index),
+                start_mm: [0.0, index as f64],
+                end_mm: [10.0, index as f64],
+            })
+            .collect::<Vec<_>>()
+    };
+    // Four unknowns a line: 128 lines are 512, the most a released version solves.
+    assert_eq!(saved_format_of_a_sketch(lines(128), Vec::new()), 103);
+    assert_eq!(saved_format_of_a_sketch(lines(129), Vec::new()), 114);
+    let horizontal = |entity| SketchConstraint {
+        id: SketchConstraintId(1),
+        kind: SketchConstraintKind::Horizontal {
+            entity: SketchEntityId(entity),
+        },
+    };
+    assert_eq!(saved_format_of_a_sketch(lines(3), vec![horizontal(1)]), 103);
+
+    let arc = |id, start_mm, end_mm| SketchEntity::Arc {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    assert_eq!(
+        saved_format_of_a_sketch(vec![arc(1, [10.0, 0.0], [0.0, 10.0])], Vec::new()),
+        103
+    );
+    assert_eq!(
+        saved_format_of_a_sketch(
+            vec![
+                arc(1, [10.0, 0.0], [0.0, 10.0]),
+                arc(2, [-10.0, 0.0], [0.0, -10.0]),
+            ],
+            Vec::new()
+        ),
+        114
+    );
+    // Two halves of one circle follow each other, and a released version reads them
+    // (examples/wardrobe-chair-table.ketchup).
+    assert_eq!(
+        saved_format_of_a_sketch(
+            vec![
+                arc(1, [10.0, 0.0], [-10.0, 0.0]),
+                arc(2, [-10.0, 0.0], [10.0, 0.0]),
+            ],
+            Vec::new()
+        ),
+        103
+    );
+}
+
+/// No released Kečup knows a surface spanning boundary curves, so a document with one
+/// saves as 115, which they refuse as newer instead of taking it for damaged, and
+/// reopens as saved.
+#[test]
+fn a_boundary_surface_needs_format_115_and_reopens_as_saved() {
+    use ketchup_model::document::{SpatialPathSegment, SurfaceBodySpec};
+    let line = |start_mm, end_mm| SpatialPathSegment::Line { start_mm, end_mm };
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Patch".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "Boundary surface".into(),
+                kind: FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary {
+                    segments: vec![
+                        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+                        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+                        line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
+                        line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
+                    ],
+                    inner: Vec::new(),
+                }),
+            },
+        ]))
+        .unwrap();
+    let bytes = persistence::save(&document.current());
+    assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), 115);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(
+        reopened.canonical_digest(),
+        document.current().canonical_digest()
     );
 }

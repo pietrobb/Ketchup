@@ -7,6 +7,7 @@ mod body_ui;
 mod cad_programs;
 mod capstone;
 mod capstone_chain;
+mod command_line;
 mod connect_ai_e2e;
 mod drawing_tools_ui;
 mod exact_house_xray;

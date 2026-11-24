@@ -1,6 +1,8 @@
 use super::*;
 use ketchup_tolerance::limits;
 
+mod entry_keys;
+
 pub(super) fn ensure_product_id(id: u64) -> Result<(), CanonicalError> {
     if id == 0 {
         Err(CanonicalError::ReservedProductId)
@@ -52,6 +54,10 @@ pub(super) fn validate_product_change(
 ) -> Result<(), CanonicalError> {
     let change = ProductChange::between(before, product);
     ensure_product_id(product.document_id.0)?;
+    // Edits file each entry under its id; a product read whole may not.
+    if before.is_none() {
+        entry_keys::validate_entry_keys(product)?;
+    }
     validate_document_entries(product, validate_drawing_sources, &change)?;
     if change.definitions {
         validate_definitions(product)?;
@@ -661,11 +667,133 @@ fn validate_definitions(product: &ProductModel) -> Result<(), CanonicalError> {
     Ok(())
 }
 
+/// A planar surface spans one closed profile or one solved sketch region.
+fn is_planar_surface_profile(kind: &FeatureKind) -> bool {
+    matches!(
+        kind,
+        FeatureKind::Profile {
+            segments,
+            closed: true,
+        } if segments.len() >= 2
+    ) || matches!(
+        kind,
+        FeatureKind::Sketch(sketch)
+            if sketch.solved_regions().is_ok_and(|regions| regions.len() == 1)
+    )
+}
+
+/// Each section of a Loft is one closed profile of its definition that comes
+/// before it; a refusal names the Loft (R1121ac P3).
+fn validate_loft_sections(
+    product: &ProductModel,
+    feature: &Feature,
+    feature_position: usize,
+    sections: &[LoftSection],
+) -> Result<(), CanonicalError> {
+    let definition = &product.definitions[&feature.definition_id];
+    for (index, section) in sections.iter().enumerate() {
+        let profile = product
+            .features
+            .get(&section.profile)
+            .ok_or(CanonicalError::FeatureNotFound(section.profile))?;
+        let source_precedes_loft = definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == section.profile)
+            .is_some_and(|position| position < feature_position);
+        let valid_profile = match &profile.kind {
+            FeatureKind::Sketch(sketch) => sketch
+                .solved_regions()
+                .is_ok_and(|regions| regions.len() == 1),
+            kind => kind
+                .closed_spline_points()
+                .is_some_and(|points| points.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS),
+        };
+        let ours = profile.definition_id == feature.definition_id;
+        feature_input::loft_profile(index, ours && valid_profile && source_precedes_loft)
+            .map_err(|error| error.of_feature(feature.id))?;
+    }
+    Ok(())
+}
+
+/// A Loft's guide and rail are spatial paths of its definition that come before
+/// it, and a curvature-continuous Loft has neither.
+fn validate_loft_paths(
+    product: &ProductModel,
+    feature: &Feature,
+    feature_position: usize,
+    continuity: LoftContinuity,
+    guide: Option<FeatureId>,
+    rail: Option<FeatureId>,
+) -> Result<(), CanonicalError> {
+    let definition = &product.definitions[&feature.definition_id];
+    let paths = [
+        (FeatureInputField::Guide, guide),
+        (FeatureInputField::Rail, rail),
+    ];
+    for (field, path) in paths
+        .into_iter()
+        .filter_map(|(field, path)| path.map(|path| (field, path)))
+    {
+        let path_feature = product
+            .features
+            .get(&path)
+            .ok_or(CanonicalError::FeatureNotFound(path))?;
+        let path_precedes_loft = definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == path)
+            .is_some_and(|position| position < feature_position);
+        feature_input::loft_path(
+            field,
+            continuity,
+            path_feature.definition_id == feature.definition_id
+                && matches!(path_feature.kind, FeatureKind::SpatialPath { .. })
+                && path_precedes_loft,
+        )
+        .map_err(|error| error.of_feature(feature.id))?;
+    }
+    Ok(())
+}
+
+/// `operand` is a surface body feature of `feature`'s definition placed before it.
+fn is_earlier_surface(product: &ProductModel, feature: &Feature, operand: FeatureId) -> bool {
+    let definition = &product.definitions[&feature.definition_id];
+    let position = |id: FeatureId| {
+        definition
+            .feature_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+    };
+    product.features.get(&operand).is_some_and(|source| {
+        source.definition_id == feature.definition_id
+            && source.kind.body_kind() == Some(BodyKind::Surface)
+            && position(operand)
+                .zip(position(feature.id))
+                .is_some_and(|(operand, feature)| operand < feature)
+    })
+}
+
+/// Every operand of a surface trim, blend, control-point move, extension or
+/// thickening is a different surface placed earlier in its definition.
+fn surface_operands_are_earlier(product: &ProductModel, feature: &Feature) -> bool {
+    let operands = feature.kind.dependencies();
+    let distinct = match &feature.kind {
+        FeatureKind::SurfaceTrim { target, cutter } => target != cutter,
+        _ => true,
+    };
+    distinct
+        && operands
+            .into_iter()
+            .all(|operand| is_earlier_surface(product, feature, operand))
+}
+
 fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
     for feature in product.features.values() {
         ensure_product_id(feature.id.0)?;
         ensure_name(&feature.name)?;
-        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())?;
+        validate_feature_kind(&feature.kind, product.tolerance.linear_mm())
+            .map_err(|error| error.of_feature(feature.id))?;
         let definition = product
             .definitions
             .get(&feature.definition_id)
@@ -966,65 +1094,20 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                     .iter()
                     .position(|candidate| *candidate == profile)
                     .is_some_and(|position| position < feature_position);
-                let valid_profile = matches!(
-                    &source.kind,
-                    FeatureKind::Profile {
-                        segments,
-                        closed: true,
-                    } if segments.len() >= 2
-                ) || matches!(
-                    &source.kind,
-                    FeatureKind::Sketch(sketch)
-                        if sketch.solved_regions().is_ok_and(|regions| regions.len() == 1)
-                );
                 if source.definition_id != feature.definition_id
                     || !source_precedes_surface
-                    || !valid_profile
+                    || !is_planar_surface_profile(&source.kind)
                 {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
-            FeatureKind::SurfaceTrim { target, cutter } => {
-                let feature_position = definition
-                    .feature_ids
-                    .iter()
-                    .position(|candidate| *candidate == feature.id)
-                    .expect("validated definition contains feature");
-                let valid_surface_operand = |operand: FeatureId| {
-                    product.features.get(&operand).is_some_and(|source| {
-                        source.definition_id == feature.definition_id
-                            && source.kind.body_kind() == Some(BodyKind::Surface)
-                            && definition
-                                .feature_ids
-                                .iter()
-                                .position(|candidate| *candidate == operand)
-                                .is_some_and(|position| position < feature_position)
-                    })
-                };
-                if target == cutter
-                    || !valid_surface_operand(target)
-                    || !valid_surface_operand(cutter)
-                {
-                    return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
-                }
-            }
-            FeatureKind::SurfaceExtend { target, .. }
-            | FeatureKind::SurfaceThicken { target, .. } => {
-                let feature_position = definition
-                    .feature_ids
-                    .iter()
-                    .position(|candidate| *candidate == feature.id)
-                    .expect("validated definition contains feature");
-                let valid_target = product.features.get(&target).is_some_and(|source| {
-                    source.definition_id == feature.definition_id
-                        && source.kind.body_kind() == Some(BodyKind::Surface)
-                        && definition
-                            .feature_ids
-                            .iter()
-                            .position(|candidate| *candidate == target)
-                            .is_some_and(|position| position < feature_position)
-                });
-                if !valid_target {
+            FeatureKind::SurfaceTrim { .. }
+            | FeatureKind::SurfaceBody(
+                SurfaceBodySpec::Blend { .. } | SurfaceBodySpec::ControlPoint { .. },
+            )
+            | FeatureKind::SurfaceExtend { .. }
+            | FeatureKind::SurfaceThicken { .. } => {
+                if !surface_operands_are_earlier(product, feature) {
                     return Err(CanonicalError::InvalidFeatureOwnership(feature.id));
                 }
             }
@@ -1053,60 +1136,21 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
                 sections,
                 guide,
                 continuity,
+                rail,
             }
             | FeatureKind::SurfaceBody(SurfaceBodySpec::Loft {
                 sections,
                 guide,
                 continuity,
+                rail,
             }) => {
                 let feature_position = definition
                     .feature_ids
                     .iter()
                     .position(|candidate| *candidate == feature.id)
                     .expect("validated definition contains feature");
-                for section in sections {
-                    let profile = product
-                        .features
-                        .get(&section.profile)
-                        .ok_or(CanonicalError::FeatureNotFound(section.profile))?;
-                    let source_precedes_loft = definition
-                        .feature_ids
-                        .iter()
-                        .position(|candidate| *candidate == section.profile)
-                        .is_some_and(|position| position < feature_position);
-                    let valid_profile = match &profile.kind {
-                        FeatureKind::Sketch(sketch) => sketch
-                            .solved_regions()
-                            .is_ok_and(|regions| regions.len() == 1),
-                        kind => kind.closed_spline_points().is_some_and(|points| {
-                            points.len() <= MAX_EXACT_BREP_LOFT_CONTROL_POINTS
-                        }),
-                    };
-                    if profile.definition_id != feature.definition_id
-                        || !valid_profile
-                        || !source_precedes_loft
-                    {
-                        return Err(CanonicalError::InvalidLoft);
-                    }
-                }
-                if let Some(guide) = guide {
-                    let guide_feature = product
-                        .features
-                        .get(&guide)
-                        .ok_or(CanonicalError::FeatureNotFound(guide))?;
-                    let guide_precedes_loft = definition
-                        .feature_ids
-                        .iter()
-                        .position(|candidate| *candidate == guide)
-                        .is_some_and(|position| position < feature_position);
-                    if continuity == LoftContinuity::Curvature
-                        || guide_feature.definition_id != feature.definition_id
-                        || !matches!(guide_feature.kind, FeatureKind::SpatialPath { .. })
-                        || !guide_precedes_loft
-                    {
-                        return Err(CanonicalError::InvalidLoft);
-                    }
-                }
+                validate_loft_sections(product, feature, feature_position, &sections)?;
+                validate_loft_paths(product, feature, feature_position, continuity, guide, rail)?;
             }
             FeatureKind::Boolean { target, tool, .. } => {
                 let target_feature = product
@@ -1352,6 +1396,7 @@ fn validate_features(product: &ProductModel) -> Result<(), CanonicalError> {
             FeatureKind::Profile { .. }
             | FeatureKind::SheetMetal(_)
             | FeatureKind::SpatialPath { .. }
+            | FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { .. })
             | FeatureKind::ConstructionPoint { .. }
             | FeatureKind::ConstructionAxis { .. }
             | FeatureKind::ConstructionPlane { .. } => {}

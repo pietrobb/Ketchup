@@ -2,10 +2,13 @@ use ketchup_exact::GeometryErrorCode;
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, Dimension, DocumentStore, NodeId, ProposalCommitError,
 };
+use ketchup_scheduler::memory_budget::MemoryBudget;
 use ketchup_scheduler::protocol::{MAX_REQUEST_FRAME_BYTES, WorkerRequest, encode_frame};
 use ketchup_scheduler::{ExactWorkerClient, WorkerError};
 use std::io::Write as _;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const NODE: NodeId = NodeId(1);
@@ -34,8 +37,8 @@ fn perf_scheduler_cancellation() {
     for run in 0..PERFORMANCE_RUNS {
         let p95 = percentile(&cancel_running_jobs(CANCELLATION_SAMPLES), 95);
         assert!(
-            p95 <= 250.0,
-            "cancellation series {run}: p95 {p95:.3} ms exceeds 250 ms"
+            p95 <= 250.0 * ketchup_test_env::perf_slowdown(),
+            "cancellation series {run}: p95 {p95:.3} ms exceeds 250 ms times the machine's slowdown"
         );
     }
 }
@@ -63,6 +66,7 @@ fn the_exact_worker_is_stopped_past_its_memory_limit() {
     let _turn = crate::integration_support::file_turn();
     let limit = ketchup_scheduler::exact_worker_memory_bytes();
     let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.ping().unwrap();
     worker.allocate_probe(64 << 20).unwrap();
     let past_limit = u64::try_from(limit).unwrap() + (256 << 20);
     assert_eq!(
@@ -71,6 +75,61 @@ fn the_exact_worker_is_stopped_past_its_memory_limit() {
     );
     let mut next = ExactWorkerClient::spawn(worker_path()).unwrap();
     next.ping().unwrap();
+}
+
+/// A failed allocation calls abort(), which on Windows holds the worker for seconds
+/// while it files an error report: a request whose time runs out meanwhile is still
+/// the memory limit, not a timeout (R1122ac, review §4 P3). The refused probe holds
+/// the worker the same way.
+#[test]
+fn a_failed_allocation_held_past_the_request_time_is_the_memory_limit() {
+    let _turn = crate::integration_support::file_turn();
+    let limit = ketchup_scheduler::exact_worker_memory_bytes();
+    let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.ping().unwrap();
+    let past_limit = u64::try_from(limit).unwrap() + (256 << 20);
+    assert_eq!(
+        worker.allocate_probe_within(
+            past_limit,
+            Duration::from_secs(60),
+            &AtomicBool::new(false),
+            Duration::from_secs(2),
+        ),
+        Err(WorkerError::MemoryLimit { bytes: limit })
+    );
+}
+
+/// Workers each within the limit of their kind but together past the window's
+/// budget: the largest is stopped and its request says what each used, the other
+/// keeps running (README "One memory limit per kind of background job").
+#[test]
+fn workers_together_past_the_window_budget_stop_the_largest() {
+    let _turn = crate::integration_support::file_turn();
+    let budget = MemoryBudget::watched(768 << 20);
+    let mut small = ExactWorkerClient::spawn_within(worker_path(), &budget).unwrap();
+    let mut large = ExactWorkerClient::spawn_within(worker_path(), &budget).unwrap();
+    // Each holds its block in the middle of a request, until the other is stopped.
+    let hold = Duration::from_secs(60);
+    let done = Arc::new(AtomicBool::new(false));
+    let small_done = Arc::clone(&done);
+    let small_request = std::thread::spawn(move || {
+        small
+            .allocate_probe_holding(256 << 20, hold, &small_done)
+            .map(|()| small)
+    });
+    let stopped = large.allocate_probe_holding(640 << 20, hold, &AtomicBool::new(false));
+    done.store(true, Ordering::Release);
+    let Err(WorkerError::MemoryBudget(stop)) = stopped else {
+        panic!("{stopped:?}");
+    };
+    assert_eq!(stop.total, 768 << 20);
+    assert!(stop.used + stop.others > stop.total, "{stop:?}");
+    assert!(stop.used > stop.others, "{stop:?}");
+    // The smaller one was not stopped: only cancelled now that the test is done.
+    assert!(matches!(
+        small_request.join().unwrap(),
+        Err(WorkerError::Cancelled)
+    ));
 }
 
 fn exercise_proposal_race() -> usize {
@@ -124,6 +183,7 @@ fn exercise_crash_recovery() -> usize {
 
 fn exercise_exception_transport() -> usize {
     let mut worker = ExactWorkerClient::spawn(worker_path()).unwrap();
+    worker.ping().unwrap();
     let mut crossed = 0;
     for _ in 0..100 {
         match worker.exception_probe() {

@@ -1,0 +1,710 @@
+//! An anchorage holds a member sideways only from the ground: a path of
+//! contacts to a grounded part standing on the floor that passes through no
+//! load-path member, every part on it at least as deep as the member (review
+//! 2026-11-13 R1113-PG-600, PG-601, PG-602).
+
+use ketchup_program::member_check::MemberCheck;
+use ketchup_program::{Report, run};
+use std::collections::BTreeMap;
+
+fn report(source: &str) -> Report {
+    run("ground.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .1
+}
+
+fn checked<'a>(report: &'a Report, part: &str) -> &'a MemberCheck {
+    report
+        .design
+        .members
+        .iter()
+        .find(|member| member.part == part)
+        .unwrap_or_else(|| panic!("{part} is not checked: {:?}", report.design.members))
+}
+
+/// Why `report` holds its beam nowhere a declaration says: the declarations
+/// it ignores, and the beam's own check (review 2026-11-13 r95 structural
+/// point 1: a path to the ground too flexible holds nothing there).
+fn refused(report: &Report) -> Vec<&str> {
+    let mut why = ignored(report);
+    why.extend(checked(report, "beam").missing.iter().map(String::as_str));
+    why
+}
+
+fn ignored(report: &Report) -> Vec<&str> {
+    report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == "declared_bracing_ignored")
+        .map(|issue| issue.message.as_str())
+        .collect()
+}
+
+/// A GL24h 80 x 400 beam (z 2000 - 2400) on two grounded posts over 5.8 m under
+/// about 13 kN at its middle.
+const BEAM: &str = "load_path(only = [\"frame\"], carriers = [\"pad\"])
+area_load(\"point\", kind = \"imposed\", kn_m2 = 560, on = [\"pad\"], source = \"test\")
+timber_design({\"GL24h\": \"GL24h\"})
+box(\"post a\", (100, 80, 2000), material = \"GL24h\", grounded = True)
+box(\"post b\", (100, 80, 2000), at = (5800, 0, 0), material = \"GL24h\", grounded = True)
+box(\"beam\", (5900, 80, 400), at = (0, 0, 2000), material = \"GL24h\", tags = [\"frame\"])
+box(\"pad\", (300, 80, 50), at = (2800, 0, 2400), material = \"GL24h\", tags = [\"pad\"])
+";
+
+const PLACES: [i32; 6] = [300, 1200, 2100, 3600, 4500, 5400];
+
+/// Six grounded blocks 50 x 420 x 50 across the beam's top (y -170 - 250),
+/// screwed to it and named in brace(), each with `extra(x)` beside it.
+fn blocks(extra: impl Fn(i32) -> String) -> Report {
+    let mut source = BEAM.to_owned();
+    for x in PLACES {
+        source.push_str(&format!(
+            "box(\"block {x}\", (50, 420, 50), at = ({x}, -170, 2400), material = \"GL24h\", grounded = True, tags = [\"block\"])
+joint(\"block {x}\", \"beam\", kind = \"screw\")
+{}",
+            extra(x)
+        ));
+    }
+    source.push_str("brace([\"beam\"], by = [\"block\"], edge = \"top\")\n");
+    report(&source)
+}
+
+/// R1113-PG-600: a small grounded part touching the block (a 1 mm nub on its
+/// end, one meeting only its corner edge, a nub just under it), a free rod
+/// 1 x 1 x 2 400 standing on the floor under it (grounded too: capability
+/// review 761), or a free part beside it with a grounded nub, made the block
+/// ground and the beam passed.
+#[test]
+fn a_small_or_free_part_touching_the_anchorage_is_no_ground() {
+    type Beside = fn(i32) -> String;
+    let cases: [(&str, Beside); 9] = [
+        ("nub on its end", |x| {
+            format!(
+                "box(\"nub {x}\", (1, 1, 1), at = ({}, 200, 2400), material = \"GL24h\", grounded = True)\n",
+                x + 50
+            )
+        }),
+        ("column on the floor at its corner edge", |x| {
+            format!(
+                "box(\"col {x}\", (400, 400, 2450), at = ({}, 250, 0), material = \"GL24h\", grounded = True)\n",
+                x + 50
+            )
+        }),
+        ("column on the floor at its corner edge, turned 1°", |x| {
+            format!(
+                "box(\"col {x}\", (400, 400, 2450), at = ({0}, 250, 0), material = \"GL24h\", grounded = True)
+rotate(\"col {x}\", axis = (0, 0, 1), angle = 1, pivot = ({0}, 250, 0))\n",
+                x + 50
+            )
+        }),
+        ("nub under it", |x| {
+            format!(
+                "box(\"nub {x}\", (1, 1, 1), at = ({x}, 200, 2399), material = \"GL24h\", grounded = True)\n"
+            )
+        }),
+        ("free rod on the floor", |x| {
+            format!(
+                "box(\"rod {x}\", (1, 1, 2400), at = ({}, 200, 0), material = \"GL24h\")\n",
+                x + 20
+            )
+        }),
+        ("grounded rod on the floor", |x| {
+            format!(
+                "box(\"rod {x}\", (1, 1, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        }),
+        ("grounded strip 1 x 4 on the floor", |x| {
+            format!(
+                "box(\"strip {x}\", (1, 4, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        }),
+        ("grounded strip 5 x 20 on the floor", |x| {
+            format!(
+                "box(\"strip {x}\", (5, 20, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        }),
+        ("free part with a grounded nub", |x| {
+            format!(
+                "box(\"free {x}\", (50, 50, 50), at = ({}, 150, 2400), material = \"GL24h\")
+box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded = True)\n",
+                x + 50,
+                x + 100
+            )
+        }),
+    ];
+    for (case, extra) in cases {
+        let held = blocks(extra);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            refused(&held)
+        );
+        if let Some(part) = ["rod", "strip"]
+            .into_iter()
+            .find(|part| case.starts_with(&format!("grounded {part}")))
+        {
+            assert!(
+                refused(&held)
+                    .iter()
+                    .any(|message| message.contains(&format!("{part} 300"))
+                        && message.contains("too slender")),
+                "{:?}",
+                refused(&held)
+            );
+        }
+    }
+
+    // A grounded post 100 x 160 standing on the floor under each block,
+    // beside the beam, holds it: as a cantilever 3 E I / L³ = 85 N/mm, over
+    // the 56 N/mm EN 1995-1-1 9.2.5.3 asks (review 2026-11-13 r95 structural
+    // point 1: a post 50 x 100 gave 10 N/mm and held it by a threshold).
+    let posts = blocks(|x| {
+        format!(
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)\n",
+            x - 25
+        )
+    });
+    assert_eq!(ignored(&posts), Vec::<&str>::new());
+    assert_eq!(checked(&posts, "beam").status, "pass");
+
+    // So does each post turned 1° about its middle, its top still flat
+    // against the block's bottom (capability review 768).
+    let turned = blocks(|x| {
+        format!(
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)
+rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 170, 0))\n",
+            x - 25,
+            x + 25
+        )
+    });
+    assert_eq!(ignored(&turned), Vec::<&str>::new());
+    assert_eq!(checked(&turned, "beam").status, "pass");
+
+    // So does a grounded wall the blocks are screwed to, through a free board
+    // between them as deep as the beam, screwed to both.
+    let walled = |to_wall: bool| {
+        blocks(|x| {
+            let wall = if x == PLACES[0] { WALL } else { "" };
+            let screwed = if to_wall {
+                format!("joint(\"board {x}\", \"wall\", kind = \"screw\")\n")
+            } else {
+                String::new()
+            };
+            format!(
+                "{wall}box(\"board {x}\", (50, 750, 50), at = ({x}, 250, 2400), material = \"GL24h\")
+joint(\"board {x}\", \"block {x}\", kind = \"screw\")
+{screwed}"
+            )
+        })
+    };
+    let screwed = walled(true);
+    assert_eq!(ignored(&screwed), Vec::<&str>::new());
+    assert_eq!(checked(&screwed, "beam").status, "pass");
+    // A free board only butting the wall holds nothing sideways (capability
+    // review 771).
+    let butting = walled(false);
+    assert_ne!(checked(&butting, "beam").status, "pass");
+    assert!(
+        refused(&butting)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        refused(&butting)
+    );
+}
+
+/// Capability review 771 (PG-163): a free stud under each block, joined to
+/// nothing, holds nothing sideways whether it stands on the bare floor or on a
+/// grounded slab lying on it. A grounded stud 100 x 160 on the slab holds the
+/// beam.
+#[test]
+fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
+    const SLAB: &str = "box(\"slab\", (5900, 400, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
+    let stud = |grounded: &str, slab: bool| {
+        blocks(|x| {
+            let (base, z, height) = if slab {
+                (if x == PLACES[0] { SLAB } else { "" }, 100, 2300)
+            } else {
+                ("", 0, 2400)
+            };
+            format!(
+                "{base}box(\"under {x}\", (100, 160, {height}), at = ({}, 100, {z}), material = \"GL24h\"{grounded})\n",
+                x - 25
+            )
+        })
+    };
+    for (case, slab) in [("on the floor", false), ("on a grounded slab", true)] {
+        let held = stud("", slab);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            refused(&held)
+        );
+    }
+    let grounded = stud(", grounded = True", true);
+    assert_eq!(ignored(&grounded), Vec::<&str>::new());
+    assert_eq!(checked(&grounded, "beam").status, "pass");
+}
+
+/// Capability review 766: a grounded strip 1 x 40 x 2 400 standing on the floor
+/// under each block was ground, its height measured against its width and not
+/// its thickness. A part standing on its end holds sideways as stiffly as it
+/// bends across the member: strips and posts too thin that way hold nothing, a
+/// post 100 x 160 deep across the member holds the beam, turned 160 x 100 not
+/// (review 2026-11-13 r95 structural point 1: 40 x 100 and 100 x 40 held it by
+/// a threshold of 60 times the thickness).
+#[test]
+fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
+    let standing = |(dx, dy): (i32, i32)| {
+        blocks(|x| {
+            format!(
+                "box(\"strip {x}\", ({dx}, {dy}, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        })
+    };
+    for section in [
+        (1, 40),
+        (40, 1),
+        (1, 59),
+        (1, 61),
+        (10, 39),
+        (10, 40),
+        (10, 100),
+        (39, 100),
+        (40, 100),
+        (100, 40),
+        (160, 100),
+    ] {
+        let held = standing(section);
+        assert_ne!(checked(&held, "beam").status, "pass", "{section:?}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("strip 300") && message.contains("too slender")),
+            "{section:?}: {:?}",
+            refused(&held)
+        );
+    }
+    let held = standing((100, 160));
+    assert_eq!(ignored(&held), Vec::<&str>::new());
+    assert_eq!(checked(&held, "beam").status, "pass");
+}
+
+/// Review 2026-11-13 r95 R1113r95-PG-700: slenderness was measured part by
+/// part, so six pieces 7 x 7 x 400 stacked 2 400 mm high under each block,
+/// grounded or screwed into a chain with only the lowest grounded, held the
+/// beam while one rod 7 x 7 x 2 400 did not. A stack bends over the height
+/// it reaches as one post, its pieces screwed end on turning on them; grounded
+/// pieces 100 x 160 stacked hold (review 2026-11-13 r95 structural point 1:
+/// pieces 50 x 50, 1.3 N/mm as a cantilever, held it by a threshold).
+#[test]
+fn stacked_short_pieces_are_as_slender_as_one_rod() {
+    let stacked = |section: (i32, i32), chained: bool| {
+        blocks(|x| {
+            let (mut pieces, mut joints) = (String::new(), String::new());
+            for level in 0..6 {
+                let grounded = if !chained || level == 0 {
+                    ", grounded = True"
+                } else {
+                    ""
+                };
+                pieces.push_str(&format!(
+                    "box(\"piece {x} {level}\", ({}, {}, 400), at = ({}, {}, {}), material = \"GL24h\"{grounded})\n",
+                    section.0,
+                    section.1,
+                    x + 25 - section.0 / 2,
+                    250 - section.1,
+                    400 * level
+                ));
+                if chained {
+                    let above = if level == 5 {
+                        format!("block {x}")
+                    } else {
+                        format!("piece {x} {}", level + 1)
+                    };
+                    joints.push_str(&format!(
+                        "joint(\"piece {x} {level}\", \"{above}\", kind = \"screw\")\n"
+                    ));
+                }
+            }
+            pieces + &joints
+        })
+    };
+    for (case, chained) in [("grounded stack", false), ("screwed chain", true)] {
+        let held = stacked((7, 7), chained);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("piece 300")
+                    && (message.contains("too slender") || message.contains("pivot"))),
+            "{case}: {:?}",
+            refused(&held)
+        );
+    }
+    let posts = stacked((100, 160), false);
+    assert_eq!(ignored(&posts), Vec::<&str>::new());
+    assert_eq!(checked(&posts, "beam").status, "pass");
+}
+
+/// Capability review 776 of R1113r95-PG-700: measured level by level, six
+/// grounded pieces 7 x 400 x 7 laid end to end sideways from the block's end
+/// to a grounded post held the beam while one rod 7 x 2 400 x 7 did not. A
+/// chain is as slender as the length of its path over each piece's width,
+/// whichever way it runs: one of pieces 7 x 7 buckles as one rod, one of
+/// pieces 50 x 400 x 50 to a post 200 x 200 holds. The pieces are screwed end
+/// to end, as bare they only push (R1122ac-PG-1101).
+#[test]
+fn a_sideways_chain_is_as_slender_as_one_rod() {
+    let chain = |side: i32, pieces: i32| {
+        blocks(|x| {
+            let length = 2400 / pieces;
+            let mut source = format!(
+                "box(\"post {x}\", (200, 200, 2450), at = ({}, 2650, 0), material = \"GL24h\", grounded = True)\n",
+                x - 75
+            );
+            for k in 0..pieces {
+                let before = if k == 0 {
+                    format!("block {x}")
+                } else {
+                    format!("piece {x} {}", k - 1)
+                };
+                source.push_str(&format!(
+                    "box(\"piece {x} {k}\", ({side}, {length}, {side}), at = ({x}, {}, 2400), material = \"GL24h\", grounded = True)
+joint(\"{before}\", \"piece {x} {k}\", kind = \"screw\")
+",
+                    250 + length * k
+                ));
+            }
+            source.push_str(&format!(
+                "joint(\"piece {x} {}\", \"post {x}\", kind = \"screw\")\n",
+                pieces - 1
+            ));
+            source
+        })
+    };
+    for (case, pieces) in [("one rod", 1), ("six pieces", 6)] {
+        let held = chain(7, pieces);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("piece 300") && message.contains("too slender")),
+            "{case}: {:?}",
+            refused(&held)
+        );
+    }
+    let posts = chain(50, 6);
+    assert_eq!(ignored(&posts), Vec::<&str>::new());
+    assert_eq!(checked(&posts, "beam").status, "pass");
+}
+
+/// Review 2026-11-13 r95 R1113r95-PG-702: a free post 50 x 100 x 2 390 under
+/// each block, screwed to it and by one screw at its foot to a grounded plate
+/// 400 x 400 x 10, held the beam. One fastener is a hinge: the post turns about
+/// it and sways with the beam.
+#[test]
+fn a_free_post_on_one_screw_at_its_foot_is_a_hinge() {
+    let held = blocks(|x| {
+        format!(
+            "box(\"plate {x}\", (400, 400, 10), at = ({}, 0, 0), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (50, 100, 2390), at = ({x}, 150, 10), material = \"GL24h\")
+joint(\"post {x}\", \"block {x}\", kind = \"screw\")
+joint(\"post {x}\", \"plate {x}\", kind = \"screw\", fasteners = [({}, 200, 10)])\n",
+            x - 175,
+            x + 25
+        )
+    });
+    assert_ne!(checked(&held, "beam").status, "pass");
+    assert!(
+        refused(&held)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        refused(&held)
+    );
+}
+
+/// R1113r95-PG-703: a grounded board 10 x 500 x 3 466 leaning 44° from the
+/// floor, its upper end in the block, was measured as a board lying flat and
+/// held the beam; at 46° it was too slender. Leaning, it bends across its
+/// thickness like any part standing.
+#[test]
+fn a_board_leaning_44_degrees_is_no_board_lying_flat() {
+    let held = blocks(|x| {
+        format!(
+            "box(\"board {x}\", (500, 3466, 10), at = ({0}, -773, 0), material = \"GL24h\", grounded = True)
+rotate(\"board {x}\", axis = (1, 0, 0), angle = -44, pivot = ({0}, 2693, 0))\n",
+            x - 225
+        )
+    });
+    assert_ne!(checked(&held, "beam").status, "pass");
+    assert!(
+        refused(&held)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        refused(&held)
+    );
+}
+
+/// R1113r95-PG-704: 60 times the thickness is the slenderness of a post held
+/// at both ends; a grounded post held only at the floor, its top by the block
+/// swaying with the beam, is a cantilever. A post 40 x 40 x 2 400 under each
+/// block, or one 50 x 50 x 2 900 screwed beside it, held the beam.
+#[test]
+fn a_post_held_only_at_the_floor_is_a_cantilever() {
+    let under = blocks(|x| {
+        format!(
+            "box(\"post {x}\", (40, 40, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+            x + 5
+        )
+    });
+    let beside = blocks(|x| {
+        format!(
+            "box(\"post {x}\", (50, 50, 2900), at = ({}, 150, 0), material = \"GL24h\", grounded = True)
+joint(\"post {x}\", \"block {x}\", kind = \"screw\")\n",
+            x + 50
+        )
+    });
+    for (case, held) in [("40 x 40 under", under), ("50 x 50 beside", beside)] {
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            refused(&held)
+        );
+    }
+}
+
+/// R1113r95-PG-705: only load_path() members were kept off the path, so a
+/// second beam 120 x 400 outside it, screwed to its posts, was ground for laths
+/// on [`BEAM`] screwed to deep grounded blocks on it. A part spanning between
+/// its supports bends and sways like the member it would hold.
+#[test]
+fn a_second_beam_off_the_load_path_is_no_ground() {
+    let mut source = format!(
+        "{BEAM}box(\"post c\", (100, 120, 2000), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"post d\", (100, 120, 2000), at = (5800, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"beam 2\", (5900, 120, 400), at = (0, 1000, 2000), material = \"GL24h\")
+joint(\"beam 2\", \"post c\", kind = \"screw\")
+joint(\"beam 2\", \"post d\", kind = \"screw\")
+"
+    );
+    for x in PLACES {
+        source.push_str(&format!(
+            "box(\"block {x}\", (50, 120, 400), at = ({x}, 1000, 2400), material = \"GL24h\", grounded = True)
+joint(\"block {x}\", \"beam 2\", kind = \"screw\")
+box(\"lath {x}\", (50, 1000, 50), at = ({x}, 0, 2400), material = \"GL24h\", tags = [\"lath\"])
+joint(\"lath {x}\", \"beam\", kind = \"screw\")
+joint(\"lath {x}\", \"block {x}\", kind = \"screw\")
+"
+        ));
+    }
+    source.push_str("brace([\"beam\"], by = [\"lath\"], edge = \"top\")\n");
+    let tied = report(&source);
+    assert_ne!(checked(&tied, "beam").status, "pass");
+    assert!(
+        refused(&tied)
+            .iter()
+            .any(|message| message.contains("lath 300")),
+        "{:?}",
+        refused(&tied)
+    );
+}
+
+/// Review 2026-11-13 r95 P3: every part on the path had to be as deep across
+/// the member as it, so grounded posts 200 x 200 on a grounded strip footing
+/// 5 900 x 300 x 100 on the floor were no ground, while the same strip 400 wide
+/// was. The footing ending the path on the floor holds however shallow.
+#[test]
+fn a_strip_footing_shallower_than_the_beam_is_ground() {
+    const STRIP: &str = "box(\"strip\", (5900, 300, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
+    let held = blocks(|x| {
+        format!(
+            "{}box(\"post {x}\", (200, 200, 2300), at = ({}, 100, 100), material = \"GL24h\", grounded = True)\n",
+            if x == PLACES[0] { STRIP } else { "" },
+            x - 75
+        )
+    });
+    assert_eq!(ignored(&held), Vec::<&str>::new());
+    assert_eq!(checked(&held, "beam").status, "pass");
+}
+
+/// R1113r95-PG-701: a grounded post 50 x 100 x 2 400 touching the block on a
+/// patch 2 x 2 or 0.05 x 0.05 mm, or with its corner sunk 0.05 mm into it,
+/// held the beam. Touching is meeting over a patch at least half the square
+/// of the thinner part's thinnest side. The post is 400 x 400, stiff enough
+/// to hold the beam where it meets the block face to face, so only the patch
+/// refuses it (review 2026-11-20 R1120ac-TST-900: a post 50 x 100 was refused
+/// as too flexible, with or without the rule).
+#[test]
+fn a_post_touching_the_anchorage_on_a_speck_is_no_ground() {
+    let posts = |off: f64, height: f64| {
+        blocks(|x| {
+            format!(
+                "box(\"post {x}\", (400, 400, {height}), at = ({}, {}, 0), material = \"GL24h\", grounded = True)\n",
+                f64::from(x) + off,
+                200.0 + off
+            )
+        })
+    };
+    let face = posts(0.0, 2400.0);
+    assert_eq!(ignored(&face), Vec::<&str>::new());
+    assert_eq!(checked(&face, "beam").status, "pass");
+    for (case, off, height) in [
+        ("patch 2 x 2", 48.0, 2400.0),
+        ("patch 0.05 x 0.05", 49.95, 2400.0),
+        ("corner sunk 0.05", 49.95, 2400.05),
+    ] {
+        let held = posts(off, height);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            refused(&held)
+        );
+    }
+}
+
+/// A grounded wall beside [`BEAM`], a metre off it, standing on the floor up to
+/// the top of the blocks on the beam.
+const WALL: &str =
+    "box(\"wall\", (5900, 100, 2450), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n";
+
+/// [`BEAM`] beside a second free beam 920 mm off it (y 1 000 - 1 080) on its
+/// own posts, loaded alike, with `extra`.
+fn two_beams(extra: &str) -> Report {
+    report(&format!(
+        "{BEAM}box(\"post c\", (100, 80, 2000), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"post d\", (100, 80, 2000), at = (5800, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"beam 2\", (5900, 80, 400), at = (0, 1000, 2000), material = \"GL24h\", tags = [\"frame\"])
+box(\"pad 2\", (300, 80, 50), at = (2800, 1000, 2400), material = \"GL24h\", tags = [\"pad\"])
+{extra}"
+    ))
+}
+
+/// R1113-PG-601: the ground was reached through a second free beam and its
+/// posts. Six grounded boards across two parallel beams, screwed to both and
+/// named in brace() for both, passed both; laths on the first beam screwed to
+/// grounded blocks on the second passed the first. Neither beam is ground for
+/// the other.
+#[test]
+fn a_second_free_beam_is_no_ground() {
+    let mut boards = String::new();
+    for x in PLACES {
+        boards.push_str(&format!(
+            "box(\"board {x}\", (50, 1080, 50), at = ({x}, 0, 2400), material = \"GL24h\", grounded = True, tags = [\"board\"])
+joint(\"board {x}\", \"beam\", kind = \"screw\")
+joint(\"board {x}\", \"beam 2\", kind = \"screw\")
+"
+        ));
+    }
+    let across = two_beams(&format!(
+        "{boards}brace([\"beam\", \"beam 2\"], by = [\"board\"], edge = \"top\")\n"
+    ));
+    for beam in ["beam", "beam 2"] {
+        assert_ne!(checked(&across, beam).status, "pass", "{beam}");
+    }
+
+    let mut laths = String::new();
+    for x in PLACES {
+        laths.push_str(&format!(
+            "box(\"block {x}\", (50, 80, 50), at = ({x}, 1000, 2400), material = \"GL24h\", grounded = True)
+joint(\"block {x}\", \"beam 2\", kind = \"screw\")
+box(\"lath {x}\", (50, 1000, 50), at = ({x}, 0, 2400), material = \"GL24h\", tags = [\"lath\"])
+joint(\"lath {x}\", \"beam\", kind = \"screw\")
+joint(\"lath {x}\", \"block {x}\", kind = \"screw\")
+"
+        ));
+    }
+    let tied = two_beams(&format!(
+        "{laths}brace([\"beam\"], by = [\"lath\"], edge = \"top\")\n"
+    ));
+    assert_ne!(checked(&tied, "beam").status, "pass");
+    assert!(
+        refused(&tied)
+            .iter()
+            .any(|message| message.contains("lath 300")),
+        "{:?}",
+        refused(&tied)
+    );
+}
+
+/// Deck strips 600 mm wide on [`BEAM`], screwed to it every 300 mm, butting
+/// two grounded plates of `plate` at (x, `y`, `z`) in the gaps between them,
+/// which anchor the diaphragm.
+fn gapped_deck(plate: [i32; 3], y: i32, z: i32) -> Report {
+    let screws = |from: i32, to: i32| {
+        (from..=to)
+            .step_by(300)
+            .map(|x| format!("({x}, 40, 2400)"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let [dx, dy, dz] = plate;
+    let mut source = BEAM.to_owned();
+    for (name, from, to) in [
+        ("a", 0, 1200),
+        ("b", 1600, 2750),
+        ("c", 3150, 4300),
+        ("d", 4700, 5900),
+    ] {
+        source.push_str(&format!(
+            "box(\"strip {name}\", ({}, 600, 22), at = ({from}, -260, 2400), material = \"GL24h\", tags = [\"deck\"])
+joint(\"strip {name}\", \"beam\", kind = \"screw\", fasteners = [{}])
+",
+            to - from,
+            screws(from + 150, to - 150)
+        ));
+    }
+    for (name, x) in [("plate 1", 1200), ("plate 2", 4300)] {
+        source.push_str(&format!(
+            "box(\"{name}\", ({dx}, {dy}, {dz}), at = ({x}, {y}, {z}), material = \"GL24h\", grounded = True, tags = [\"plate\"])\n"
+        ));
+    }
+    source.push_str(
+        "joint(\"strip a\", \"plate 1\", kind = \"screw\")
+joint(\"strip b\", \"plate 1\", kind = \"screw\")
+joint(\"strip c\", \"plate 2\", kind = \"screw\")
+joint(\"strip d\", \"plate 2\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"plate\"])
+",
+    );
+    report(&source)
+}
+
+/// R1113-PG-602: a grounded part touching nothing under it was still ground.
+/// Two grounded plates 400 x 920 x 22 a millimetre over the beam, touching
+/// only the deck's strips, anchored its diaphragm; so did plates 400 x 400 x 10
+/// beside the beam, flush with the strips' bottom. A grounded part standing on
+/// nothing modelled holds nothing, and the report says so.
+#[test]
+fn a_grounded_part_standing_on_nothing_is_no_ground() {
+    for (plate, y, z) in [([400, 920, 22], -460, 2401), ([400, 400, 10], 100, 2400)] {
+        let floating = gapped_deck(plate, y, z);
+        assert_ne!(checked(&floating, "beam").status, "pass", "{plate:?}");
+        assert!(
+            refused(&floating)
+                .iter()
+                .any(|message| message.contains("plate 1")
+                    && message.contains("stands on nothing modelled")),
+            "{plate:?}: {:?}",
+            refused(&floating)
+        );
+    }
+}

@@ -34,3 +34,7 @@ Accepted by the project owner on 2026-08-09 with the explicit direction that Win
 ## Addendum 2026-10-11: macOS development build
 
 The project owner approved a macOS (Apple Silicon) development build that does not gate the Windows release. `scripts/macos/build-occt.sh` builds the same pinned OCCT 8.0.1 module set and `scripts/macos/build-app.sh` packages `Kečup.app` with the exact worker and OCCT libraries; the app renders with Metal. The first release still targets Windows x86-64 only, and this build carries no release, signing, notarization or hardware evidence. As on Windows, AI clients drive the app through MCP (`ketchup-app --mcp`).
+
+## Addendum 2026-11-12: macOS release
+
+From 0.3.3 the project owner releases Ketchup for macOS beside Windows, after testing it on a Mac. The `v0.3.3` release, built from the same commit as the Windows packages, carries `Ketchup-0.3.3-macOS.dmg` (Kečup.app, arm64, macOS 11 or later) and `Ketchup-Viewer-0.3.3-macOS.dmg` (Kečup Viewer.app, arm64 and x86_64), both signed with a Developer ID of CENTAURY Plus s.r.o., notarized and listed in `SHA256SUMS.txt`. Windows x86-64 and macOS on Apple Silicon are the released desktop platforms; Linux stays a build from source. Point 3 of the decision is fulfilled for macOS by this scope decision.

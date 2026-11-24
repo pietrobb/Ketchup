@@ -1,6 +1,7 @@
 //! An AI client brings files into the window and writes the model out over the bridge.
 
 use super::*;
+use crate::live_bridge::drawings::ExportDrawingsRequest;
 
 const TETRAHEDRON: &[u8] = b"solid tetrahedron\n\
  facet normal 0 0 -1\n  outer loop\n   vertex 0 0 0\n   vertex 0 10 0\n   vertex 10 0 0\n  endloop\n endfacet\n\
@@ -27,16 +28,32 @@ fn import(path: &Path, unit: Option<&str>) -> Request {
         path: path.display().to_string(),
         unit: unit.map(str::to_owned),
         as_underlay: false,
+        revision_of: None,
+        code_page: None,
     }
 }
 
 fn export(path: &Path, export_format: &str) -> Request {
-    Request::Export {
+    Request::Export(crate::live_bridge::interchange::ExportRequest {
         expected: None,
         path: path.display().to_string(),
         export_format: export_format.to_owned(),
         drawing_scale: None,
+        image: None,
+        cam_dialect: None,
+        cam_operations: None,
+        overwrite: false,
+    })
+}
+
+fn export_over(path: &Path, export_format: &str) -> Request {
+    let mut request = export(path, export_format);
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest { overwrite, .. }) =
+        &mut request
+    {
+        *overwrite = true;
     }
+    request
 }
 
 /// The entities of the ENTITIES section of a DXF text, each as its type and its
@@ -242,13 +259,237 @@ fn a_dxf_without_units_needs_a_unit_and_nothing_changes_until_it_has_one() {
         target.with_extension("dxf.loss.txt").display().to_string()
     );
 
-    // An existing file is never replaced from outside the window.
+    // Without overwrite an existing file is kept, and nobody is asked.
     std::fs::write(&target, b"user drawing").unwrap();
     assert_eq!(
         bridge.execute(&mut app, export(&target, "dxf"), false),
         Err("export_failed")
     );
     assert_eq!(std::fs::read(&target).unwrap(), b"user drawing");
+}
+
+/// Review 2026-11-08 (class of CD-72): a model the format cannot carry, and a
+/// declined consent, were `export_failed` like a full disk, whose hint is
+/// "export to another path". Each now has the code whose hint repairs it.
+#[test]
+fn an_export_refusal_is_named_by_what_repairs_it() {
+    use crate::export_bundle::ExportError;
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    use ketchup_rejection::{Rejection, RejectionPhase};
+    let code = crate::live_bridge::interchange::export_code;
+    assert_eq!(
+        code(&ExportError::NothingToExport {
+            subject: "weldment"
+        }),
+        "export_refused"
+    );
+    assert_eq!(
+        code(&ExportError::failed(
+            GeneralFabricationError::PartGeometryUnavailable { part: "top".into() }
+        )),
+        "export_refused"
+    );
+    assert_eq!(
+        code(&ExportError::from(Rejection::new(
+            "side_effect.declined",
+            RejectionPhase::Validation
+        ))),
+        "export_declined"
+    );
+    assert_eq!(
+        code(&ExportError::Destination {
+            requirement: "a .btlx path"
+        }),
+        "export_failed"
+    );
+    assert_eq!(code(&ExportError::ChangedDuringConsent), "export_failed");
+
+    // Over the bridge: an empty window has no weldment to write.
+    let (mut app, mut bridge, directory) = window();
+    let target = directory.path().join("frame.btlx");
+    assert_eq!(
+        bridge.execute(&mut app, export(&target, "btlx"), false),
+        Err("export_refused")
+    );
+    assert!(!target.exists());
+    // Review 2026-11-08 §5.2: nor any shop file to send to the workshop.
+    let package = directory.path().join("frame.zip");
+    assert_eq!(
+        bridge.execute(&mut app, export(&package, "workshop_package"), false),
+        Err("export_refused")
+    );
+    assert!(!package.exists());
+}
+
+/// Jožinko 2026-11-10 U3: an AI that exports the model again to its GLB had to
+/// pick a new name every time. `overwrite` replaces the file and its loss report
+/// when Kečup wrote them and nobody changed the file since.
+#[test]
+fn overwrite_replaces_a_glb_kecup_wrote_and_its_loss_report_together() {
+    let (mut app, mut bridge, directory) = window();
+    crate::tests::install_initial_graph_result(&mut app);
+    let target = directory.path().join("model.glb");
+    let report = target.with_extension("glb.loss.txt");
+    bridge
+        .execute(&mut app, export(&target, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let first = std::fs::read_to_string(&report).unwrap();
+
+    // Without the option nothing changes: an existing file is refused.
+    assert_eq!(
+        bridge.execute(&mut app, export(&target, "glb"), false),
+        Err("export_failed")
+    );
+
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(2),
+                dimension: ketchup_model::document::Dimension::from_decimal("55").unwrap(),
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let exported = bridge
+        .execute(&mut app, export_over(&target, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(exported["path"], target.display().to_string());
+    let second = std::fs::read_to_string(&report).unwrap();
+    assert_ne!(second, first, "the loss report is written with the file");
+    let glb = std::fs::read(&target).unwrap();
+    assert!(
+        second.contains(&format!(
+            "artifact_sha256={}",
+            ketchup_model::graph::sha256_hex(&glb)
+        )),
+        "{second}"
+    );
+    // No temporary file or journal is left beside them.
+    let mut names = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["model.glb", "model.glb.loss.txt"]);
+}
+
+/// U3 and owner decision R1 (review 2026-11-19 og-6): `overwrite` replaces a file
+/// Kečup did not write there, or one changed after Kečup wrote it, only once the
+/// user agrees in the window, asked once for each existing file of the pair.
+#[test]
+fn overwrite_asks_before_replacing_a_file_kecup_did_not_write_or_that_was_changed_since() {
+    let (mut app, mut bridge, directory) = window();
+    crate::tests::install_initial_graph_result(&mut app);
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(7)
+        .queue_high_risk_approval(7)
+        .queue_refused_high_risk();
+    app.dialogs = Box::new(dialogs.clone());
+
+    // Someone else's file, without a loss report: kept without overwrite and unasked.
+    let foreign = directory.path().join("foreign.glb");
+    std::fs::write(&foreign, b"someone's model").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export(&foreign, "glb"), false),
+        Err("export_failed")
+    );
+    assert!(dialogs.high_risk_prompts().is_empty());
+    // With overwrite the user is asked; declined, it is kept.
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&foreign, "glb"), false),
+        Err("export_declined")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"someone's model");
+    assert!(!foreign.with_extension("glb.loss.txt").exists());
+    // Agreed, the export replaces it and writes its loss report beside it.
+    bridge
+        .execute(&mut app, export_over(&foreign, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
+    assert!(std::fs::read(&foreign).unwrap().starts_with(b"glTF"));
+    assert!(foreign.with_extension("glb.loss.txt").is_file());
+
+    // Kečup's file the user changed afterwards (e.g. saved from Blender): the file
+    // and its loss report are each asked about, and one refusal keeps both.
+    let edited = directory.path().join("edited.glb");
+    bridge
+        .execute(&mut app, export(&edited, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    std::fs::write(&edited, b"edited in Blender").unwrap();
+    let report = std::fs::read(edited.with_extension("glb.loss.txt")).unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&edited, "glb"), false),
+        Err("export_declined")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 4);
+    assert_eq!(std::fs::read(&edited).unwrap(), b"edited in Blender");
+    assert_eq!(
+        std::fs::read(edited.with_extension("glb.loss.txt")).unwrap(),
+        report
+    );
+
+    // A file changed while the user was being asked is not replaced.
+    let older = directory.path().join("older.glb");
+    std::fs::write(&older, b"older export").unwrap();
+    app.dialogs = Box::new(
+        ScriptedFileDialogs::new().queue_high_risk_approval_after_write(
+            7,
+            &older,
+            b"saved meanwhile".to_vec(),
+        ),
+    );
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&older, "glb"), false),
+        Err("export_failed")
+    );
+    assert_eq!(std::fs::read(&older).unwrap(), b"saved meanwhile");
+}
+
+/// Owner decision R1 (review 2026-11-19 og-6): an AI updates the architect's
+/// plan.dxf, or any DXF/DWG plan, once the user agrees in the window.
+#[test]
+fn a_plan_replaces_an_existing_dxf_or_dwg_once_the_user_agrees() {
+    let (mut app, mut bridge, directory) = window();
+    bridge
+        .execute(
+            &mut app,
+            super::program_access::apply_source("box('floor', (3000, 40, 5))\n"),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .always_confirm_high_risk_as(7);
+    app.dialogs = Box::new(dialogs.clone());
+    let plan = directory.path().join("plan.dxf");
+    std::fs::write(&plan, b"architect's plan").unwrap();
+
+    // Declined, the architect's plan is kept.
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&plan, "dxf"), false),
+        Err("export_declined")
+    );
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read(&plan).unwrap(), b"architect's plan");
+    assert!(!plan.with_extension("dxf.loss.txt").exists());
+
+    // Agreed, it is the plan; a DWG likewise.
+    bridge
+        .execute(&mut app, export_over(&plan, "dxf"), false)
+        .unwrap_or_else(|code| panic!("dxf {code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
+    let written = std::fs::read_to_string(&plan).unwrap();
+    assert!(written.trim_end().ends_with("EOF"), "{written}");
+    assert!(plan.with_extension("dxf.loss.txt").is_file());
+    let dwg = directory.path().join("plan.dwg");
+    std::fs::write(&dwg, b"architect's plan").unwrap();
+    bridge
+        .execute(&mut app, export_over(&dwg, "dwg"), false)
+        .unwrap_or_else(|code| panic!("dwg {code}: {}", app.action_digest()));
+    assert_eq!(dialogs.high_risk_prompts().len(), 3);
+    assert!(std::fs::read(&dwg).unwrap().starts_with(b"AC10"));
 }
 
 /// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one
@@ -333,6 +574,7 @@ fn unknown_formats_and_mismatched_extensions_write_and_change_nothing() {
 fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(1000, 2000), height_mm=3.5, tags='plan')\n\
                  dim('d', (0, 0), (1000, 0), offset_mm=-500, tags='plan')\n"
@@ -360,7 +602,10 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
 
     let scaled = directory.path().join("plan-20.dxf");
     let mut request = export(&scaled, "dxf");
-    if let Request::Export { drawing_scale, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+        drawing_scale, ..
+    }) = &mut request
+    {
         *drawing_scale = Some(20.0);
     }
     bridge
@@ -379,7 +624,10 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     // The same plan as DWG keeps the dimension a DIMENSION and both on the tag's layer.
     let dwg = directory.path().join("plan-20.dwg");
     let mut request = export(&dwg, "dwg");
-    if let Request::Export { drawing_scale, .. } = &mut request {
+    if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+        drawing_scale, ..
+    }) = &mut request
+    {
         *drawing_scale = Some(20.0);
     }
     bridge
@@ -422,7 +670,11 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     for (format, path, scale) in [("stl", "plan.stl", 20.0), ("dxf", "tiny.dxf", 0.5)] {
         let target = directory.path().join(path);
         let mut request = export(&target, format);
-        if let Request::Export { drawing_scale, .. } = &mut request {
+        if let Request::Export(crate::live_bridge::interchange::ExportRequest {
+            drawing_scale,
+            ..
+        }) = &mut request
+        {
             *drawing_scale = Some(scale);
         }
         assert_eq!(
@@ -441,6 +693,7 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
 fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
         overrides: None,
@@ -545,6 +798,7 @@ fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps
 fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n\
                  box('slab', (6000, 3000, 200), at=(0, 0, 450))\n"
@@ -600,12 +854,156 @@ fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
     assert_eq!(stored(&app), None);
 }
 
+/// Review 2026-11-08 MF-241: the storeys were only ever found from the faces
+/// of the model. A client gives the table of storeys and the altitude of
+/// ±0,000; the document keeps them, the plans are cut above its floors and
+/// the answer says where the storeys came from.
+#[test]
+fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        source_folder: None,
+        expected: None,
+        source: "box('slab', (6000, 3000, 200))\n\
+                 box('lining', (6000, 3000, 12), at=(0, 0, 2700))\n\
+                 box('joists', (6000, 3000, 220), at=(0, 0, 2712))\n\
+                 box('osb', (6000, 3000, 22), at=(0, 0, 2932))\n\
+                 box('wall', (6000, 200, 2500), at=(0, 0, 200))\n\
+                 box('upper wall', (6000, 200, 2500), at=(0, 0, 2954))\n"
+            .into(),
+        overrides: None,
+        file_name: Some("tiny.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, storeys: Option<Value>, altitude: Option<Value>| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "plan_only": true,
+            "drawing_scale": 250,
+        });
+        if let Some(storeys) = storeys {
+            request["storeys"] = storeys;
+        }
+        if let Some(altitude) = altitude {
+            request["zero_altitude_mm"] = altitude;
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let table = json!([
+        {"finished_floor_mm": 200, "structural_mm": 200},
+        {"finished_floor_mm": 2954, "structural_mm": 2932},
+    ]);
+    let written = bridge
+        .execute(
+            &mut app,
+            drawings("set.pdf", Some(table.clone()), Some(json!(245_300))),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["storeys_from"], "table", "{written}");
+    assert_eq!(written["storeys"], table, "{written}");
+    assert_eq!(written["zero_altitude_mm"], 245_300, "{written}");
+    assert_eq!(written["zero_level_used_mm"], 200.0, "{written}");
+    assert_eq!(written["sheet_count"], 2, "{written}");
+    let settings = app.stored_sheet_settings().unwrap();
+    assert_eq!(settings.storeys.len(), 2);
+    assert_eq!(settings.zero_altitude_mm, Some(245_300));
+
+    for refused in [
+        json!([]),
+        json!([{"finished_floor_mm": 1.5, "structural_mm": 0}]),
+        json!("high"),
+    ] {
+        assert_eq!(
+            bridge.execute(
+                &mut app,
+                drawings("refused.pdf", Some(refused), None),
+                false
+            ),
+            Err("invalid_params")
+        );
+        assert!(!directory.path().join("refused.pdf").exists());
+    }
+    assert_eq!(app.stored_sheet_settings().unwrap().storeys.len(), 2);
+
+    // Review 2026-11-09 MF-300: a row whose plan would be wrong is refused
+    // and named.
+    let refused = json!([
+        {"finished_floor_mm": 200, "structural_mm": 200},
+        {"finished_floor_mm": 2954, "structural_mm": 3100},
+    ]);
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            drawings("contradicted.pdf", Some(refused), None),
+            false
+        ),
+        Err("storey_table_contradicts_model")
+    );
+    assert!(!directory.path().join("contradicted.pdf").exists());
+    assert_eq!(
+        app.stored_sheet_settings().unwrap().storeys[1].structural_mm,
+        2932,
+        "the document keeps its table"
+    );
+    // Review 2026-11-10 R1110-MF-400: a screed of 100 mm on the slab at 200,
+    // not modelled, is written as given and reported nothing; a floor in
+    // the air at 3500 (MF-300 printed +3,300 for it) is written and reported.
+    let screed = json!([
+        {"finished_floor_mm": 300, "structural_mm": 200},
+        {"finished_floor_mm": 3054, "structural_mm": 2954},
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("screed.pdf", Some(screed), None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["storey_table_issues"], json!([]), "{written}");
+    assert_eq!(written["zero_level_used_mm"], 300.0, "{written}");
+    let in_the_air = json!([
+        {"finished_floor_mm": 200, "structural_mm": 200},
+        {"finished_floor_mm": 3500, "structural_mm": 3500},
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("air.pdf", Some(in_the_air), None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert!(directory.path().join("air.pdf").exists());
+    let issues = written["storey_table_issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 2, "{written}");
+    assert_eq!(issues[0]["storey"], 2, "{written}");
+    assert_eq!(issues[0]["problem"], "no_floor_in_model", "{written}");
+    assert!(
+        issues[0]["message"].as_str().unwrap().contains("3500 mm"),
+        "{written}"
+    );
+    // R1110r2-MF-501: the model's upper floor at 2954, which no row has, is
+    // named too.
+    assert_eq!(issues[1]["problem"], "not_in_table", "{written}");
+    assert_eq!(issues[1]["structural_mm"], 2954, "{written}");
+
+    let written = bridge
+        .execute(
+            &mut app,
+            drawings("auto.pdf", Some(json!("auto")), Some(json!("none"))),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["storeys_from"], "model", "{written}");
+    assert_eq!(written["storeys"], "auto", "{written}");
+    assert_eq!(written["zero_altitude_mm"], "none", "{written}");
+    assert!(app.stored_sheet_settings().unwrap().storeys.is_empty());
+}
+
 /// A client writes the plan alone as a PDF at the scale it names: the sheet holds
 /// one view, the texts and the measured value of the dimension, and says what it drew.
 #[test]
 fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n\
                  text('S-02', 'S-02', at=(5000, 0), height_mm=3.5, tags='plan')\n\
@@ -620,7 +1018,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let drawings =
         |path: &Path, plan_only: bool, drawing_scale: Option<f64>, format: Option<&str>| {
-            Request::ExportDrawings {
+            Request::ExportDrawings(ExportDrawingsRequest {
                 expected: None,
                 path: path.display().to_string(),
                 sheet_id: None,
@@ -632,7 +1030,11 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 replace: false,
                 take_over: false,
                 zero_level_mm: None,
-            }
+                storeys: None,
+                zero_altitude_mm: None,
+                north_deg: None,
+                revisions: None,
+            })
         };
 
     let target = directory.path().join("plan.pdf");
@@ -700,7 +1102,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         assert!(!target.exists());
     }
     let mut sheet = drawings(&directory.path().join("sheet.dxf"), true, None, None);
-    if let Request::ExportDrawings { sheet_id, .. } = &mut sheet {
+    if let Request::ExportDrawings(ExportDrawingsRequest { sheet_id, .. }) = &mut sheet {
         *sheet_id = Some(1);
     }
     assert_eq!(
@@ -716,6 +1118,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
 fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: "text('S-01', 'S-01 漢', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
         overrides: None,
@@ -729,7 +1132,7 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     let written = bridge
         .execute(
             &mut app,
-            Request::ExportDrawings {
+            Request::ExportDrawings(ExportDrawingsRequest {
                 expected: None,
                 path: target.display().to_string(),
                 sheet_id: None,
@@ -744,7 +1147,11 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 replace: false,
                 take_over: false,
                 zero_level_mm: None,
-            },
+                storeys: None,
+                zero_altitude_mm: None,
+                north_deg: None,
+                revisions: None,
+            }),
             false,
         )
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
@@ -758,4 +1165,207 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     );
     let digest = app.action_digest();
     assert!(digest.contains("東") && digest.contains("漢"), "{digest}");
+}
+
+/// Review 2026-11-08 §5.2: north kept in the sheet settings gives each plan its
+/// north arrow and names each elevation, in the sheet language, by the side of
+/// the world it shows.
+#[test]
+fn north_in_the_sheet_settings_names_the_elevations_in_the_sheet_language() {
+    use ketchup_manufacturing::project_drawings::{CompassSide, ProjectView};
+    use ketchup_manufacturing::title_block::SheetLanguage;
+    let (mut app, mut bridge) = setup();
+    let program = Request::ApplyProgram {
+        source_folder: None,
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut settings = app.stored_sheet_settings().unwrap();
+    settings.language = Some(SheetLanguage::Slovak);
+    // North along -x: the long front, facing -y, faces west.
+    settings.north_tenths_deg = Some(900);
+    app.store_sheet_settings(settings);
+    let set = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest::default())
+        .unwrap()
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+    let views = set
+        .sheets
+        .iter()
+        .flat_map(|sheet| &sheet.views)
+        .collect::<Vec<_>>();
+    let front = views
+        .iter()
+        .find(|view| view.view == ProjectView::Front)
+        .unwrap();
+    assert_eq!(front.facing, Some(CompassSide::West));
+    assert_eq!(front.title, "Pohľad západný");
+    let plan = views
+        .iter()
+        .find(|view| view.view == ProjectView::Plan)
+        .unwrap();
+    assert!(plan.north_arrow, "{views:?}");
+    assert!(
+        set.sheets[0].page.texts().any(|text| text == "S"),
+        "the Slovak north letter"
+    );
+}
+
+/// Review 2026-11-08 §5.2: north could be set in the drawings window only. A
+/// client names it in degrees counter-clockwise from the model's +y, the
+/// document keeps it, `none` takes it away, and a value that is no direction is
+/// refused and changes nothing.
+#[test]
+fn a_client_sets_north_and_the_document_keeps_it() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        source_folder: None,
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, north: Option<Value>| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "drawing_scale": 250,
+        });
+        if let Some(north) = north {
+            request["north_deg"] = north;
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().north_tenths_deg;
+    let front_facing = |written: &Value| {
+        written["sheets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|sheet| sheet["views"].as_array().unwrap())
+            .find(|view| view["view"] == "front")
+            .map(|view| view["facing"].clone())
+    };
+
+    let written = bridge
+        .execute(&mut app, drawings("set.pdf", Some(json!(90))), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["north_deg"], 90.0, "{written}");
+    assert_eq!(stored(&app), Some(900));
+    assert_eq!(front_facing(&written), Some(json!("west")), "{written}");
+    let written = bridge
+        .execute(&mut app, drawings("again.pdf", None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["north_deg"], 90.0, "{written}");
+
+    for refused in [json!(360.5), json!(-400), json!("up"), json!([0, 1])] {
+        assert_eq!(
+            bridge.execute(&mut app, drawings("refused.pdf", Some(refused)), false),
+            Err("invalid_params")
+        );
+        assert!(!directory.path().join("refused.pdf").exists());
+        assert_eq!(stored(&app), Some(900));
+    }
+
+    let written = bridge
+        .execute(&mut app, drawings("none.pdf", Some(json!("none"))), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["north_deg"], "none", "{written}");
+    assert_eq!(stored(&app), None);
+    assert_eq!(front_facing(&written), Some(Value::Null), "{written}");
+}
+
+/// Review 2026-11-08 §5.3: a drawing set had no revisions. A client gives
+/// them, oldest first; the document keeps them, every sheet lists them beside
+/// its title block under the sheet language's headings, and more than the
+/// table holds refuse the export and keep the document's.
+#[test]
+fn a_client_gives_the_revisions_every_sheet_lists() {
+    use ketchup_manufacturing::title_block::SheetLanguage;
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        source_folder: None,
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, revisions: Value| {
+        serde_json::from_value::<Request>(json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "drawing_scale": 250,
+            "sheet_language": "cs",
+            "revisions": revisions,
+        }))
+        .unwrap()
+    };
+    let revision = |index: &str, change: &str| json!({"index": index, "date": "8. 11. 2026", "change": change});
+    let given = json!([
+        revision("A", "Vydání pro stavební povolení"),
+        revision("B", "Zvětšené okno v obývacím pokoji"),
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("set.pdf", given.clone()), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["revisions"], given, "{written}");
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().revisions;
+    assert_eq!(stored(&app).len(), 2);
+    assert_eq!(
+        app.stored_sheet_settings().unwrap().language,
+        Some(SheetLanguage::Czech)
+    );
+    let set = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest::default())
+        .unwrap()
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+    for sheet in &set.sheets {
+        let texts = sheet.page.texts().collect::<Vec<_>>();
+        for text in ["Popis změny", "Datum", "Zvětšené okno v obývacím pokoji"] {
+            assert!(
+                texts.contains(&text),
+                "{text} on sheet {}: {texts:?}",
+                sheet.number
+            );
+        }
+    }
+
+    let crowded = Value::Array(
+        (1..=12)
+            .map(|index| revision(&index.to_string(), "Změna"))
+            .collect(),
+    );
+    assert_eq!(
+        bridge.execute(&mut app, drawings("crowded.pdf", crowded), false),
+        Err("revisions_do_not_fit")
+    );
+    assert!(!directory.path().join("crowded.pdf").exists());
+    assert_eq!(stored(&app).len(), 2, "the document keeps its revisions");
 }

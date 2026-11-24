@@ -1,0 +1,996 @@
+//! The CPU renderer behind [`super::render_presentation`]. Only `f64` arithmetic and square
+//! roots, no trigonometry from the platform's maths library, so the pixels are the same on
+//! every system.
+
+use super::{
+    Background, PresentationError, PresentationImage, PresentationOptions, PresentationScene,
+    PresentationTexture, TriangleTexture,
+};
+use ketchup_geometry::linalg::Vec3;
+use ketchup_tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
+use std::f64::consts::FRAC_1_SQRT_2;
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+mod annotate;
+
+pub(super) use annotate::{drawable, shown, undrawable, unseen};
+
+/// tan(15°): a 30° vertical field of view, a natural lens for buildings and room-sized objects.
+const TAN_HALF_FOV: f64 = 0.267_949_192_431_122_7;
+/// Share of the image the model may fill along its tighter side.
+const FRAME_FILL: f64 = 0.88;
+/// Most texels along a side of the shadow map.
+const SHADOW_MAP_SIDE: usize = 2048;
+const NO_TRIANGLE: u32 = u32::MAX;
+const AMBIENT: f64 = 0.40;
+const SKY: f64 = 0.10;
+const SUN: f64 = 0.55;
+/// Darkening of the implied ground in full shadow.
+const GROUND_SHADOW: f64 = 0.30;
+const OUTLINE_RGB: [f64; 3] = [0.16, 0.16, 0.18];
+const OUTLINE_MIX: f64 = 0.75;
+/// Faces meeting at more than about 20° get an outline.
+const OUTLINE_COS: f64 = 0.94;
+/// Ambient-occlusion sample pattern: two rings of eight directions, the inner one turned 22.5°.
+const AO_OFFSETS: [[f64; 2]; 16] = [
+    [1.0, 0.0],
+    [FRAC_1_SQRT_2, FRAC_1_SQRT_2],
+    [0.0, 1.0],
+    [-FRAC_1_SQRT_2, FRAC_1_SQRT_2],
+    [-1.0, 0.0],
+    [-FRAC_1_SQRT_2, -FRAC_1_SQRT_2],
+    [0.0, -1.0],
+    [FRAC_1_SQRT_2, -FRAC_1_SQRT_2],
+    [0.369_551_813_004_514_9, 0.153_073_372_946_035_8],
+    [0.153_073_372_946_035_8, 0.369_551_813_004_514_9],
+    [-0.153_073_372_946_035_8, 0.369_551_813_004_514_9],
+    [-0.369_551_813_004_514_9, 0.153_073_372_946_035_8],
+    [-0.369_551_813_004_514_9, -0.153_073_372_946_035_8],
+    [-0.153_073_372_946_035_8, -0.369_551_813_004_514_9],
+    [0.153_073_372_946_035_8, -0.369_551_813_004_514_9],
+    [0.369_551_813_004_514_9, -0.153_073_372_946_035_8],
+];
+/// Ambient-occlusion radius as a share of the model's diagonal.
+const AO_RADIUS: f64 = 0.05;
+const AO_STRENGTH: f64 = 0.8;
+
+/// A count or index as a coordinate; sample counts stay far below 2³².
+pub(super) fn real(value: usize) -> f64 {
+    u32::try_from(value).map_or(f64::from(u32::MAX), f64::from)
+}
+/// A coordinate already clamped to the buffer as its index (towards zero).
+pub(super) fn index(value: f64) -> usize {
+    value as usize
+}
+/// A depth or colour stored in single precision.
+fn narrow(value: f64) -> f32 {
+    value as f32
+}
+/// A 0–1 share as an 8-bit channel.
+fn channel(value: f64) -> u8 {
+    (value * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// An orthonormal pair perpendicular to the unit `axis`.
+fn basis(axis: Vec3) -> Option<(Vec3, Vec3)> {
+    let reference = if axis.z.abs() > 0.999 {
+        Vec3::Y
+    } else {
+        Vec3::Z
+    };
+    let first = axis.cross(reference).normalized()?;
+    Some((first, first.cross(axis)))
+}
+
+fn bounds(points: &[Vec3]) -> Option<(Vec3, Vec3)> {
+    let first = *points.first()?;
+    Some(points.iter().fold((first, first), |(low, high), point| {
+        (
+            Vec3::new(low.x.min(point.x), low.y.min(point.y), low.z.min(point.z)),
+            Vec3::new(
+                high.x.max(point.x),
+                high.y.max(point.y),
+                high.z.max(point.z),
+            ),
+        )
+    }))
+}
+
+struct Camera {
+    eye: Vec3,
+    forward: Vec3,
+    right: Vec3,
+    up: Vec3,
+    tan_x: f64,
+    tan_y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl Camera {
+    /// Looks along `-view_from` at the model's box centre, far enough that every corner fits.
+    fn fit(corners: &[Vec3], view_from: Vec3, width: usize, height: usize) -> Option<Self> {
+        let forward = (-view_from).normalized()?;
+        let (right, up) = basis(forward)?;
+        let (low, high) = bounds(corners)?;
+        let centre = (low + high) * 0.5;
+        let diagonal = low.distance(high).max(APPROXIMATION);
+        let (width, height) = (real(width), real(height));
+        let tan_y = TAN_HALF_FOV;
+        let tan_x = tan_y * width / height;
+        let mut distance = 0.0_f64;
+        let mut nearest = f64::NEG_INFINITY;
+        for corner in corners {
+            let offset = *corner - centre;
+            let depth = offset.dot(forward);
+            distance = distance
+                .max(offset.dot(right).abs() / (tan_x * FRAME_FILL) - depth)
+                .max(offset.dot(up).abs() / (tan_y * FRAME_FILL) - depth);
+            nearest = nearest.max(-depth);
+        }
+        let distance = distance.max(nearest + diagonal * 0.01);
+        Some(Self {
+            eye: centre - forward * distance,
+            forward,
+            right,
+            up,
+            tan_x,
+            tan_y,
+            width,
+            height,
+        })
+    }
+
+    /// Sample-space x, y and view depth of a world point in front of the eye.
+    fn project(&self, point: Vec3) -> Option<Vec3> {
+        let offset = point - self.eye;
+        let depth = offset.dot(self.forward);
+        (depth > ROUNDING).then(|| {
+            Vec3::new(
+                (offset.dot(self.right) / (depth * self.tan_x) + 1.0) * 0.5 * self.width,
+                (1.0 - offset.dot(self.up) / (depth * self.tan_y)) * 0.5 * self.height,
+                depth,
+            )
+        })
+    }
+
+    /// Direction through the centre of sample `at`, scaled so its view depth is 1.
+    fn ray(&self, at: usize) -> Vec3 {
+        let width = index(self.width);
+        let ndc_x = (real(at % width) + 0.5) / self.width * 2.0 - 1.0;
+        let ndc_y = 1.0 - (real(at / width) + 0.5) / self.height * 2.0;
+        self.forward + self.right * (ndc_x * self.tan_x) + self.up * (ndc_y * self.tan_y)
+    }
+
+    fn triangle(&self, corners: [Vec3; 3]) -> Option<[Vec3; 3]> {
+        Some([
+            self.project(corners[0])?,
+            self.project(corners[1])?,
+            self.project(corners[2])?,
+        ])
+    }
+}
+
+/// Calls `visit(sample index from the first of `rows`, depth)` for each sample centre of `rows`
+/// inside the triangle `corners` (x, y, depth). Depth is interpolated perspective-correctly or,
+/// for an orthographic map, linearly.
+fn raster(
+    width: usize,
+    rows: Range<usize>,
+    corners: [Vec3; 3],
+    perspective: bool,
+    mut visit: impl FnMut(usize, f64),
+) {
+    let flat = |point: Vec3| Vec3::new(point.x, point.y, 0.0);
+    let edge = |a: Vec3, b: Vec3, x: f64, y: f64| {
+        (flat(b) - flat(a)).cross(Vec3::new(x, y, 0.0) - flat(a)).z
+    };
+    let [a, b, c] = corners;
+    let area = edge(a, b, c.x, c.y);
+    if !area.is_finite() || area.abs() < NEGLIGIBLE {
+        return;
+    }
+    let min_x = index(a.x.min(b.x).min(c.x).floor().max(0.0));
+    let max_x = index(a.x.max(b.x).max(c.x).ceil().clamp(0.0, real(width)));
+    let min_y = index(a.y.min(b.y).min(c.y).floor().max(0.0)).max(rows.start);
+    let max_y = index(a.y.max(b.y).max(c.y).ceil().clamp(0.0, real(rows.end)));
+    let inverse = [1.0 / a.z, 1.0 / b.z, 1.0 / c.z];
+    for y in min_y..max_y {
+        let sample_y = real(y) + 0.5;
+        for x in min_x..max_x {
+            let sample_x = real(x) + 0.5;
+            let weights = [
+                edge(b, c, sample_x, sample_y) / area,
+                edge(c, a, sample_x, sample_y) / area,
+                edge(a, b, sample_x, sample_y) / area,
+            ];
+            if weights.iter().any(|weight| *weight < 0.0) {
+                continue;
+            }
+            let depth = if perspective {
+                1.0 / Vec3::from(weights).dot(Vec3::from(inverse))
+            } else {
+                weights[0] * a.z + weights[1] * b.z + weights[2] * c.z
+            };
+            visit((y - rows.start) * width + x, depth);
+        }
+    }
+}
+
+/// Depth towards the sun of the opaque parts, seen along the sun's direction.
+struct ShadowMap {
+    sun: Vec3,
+    u_axis: Vec3,
+    v_axis: Vec3,
+    origin: [f64; 2],
+    texel: f64,
+    /// Texels along each side.
+    side: usize,
+    nearest: Vec<f64>,
+}
+
+impl ShadowMap {
+    /// The map of `triangles`, `None` when they cast no shadow. A cancel is seen before each
+    /// triangle: one can cover the whole map, so thousands took a minute (review 2026-11-13
+    /// R1113-IMG-600). The map has about as many texels along a side as the image has samples
+    /// along its longer one, 256 to [`SHADOW_MAP_SIDE`] (review 2026-11-13 r95 P3: a 1 × 1
+    /// image held a 32 MB map).
+    fn new(
+        sun: Vec3,
+        triangles: &[[Vec3; 3]],
+        image_side: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Self>, PresentationError> {
+        let side = image_side.next_power_of_two().clamp(256, SHADOW_MAP_SIDE);
+        let Some((u_axis, v_axis)) = basis(sun) else {
+            return Ok(None);
+        };
+        let Some((low, high)) = bounds(
+            &triangles
+                .iter()
+                .flatten()
+                .map(|point| Vec3::new(point.dot(u_axis), point.dot(v_axis), 0.0))
+                .collect::<Vec<_>>(),
+        ) else {
+            return Ok(None);
+        };
+        let span = (high.x - low.x).max(high.y - low.y).max(APPROXIMATION) * 1.04;
+        let mut map = Self {
+            sun,
+            u_axis,
+            v_axis,
+            origin: [low.x - span * 0.02, low.y - span * 0.02],
+            texel: span / real(side),
+            side,
+            nearest: vec![f64::NEG_INFINITY; side * side],
+        };
+        for triangle in triangles {
+            going_on(cancelled)?;
+            let corners = triangle.map(|point| map.map_point(point));
+            let nearest = &mut map.nearest;
+            raster(side, 0..side, corners, false, |at, depth| {
+                if depth > nearest[at] {
+                    nearest[at] = depth;
+                }
+            });
+        }
+        Ok(Some(map))
+    }
+
+    fn map_point(&self, point: Vec3) -> Vec3 {
+        Vec3::new(
+            (point.dot(self.u_axis) - self.origin[0]) / self.texel,
+            (point.dot(self.v_axis) - self.origin[1]) / self.texel,
+            point.dot(self.sun),
+        )
+    }
+
+    /// Share of the sun a point with normal `normal` receives, 0–1, softened over 5 × 5 texels.
+    fn lit(&self, point: Vec3, normal: Vec3) -> f64 {
+        let mapped = self.map_point(point + normal * (self.texel * 1.5));
+        let side = real(self.side);
+        let mut lit = 0;
+        for step_v in -2_i32..=2 {
+            for step_u in -2_i32..=2 {
+                let u = (mapped.x + f64::from(step_u) * 1.25).floor();
+                let v = (mapped.y + f64::from(step_v) * 1.25).floor();
+                let blocked = u >= 0.0
+                    && v >= 0.0
+                    && u < side
+                    && v < side
+                    && self.nearest[index(v) * self.side + index(u)] > mapped.z + self.texel;
+                lit += i32::from(!blocked);
+            }
+        }
+        f64::from(lit) / 25.0
+    }
+}
+
+/// Sample rows past a band's own that ambient occlusion (at most a tenth of the image's
+/// `height`, rounded) and outlines (one) look at.
+fn margin(height: usize) -> usize {
+    index((real(height) * 0.1).max(1.5).ceil()) + 1
+}
+
+/// Sample rows of its own each band of a `width` × `height` render with `factor` samples per
+/// pixel side shades within `budget` samples (depth, triangle and colour: 24 bytes each),
+/// counting the rows around it that it looks at: the whole height when it fits at once, else a
+/// multiple of `factor` at least a quarter as many as the rows on either side, so a band holds
+/// at most nine times the rows it shades. `None` when no band that large fits. Review
+/// 2026-11-13 r95 P3: a band as many rows as those around it left a 6 144 × 3 456 or 8 192 ×
+/// 2 929 image unsmoothed; with a quarter they get two samples per pixel side.
+pub(super) fn band_rows(width: usize, height: usize, factor: usize, budget: u64) -> Option<usize> {
+    let fitting = budget / u64::try_from(width).unwrap_or(u64::MAX).max(1);
+    let fitting = usize::try_from(fitting).unwrap_or(usize::MAX);
+    if fitting >= height {
+        return Some(height);
+    }
+    let margin = margin(height);
+    let own = fitting.checked_sub(2 * margin)? / factor * factor;
+    (own >= factor && own * 4 >= margin).then_some(own)
+}
+
+/// The opaque parts as seen from the camera over the sample rows `top`… of a band: nearest
+/// depth and triangle per sample.
+struct Frame<'a> {
+    camera: &'a Camera,
+    width: usize,
+    /// Sample rows of the whole image.
+    height: usize,
+    /// First row held, and the rows the band shades, of the whole image.
+    top: usize,
+    own: Range<usize>,
+    normals: &'a [Vec3],
+    depth: Vec<f32>,
+    triangle: Vec<u32>,
+}
+
+impl Frame<'_> {
+    /// Direction through the centre of the held sample `at`.
+    fn ray(&self, at: usize) -> Vec3 {
+        self.camera.ray(at + self.top * self.width)
+    }
+
+    fn point(&self, at: usize) -> Vec3 {
+        self.camera.eye + self.ray(at) * f64::from(self.depth[at])
+    }
+
+    /// Normal of the side of a triangle that faces the eye at a sample.
+    fn facing_normal(&self, triangle: usize, at: usize) -> Vec3 {
+        let normal = self.normals[triangle];
+        if normal.dot(self.ray(at)) > 0.0 {
+            -normal
+        } else {
+            normal
+        }
+    }
+
+    /// Light kept in corners and creases: 1 in the open, lower where nearby surfaces close in.
+    fn ambient_occlusion(&self, at: usize, normal: Vec3, radius: f64) -> f64 {
+        let point = self.point(at);
+        let height = real(self.height);
+        let pixels_per_mm = height * 0.5 / (f64::from(self.depth[at]) * self.camera.tan_y);
+        // Not `clamp`: under 15 samples high its upper bound is below 1.5 and it would panic.
+        let reach = (radius * pixels_per_mm).min(height * 0.1).max(1.5);
+        let (x, y) = (real(at % self.width), real(self.top + at / self.width));
+        let mut occlusion = 0.0;
+        for [dx, dy] in AO_OFFSETS {
+            let (sx, sy) = ((x + dx * reach).round(), (y + dy * reach).round());
+            if sx < 0.0 || sy < 0.0 || sx >= real(self.width) || sy >= height {
+                continue;
+            }
+            // Within the band: its margin is as tall as the reach.
+            let Some(row) = index(sy).checked_sub(self.top) else {
+                continue;
+            };
+            let other = row * self.width + index(sx);
+            if self
+                .triangle
+                .get(other)
+                .is_none_or(|owner| *owner == NO_TRIANGLE)
+            {
+                continue;
+            }
+            let towards = self.point(other) - point;
+            let distance = towards.length();
+            if distance < ROUNDING || distance > radius {
+                continue;
+            }
+            let share = distance / radius;
+            occlusion += (normal.dot(towards) / distance - 0.15).max(0.0) * (1.0 - share * share);
+        }
+        1.0 - AO_STRENGTH * (occlusion * 3.0 / real(AO_OFFSETS.len())).min(1.0)
+    }
+
+    /// An outline sample: it meets another surface at a crease, a step or the background.
+    fn outline(&self, at: usize) -> bool {
+        let own = self.triangle[at];
+        if own == NO_TRIANGLE {
+            return false;
+        }
+        let (x, y) = (at % self.width, self.top + at / self.width);
+        let neighbours = [
+            (x + 1 < self.width).then_some(at + 1),
+            (x > 0).then_some(at.wrapping_sub(1)),
+            (y + 1 < self.height).then_some(at + self.width),
+            (y > 0).then_some(at.wrapping_sub(self.width)),
+        ];
+        neighbours.into_iter().flatten().any(|other| {
+            let Some(&theirs) = self.triangle.get(other) else {
+                return false;
+            };
+            if theirs == own {
+                return false;
+            }
+            if theirs == NO_TRIANGLE {
+                return true;
+            }
+            let (Ok(own), Ok(theirs)) = (usize::try_from(own), usize::try_from(theirs)) else {
+                return false;
+            };
+            let crease = self.normals[own].dot(self.normals[theirs]).abs() < OUTLINE_COS;
+            let step = self.depth[other] > self.depth[at] * 1.02;
+            crease || step
+        })
+    }
+}
+
+/// `base` (0–1 per channel) in the light a surface with `normal` receives.
+fn shade(base: [f64; 3], normal: Vec3, sun: Vec3, lit: f64, occlusion: f64) -> [f64; 3] {
+    let light =
+        (AMBIENT + SKY * (normal.z * 0.5 + 0.5)) * occlusion + SUN * normal.dot(sun).max(0.0) * lit;
+    base.map(|channel| (channel * light).min(1.0))
+}
+
+/// The triangles that have an area and are not fully transparent, with their unit normals.
+struct Surfaces<'a> {
+    corners: Vec<[Vec3; 3]>,
+    normals: Vec<Vec3>,
+    colours: Vec<[u8; 4]>,
+    looks: Vec<Option<TriangleTexture>>,
+    textures: &'a [PresentationTexture],
+}
+
+impl<'a> Surfaces<'a> {
+    fn new(scene: &'a PresentationScene) -> Self {
+        let mut surfaces = Self {
+            corners: Vec::with_capacity(scene.triangles.len()),
+            normals: Vec::with_capacity(scene.triangles.len()),
+            colours: Vec::with_capacity(scene.triangles.len()),
+            looks: Vec::with_capacity(scene.triangles.len()),
+            textures: &scene.textures,
+        };
+        for triangle in &scene.triangles {
+            let corners = triangle.corners_mm.map(Vec3::from);
+            let [a, b, c] = corners;
+            if triangle.rgba[3] == 0 {
+                continue;
+            }
+            if let Some(normal) = (b - a).cross(c - a).normalized() {
+                surfaces.corners.push(corners);
+                surfaces.normals.push(normal);
+                surfaces.colours.push(triangle.rgba);
+                surfaces.looks.push(triangle.texture);
+            }
+        }
+        surfaces
+    }
+
+    /// The colour, 0–1 per channel, of surface `at` at the world point `point` on it: its
+    /// picture there or its own colour.
+    fn base(&self, at: usize, point: Vec3) -> [f64; 3] {
+        let [r, g, b, _] = self.colours[at];
+        let own = [r, g, b].map(|channel| f64::from(channel) / 255.0);
+        let Some(look) = self.looks[at] else {
+            return own;
+        };
+        let Some(texture) = self.textures.get(look.texture) else {
+            return own;
+        };
+        // The point's share of each corner, from the areas it cuts the triangle into.
+        let [a, b, c] = self.corners[at];
+        let normal = (b - a).cross(c - a);
+        let area = normal.dot(normal);
+        if area < NEGLIGIBLE {
+            return own;
+        }
+        let first = (c - b).cross(point - b).dot(normal) / area;
+        let second = (a - c).cross(point - c).dot(normal) / area;
+        let weights = [first, second, 1.0 - first - second];
+        let uv = look
+            .uv
+            .iter()
+            .zip(weights)
+            .fold([0.0, 0.0], |[u, v], ([corner_u, corner_v], weight)| {
+                [u + corner_u * weight, v + corner_v * weight]
+            });
+        texture.sample(uv)
+    }
+
+    fn with_opacity(&self, opaque: bool) -> impl Iterator<Item = usize> + '_ {
+        (0..self.colours.len()).filter(move |at| (self.colours[*at][3] == 255) == opaque)
+    }
+}
+
+/// `Err(Cancelled)` once `cancelled` is set.
+fn going_on(cancelled: &AtomicBool) -> Result<(), PresentationError> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(PresentationError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Renders `scene` holding at most `budget` samples at once.
+pub(super) fn render(
+    scene: &PresentationScene,
+    options: &PresentationOptions,
+    cancelled: &AtomicBool,
+    budget: u64,
+) -> Result<PresentationImage, PresentationError> {
+    let size_error = |_out_of_range: std::num::TryFromIntError| PresentationError::Size {
+        width: options.width,
+        height: options.height,
+        max_side: super::MAX_PRESENTATION_SIDE,
+    };
+    let factor = usize::try_from(options.supersample).map_err(size_error)?;
+    let width = usize::try_from(options.width).map_err(size_error)? * factor;
+    let height = usize::try_from(options.height).map_err(size_error)? * factor;
+    let surfaces = Surfaces::new(scene);
+    let mut corners = surfaces
+        .corners
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let (low, high) = bounds(&corners).ok_or(PresentationError::EmptyModel)?;
+    let view_from = Vec3::from(options.view_from);
+    if !view_from.is_finite() {
+        return Err(PresentationError::ViewDirection);
+    }
+    let diagonal = low.distance(high);
+    // A label much farther away than the model is large would shrink it to a speck in the
+    // frame (review 2026-11-12 R1112-IMG-503).
+    let reach = diagonal.max(1.0);
+    if let Some(label) = scene.labels.iter().position(|label| {
+        let point = Vec3::from(label.at_mm);
+        [
+            (point.x, low.x, high.x),
+            (point.y, low.y, high.y),
+            (point.z, low.z, high.z),
+        ]
+        .iter()
+        .any(|(at, low, high)| *at < low - reach || *at > high + reach)
+    }) {
+        return Err(PresentationError::LabelAway { label });
+    }
+    let dimensions = if options.dimensions {
+        annotate::dimensions(low, high, view_from)
+    } else {
+        Vec::new()
+    };
+    // The camera frames the dimension lines and labelled points with the model.
+    corners.extend(
+        dimensions
+            .iter()
+            .flat_map(|dimension| dimension.reach(diagonal)),
+    );
+    corners.extend(scene.labels.iter().map(|label| Vec3::from(label.at_mm)));
+    let camera =
+        Camera::fit(&corners, view_from, width, height).ok_or(PresentationError::ViewDirection)?;
+    // The sun shines from above, behind the viewer's left shoulder.
+    let sun = (Vec3::Z - camera.right * 0.5 - camera.forward * 0.4)
+        .normalized()
+        .ok_or(PresentationError::ViewDirection)?;
+    let opaque = surfaces.with_opacity(true).collect::<Vec<_>>();
+    let shadow_map = if options.shadows {
+        ShadowMap::new(
+            sun,
+            &opaque
+                .iter()
+                .map(|at| surfaces.corners[*at])
+                .collect::<Vec<_>>(),
+            width.max(height),
+            cancelled,
+        )?
+    } else {
+        None
+    };
+    let own_rows = band_rows(width, height, factor, budget).ok_or_else(|| {
+        PresentationError::TooManyPixels {
+            pixels: u64::from(options.width) * u64::from(options.height),
+            limit: budget,
+        }
+    })?;
+    let margin = margin(height);
+    let annotator = annotate::Annotator::new(&camera, height, factor)?;
+    let labels = annotator.place_labels(&scene.labels, width, cancelled)?;
+    let mut rgba = Vec::with_capacity(width / factor * (height / factor) * 4);
+    let mut first = 0;
+    // Review 2026-11-13 P3: the whole smoothed image was held at once, so 4K and larger had no
+    // smoothing. Each band of rows is drawn with the rows around it its shading looks at.
+    while first < height {
+        let own = first..(first + own_rows).min(height);
+        let top = own.start.saturating_sub(margin);
+        let held = top..(own.end + margin).min(height);
+        let mut frame = Frame {
+            camera: &camera,
+            width,
+            height,
+            top,
+            own: own.clone(),
+            normals: &surfaces.normals,
+            depth: vec![f32::INFINITY; width * held.len()],
+            triangle: vec![NO_TRIANGLE; width * held.len()],
+        };
+        for &at in &opaque {
+            going_on(cancelled)?;
+            let Some(projected) = camera.triangle(surfaces.corners[at]) else {
+                continue;
+            };
+            let id = u32::try_from(at).map_err(|_out_of_range: std::num::TryFromIntError| {
+                PresentationError::TooManyTriangles {
+                    triangles: surfaces.corners.len(),
+                    limit: super::limits::EXPORT_TRIANGLES,
+                }
+            })?;
+            let (depth, owner) = (&mut frame.depth, &mut frame.triangle);
+            raster(width, held.clone(), projected, true, |sample, value| {
+                let value = narrow(value);
+                if value < depth[sample] {
+                    depth[sample] = value;
+                    owner[sample] = id;
+                }
+            });
+        }
+        let shading = Shading {
+            frame: &frame,
+            surfaces: &surfaces,
+            shadow_map: shadow_map.as_ref(),
+            sun,
+            ground: low.z,
+            ao_radius: low.distance(high) * AO_RADIUS,
+            options,
+            cancelled,
+        };
+        let mut colour = shading.opaque()?;
+        shading.see_through(&mut colour)?;
+        if !dimensions.is_empty() || !labels.is_empty() {
+            let mut sheet = annotate::Sheet {
+                colour: &mut colour,
+                width,
+                height,
+                own: own.clone(),
+            };
+            for dimension in &dimensions {
+                annotator.dimension(&mut sheet, dimension, diagonal, options.decimal_mark);
+            }
+            for label in &labels {
+                annotator.label(&mut sheet, label);
+            }
+        }
+        downsample(factor, width, &colour, &mut rgba);
+        first = own.end;
+    }
+    going_on(cancelled)?;
+    Ok(PresentationImage {
+        width: options.width,
+        height: options.height,
+        rgba,
+    })
+}
+
+struct Shading<'a> {
+    frame: &'a Frame<'a>,
+    surfaces: &'a Surfaces<'a>,
+    shadow_map: Option<&'a ShadowMap>,
+    sun: Vec3,
+    ground: f64,
+    ao_radius: f64,
+    options: &'a PresentationOptions,
+    cancelled: &'a AtomicBool,
+}
+
+impl Shading<'_> {
+    /// Premultiplied RGBA of each sample: the opaque parts over the background and the shadow on
+    /// the implied ground at the model's lowest point.
+    fn opaque(&self) -> Result<Vec<[f32; 4]>, PresentationError> {
+        let background = match self.options.background {
+            Background::White => [1.0, 1.0, 1.0, 1.0],
+            Background::Transparent => [0.0, 0.0, 0.0, 0.0],
+            Background::Color([r, g, b]) => [
+                f64::from(r) / 255.0,
+                f64::from(g) / 255.0,
+                f64::from(b) / 255.0,
+                1.0,
+            ],
+        };
+        let frame = self.frame;
+        let mut colour = Vec::with_capacity(frame.own.len() * frame.width);
+        for row in frame.own.clone() {
+            going_on(self.cancelled)?;
+            let row = row - frame.top;
+            colour.extend((row * frame.width..(row + 1) * frame.width).map(|at| {
+                let owner = frame.triangle[at];
+                let part = (owner != NO_TRIANGLE)
+                    .then(|| usize::try_from(owner).ok())
+                    .flatten();
+                let pixel = match part {
+                    Some(owner) => self.surface(owner, at),
+                    None => {
+                        let shadow = self.ground_shadow(at);
+                        if background[3] == 0.0 {
+                            [0.0, 0.0, 0.0, shadow]
+                        } else {
+                            let keep = 1.0 - shadow;
+                            [
+                                background[0] * keep,
+                                background[1] * keep,
+                                background[2] * keep,
+                                1.0,
+                            ]
+                        }
+                    }
+                };
+                pixel.map(narrow)
+            }));
+        }
+        Ok(colour)
+    }
+
+    fn ground_shadow(&self, at: usize) -> f64 {
+        let camera = self.frame.camera;
+        let ray = self.frame.ray(at);
+        match self.shadow_map {
+            Some(map) if ray.z < 0.0 && camera.eye.z > self.ground => {
+                let point = camera.eye + ray * ((self.ground - camera.eye.z) / ray.z);
+                GROUND_SHADOW * (1.0 - map.lit(point, Vec3::Z))
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn surface(&self, owner: usize, at: usize) -> [f64; 4] {
+        let frame = self.frame;
+        let normal = frame.facing_normal(owner, at);
+        let lit = self
+            .shadow_map
+            .map_or(1.0, |map| map.lit(frame.point(at), normal));
+        let occlusion = if self.options.ambient_occlusion {
+            frame.ambient_occlusion(at, normal, self.ao_radius)
+        } else {
+            1.0
+        };
+        let mut rgb = shade(
+            self.surfaces.base(owner, frame.point(at)),
+            normal,
+            self.sun,
+            lit,
+            occlusion,
+        );
+        if self.options.outlines && frame.outline(at) {
+            rgb = [0, 1, 2].map(|c| rgb[c] * (1.0 - OUTLINE_MIX) + OUTLINE_RGB[c] * OUTLINE_MIX);
+        }
+        [rgb[0], rgb[1], rgb[2], 1.0]
+    }
+
+    /// Blends the see-through parts, farthest first, over the samples they are in front of.
+    fn see_through(&self, colour: &mut [[f32; 4]]) -> Result<(), PresentationError> {
+        let frame = self.frame;
+        let camera = frame.camera;
+        // `raster` counts the band's own samples, as `colour` holds them.
+        let held = (frame.own.start - frame.top) * frame.width;
+        let mut layers = self
+            .surfaces
+            .with_opacity(false)
+            .filter_map(|at| {
+                let [a, b, c] = self.surfaces.corners[at];
+                let depth = ((a + b + c) * (1.0 / 3.0) - camera.eye).dot(camera.forward);
+                Some((depth, at, camera.triangle(self.surfaces.corners[at])?))
+            })
+            .collect::<Vec<_>>();
+        layers.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+        for (_, at, projected) in layers {
+            going_on(self.cancelled)?;
+            let alpha = f64::from(self.surfaces.colours[at][3]) / 255.0;
+            raster(
+                frame.width,
+                frame.own.clone(),
+                projected,
+                true,
+                |sample, depth| {
+                    if narrow(depth) >= frame.depth[held + sample] {
+                        return;
+                    }
+                    let normal = frame.facing_normal(at, held + sample);
+                    let point = camera.eye + frame.ray(held + sample) * depth;
+                    let lit = self.shadow_map.map_or(1.0, |map| map.lit(point, normal));
+                    let rgb = shade(self.surfaces.base(at, point), normal, self.sun, lit, 1.0);
+                    let front = [rgb[0], rgb[1], rgb[2], 1.0];
+                    let below = colour[sample];
+                    colour[sample] = [0, 1, 2, 3]
+                        .map(|c| narrow(front[c] * alpha + f64::from(below[c]) * (1.0 - alpha)));
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Appends to `rgba` the pixels of the samples `colour`, `sample_width` a row.
+fn downsample(factor: usize, sample_width: usize, colour: &[[f32; 4]], rgba: &mut Vec<u8>) {
+    let (width, height) = (sample_width / factor, colour.len() / sample_width / factor);
+    let count = real(factor * factor);
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0.0_f64; 4];
+            for row in 0..factor {
+                let start = (y * factor + row) * sample_width + x * factor;
+                for sample in &colour[start..start + factor] {
+                    for (total, value) in sum.iter_mut().zip(sample) {
+                        *total += f64::from(*value);
+                    }
+                }
+            }
+            let straight = |value: f64| if sum[3] > 0.0 { value / sum[3] } else { 0.0 };
+            for value in [
+                straight(sum[0]),
+                straight(sum[1]),
+                straight(sum[2]),
+                sum[3] / count,
+            ] {
+                rgba.push(channel(value));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::presentation::{PresentationLabel, PresentationTriangle};
+
+    fn cuboid(low: [f64; 3], high: [f64; 3], rgba: [u8; 4]) -> Vec<PresentationTriangle> {
+        let corner = |i: usize| {
+            [0, 1, 2].map(|axis| {
+                if i >> axis & 1 == 0 {
+                    low[axis]
+                } else {
+                    high[axis]
+                }
+            })
+        };
+        let faces = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        faces
+            .iter()
+            .flat_map(|[a, b, c, d]| {
+                [[*a, *b, *c], [*a, *c, *d]].map(|corners| PresentationTriangle {
+                    corners_mm: corners.map(corner),
+                    rgba,
+                    texture: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Review 2026-11-13 P3: 4K and larger had no smoothing, as the whole smoothed image was
+    /// held at once. Made in bands of rows, the image is the same to the last bit: shadows,
+    /// corner shading and outlines look past a band's rows, see-through parts and annotations
+    /// are drawn into each band.
+    #[test]
+    fn an_image_made_in_bands_is_the_image_made_at_once() {
+        let mut triangles = cuboid(
+            [-200.0, -150.0, 0.0],
+            [200.0, 150.0, 20.0],
+            [190, 190, 185, 255],
+        );
+        triangles.extend(cuboid(
+            [-50.0, -50.0, 20.0],
+            [50.0, 50.0, 140.0],
+            [200, 60, 50, 255],
+        ));
+        triangles.extend(cuboid(
+            [60.0, -40.0, 20.0],
+            [150.0, 40.0, 90.0],
+            [40, 90, 200, 120],
+        ));
+        let scene = PresentationScene {
+            triangles,
+            labels: vec![PresentationLabel {
+                text: "Box".into(),
+                at_mm: [0.0, 0.0, 140.0],
+            }],
+            textures: Vec::new(),
+            plain_pictures: Vec::new(),
+        };
+        let options = PresentationOptions {
+            width: 160,
+            height: 120,
+            supersample: 2,
+            shadows: true,
+            ambient_occlusion: true,
+            outlines: true,
+            dimensions: true,
+            ..PresentationOptions::default()
+        };
+        let going = AtomicBool::new(false);
+        let whole = render(
+            &scene,
+            &options,
+            &going,
+            super::super::MAX_PRESENTATION_SAMPLES,
+        )
+        .unwrap();
+        // 320 samples a row; 80 rows hold a band of 30 own rows and 25 either side.
+        let budget = 320 * 80;
+        assert_eq!(band_rows(320, 240, 2, budget), Some(30));
+        let banded = render(&scene, &options, &going, budget).unwrap();
+        assert_eq!((banded.width, banded.height), (160, 120));
+        let differing = whole
+            .rgba
+            .chunks_exact(4)
+            .zip(banded.rgba.chunks_exact(4))
+            .filter(|(left, right)| left != right)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "pixels differ between the whole and the banded image"
+        );
+        assert!(
+            whole
+                .rgba
+                .chunks_exact(4)
+                .any(|pixel| u16::from(pixel[2]) > u16::from(pixel[0]) + 40)
+        );
+        // A band of 10 own rows holds 60; one of 4 would hold 54, more than nine times it.
+        assert_eq!(band_rows(320, 240, 2, 320 * 60), Some(10));
+        assert!(band_rows(320, 240, 2, 320 * 55).is_none());
+        let narrow = render(&scene, &options, &going, 320 * 60).unwrap();
+        assert_eq!(narrow.rgba, whole.rgba);
+    }
+
+    /// R1113-IMG-600: the shadow map drew every triangle before anyone looked at the flag.
+    #[test]
+    fn a_cancelled_shadow_map_draws_no_triangle() {
+        let triangle = [
+            Vec3::ZERO,
+            Vec3::new(1_000.0, 0.0, 0.0),
+            Vec3::new(0.0, 1_000.0, 0.0),
+        ];
+        let sun = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
+        assert!(matches!(
+            ShadowMap::new(sun, &[triangle], 5_760, &AtomicBool::new(true)),
+            Err(PresentationError::Cancelled)
+        ));
+        let map = ShadowMap::new(sun, &[triangle], 5_760, &AtomicBool::new(false)).unwrap();
+        assert!(map.is_some_and(|map| map.nearest.iter().any(|depth| depth.is_finite())));
+    }
+
+    /// Review 2026-11-13 r95 P3: the shadow map was 2 048² texels, 32 MB, for any image, a
+    /// 1 × 1 one too. It has about as many texels along a side as the image has samples.
+    #[test]
+    fn the_shadow_map_is_as_fine_as_the_image() {
+        let triangle = [
+            Vec3::ZERO,
+            Vec3::new(1_000.0, 0.0, 0.0),
+            Vec3::new(0.0, 1_000.0, 0.0),
+        ];
+        let sun = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
+        let side = |image_side| {
+            ShadowMap::new(sun, &[triangle], image_side, &AtomicBool::new(false))
+                .unwrap()
+                .map(|map| (map.side, map.nearest.len()))
+        };
+        assert_eq!(side(1), Some((256, 256 * 256)));
+        assert_eq!(side(300), Some((512, 512 * 512)));
+        assert_eq!(side(5_760), Some((2_048, 2_048 * 2_048)));
+    }
+}

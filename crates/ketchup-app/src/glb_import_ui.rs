@@ -1,11 +1,14 @@
 use super::*;
-use ketchup_model::import::{ParsedGlbScene, inspect_glb, plan_glb_import};
+use crate::app::skp_import::{SkpConversion, model_glb};
+use ketchup_model::import::{GlbNodeTags, ParsedGlbScene, inspect_glb, plan_glb_import_tagged};
 
 #[derive(Clone, Debug, PartialEq)]
 struct GlbImportPreviewPlan {
     source: ImportSourcePlan,
     review: ParsedGlbScene,
     batch: CommandBatch,
+    /// The conversion of a SketchUp file, held while the review is open.
+    skp: Option<SkpConversion>,
 }
 
 #[derive(Clone, Debug)]
@@ -16,11 +19,11 @@ pub(super) struct PendingGlbImport {
 
 impl KetchupApp {
     fn choose_glb_import_path(&mut self) -> Option<PathBuf> {
-        let filter_label = self.catalog.text("file-filter-glb");
+        let filter_label = self.catalog.text("file-filter-glb-skp");
         self.dialogs.pick_import_path(ImportDialogRequest {
             format: ImportFormat::Glb,
             filter_label: &filter_label,
-            extensions: &["glb"],
+            extensions: &["glb", "skp"],
         })
     }
 
@@ -30,13 +33,20 @@ impl KetchupApp {
     ) -> Result<GlbImportPreviewPlan, ImportError> {
         let snapshot = self.document.current();
         let source_name = source.verify_seal(&snapshot)?;
-        let review = crate::bounded_parser::run_bounded_parser(source.format, || {
-            inspect_glb(&source.source)
-        })
-        .map_err(|error| source.failed(error))?
-        .map_err(|error| source.failed(error))?;
+        let (glb, skp) = model_glb(&source.path, &source.source)?;
+        let (notes, tags) = match &skp {
+            Some(conversion) => (
+                conversion.notes().map_err(|error| source.failed(error))?,
+                conversion.node_tags(),
+            ),
+            None => (Vec::new(), GlbNodeTags::default()),
+        };
+        let review = crate::bounded_parser::run_bounded_parser(source.format, || inspect_glb(&glb))
+            .map_err(|error| source.failed(error))?
+            .map_err(|error| source.failed(error))?
+            .with_notes(&notes);
         let batch = crate::bounded_parser::run_bounded_parser(source.format, || {
-            plan_glb_import(&snapshot, &source.source, source_name)
+            plan_glb_import_tagged(&snapshot, &glb, source_name, &notes, &tags)
         })
         .map_err(|error| source.failed(error))?
         .map_err(|error| source.failed(error))?;
@@ -44,6 +54,7 @@ impl KetchupApp {
             source,
             review,
             batch,
+            skp,
         })
     }
 
@@ -54,10 +65,20 @@ impl KetchupApp {
                 return Err(source.error(ImportFailure::ReviewStale));
             }
             source.reread_unchanged()?;
-            if self.prepare_glb_import_preview_plan(source.clone())? != pending.plan {
-                return Err(source.error(ImportFailure::ReviewChanged));
+            // The plan is made from the document and the bytes alone: the seal still the
+            // document's and the bytes the reviewed ones, planning again gives the same
+            // plan at the cost of the first (review 2026-11-12 R1112-SKP-501: a SketchUp
+            // file sharing one picture across its meshes froze the window twice).
+            source.verify_seal(&self.document.current())?;
+            // The pictures the meshes show are blobs of the document, as an imported
+            // drawing's lines are.
+            let mut staged_container = self.file.container_data.clone();
+            for image in pending.plan.review.shown_images() {
+                staged_container
+                    .insert_import_blob(image.to_vec())
+                    .map_err(|error| source.failed(error))?;
             }
-            self.apply_batch_with_work_recovery(&pending.plan.batch)
+            self.apply_batch_with_container_work_recovery(&pending.plan.batch, staged_container)
                 .map_err(|error| source.failed(error))?;
             Ok(())
         })();
@@ -69,10 +90,20 @@ impl KetchupApp {
         &mut self,
         path: &Path,
     ) -> Result<serde_json::Value, ImportError> {
+        self.import_glb_source(path, read_import_source(ImportFormat::Glb, path)?)
+    }
+
+    /// [`Self::import_glb_file`] of `source`, the bytes of the `.glb` or `.skp` file at
+    /// `path` a thread has read already.
+    pub(crate) fn import_glb_source(
+        &mut self,
+        path: &Path,
+        source: Vec<u8>,
+    ) -> Result<serde_json::Value, ImportError> {
         let source = ImportSourcePlan::seal(
             ImportFormat::Glb,
             path.to_owned(),
-            read_import_source(ImportFormat::Glb, path)?,
+            source,
             (),
             &self.document.current(),
         );
@@ -98,20 +129,33 @@ impl KetchupApp {
         let Some(path) = self.choose_glb_import_path() else {
             return;
         };
-        let result = read_import_source(ImportFormat::Glb, &path).and_then(|source| {
-            let source_plan = ImportSourcePlan::seal(
-                ImportFormat::Glb,
-                path.clone(),
-                source,
-                (),
-                &self.document.current(),
-            );
-            let plan = self.prepare_glb_import_preview_plan(source_plan)?;
-            Ok(PendingGlbImport {
+        // In a frame a SketchUp file is read on a thread while the window shows it.
+        match self.file.activity.context.clone() {
+            Some(context) if crate::app::skp_import::is_skp_path(&path) => {
+                self.start_converted_read(path, &context);
+            }
+            _ => match read_import_source(ImportFormat::Glb, &path) {
+                Ok(source) => self.open_glb_import(path, source),
+                Err(reason) => self.report_import_failure(&path, &reason),
+            },
+        }
+    }
+
+    /// Opens the review of `source`, the bytes of the `.glb` or `.skp` file at `path`.
+    pub(crate) fn open_glb_import(&mut self, path: PathBuf, source: Vec<u8>) {
+        let source_plan = ImportSourcePlan::seal(
+            ImportFormat::Glb,
+            path.clone(),
+            source,
+            (),
+            &self.document.current(),
+        );
+        let result = self
+            .prepare_glb_import_preview_plan(source_plan)
+            .map(|plan| PendingGlbImport {
                 plan,
                 invalidated: false,
-            })
-        });
+            });
         match result {
             Ok(pending) => self.modal.open(pending),
             Err(reason) => {

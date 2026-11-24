@@ -59,6 +59,26 @@ fn the_worker_runs_under_its_data_limit_on_linux() {
     assert!(data.contains(&bytes), "{data}");
 }
 
+/// R1122ac-PG-1103: a program nesting thousands deep killed the worker in the
+/// window with a stack overflow, and the user got worker_failed with no line.
+/// It comes back as a syntax error with its line, and the worker stays.
+#[test]
+fn a_program_nesting_thousands_deep_is_a_syntax_error_in_the_worker() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let deep = format!("{BOX}x = {}1{}\n", "[".repeat(3000), "]".repeat(3000));
+    let error = run(&mut worker, &deep).unwrap_err();
+    assert_eq!(error.code, "syntax_error", "{error}");
+    assert_eq!(
+        error.location.as_ref().map(|at| at.at.line),
+        Some(2),
+        "{error}"
+    );
+    let pid = worker.process_id();
+    assert_eq!(run(&mut worker, BOX).unwrap().model.parts.len(), 1);
+    assert_eq!(worker.process_id(), pid);
+}
+
 #[test]
 fn a_builtin_loop_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
@@ -128,17 +148,27 @@ fn the_worker_stays_between_programs_and_is_replaced_after_a_kill() {
     assert_ne!(worker.process_id(), Some(first));
 }
 
-/// Checking 400 boxes that all overlap takes over a minute; the worker is
+/// A model cheap to evaluate but seconds to check: a block of cubes, each
+/// touching its 26 neighbours. (Overlapping cubes stop at a pair limit and a
+/// flat grid now checks only neighbours, review 2026-11-22 R1122ac-PG-1102.)
+/// A debug build checks 15 × 15 × 15 in about 7 s, a release build
+/// 27 × 27 × 27 in 6 s; a debug build evaluating 10 000 parts under load ran
+/// past the deadline before the checks began.
+fn slow_to_check() -> String {
+    let side = if cfg!(debug_assertions) { 15 } else { 27 };
+    format!(
+        "for i in range({side}):\n    for j in range({side}):\n        for k in range({side}):\n            \
+         box(\"b%d_%d_%d\" % (i, j, k), (100, 100, 100), at=(i * 100, j * 100, k * 100))\n"
+    )
+}
+
+/// Checking [`slow_to_check`] takes longer than the deadline; the worker is
 /// stopped at its deadline and the next request starts a new one (review PRG-1).
 #[test]
 fn a_report_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    let evaluated = run(
-        &mut worker,
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
-    )
-    .unwrap();
+    let evaluated = run(&mut worker, &slow_to_check()).unwrap();
     let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .report(&evaluated, deadline, &CancelToken::default())
@@ -165,11 +195,7 @@ fn a_report_past_the_deadline_is_killed() {
 fn a_refine_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    let evaluated = run(
-        &mut worker,
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n",
-    )
-    .unwrap();
+    let evaluated = run(&mut worker, &slow_to_check()).unwrap();
     let deadline = CheckDeadline::after(Duration::from_secs(2));
     let error = worker
         .refine(
@@ -205,9 +231,8 @@ fn a_refine_past_the_deadline_is_killed() {
 #[test]
 fn evaluation_report_and_refine_share_one_deadline() {
     let _turn = crate::integration_support::file_turn();
-    // Checking 400 boxes that all overlap takes over a minute.
-    let source =
-        "for i in range(400):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n";
+    let source = slow_to_check();
+    let source = source.as_str();
     let evaluated = evaluate("test.star", source, &BTreeMap::new()).unwrap();
     let mut worker = worker();
     let cancel = CancelToken::default();
@@ -318,4 +343,41 @@ fn assert_round_trip(programs: Vec<(String, String)>) {
             "{name}"
         );
     }
+}
+
+/// A program worker that never answers its handshake stops the check as past its
+/// deadline. `sort` stands in for it: it reads its input to the end and never
+/// answers.
+#[test]
+fn a_worker_slow_to_start_is_past_the_check_deadline() {
+    assert_eq!(slow_start(Duration::from_secs(1)).code, "time_limit");
+}
+
+/// A program worker that is slow to start still ends the check by its deadline:
+/// the start-up gets only the time left, not its own 30 s (R1122ac, review §4 P3).
+#[test]
+#[ignore = "a wall-clock budget, run nightly in release"]
+fn perf_a_worker_slow_to_start_ends_by_the_check_deadline() {
+    let started = std::time::Instant::now();
+    let error = slow_start(Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(10), "{error}");
+}
+
+/// The error of a check given `time` on a worker that never answers its handshake.
+fn slow_start(time: Duration) -> ketchup_program::ProgramError {
+    let sort = if cfg!(windows) {
+        Path::new(r"C:\Windows\System32\sort.exe")
+    } else {
+        Path::new("/usr/bin/sort")
+    };
+    let mut worker = ProgramWorker::new(sort).unwrap();
+    worker
+        .evaluate_by(
+            "test.star",
+            BOX,
+            &BTreeMap::new(),
+            CheckDeadline::after(time),
+            &CancelToken::default(),
+        )
+        .unwrap_err()
 }

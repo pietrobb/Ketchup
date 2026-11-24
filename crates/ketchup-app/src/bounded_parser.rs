@@ -34,7 +34,7 @@ pub(crate) fn run_bounded_parser<T>(
     })
 }
 
-fn panic_message(payload: &(dyn Any + Send)) -> &str {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&str>()
         .copied()

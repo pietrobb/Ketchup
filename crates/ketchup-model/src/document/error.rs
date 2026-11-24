@@ -120,6 +120,8 @@ pub enum CanonicalError {
     GroupNotEmpty(GroupId),
     GroupCycle(GroupId),
     InvalidFeatureOwnership(FeatureId),
+    /// A field of a surface or loft input breaks its rule (R1120ac-EXA-901).
+    InvalidFeatureInput(FeatureInputError),
     InvalidFeatureMap,
     InvalidSolidToolPlan,
     UnsupportedSolidToolTransform,
@@ -189,6 +191,13 @@ pub enum CanonicalError {
     ClassificationCategoryInUse(ClassificationDimensionId),
     CollectionAlreadyExists(CollectionId),
     CollectionNotFound(CollectionId),
+    /// An entry of the product's `collection` is filed under `key` but names
+    /// itself `id`: the file was changed outside Kečup (R1122ac-PS-1100).
+    EntryUnderOtherId {
+        collection: &'static str,
+        key: u64,
+        id: u64,
+    },
     CollectionMembershipNotCanonical(CollectionId),
     OccurrenceInCollection(OccurrenceId),
     InvalidImportReceipt(ImportContractError),
@@ -351,6 +360,7 @@ impl CanonicalError {
             Self::GroupNotEmpty(..) => "canonical.group_not_empty",
             Self::GroupCycle(..) => "canonical.group_cycle",
             Self::InvalidFeatureOwnership(..) => "canonical.invalid_feature_ownership",
+            Self::InvalidFeatureInput(_) => "canonical.invalid_feature_input",
             Self::InvalidFeatureMap => "canonical.invalid_feature_map",
             Self::InvalidSolidToolPlan => "canonical.invalid_solid_tool_plan",
             Self::UnsupportedSolidToolTransform => "canonical.unsupported_solid_tool_transform",
@@ -404,6 +414,7 @@ impl CanonicalError {
             Self::ClassificationCategoryInUse(..) => "canonical.classification_category_in_use",
             Self::CollectionAlreadyExists(..) => "canonical.collection_already_exists",
             Self::CollectionNotFound(..) => "canonical.collection_not_found",
+            Self::EntryUnderOtherId { .. } => "canonical.entry_under_other_id",
             Self::CollectionMembershipNotCanonical(..) => {
                 "canonical.collection_membership_not_canonical"
             }
@@ -546,7 +557,7 @@ impl fmt::Display for CanonicalError {
                 "topological feature references must be valid, kind-correct, unique, and strictly sorted",
             ),
             Self::InvalidMeshBody => formatter.write_str(
-                "mesh body must be finite, closed, consistently oriented, non-degenerate, and carry valid authority provenance",
+                "mesh body must be finite, non-degenerate, closed and consistently oriented unless it is a sheet, and carry valid authority provenance",
             ),
             Self::DefinitionAlreadyExists(id) => {
                 write!(formatter, "definition {} already exists", id.0)
@@ -741,6 +752,7 @@ impl fmt::Display for CanonicalError {
                 "feature {} has invalid definition ownership",
                 id.0
             ),
+            Self::InvalidFeatureInput(error) => write!(formatter, "{error}"),
             Self::InvalidFeatureMap => {
                 formatter.write_str("feature clone map is incomplete or non-canonical")
             }
@@ -839,6 +851,10 @@ impl fmt::Display for CanonicalError {
             Self::CollectionNotFound(id) => {
                 write!(formatter, "collection {} does not exist", id.0)
             }
+            Self::EntryUnderOtherId { collection, key, id } => write!(
+                formatter,
+                "the document's {collection} entry {key} names itself {id}: the file was changed outside Kečup; open a copy Kečup saved"
+            ),
             Self::CollectionMembershipNotCanonical(id) => write!(
                 formatter,
                 "collection {} membership must be unique and strictly sorted",

@@ -17,6 +17,7 @@ fn a_late_exact_check_answers_incomplete_then_pages_its_verdict() {
         worker_cancelled: Arc::default(),
         started: Instant::now() - PROGRAM_EXACT_RUNNING_AFTER,
         time: PROGRAM_EXACT_TIMEOUT,
+        answer_after: PROGRAM_EXACT_RUNNING_AFTER,
         applied,
         receiver,
         verdict: None,
@@ -55,6 +56,7 @@ fn an_answered_exact_check_names_its_report_and_gives_way_to_the_next_edit() {
         worker_cancelled: Arc::clone(&worker_cancelled),
         started: Instant::now() - PROGRAM_EXACT_RUNNING_AFTER,
         time: PROGRAM_EXACT_TIMEOUT,
+        answer_after: PROGRAM_EXACT_RUNNING_AFTER,
         applied,
         receiver,
         verdict: None,
@@ -141,6 +143,7 @@ fn check_job(
         worker_cancelled: Arc::default(),
         started,
         time: PROGRAM_EXACT_TIMEOUT,
+        answer_after: PROGRAM_EXACT_RUNNING_AFTER,
         applied,
         receiver,
         verdict: None,
@@ -149,23 +152,31 @@ fn check_job(
     (ProgramCheckJob::Checking(Box::new(job)), response)
 }
 
-/// Polls like the window's frames until the job answers, waiting between
-/// polls for the report's own checks, which the answer waits for.
+/// The job's answer in its first frame: it waits for neither the report's own
+/// checks nor an exact check still running.
 fn answer(
     app: &mut KetchupApp,
     bridge: &mut LiveBridge,
     response: &mpsc::Receiver<Response>,
 ) -> Value {
+    bridge.poll_program_check_job(app, &egui::Context::default());
+    let response = response.try_recv().expect("the apply answers at once");
+    response.result.unwrap()
+}
+
+/// Polls like the window's frames until the report's own checks are done,
+/// waiting between polls for them.
+fn settle(app: &mut KetchupApp, bridge: &mut LiveBridge) {
     let context = egui::Context::default();
     let until = Instant::now() + Duration::from_secs(120);
     loop {
         bridge.poll_program_check_job(app, &context);
-        if let Ok(response) = response.try_recv() {
-            return response.result.unwrap();
-        }
         let Some(ProgramCheckJob::Checking(job)) = &mut bridge.program_check_job else {
-            panic!("the job ended without an answer");
+            return;
         };
+        if !job.applied.report.checks_pending() {
+            return;
+        }
         let completion = job.completion.as_mut().expect("the report's checks run");
         // Their report goes back to the job's next poll; a check thread gone
         // leaves the channel disconnected, as it was.
@@ -197,8 +208,9 @@ fn a_report_left_for_the_exact_check_answers_whole_when_the_check_does_not() {
     ] {
         let (mut app, mut bridge) = setup();
         let (mut applied, pending) = applied_before_exact(&mut app, &mut bridge);
-        let expected = applied.result(Some(unfinished(reason)));
         let whole = std::mem::replace(&mut applied.report, pending);
+        // The answer does not wait for the report's own checks.
+        let expected = applied.result(Some(unfinished(reason)));
         let (sender, receiver) = mpsc::sync_channel(1);
         // The check thread holds its sender until it answers.
         let _thread = match reason {
@@ -214,11 +226,16 @@ fn a_report_left_for_the_exact_check_answers_whole_when_the_check_does_not() {
         };
         let (job, response) = check_job(applied, started, receiver, cancelled);
         bridge.program_check_job = Some(job);
-        assert_eq!(
-            answer(&mut app, &mut bridge, &response),
-            expected,
+        let answered = answer(&mut app, &mut bridge, &response);
+        assert_eq!(answered, expected, "{reason}");
+        assert_eq!(answered["report"]["checks_pending"], true, "{reason}");
+        // With its checks still running the answer claims no pass.
+        assert_ne!(answered["validation"]["state"], "passed", "{reason}");
+        assert_ne!(
+            answered["validation"]["collisions"]["state"], "passed",
             "{reason}"
         );
+        settle(&mut app, &mut bridge);
         assert!(bridge.program_check_job.is_none());
         let (_, report, _, exact) = bridge.program_report.as_ref().unwrap();
         assert_eq!(report, &whole, "{reason}");
@@ -229,21 +246,26 @@ fn a_report_left_for_the_exact_check_answers_whole_when_the_check_does_not() {
     }
 }
 
-/// Review #136: the early answer of a long check lists the whole report too,
-/// and so does the report a later edit leaves behind when it ends the check.
+/// The early answer of a long check does not wait for the report's own checks
+/// (owner 2026-11-23: apply answers once the model is published); they finish
+/// into the report, which is whole then, and so is the report a later edit
+/// leaves behind when it ends the check.
 #[test]
-fn a_report_left_for_the_exact_check_answers_whole_while_the_check_runs() {
+fn a_long_check_answers_at_once_and_its_report_becomes_whole_behind_it() {
     let (mut app, mut bridge) = setup();
     let (mut applied, pending) = applied_before_exact(&mut app, &mut bridge);
     let mut running = unfinished("exact_check_running");
     running["not_evaluated"][0]["next"] = json!(EXACT_CHECK_RUNNING_NEXT);
-    let expected = applied.result(Some(running));
     let whole = std::mem::replace(&mut applied.report, pending);
+    let expected = applied.result(Some(running));
     let (_sender, receiver) = mpsc::sync_channel(1);
     let started = Instant::now() - PROGRAM_EXACT_RUNNING_AFTER;
     let (job, response) = check_job(applied, started, receiver, false);
     bridge.program_check_job = Some(job);
-    assert_eq!(answer(&mut app, &mut bridge, &response), expected);
+    let answered = answer(&mut app, &mut bridge, &response);
+    assert_eq!(answered, expected);
+    assert_eq!(answered["report"]["checks_pending"], true);
+    settle(&mut app, &mut bridge);
     let Some(ProgramCheckJob::Checking(job)) = &bridge.program_check_job else {
         panic!("the check goes on after its early answer");
     };
@@ -319,6 +341,7 @@ fn missing_exact_result_and_worker_failure_never_claim_verified_or_revert_the_ed
             .apply_program(
                 &mut app,
                 Request::ApplyProgram {
+                    source_folder: None,
                     expected: None,
                     source: "a=box('a',(10,10,10))\nhole(a,'z+',at=(5,5),diameter=2,depth=2)"
                         .into(),
@@ -345,6 +368,7 @@ fn missing_exact_result_and_worker_failure_never_claim_verified_or_revert_the_ed
             worker_cancelled: Arc::new(AtomicBool::new(false)),
             started: Instant::now(),
             time: PROGRAM_EXACT_TIMEOUT,
+            answer_after: PROGRAM_EXACT_RUNNING_AFTER,
             applied,
             receiver,
             verdict: None,

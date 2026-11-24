@@ -1,0 +1,13 @@
+# Panics and stderr writes clippy still finds in production code on browser (unwrap_used, expect_used, panic, print_stderr; <file> <lint> <count>, scripts/check_clippy_panics.py); may only shrink.
+# packages: ketchup-viewer-web
+# dependencies: ketchup-geometry ketchup-rejection ketchup-tolerance ketchup-view-format ketchup-viewer
+crates/ketchup-view-format/src/comments.rs expect_used 1
+crates/ketchup-view-format/src/container.rs expect_used 7
+crates/ketchup-view-format/src/glb.rs expect_used 2
+crates/ketchup-view-format/src/glb/geometry.rs expect_used 2
+crates/ketchup-viewer/src/app.rs expect_used 1
+crates/ketchup-viewer/src/camera.rs expect_used 14
+crates/ketchup-viewer/src/gpu.rs expect_used 12
+crates/ketchup-viewer/src/guides.rs expect_used 1
+crates/ketchup-viewer/src/measure.rs expect_used 1
+crates/ketchup-viewer/src/model.rs expect_used 3

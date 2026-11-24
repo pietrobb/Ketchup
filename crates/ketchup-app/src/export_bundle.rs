@@ -70,6 +70,15 @@ impl ExportTransactionError {
         }
     }
 
+    /// The file another program changed, when that is why publishing was refused.
+    fn changed_path(&self) -> Option<&Path> {
+        match self {
+            Self::TargetChanged { path } | Self::OriginalPreserved { path, .. } => Some(path),
+            Self::Unrecovered { failure, .. } => failure.changed_path(),
+            _ => None,
+        }
+    }
+
     /// A no-clobber publish fails with `AlreadyExists` exactly when another writer created
     /// the target after it was checked.
     fn publish(path: &Path, cause: std::io::Error) -> Self {
@@ -141,6 +150,33 @@ impl std::error::Error for ExportTransactionError {
             _ => None,
         }
     }
+}
+
+/// The file whose change by another program is why `error` refused to publish, if it
+/// is: the change is that program's, not a write of the export (R1122ac, review §4
+/// P3: the Connect tab listed it as the AI's).
+pub(crate) fn changed_by_another<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a Path> {
+    let mut next = Some(error);
+    while let Some(error) = next {
+        let transaction = match error.downcast_ref::<ExportError>() {
+            Some(ExportError::Transaction(transaction)) => Some(transaction),
+            _ => error.downcast_ref::<ExportTransactionError>(),
+        };
+        if let Some(transaction) = transaction {
+            return transaction.changed_path();
+        }
+        // An I/O error made of another error does not give it as its source.
+        next = match error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
+            None => error.source(),
+        };
+    }
+    None
 }
 
 /// Why one export command was refused.
@@ -247,29 +283,37 @@ impl KetchupApp {
         precondition: &ExportBundlePrecondition,
         evidence: &[u8],
     ) -> Result<(), ExportError> {
-        if self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion {
-            // Nobody in the window asked for this file, so nobody confirms
-            // replacing one; the client reads the loss report itself. A release
-            // to manufacturing still waits for the user's confirmation.
-            return if precondition.primary_sha256.is_some() || precondition.report_sha256.is_some()
+        let client_lossy =
+            self.live.client_export.is_some() && consent.class == HighRiskClass::LossyConversion;
+        if client_lossy {
+            // A client writes a new file without a prompt and reads the loss report
+            // itself (owner decision R1). It replaces an existing file or report only
+            // with overwrite: without a prompt the pair Kečup exported there and nobody
+            // changed since, anything else once the user agrees in the window.
+            let exists =
+                precondition.primary_sha256.is_some() || precondition.report_sha256.is_some();
+            if !exists
+                || (self.live.client_overwrite && precondition.written_by_ketchup(report_path))
             {
-                Err(ExportError::Destination {
-                    requirement: "a new file name; a client export never replaces an existing file or loss report",
-                })
-            } else {
-                Ok(())
-            };
+                return Ok(());
+            }
+            if !self.live.client_overwrite {
+                return Err(ExportError::Destination {
+                    requirement: "a new file name, or overwrite: true to ask the user in the window to replace the existing file or loss report",
+                });
+            }
+        } else {
+            let title = self.catalog.text(consent.title_key);
+            let risk = self.catalog.text(consent.risk_key);
+            self.authorize_path_side_effect(
+                consent.class,
+                consent.operation,
+                &title,
+                &risk,
+                primary_path,
+                evidence,
+            )?;
         }
-        let title = self.catalog.text(consent.title_key);
-        let risk = self.catalog.text(consent.risk_key);
-        self.authorize_path_side_effect(
-            consent.class,
-            consent.operation,
-            &title,
-            &risk,
-            primary_path,
-            evidence,
-        )?;
         let replaced = [
             (primary_path, &precondition.primary_sha256),
             (report_path, &precondition.report_sha256),
@@ -335,7 +379,7 @@ impl KetchupApp {
 /// The files one export wrote: the chosen file and what was written beside it
 /// (review 2026-10-17 MCP-1, §5.8). A client is told these paths instead of
 /// guessing the names of the reports.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Written {
     pub(crate) primary: PathBuf,
     /// What the conversion lost (`x.step.loss.txt`).
@@ -347,6 +391,11 @@ pub(crate) struct Written {
     /// Visible parts the export left out, by name (a plan DXF/DWG leaves out
     /// a part whose profiles are not parallel to XY, Měchenice MECH-9).
     pub(crate) omitted_parts: Vec<String>,
+    /// What a machine file leaves unmade, as `<part>: <element>`: the pin
+    /// holes in a bought part joined to a made one (review 2026-11-09 MF-305).
+    pub(crate) lost: Vec<String>,
+    /// What the exact simulation of a CAM program found.
+    pub(crate) machining: Option<crate::app::Machining>,
 }
 
 impl Written {
@@ -412,6 +461,38 @@ impl ExportBundlePrecondition {
             report_sha256: export_target_sha256(report_path)?,
         })
     }
+
+    /// Whether the existing file and loss report are an export Kečup wrote and
+    /// nobody changed since: the report, as hashed, names the file's SHA-256.
+    pub(crate) fn written_by_ketchup(&self, report_path: &Path) -> bool {
+        use std::io::Read as _;
+        let (Some(primary), Some(report)) = (&self.primary_sha256, &self.report_sha256) else {
+            return false;
+        };
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(report_path)
+            .and_then(|file| file.take(MAX_LOSS_REPORT_BYTES).read_to_end(&mut bytes));
+        read.is_ok()
+            && ketchup_model::graph::sha256_hex(&bytes) == *report
+            && std::str::from_utf8(&bytes).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| line.strip_prefix(ARTIFACT_SHA256_LINE) == Some(primary))
+            })
+    }
+}
+
+/// The line of a loss report that names the file it was written with.
+const ARTIFACT_SHA256_LINE: &str = "artifact_sha256=";
+/// More than any loss report Kečup writes; a larger file is not one.
+const MAX_LOSS_REPORT_BYTES: u64 = 1 << 20;
+
+/// `report` with the line naming `artifact`, so that `overwrite` later knows
+/// the pair as Kečup's own.
+pub(crate) fn loss_report_naming(report: &str, artifact: &[u8]) -> String {
+    format!(
+        "{report}{ARTIFACT_SHA256_LINE}{}\n",
+        ketchup_model::graph::sha256_hex(artifact)
+    )
 }
 
 pub(crate) fn export_target_sha256(path: &Path) -> Result<Option<String>, ExportTransactionError> {

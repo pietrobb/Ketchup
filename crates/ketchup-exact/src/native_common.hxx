@@ -227,6 +227,9 @@ class ShapeIndex {
   mutable std::optional<TopTools_IndexedMapOfShape> edges_;
 };
 
+// The only face of a non-solid single-face surface body, or null.
+TopoDS_Face single_surface_face(const NativeOperationResult& body);
+
 HistoryRecord history_record(
     std::string role,
     std::string relation,
@@ -248,6 +251,16 @@ std::unique_ptr<NativeOperationResult> error_result(
 
 bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal);
 
+// The largest constant radius (fillet) or distance (chamfer) below `amount`
+// that finishes every one of `edges` of `shape` into a valid shape, on a grid
+// of three significant digits of `amount`; every figure returned was built.
+// Zero when not even the smallest step fits.
+double largest_fitting_finish(
+    const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges, double amount, bool fillet);
+
+// "; the largest radius found to fit is 19.9 mm" for a refused finish.
+std::string largest_fit_hint(double largest, bool fillet);
+
 NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal);
 
 NativeEdgeEvidence inspect_edge(const TopoDS_Edge& edge, std::uint32_t ordinal);
@@ -259,6 +272,16 @@ std::unique_ptr<NativeOperationResult> success_result(
     bool allow_planar_face = false,
     std::vector<EdgeHistoryRecord> edge_history = {},
     bool allow_surface = false);
+
+// A Loft through `wires` along `guide` with every section across the guide
+// stretched so its border meets `rail` (native_loft_rail.cc).
+std::unique_ptr<NativeOperationResult> loft_stretched_to_rail(
+    const TopoDS_Wire& guide, const TopoDS_Wire& rail, const std::vector<TopoDS_Wire>& wires,
+    std::uint8_t continuity, bool make_solid);
+
+// Every edge of a convex polyhedron rounded by `radius` when the rounds use up
+// whole faces; a null shape for any other body (native_full_round.cc).
+TopoDS_Shape full_round_of_convex_polyhedron(const TopoDS_Shape& body, double radius);
 
 inline gp_Pnt planar_point(const NativePoint& point, double z) {
   return gp_Pnt(point.x, point.y, z);
@@ -277,6 +300,10 @@ bool segment_bounded(const NativeSegment& segment, double limit);
 
 // The cubic Bezier of a planar segment, lifted to height z.
 TopoDS_Edge cubic_bezier_edge(const NativeSegment& segment, double z);
+
+// The edge of one spatial line, circular arc (about its normal) or cubic
+// Bezier segment; null when the segment does not make an edge.
+TopoDS_Edge spatial_segment_edge(const NativeSegment& segment);
 
 template <typename Operation>
 std::unique_ptr<NativeOperationResult> guarded(Operation&& operation) noexcept {

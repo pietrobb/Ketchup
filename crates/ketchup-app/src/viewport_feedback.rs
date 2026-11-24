@@ -193,6 +193,18 @@ impl KetchupApp {
         );
     }
 
+    /// The hovered target as the viewport paints it. Measure and the camera
+    /// tools act on points or the view, not on the face under the pointer, so
+    /// filling that face would only flicker from face to face while aiming.
+    pub(crate) fn painted_hover_target(&self) -> Option<&SelectionId> {
+        self.hover.target.as_ref().filter(|_| {
+            !matches!(
+                self.active_tool,
+                ActiveTool::Measure | ActiveTool::Orbit | ActiveTool::Pan | ActiveTool::ZoomWindow
+            )
+        })
+    }
+
     pub(super) fn paint_face_feedback<'a>(
         &self,
         painter: &egui::Painter,
@@ -209,7 +221,7 @@ impl KetchupApp {
                 if face.previewed {
                     continue;
                 }
-                let hovered = self.hover.target.as_ref() == Some(&face.selection);
+                let hovered = self.painted_hover_target() == Some(&face.selection);
                 if hovered != hovered_pass {
                     continue;
                 }
@@ -439,6 +451,33 @@ mod tests {
                     vertex.pos
                 );
             }
+        }
+    }
+
+    #[test]
+    fn measure_leaves_the_face_under_the_pointer_unfilled() {
+        let mut app = KetchupApp::new();
+        app.exact.worker_attempted = true;
+        app.render.wgpu_target_format = Some(eframe::wgpu::TextureFormat::Rgba8Unorm);
+        let context = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
+            ..Default::default()
+        };
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
+        let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
+        for (tool, filled) in [(ActiveTool::Select, true), (ActiveTool::Measure, false)] {
+            app.active_tool = tool;
+            let mut raw = input();
+            raw.events.push(egui::Event::PointerMoved(pointer));
+            let output = context.run(raw, |context| app.ui(context));
+            // The right-click menu still acts on what is under the pointer.
+            assert!(app.hover.target.is_some(), "{tool:?}");
+            assert_eq!(
+                output_has_fill(&output.shapes, &[], |fill| fill == HOVER_FILL),
+                filled,
+                "{tool:?}"
+            );
         }
     }
 

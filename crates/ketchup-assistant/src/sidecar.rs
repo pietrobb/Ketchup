@@ -2,7 +2,7 @@ use ketchup_geometry::helix::Helix;
 use ketchup_geometry::linalg::{CubicBezier, cross, length, sub};
 use ketchup_model::document::{
     Dimension, MAX_DRAFT_ANGLE_DEGREES, MIN_DRAFT_ANGLE_DEGREES, SpatialPathSegment,
-    WeldmentJointPolicy, WeldmentJointPrimary, is_valid_spatial_sweep_path,
+    WeldmentJointPolicy, WeldmentJointPrimary,
 };
 use ketchup_model::graph::is_sha256_hex;
 use ketchup_model::pin_joint::PinSpec;
@@ -16,6 +16,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::request_invalid::{AssistantRequestInvalid, AssistantRequestProblem};
+
+mod cam_kinds;
+mod feature_checks;
+mod loft;
+mod operation_checks;
+mod program_references;
+mod spatial_path;
+mod structure_change;
+
+pub use cam_kinds::{AssistantCamToolKind, AssistantCamWorkOffset};
+pub use spatial_path::validated_spatial_path_segments;
 
 /// Most operations in one CAD edit program.
 const MAX_CAD_EDIT_OPERATIONS: usize = 64;
@@ -184,60 +195,6 @@ pub enum AssistantSpatialPathSegment {
         control_2_mm: [f64; 3],
         end_mm: [f64; 3],
     },
-}
-
-impl AssistantSpatialPathSegment {
-    fn canonical(&self) -> SpatialPathSegment {
-        match self {
-            Self::Line { start_mm, end_mm } => SpatialPathSegment::Line {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-            },
-            Self::CircularArc {
-                start_mm,
-                end_mm,
-                center_mm,
-                normal,
-                clockwise,
-            } => SpatialPathSegment::CircularArc {
-                start_mm: *start_mm,
-                end_mm: *end_mm,
-                center_mm: *center_mm,
-                normal: *normal,
-                clockwise: *clockwise,
-            },
-            Self::CubicBezier {
-                start_mm,
-                control_1_mm,
-                control_2_mm,
-                end_mm,
-            } => SpatialPathSegment::CubicBezier {
-                start_mm: *start_mm,
-                control_1_mm: *control_1_mm,
-                control_2_mm: *control_2_mm,
-                end_mm: *end_mm,
-            },
-        }
-    }
-}
-
-pub fn validated_spatial_path_segments(
-    segments: &[AssistantSpatialPathSegment],
-    tolerance_mm: f64,
-) -> Result<Vec<SpatialPathSegment>, AssistantRequestInvalid> {
-    if !(1..=limits::PATH_SEGMENTS).contains(&segments.len()) {
-        return Err(AssistantRequestInvalid::invalid(
-            "spatial path segment count",
-        ));
-    }
-    let segments = segments
-        .iter()
-        .map(AssistantSpatialPathSegment::canonical)
-        .collect::<Vec<_>>();
-    if !is_valid_spatial_sweep_path(&segments, tolerance_mm) {
-        return Err(AssistantRequestInvalid::invalid("spatial path"));
-    }
-    Ok(segments)
 }
 
 impl Default for AssistantHelixParameters {
@@ -962,7 +919,57 @@ pub enum AssistantCadSurfaceBodySource {
         guide_feature_id: Option<AssistantCadFeatureReference>,
         #[serde(default)]
         continuity: AssistantCadLoftContinuity,
+        /// A second spatial path from the first section's border to the
+        /// last's; every section stretches so its border stays on it. Needs
+        /// `guide_feature_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail_feature_id: Option<AssistantCadFeatureReference>,
     },
+    /// The smoothest surface spanning one closed loop of spatial lines, arcs
+    /// and cubic Beziers; the loop may turn at corners.
+    Boundary {
+        segments: Vec<AssistantSpatialPathSegment>,
+        /// Curves of a network inside the loop the surface must also pass
+        /// through, each on its own: up to 64 lines, arcs and cubic Beziers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inner: Vec<AssistantSpatialPathSegment>,
+    },
+    /// A surface across the gap between two earlier single-face surfaces,
+    /// from the edge of each that faces the other, meeting each in position,
+    /// tangent plane or curvature. Both surfaces stay.
+    Blend {
+        first_feature_id: AssistantCadFeatureReference,
+        #[serde(default)]
+        first_continuity: AssistantCadLoftContinuity,
+        second_feature_id: AssistantCadFeatureReference,
+        #[serde(default)]
+        second_continuity: AssistantCadLoftContinuity,
+    },
+    /// An earlier one-face surface; its B-spline control point (row `u_index`, column `v_index`,
+    /// from 0) at `from_mm` moves by `offset_mm`, `weight` sets a new positive weight. The move is
+    /// refused with both positions if the point lies elsewhere (also after an earlier edit changed
+    /// the net), or if a seam in `keep` loses its continuity. The earlier surface stays.
+    ControlPoint {
+        target_feature_id: AssistantCadFeatureReference,
+        u_index: u32,
+        v_index: u32,
+        from_mm: [f64; 3],
+        #[serde(default)]
+        offset_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<AssistantCadSurfaceSeam>,
+    },
+}
+
+/// A neighbouring surface whose seam with a reshaped surface keeps its
+/// continuity.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantCadSurfaceSeam {
+    pub surface_feature_id: AssistantCadFeatureReference,
+    pub continuity: AssistantCadLoftContinuity,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -1092,6 +1099,11 @@ pub enum AssistantCadBodyFeature {
         guide_feature_id: Option<AssistantCadFeatureReference>,
         #[serde(default)]
         continuity: AssistantCadLoftContinuity,
+        /// A second spatial path from the first section's border to the
+        /// last's; every section stretches so its border stays on it. Needs
+        /// `guide_feature_id`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail_feature_id: Option<AssistantCadFeatureReference>,
     },
     SurfaceBody {
         source: AssistantCadSurfaceBodySource,
@@ -1267,109 +1279,27 @@ impl AssistantCadBodyFeature {
                 sections,
                 guide_feature_id,
                 continuity,
-            } if (2..=limits::LOFT_SECTIONS).contains(&sections.len())
-                && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
-                && !(guide_feature_id.is_some()
-                    && *continuity == AssistantCadLoftContinuity::Curvature)
-                && sections.iter().all(|section| {
-                    section.profile_feature_id.validate().is_ok()
-                        && section.elevation_mm.is_finite()
-                        && section.elevation_mm.abs() <= MAX_COORDINATE_MM
-                })
-                && sections
-                    .iter()
-                    .map(|section| section.profile_feature_id)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    == sections.len()
-                && sections
-                    .windows(2)
-                    .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
-            {
-                Ok(())
-            }
-            Self::Loft { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
-            Self::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Planar { profile_feature_id },
-            } if profile_feature_id.validate().is_ok() => Ok(()),
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Loft {
-                        sections,
-                        guide_feature_id,
-                        continuity,
-                    },
-            } if (2..=limits::LOFT_SECTIONS).contains(&sections.len())
-                && guide_feature_id.is_none_or(|guide| guide.validate().is_ok())
-                && !(guide_feature_id.is_some()
-                    && *continuity == AssistantCadLoftContinuity::Curvature)
-                && sections.iter().all(|section| {
-                    section.profile_feature_id.validate().is_ok()
-                        && section.elevation_mm.is_finite()
-                        && section.elevation_mm.abs() <= MAX_COORDINATE_MM
-                })
-                && sections
-                    .iter()
-                    .map(|section| section.profile_feature_id)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    == sections.len()
-                && sections
-                    .windows(2)
-                    .all(|pair| pair[0].elevation_mm < pair[1].elevation_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceBody { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+                rail_feature_id,
+            } => loft::check(sections, *guide_feature_id, *rail_feature_id, *continuity),
+            Self::SurfaceBody { source } => feature_checks::surface_body(source),
             Self::SurfaceTrim {
                 target_feature_id,
                 cutter_feature_id,
-            } if target_feature_id.validate().is_ok()
-                && cutter_feature_id.validate().is_ok()
-                && target_feature_id != cutter_feature_id =>
-            {
-                Ok(())
-            }
-            Self::SurfaceTrim { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => feature_checks::surface_trim(*target_feature_id, *cutter_feature_id),
             Self::SurfaceExtend {
                 target_feature_id,
                 distance_mm,
-            } if target_feature_id.validate().is_ok()
-                && distance_mm.is_finite()
-                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(distance_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceExtend { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => feature_checks::surface_extend(*target_feature_id, *distance_mm),
             Self::SurfaceKnit {
                 surface_feature_ids,
                 tolerance_mm,
                 ..
-            } if (2..=limits::KNIT_SURFACES).contains(&surface_feature_ids.len())
-                && surface_feature_ids
-                    .iter()
-                    .all(|reference| reference.validate().is_ok())
-                && surface_feature_ids.iter().collect::<BTreeSet<_>>().len()
-                    == surface_feature_ids.len()
-                && tolerance_mm.is_finite()
-                && (DEFAULT_LINEAR_TOLERANCE_MM..=10.0).contains(tolerance_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceKnit { .. } => Err(AssistantRequestInvalid::invalid("CAD body feature")),
+            } => feature_checks::surface_knit(surface_feature_ids, *tolerance_mm),
             Self::SurfaceThicken {
                 target_feature_id,
                 thickness_mm,
                 ..
-            } if target_feature_id.validate().is_ok()
-                && thickness_mm.is_finite()
-                && (limits::MIN_LENGTH_MM..=MAX_COORDINATE_MM).contains(thickness_mm) =>
-            {
-                Ok(())
-            }
-            Self::SurfaceThicken { .. } => {
-                Err(AssistantRequestInvalid::invalid("CAD body feature"))
-            }
+            } => feature_checks::surface_thicken(*target_feature_id, *thickness_mm),
             Self::SheetMetal { .. } => self
                 .sheet_metal_spec()
                 .filter(|spec| spec.validate().is_ok())
@@ -1401,77 +1331,25 @@ impl AssistantCadBodyFeature {
                 edge_reference_ids,
                 radius_mm,
                 radius_stations,
-            } if *target_feature_id != 0
-                && (1..=limits::FEATURE_REFERENCES).contains(&edge_reference_ids.len())
-                && edge_reference_ids
-                    .iter()
-                    .all(|reference_id| is_sha256_hex(reference_id))
-                && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
-                    == edge_reference_ids.len()
-                && radius_mm.is_finite()
-                && (0.01..=100_000.0).contains(radius_mm)
-                && radius_stations.len() <= limits::FILLET_RADIUS_STATIONS
-                && (radius_stations.is_empty()
-                    || radius_stations
-                        .last()
-                        .is_some_and(|station| station.position == 1.0))
-                && radius_stations.iter().all(|station| {
-                    station.position.is_finite()
-                        && station.position > 0.0
-                        && station.position <= 1.0
-                        && station.radius_mm.is_finite()
-                        && (0.01..=100_000.0).contains(&station.radius_mm)
-                })
-                && radius_stations
-                    .windows(2)
-                    .all(|pair| pair[0].position < pair[1].position) =>
-            {
-                Ok(())
-            }
-            Self::TopologyFillet { .. } => {
-                Err(AssistantRequestInvalid::invalid("CAD body feature"))
-            }
+            } => feature_checks::fillet(
+                *target_feature_id,
+                edge_reference_ids,
+                *radius_mm,
+                radius_stations,
+            ),
             Self::TopologyChamfer {
                 target_feature_id,
                 edge_reference_ids,
                 distance_mm,
                 mode,
                 side_face_reference_ids,
-            } if *target_feature_id != 0
-                && (1..=limits::FEATURE_REFERENCES).contains(&edge_reference_ids.len())
-                && edge_reference_ids
-                    .iter()
-                    .all(|reference_id| is_sha256_hex(reference_id))
-                && edge_reference_ids.iter().collect::<BTreeSet<_>>().len()
-                    == edge_reference_ids.len()
-                && distance_mm.is_finite()
-                && (0.01..=100_000.0).contains(distance_mm)
-                && match mode {
-                    AssistantCadChamferMode::Symmetric => side_face_reference_ids.is_empty(),
-                    AssistantCadChamferMode::TwoDistance { second_distance_mm } => {
-                        second_distance_mm.is_finite()
-                            && (0.01..=100_000.0).contains(second_distance_mm)
-                            && side_face_reference_ids.len() == edge_reference_ids.len()
-                            && side_face_reference_ids
-                                .iter()
-                                .all(|reference_id| is_sha256_hex(reference_id))
-                    }
-                    AssistantCadChamferMode::DistanceAngle { angle_degrees } => {
-                        angle_degrees.is_finite()
-                            && *angle_degrees > 0.1
-                            && *angle_degrees < 89.9
-                            && side_face_reference_ids.len() == edge_reference_ids.len()
-                            && side_face_reference_ids
-                                .iter()
-                                .all(|reference_id| is_sha256_hex(reference_id))
-                    }
-                } =>
-            {
-                Ok(())
-            }
-            Self::TopologyChamfer { .. } => {
-                Err(AssistantRequestInvalid::invalid("CAD body feature"))
-            }
+            } => feature_checks::chamfer(
+                *target_feature_id,
+                edge_reference_ids,
+                *distance_mm,
+                *mode,
+                side_face_reference_ids,
+            ),
             Self::TopologyDraft {
                 target_feature_id,
                 face_reference_ids,
@@ -1506,123 +1384,6 @@ impl AssistantCadBodyFeature {
 
     pub fn produces_body_feature_output(&self) -> bool {
         !matches!(self, Self::PlanarOffset { .. })
-    }
-
-    fn validate_program_references(
-        &self,
-        operation_index: usize,
-        operations: &[AssistantCadEditOperation],
-    ) -> Result<(), AssistantRequestInvalid> {
-        let validate_reference = |reference: AssistantCadFeatureReference| match reference {
-            AssistantCadFeatureReference::Existing(_) => Ok(()),
-            AssistantCadFeatureReference::ProgramOutput(reference) => reference.validate_for(
-                operation_index,
-                operations,
-                AssistantCadProgramFeatureOutput::BodyFeature,
-            ),
-        };
-        match self {
-            Self::Boolean {
-                target_feature_id,
-                tool_feature_id,
-                ..
-            } => {
-                validate_reference(*target_feature_id)?;
-                validate_reference(*tool_feature_id)?;
-            }
-            Self::WeldmentJoint {
-                first_member_id,
-                second_member_id,
-                ..
-            } => {
-                validate_reference(*first_member_id)?;
-                validate_reference(*second_member_id)?;
-            }
-            Self::Loft {
-                sections,
-                guide_feature_id,
-                ..
-            }
-            | Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Loft {
-                        sections,
-                        guide_feature_id,
-                        ..
-                    },
-            } => {
-                for section in sections {
-                    if let AssistantCadFeatureReference::ProgramOutput(reference) =
-                        section.profile_feature_id
-                    {
-                        reference.validate_for(
-                            operation_index,
-                            operations,
-                            AssistantCadProgramFeatureOutput::SketchFeature,
-                        )?;
-                    }
-                }
-                if let Some(AssistantCadFeatureReference::ProgramOutput(reference)) =
-                    guide_feature_id
-                {
-                    reference.validate_for(
-                        operation_index,
-                        operations,
-                        AssistantCadProgramFeatureOutput::ConstructionFeature,
-                    )?;
-                }
-            }
-            Self::SurfaceBody {
-                source:
-                    AssistantCadSurfaceBodySource::Planar {
-                        profile_feature_id: AssistantCadFeatureReference::ProgramOutput(reference),
-                    },
-            } => {
-                reference.validate_for(
-                    operation_index,
-                    operations,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                )?;
-            }
-            Self::SurfaceBody {
-                source: AssistantCadSurfaceBodySource::Planar { .. },
-            } => {}
-            Self::SurfaceTrim {
-                target_feature_id,
-                cutter_feature_id,
-            } => {
-                validate_reference(*target_feature_id)?;
-                validate_reference(*cutter_feature_id)?;
-            }
-            Self::SurfaceExtend {
-                target_feature_id, ..
-            }
-            | Self::SurfaceThicken {
-                target_feature_id, ..
-            } => validate_reference(*target_feature_id)?,
-            Self::SurfaceKnit {
-                surface_feature_ids,
-                ..
-            } => {
-                for reference in surface_feature_ids {
-                    validate_reference(*reference)?;
-                }
-            }
-            Self::Pocket {
-                target_feature_id,
-                profile_feature_id,
-                ..
-            } => {
-                validate_reference(*target_feature_id)?;
-                profile_feature_id.validate_output(
-                    operation_index,
-                    operations,
-                    AssistantCadProgramFeatureOutput::SketchFeature,
-                )?;
-            }
-            _ => {}
-        }
-        Ok(())
     }
 }
 
@@ -1792,25 +1553,6 @@ pub enum AssistantSketchConstraint {
 pub struct AssistantCadClassificationCategory {
     pub id: u64,
     pub name: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantCamToolKind {
-    FlatEndMill,
-    BallEndMill,
-    Drill,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssistantCamWorkOffset {
-    G54,
-    G55,
-    G56,
-    G57,
-    G58,
-    G59,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -2009,6 +1751,9 @@ pub enum AssistantCadEditOperation {
         spindle_rpm: u32,
         feed_mm_per_min: f64,
         plunge_mm_per_min: f64,
+        /// Included point angle of a drill; none is the standard 118°, 180 a flat-bottom drill.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        drill_point_angle_deg: Option<f64>,
         work_offset: AssistantCamWorkOffset,
         origin_mm: [f64; 3],
         x_axis: [f64; 3],
@@ -2254,55 +1999,6 @@ pub enum AssistantStructureChange {
     DeleteDefinition {
         definition_id: u64,
     },
-}
-
-impl AssistantStructureChange {
-    fn validate(&self) -> Result<(), AssistantRequestInvalid> {
-        let name_is_valid = |name: &str| {
-            !name.trim().is_empty()
-                && name.len() <= limits::NAME_BYTES
-                && !name.chars().any(char::is_control)
-        };
-        let valid = match self {
-            Self::CreateGroup {
-                group_id,
-                name,
-                parent_group_id,
-            } => *group_id != 0 && name_is_valid(name) && *parent_group_id != Some(0),
-            Self::MoveOccurrence {
-                occurrence_id,
-                group_id,
-            } => *occurrence_id != 0 && *group_id != Some(0),
-            Self::MoveGroup {
-                group_id,
-                parent_group_id,
-            } => {
-                *group_id != 0 && *parent_group_id != Some(0) && *parent_group_id != Some(*group_id)
-            }
-            Self::SetGroupTranslation {
-                group_id,
-                translation_mm,
-            } => *group_id != 0 && assistant_cad_vector_is_bounded(*translation_mm),
-            Self::MakeComponent { group_id, name } => *group_id != 0 && name_is_valid(name),
-            Self::ReplaceDefinition {
-                occurrence_id,
-                definition_id,
-            } => *occurrence_id != 0 && *definition_id != 0,
-            Self::RenameDefinition {
-                definition_id,
-                name,
-            } => *definition_id != 0 && name_is_valid(name),
-            Self::SetOccurrenceVisibility { occurrence_id, .. } => *occurrence_id != 0,
-            Self::DeleteGroup { group_id } => *group_id != 0,
-            Self::DeleteTag { tag_id } => *tag_id != 0,
-            Self::DeleteDefinition { definition_id } => *definition_id != 0,
-        };
-        if valid {
-            Ok(())
-        } else {
-            Err(AssistantRequestInvalid::invalid("CAD structure change"))
-        }
-    }
 }
 
 fn assistant_cad_vector_is_bounded(vector: [f64; 3]) -> bool {
@@ -3085,20 +2781,10 @@ impl AssistantCadEditProgram {
         }
         let mut generated_occurrences = 0usize;
         let mut named_outputs = BTreeMap::<String, AssistantCadProgramFeatureOutput>::new();
-        for (operation_index, operation) in self.operations.iter().enumerate() {
-            let bounded_targets = Self::bounded_operation_targets(operation)?;
-            let generated_per_target =
-                self.validate_part_operation(operation_index, operation, max_part_cuts)?
-                    + self.validate_construction_operation(operation_index, operation)?
-                    + self.validate_feature_operation(
-                        operation_index,
-                        operation,
-                        &mut named_outputs,
-                    )?
-                    + self.validate_joint_operation(operation_index, operation)?
-                    + Self::validate_cam_operation(operation)?
-                    + Self::validate_metadata_operation(operation)?
-                    + self.validate_transform_operation(operation_index, operation)?;
+        for operation_index in 0..self.operations.len() {
+            let (bounded_targets, generated_per_target) = self
+                .validate_operation(operation_index, max_part_cuts, &mut named_outputs)
+                .map_err(|error| error.at_operation(operation_index))?;
             generated_occurrences = generated_occurrences
                 .checked_add(bounded_targets.checked_mul(generated_per_target).ok_or(
                     AssistantRequestInvalid::invalid("CAD generated occurrence count"),
@@ -3772,6 +3458,7 @@ impl AssistantCadEditProgram {
                 spindle_rpm,
                 feed_mm_per_min,
                 plunge_mm_per_min,
+                drill_point_angle_deg,
                 origin_mm,
                 x_axis,
                 y_axis,
@@ -3817,6 +3504,7 @@ impl AssistantCadEditProgram {
                         .iter()
                         .any(|value| !value.is_finite() || *value <= 0.0)
                     || signed.iter().any(|value| !value.is_finite())
+                    || drill_point_angle_deg.is_some_and(|angle| !angle.is_finite())
                 {
                     return Err(AssistantRequestInvalid::invalid("CAM plan"));
                 }

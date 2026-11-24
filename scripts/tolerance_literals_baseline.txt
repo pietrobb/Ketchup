@@ -1,5 +1,4 @@
 # Remaining tolerance literals (<file>) and size-limit literals (<file> limit); may only shrink.
-crates/ketchup-analysis/src/fea.rs limit 1
 crates/ketchup-analysis/src/validator_hosting.rs limit 3
 crates/ketchup-app/src/app/drawing.rs limit 1
 crates/ketchup-app/src/app/export.rs limit 2
@@ -22,11 +21,10 @@ crates/ketchup-exact/src/solids.rs limit 1
 crates/ketchup-exact/src/sweep_loft.rs limit 5
 crates/ketchup-geometry/src/slot.rs limit 1
 crates/ketchup-geometry/src/tapping.rs 1
-crates/ketchup-headless/src/protocol.rs limit 3
+crates/ketchup-headless/src/protocol.rs limit 2
 crates/ketchup-headless/src/protocol/model_tools.rs limit 1
 crates/ketchup-headless/src/protocol/production.rs limit 2
 crates/ketchup-manufacturing/src/fabrication.rs limit 1
-crates/ketchup-model/src/cam.rs limit 1
 crates/ketchup-model/src/document/assembly_validation.rs limit 2
 crates/ketchup-model/src/document/command.rs limit 1
 crates/ketchup-model/src/document/store.rs limit 2
@@ -34,7 +32,6 @@ crates/ketchup-model/src/drawing_export.rs limit 1
 crates/ketchup-model/src/exact_brep_graph/validation.rs limit 4
 crates/ketchup-model/src/exact_product.rs limit 2
 crates/ketchup-model/src/import.rs limit 1
-crates/ketchup-model/src/import/dxf.rs limit 3
 crates/ketchup-model/src/import/glb.rs limit 1
 crates/ketchup-model/src/import/iges.rs limit 2
 crates/ketchup-model/src/mechanical_contract.rs 1

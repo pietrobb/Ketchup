@@ -587,6 +587,7 @@ pub fn plan_sketchup_scene_import(
             definition_id,
             name: "SketchUp mesh".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: None,
                 schema: MESH_BODY_SCHEMA_V1.to_owned(),
                 vertices_mm: definition.vertices_mm.clone(),
                 triangles: definition.triangles.clone(),

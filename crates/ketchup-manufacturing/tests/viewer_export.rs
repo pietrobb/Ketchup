@@ -451,6 +451,7 @@ fn canonical_mesh_edges_hide_coplanar_diagonal_and_keep_a_fold() {
             .collect();
         vertices[7][2] = last_z;
         let mesh = MeshBodySpec {
+            look: None,
             schema: MESH_BODY_SCHEMA_V1.into(),
             vertices_mm: vertices,
             triangles: body

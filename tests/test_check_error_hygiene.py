@@ -75,17 +75,18 @@ def test_inline_test_modules_are_not_production_code(tmp_path):
         "crates/a/src/lib.rs",
         'fn f() -> Result<(), String> { Err("x".to_owned()) }\n'
         '#[cfg(test)]\nmod tests {\n    fn g() { x.map_err(|_| "bad"); }\n}\n'
-        '#[cfg(all(test, windows))]\nmod windows_tests {\n    fn h() { y.unwrap(); }\n}\n'
-        '#[cfg(not(test))]\nmod production {\n    fn k() { z.unwrap(); }\n}\n',
+        '#[cfg(all(test, windows))]\nmod windows_tests {\n    fn h() { y.ok(); }\n}\n'
+        '#[cfg(not(test))]\nmod production {\n    fn k() { z.ok(); }\n}\n',
     )
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs string": 1,
         "crates/a/src/lib.rs string_result": 1,
-        "crates/a/src/lib.rs unwrap": 1,
+        "crates/a/src/lib.rs ok_statement": 1,
     }
 
 
-def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
+def test_counts_text_errors_and_formatted_variants_not_unwraps(tmp_path):
+    # `.unwrap()` and `.expect(..)` are clippy's to count (review 2026-11-08 TST-250).
     write(
         tmp_path,
         "crates/a/src/lib.rs",
@@ -110,7 +111,6 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
         "crates/a/src/lib.rs stringified_cause": 2,
         "crates/a/src/lib.rs stringified_variant": 4,
         "crates/a/src/lib.rs formatted_variant": 2,
-        "crates/a/src/lib.rs unwrap": 1,
         "crates/a/src/lib.rs unreachable": 2,
         "crates/a/src/lib.rs silent_unreachable": 1,
     }
@@ -411,7 +411,7 @@ def test_the_drops_review_1106_r23_found_past_the_ratchet_count(tmp_path):
 def test_the_forms_with_a_path_or_a_name_review_1107_found_count(tmp_path):
     # Review 2026-11-07 P3: a default named by its type, `unwrap_or_else(drop)`,
     # `map_or_else(|_| (), ...)`, a bare `.is_ok();`, an empty `if let Ok(()) = ... {}`
-    # and `.expect(` slipped past.
+    # and `.expect(` slipped past; clippy counts `.expect(` now (TST-250).
     write(
         tmp_path,
         "crates/a/src/lib.rs",
@@ -423,7 +423,6 @@ def test_the_forms_with_a_path_or_a_name_review_1107_found_count(tmp_path):
         "save(&path).is_ok();\n"
         "if let Ok(()) = save(&path) {}\n"
         "if let Ok(_) = tx.send(Msg { a: 1 }) { /* Gone. */ }\n"
-        'let value = parse(text).expect("checked above");\n'
         "// What keeps or answers it is not counted.\n"
         "let saved = save(&path).is_ok();\n"
         "if let Ok(()) = save(&path) { done(); }\n"
@@ -459,7 +458,50 @@ def test_the_forms_with_a_path_or_a_name_review_1107_found_count(tmp_path):
         "crates/a/src/lib.rs dropped_closure": 1,
         "crates/a/src/lib.rs ok_statement": 1,
         "crates/a/src/lib.rs empty_is_err": 2,
-        "crates/a/src/lib.rs expect": 1,
+        "crates/b/src/main.rs eprintln": 3,
+    }
+
+
+def test_the_forms_review_r26_found_count_and_a_comment_or_an_else_does_not(tmp_path):
+    # Review 2026-11-07 r26 P3: a default named by its constructor, `std::mem::drop`
+    # passed by its path and `map_or_else(drop, ...)` slipped past, and an empty block an
+    # `else` answers was counted.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let list = read(&path).unwrap_or_else(Vec::new);\n"
+        "let text = read(&path).unwrap_or_else(String::new);\n"
+        "save(&path).map_err(std::mem::drop)?;\n"
+        "save(&path).map_or_else(drop, |()| done());\n"
+        "// Not counted: an empty block an else answers.\n"
+        "if let Ok(()) = save(&path) {} else { refuse(); }\n"
+        # Review 2026-11-08 TST-251: the else of `.is_err() {}` runs on success, so the
+        # error itself is still dropped.
+        "if save(&path).is_err() {} else { done(); }\n"
+        "if save(&path).is_err() { /* kept */ }\nelse { done(); }\n",
+    )
+    # In an entry point: two functions of one name and a helper passed as `Self::name`.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    log_window_to("B", "b.log");\n'
+        "    run();\n"
+        "    App::start();\n"
+        "}\n"
+        'fn run() { eprintln!("first run"); }\n'
+        "impl App {\n"
+        "    fn start() { load().unwrap_or_else(Self::failed); }\n"
+        '    fn failed(error: Error) { eprintln!("{error}"); }\n'
+        "}\n"
+        "impl Other {\n"
+        '    fn run() { eprintln!("second run"); }\n'
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_default": 2,
+        "crates/a/src/lib.rs dropped_error": 2,
+        "crates/a/src/lib.rs empty_is_err": 2,
         "crates/b/src/main.rs eprintln": 3,
     }
 

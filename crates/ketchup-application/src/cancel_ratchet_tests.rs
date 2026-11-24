@@ -12,7 +12,11 @@ use std::path::{Path, PathBuf};
 const UNCANCELLED: &[(&str, &str, &str)] = &[
     ("rule_program.rs", "plan_rule_program", "synchronous plan"),
     ("rule_program.rs", "plan_rule_program_from", "window edit"),
-    ("rule_program.rs", "apply_rule_program_by", "session call"),
+    (
+        "rule_program.rs",
+        "apply_rule_program_reading",
+        "session call",
+    ),
     ("rule_program.rs", "evaluate", "window edit of parts"),
 ];
 

@@ -296,16 +296,17 @@ fn a_wrong_face_or_too_large_radius_is_explained() {
         "block",
     )
     .unwrap_err();
-    assert!(error.contains("do not share an edge"), "{error}");
+    assert!(error.contains("share no edge"), "{error}");
 
-    // The x+ face is only 40 mm tall, so a 45 mm round cannot fit on its top edge.
+    // The x+ face is only 40 mm tall, so a 45 mm round cannot fit on its top edge;
+    // the program refuses it before the kernel is asked (review 2026-11-20 ac P3).
     let error = solid(
         &mut worker,
         &format!("{BLOCK}fillet(block, edges=[[\"z+\", \"x+\"]], radius=45)"),
         "block",
     )
     .unwrap_err();
-    assert!(error.contains("finish did not complete"), "{error}");
+    assert!(error.contains("40 mm across it"), "{error}");
 }
 
 const KNOB: &str = "knob = revolve(\"knob\", axis=[[0, 0], [0, 1]], profile=[[\"bottom\", [0, 0], [30, 0]], [\"side\", [30, 0], [30, 100]], [\"top\", [30, 100], [0, 100]], [\"axis\", [0, 100], [0, 0]]])\n";

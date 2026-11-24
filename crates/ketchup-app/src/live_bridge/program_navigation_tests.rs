@@ -91,6 +91,7 @@ fn set_params_refuses_a_value_outside_the_declared_range() {
         .execute(
             &mut app,
             Request::ApplyProgram {
+                source_folder: None,
                 expected: None,
                 source:
                     "W = param(\"width\", 300, min = 100, max = 600)\nbox(\"seat\", (W, W, 20))\n"
@@ -141,6 +142,7 @@ fn apply_and_check_refuse_an_override_the_program_refuses() {
     const NARROW: &str = "W = param(\"width\", 300, min = 100, max = 600)\nN = param(\"count\", 2, whole = True)\nbox(\"seat\", (W, W, 20 * N))\n";
     let (mut app, mut bridge) = setup();
     let apply = |source: &str, overrides: Option<BTreeMap<String, f64>>| Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.into(),
         overrides,
@@ -210,6 +212,7 @@ fn part_piece_and_set_params_work_on_the_open_program() {
         .execute(
             &mut app,
             Request::ApplyProgram {
+                source_folder: None,
                 expected: None,
                 source: SOURCE.into(),
                 overrides: Some(BTreeMap::from([("height".into(), 400.)])),

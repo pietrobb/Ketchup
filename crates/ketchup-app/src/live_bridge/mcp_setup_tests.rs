@@ -754,6 +754,35 @@ fn a_program_of_a_folder_deleted_outside_the_home_folder_is_replaced() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Review 2026-11-08 SEC-243: with `HOME=/` every folder was the home folder,
+/// so a program below a share not mounted counted as deleted and the
+/// installer replaced its entry.
+#[cfg(unix)]
+#[test]
+fn a_home_that_is_the_root_of_the_system_trusts_no_missing_folder() {
+    let home = temporary_home("home-root");
+    let environment = Environment {
+        home: PathBuf::from("/"),
+        claude_config_dir: Some(home.clone()),
+        ..clean_profile(&home)
+    };
+    let this = std::env::current_exe().unwrap();
+    let program = home
+        .parent()
+        .unwrap()
+        .join(format!("ketchup-share-{}", std::process::id()))
+        .join("bin")
+        .join("ketchup");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config =
+        serde_json::json!({"mcpServers": {"ketchup": {"command": program, "args": ["--mcp"]}}})
+            .to_string();
+    std::fs::write(&file, &config).unwrap();
+    environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), config);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// Review 2026-11-04 r19 P3: an entry starting this Kečup but turned off
 /// showed as set up, and so did one that is a network server. Neither starts
 /// a program; the installer keeps them, Connect turns them on.

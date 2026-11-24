@@ -5,18 +5,20 @@ use ketchup_application::evaluation::{
     EvaluationReport, EvidenceStatus, ExactEvaluationProgress, ExactEvaluationSelection,
     ExactEvaluationTask, ExactSource, ProducerKey, exact_worker_candidates,
 };
-use ketchup_application::fea_workflow::{
-    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewError,
-    FeaReviewSummary, FeaReviewWorkflow, FeaStudyRequest,
-};
+use ketchup_application::fea_workflow::FeaReviewWorkflow;
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
+use ketchup_application::thermal_workflow::ThermalReviewWorkflow;
+use ketchup_application::validation_rules::ValidationRules;
 use ketchup_model::tolerance::limits;
 use ketchup_rejection::{Reason, dropped};
+mod cam_input;
+mod fea_input;
 mod model_tools;
 mod production;
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
+mod program_check;
+mod thermal_input;
 use ketchup_application::batch_task::{
     OccurrenceBatchError, OccurrenceBatchOperation, OccurrenceBatchState, OccurrenceBatchTask,
 };
@@ -25,11 +27,12 @@ use ketchup_application::program_isolation::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_application::validation::{ASSISTANT_VALIDATOR_IDS, assistant_validator_catalog};
 use ketchup_application::{
     AssistantValidationSelection, DocumentSession, RuleProgramApplyError, SaveOptions,
-    SessionError, SessionSettings, verify_rule_program_exact,
+    SessionError, SessionSettings, exact_check_past_deadline, verify_rule_program_exact,
 };
 use ketchup_assistant::sidecar::AssistantCadEditProgram;
 use ketchup_model::cam::{
-    CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId, CamPostprocessorDialect,
+    CamContourSide, CamFixture, CamOperation, CamPath2d, CamPathSegment2d, CamPlanId,
+    CamPostprocessorDialect,
 };
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, InstancePath, OccurrenceId, Snapshot,
@@ -64,6 +67,7 @@ const METHODS: &[&str] = &[
     "edit_context",
     "query",
     "detail",
+    "surface_control_net",
     "workset_create",
     "workset_status",
     "batch_job_start",
@@ -79,6 +83,8 @@ const METHODS: &[&str] = &[
     "cam_preview",
     "cam_export",
     "fea_review",
+    "thermal_review",
+    "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
     "pdm_catalog",
@@ -104,6 +110,8 @@ const GUARDED_METHODS: &[&str] = &[
     "cam_preview",
     "cam_export",
     "fea_review",
+    "thermal_review",
+    "fea_assembly_review",
     "pdm_release_create",
     "pdm_release_open",
     "pdm_catalog",
@@ -162,42 +170,6 @@ impl Error {
         Self::caused_by("invalid_params", error)
     }
 }
-impl From<CamReviewError> for Error {
-    fn from(error: CamReviewError) -> Self {
-        let code = match &error {
-            CamReviewError::PlanMissing => "cam_plan_missing",
-            CamReviewError::WorkerUnavailable => "exact_worker_unavailable",
-            CamReviewError::Planning(_) => "cam_planning_rejected",
-            CamReviewError::Simulation(_) => "cam_simulation_rejected",
-            CamReviewError::Postprocessing(_) => "cam_postprocessing_rejected",
-            CamReviewError::ReviewLimit => "cam_review_limit",
-            CamReviewError::InvalidToken => "cam_review_token_invalid",
-            CamReviewError::StaleReview => "stale_state",
-            CamReviewError::SubstitutedEvidence => "cam_review_substituted",
-            CamReviewError::ConfirmationRequired => "confirmation_required",
-            CamReviewError::InvalidPath => "invalid_path",
-            CamReviewError::FileExists => "file_exists",
-            CamReviewError::Write(_) => "io_error",
-        };
-        Self::caused_by(code, &error)
-    }
-}
-
-impl From<FeaReviewError> for Error {
-    fn from(error: FeaReviewError) -> Self {
-        let code = match &error {
-            FeaReviewError::ConfirmationRequired => "confirmation_required",
-            FeaReviewError::WorkerUnavailable => "exact_worker_unavailable",
-            FeaReviewError::InvalidRefinementLevels => "fea_refinement_invalid",
-            FeaReviewError::InvalidTarget(_) => "fea_target_rejected",
-            FeaReviewError::Meshing(_) => "fea_meshing_rejected",
-            FeaReviewError::Setup(_) => "fea_setup_rejected",
-            FeaReviewError::MeshNotRefined | FeaReviewError::Solve(_) => "fea_solve_rejected",
-        };
-        Self::caused_by(code, &error)
-    }
-}
-
 impl From<PdmWorkflowError> for Error {
     fn from(error: PdmWorkflowError) -> Self {
         let code = match &error {
@@ -386,105 +358,6 @@ struct Request {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum CamOperationInput {
-    Face {
-        id: u64,
-        minimum_mm: [f64; 2],
-        maximum_mm: [f64; 2],
-        target_z_mm: f64,
-    },
-    Pocket {
-        id: u64,
-        minimum_mm: [f64; 2],
-        maximum_mm: [f64; 2],
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-    },
-    Contour {
-        id: u64,
-        center_path: CamPathInput,
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-        applied_radial_allowance_mm: f64,
-    },
-    Drill {
-        id: u64,
-        points_mm: Vec<[f64; 2]>,
-        top_z_mm: f64,
-        bottom_z_mm: f64,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CamPathInput {
-    start_mm: [f64; 2],
-    segments: Vec<CamPathSegmentInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum CamPathSegmentInput {
-    Line {
-        to_mm: [f64; 2],
-    },
-    Arc {
-        to_mm: [f64; 2],
-        center_mm: [f64; 2],
-        clockwise: bool,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CamFixtureInput {
-    id: u64,
-    minimum_mm: [f64; 3],
-    maximum_mm: [f64; 3],
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaReviewInput {
-    definition_id: u64,
-    feature_id: u64,
-    occurrence_id: u64,
-    case_id: String,
-    material: FeaMaterialInput,
-    constrained_face_ordinals: Vec<u32>,
-    face_tractions: Vec<FeaFaceTractionInput>,
-    mesh_levels: Vec<ExactVolumeMeshWireOptions>,
-    solve_settings: FeaSolveSettingsInput,
-    confirmed: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaMaterialInput {
-    id: u64,
-    youngs_modulus_mpa: f64,
-    poisson_ratio: f64,
-    yield_strength_mpa: Option<f64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaFaceTractionInput {
-    face_ordinal: u32,
-    traction_local_n_per_mm2: [f64; 3],
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeaSolveSettingsInput {
-    maximum_nodes: usize,
-    relative_pivot_tolerance: f64,
-    maximum_small_deformation_ratio: f64,
-    convergence_relative_tolerance: f64,
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PdmDependencyInput {
     logical_path: String,
@@ -497,79 +370,6 @@ struct PdmAuditInput {
     actor: String,
     created_unix_ms: u64,
     note: String,
-}
-
-impl From<CamOperationInput> for CamOperation {
-    fn from(operation: CamOperationInput) -> Self {
-        match operation {
-            CamOperationInput::Face {
-                id,
-                minimum_mm,
-                maximum_mm,
-                target_z_mm,
-            } => Self::Face {
-                id,
-                minimum_mm,
-                maximum_mm,
-                target_z_mm,
-            },
-            CamOperationInput::Pocket {
-                id,
-                minimum_mm,
-                maximum_mm,
-                top_z_mm,
-                bottom_z_mm,
-            } => Self::Pocket {
-                id,
-                minimum_mm,
-                maximum_mm,
-                top_z_mm,
-                bottom_z_mm,
-            },
-            CamOperationInput::Contour {
-                id,
-                center_path,
-                top_z_mm,
-                bottom_z_mm,
-                applied_radial_allowance_mm,
-            } => Self::Contour {
-                id,
-                center_path: CamPath2d {
-                    start_mm: center_path.start_mm,
-                    segments: center_path
-                        .segments
-                        .into_iter()
-                        .map(|segment| match segment {
-                            CamPathSegmentInput::Line { to_mm } => CamPathSegment2d::Line { to_mm },
-                            CamPathSegmentInput::Arc {
-                                to_mm,
-                                center_mm,
-                                clockwise,
-                            } => CamPathSegment2d::Arc {
-                                to_mm,
-                                center_mm,
-                                clockwise,
-                            },
-                        })
-                        .collect(),
-                },
-                top_z_mm,
-                bottom_z_mm,
-                applied_radial_allowance_mm,
-            },
-            CamOperationInput::Drill {
-                id,
-                points_mm,
-                top_z_mm,
-                bottom_z_mm,
-            } => Self::Drill {
-                id,
-                points_mm,
-                top_z_mm,
-                bottom_z_mm,
-            },
-        }
-    }
 }
 
 struct BatchJob {
@@ -617,6 +417,7 @@ pub struct Server {
     next_verify_job: u64,
     cam_reviews: CamReviewWorkflow,
     fea_reviews: FeaReviewWorkflow,
+    thermal_reviews: ThermalReviewWorkflow,
     pdm: LocalPdmWorkflow,
     compact_result: bool,
     /// One deadline for each program request: evaluation, report, exact
@@ -642,7 +443,8 @@ impl Server {
             verify_job_key: RandomState::new(),
             next_verify_job: 1,
             cam_reviews: CamReviewWorkflow::new(worker_path.clone()),
-            fea_reviews: FeaReviewWorkflow::new(worker_path),
+            fea_reviews: FeaReviewWorkflow::new(worker_path.clone()),
+            thermal_reviews: ThermalReviewWorkflow::new(worker_path),
             pdm: LocalPdmWorkflow::new(),
             compact_result: false,
             check_time: PROGRAM_CHECK_TIME,
@@ -650,41 +452,6 @@ impl Server {
     }
     fn batch_job_handle(&self, id: u64) -> String {
         format!("batch-{id:016x}-{:016x}", self.batch_job_key.hash_one(id))
-    }
-
-    /// Builds the evaluated program in a scratch document, leaving the
-    /// session's document untouched, and settles on its exact solids what the
-    /// boxes cannot, exactly as `program_apply` and the window do, by the
-    /// deadline of the whole check.
-    fn exact_program_check(
-        &self,
-        source: &ketchup_model::document::RuleProgramSource,
-        evaluated: &ketchup_program::Evaluated,
-        report: &mut ketchup_program::Report,
-        deadline: CheckDeadline,
-    ) -> Option<Value> {
-        if ketchup_program::exact_candidates(&evaluated.model).is_empty() {
-            return None;
-        }
-        let mut scratch = DocumentSession::new(self.settings.clone());
-        let snapshot =
-            match scratch.replace_with_rule_model(evaluated.reference_model(), source.clone()) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    let reason = Error::from(error).code;
-                    return Some(json!({"state": "incomplete",
-                    "not_evaluated": [{"reason": "program_build_failed", "detail": reason}]}));
-                }
-            };
-        verify_rule_program_exact(
-            &snapshot,
-            &evaluated.model,
-            report,
-            scratch.container_data(),
-            self.settings.exact_worker_path.clone(),
-            deadline,
-            Arc::new(AtomicBool::new(false)),
-        )
     }
 
     fn verify_job_handle(&self, id: u64) -> String {
@@ -959,21 +726,9 @@ impl Server {
             ),
             "cam_preview" => (&["plan_id", "operations", "fixtures", "dialect"], true),
             "cam_export" => (&["review_token", "path", "confirmed"], true),
-            "fea_review" => (
-                &[
-                    "definition_id",
-                    "feature_id",
-                    "occurrence_id",
-                    "case_id",
-                    "material",
-                    "constrained_face_ordinals",
-                    "face_tractions",
-                    "mesh_levels",
-                    "solve_settings",
-                    "confirmed",
-                ],
-                true,
-            ),
+            "fea_review" => (fea_input::REVIEW_FIELDS, true),
+            "fea_assembly_review" => (fea_input::ASSEMBLY_REVIEW_FIELDS, true),
+            "thermal_review" => (thermal_input::FIELDS, true),
             "pdm_release_create" => (
                 &[
                     "repository",
@@ -1123,7 +878,7 @@ impl Server {
                 Ok(result)
             }
             "cam_preview" => {
-                let request = cam_review_request(p)?;
+                let request = cam_input::cam_review_request(p)?;
                 let snapshot = self.session.snapshot();
                 let mutation_epoch = self.session.mutation_epoch();
                 let cancelled = AtomicBool::new(false);
@@ -1137,26 +892,46 @@ impl Server {
                 let mutation_epoch = self.session.mutation_epoch();
                 let token = string(p, "review_token")?;
                 let path = Path::new(string(p, "path")?);
-                let confirmed = boolean(p, "confirmed", false)?;
                 let cancelled = AtomicBool::new(false);
                 let review = self.cam_reviews.export(
                     &snapshot,
                     mutation_epoch,
                     token,
                     path,
-                    confirmed,
+                    boolean(p, "confirmed", false)?,
+                    None,
                     &cancelled,
                 )?;
                 Ok(json!({"exported":true,"path":path,"review":cam_review_value(&review)}))
             }
             "fea_review" => {
-                let (request, confirmed) = fea_review_request(p)?;
+                let (request, confirmed) = fea_input::review_request(p)?;
                 let snapshot = self.session.snapshot();
                 let cancelled = AtomicBool::new(false);
                 let review = self
                     .fea_reviews
                     .review(&snapshot, &request, confirmed, &cancelled)?;
-                Ok(fea_review_value(&review))
+                Ok(fea_input::review_value(&review))
+            }
+            "fea_assembly_review" => {
+                let (request, confirmed) = fea_input::assembly_review_request(p)?;
+                let snapshot = self.session.snapshot();
+                let cancelled = AtomicBool::new(false);
+                let review = self
+                    .fea_reviews
+                    .review_assembly(&snapshot, &request, confirmed, &cancelled)?;
+                Ok(fea_input::review_value(&review))
+            }
+            "thermal_review" => {
+                let (request, confirmed) = thermal_input::thermal_review_request(p)?;
+                let review = self.thermal_reviews.review(
+                    &self.session.snapshot(),
+                    &request,
+                    ValidationRules::library(),
+                    confirmed,
+                    &AtomicBool::new(false),
+                )?;
+                Ok(thermal_input::thermal_review_value(&review))
             }
             "pdm_release_create" => {
                 let current = PdmDocumentState::observed(
@@ -1434,143 +1209,6 @@ fn ids(p: &Map<String, Value>, key: &str, empty: bool) -> Result<Vec<u64>> {
     }
     Ok(ids)
 }
-fn cam_review_request(p: &Map<String, Value>) -> Result<CamReviewRequest> {
-    let operations: Vec<CamOperationInput> = serde_json::from_value(
-        p.get("operations")
-            .cloned()
-            .ok_or_else(|| Error::invalid("missing operations"))?,
-    )
-    .map_err(|error| Error::invalid_because(&error))?;
-    let fixtures: Vec<CamFixtureInput> = serde_json::from_value(
-        p.get("fixtures")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )
-    .map_err(|error| Error::invalid_because(&error))?;
-    let dialect = match string(p, "dialect")? {
-        "iso_metric_gcode" => CamPostprocessorDialect::IsoMetricGCode,
-        "controller_neutral_json" => CamPostprocessorDialect::ControllerNeutralJson,
-        _ => return Err(Error::invalid("unsupported CAM postprocessor dialect")),
-    };
-    Ok(CamReviewRequest {
-        plan_id: CamPlanId(uint(p, "plan_id")?),
-        operations: operations.into_iter().map(Into::into).collect(),
-        fixtures: fixtures
-            .into_iter()
-            .map(|fixture| CamFixture {
-                id: fixture.id,
-                minimum_mm: fixture.minimum_mm,
-                maximum_mm: fixture.maximum_mm,
-            })
-            .collect(),
-        dialect,
-    })
-}
-
-fn fea_review_request(p: &Map<String, Value>) -> Result<(FeaStudyRequest, bool)> {
-    let mut payload = Map::new();
-    for field in [
-        "definition_id",
-        "feature_id",
-        "occurrence_id",
-        "case_id",
-        "material",
-        "constrained_face_ordinals",
-        "face_tractions",
-        "mesh_levels",
-        "solve_settings",
-        "confirmed",
-    ] {
-        payload.insert(
-            field.to_owned(),
-            p.get(field)
-                .cloned()
-                .ok_or_else(|| Error::invalid(format!("missing {field}")))?,
-        );
-    }
-    let input: FeaReviewInput = serde_json::from_value(Value::Object(payload))
-        .map_err(|error| Error::invalid_because(&error))?;
-    if input.definition_id == 0
-        || input.feature_id == 0
-        || input.occurrence_id == 0
-        || input.material.id == 0
-        || input.case_id.trim().is_empty()
-        || input.case_id.len() > 128
-    {
-        return Err(Error::invalid(
-            "FEA target, material and case IDs must be bounded and nonzero",
-        ));
-    }
-    Ok((
-        FeaStudyRequest {
-            definition_id: DefinitionId(input.definition_id),
-            feature_id: FeatureId(input.feature_id),
-            setup: ExactFeaSetup {
-                case_id: input.case_id,
-                instance_path: InstancePath::root(OccurrenceId(input.occurrence_id)),
-                material: FeaMaterial {
-                    id: input.material.id,
-                    youngs_modulus_mpa: input.material.youngs_modulus_mpa,
-                    poisson_ratio: input.material.poisson_ratio,
-                    yield_strength_mpa: input.material.yield_strength_mpa,
-                },
-                constrained_face_ordinals: input.constrained_face_ordinals,
-                face_tractions: input
-                    .face_tractions
-                    .into_iter()
-                    .map(|traction| ExactFeaFaceTraction {
-                        face_ordinal: traction.face_ordinal,
-                        traction_local_n_per_mm2: traction.traction_local_n_per_mm2,
-                    })
-                    .collect(),
-            },
-            mesh_levels: input.mesh_levels,
-            solve_settings: FeaSolveSettings {
-                maximum_nodes: input.solve_settings.maximum_nodes,
-                relative_pivot_tolerance: input.solve_settings.relative_pivot_tolerance,
-                maximum_small_deformation_ratio: input
-                    .solve_settings
-                    .maximum_small_deformation_ratio,
-                convergence_relative_tolerance: input.solve_settings.convergence_relative_tolerance,
-            },
-        },
-        input.confirmed,
-    ))
-}
-
-fn fea_review_value(review: &FeaReviewSummary) -> Value {
-    json!({
-        "review_digest":review.review_digest,
-        "source":{"document_id":review.document_id,"revision":review.revision,"canonical_digest":review.canonical_digest},
-        "graph_digest":review.graph_digest,
-        "case_id":review.case_id,
-        "units":review.units,
-        "solver_version":review.solver_version,
-        "levels":review.levels.iter().map(|level| json!({
-            "node_count":level.node_count,
-            "element_count":level.element_count,
-            "mesh_fingerprint":level.mesh_fingerprint,
-            "relative_volume_error":level.relative_volume_error,
-            "minimum_quality":level.minimum_quality,
-            "maximum_edge_ratio":level.maximum_edge_ratio,
-            "maximum_displacement_mm":level.maximum_displacement_mm,
-            "maximum_von_mises_stress_mpa":level.maximum_von_mises_stress_mpa,
-            "maximum_free_dof_residual_n":level.maximum_free_dof_residual_n,
-            "force_balance_n":level.force_balance_n,
-            "within_declared_limits":level.within_declared_limits,
-        })).collect::<Vec<_>>(),
-        "convergence":{
-            "final_displacement_relative_change":review.final_displacement_relative_change,
-            "final_energy_relative_change":review.final_energy_relative_change,
-            "required_relative_tolerance":review.required_relative_tolerance,
-            "converged":review.converged,
-        },
-        "all_levels_within_declared_limits":review.all_levels_within_declared_limits,
-        "excluded_physics":review.excluded_physics,
-        "document_mutated":false,
-    })
-}
-
 fn pdm_create_request(p: &Map<String, Value>) -> Result<PdmCreateReleaseRequest> {
     let dependencies: Vec<PdmDependencyInput> = serde_json::from_value(
         p.get("dependencies")
@@ -1696,7 +1334,7 @@ fn cam_review_value(review: &CamReviewSummary) -> Value {
         "toolpath_digest":review.toolpath_digest,
         "simulation_fingerprint":review.simulation_fingerprint,
         "content_digest":review.content_digest,
-        "dialect":match review.dialect { CamPostprocessorDialect::IsoMetricGCode => "iso_metric_gcode", CamPostprocessorDialect::ControllerNeutralJson => "controller_neutral_json" },
+        "dialect":review.dialect.id(),
         "units":review.units,
         "work_offset":review.work_offset,
         "tool_number":review.tool_number,
@@ -1852,6 +1490,9 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod cam_faces;
+    mod fea_assembly;
+    mod thermal;
 
     #[test]
     fn underlay_binding_rejection_keeps_its_structured_repair_and_cause() {
@@ -1900,7 +1541,7 @@ mod tests {
     fn perf_a_program_check_ends_soon_after_its_deadline() {
         let (elapsed, total, checked) = check_past_one_deadline();
         assert!(
-            elapsed < total + std::time::Duration::from_secs(1),
+            elapsed < total + ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
             "{elapsed:?} for a deadline of {total:?}: {checked}"
         );
         assert_stopped_at_time_limit(&checked);
@@ -2352,7 +1993,7 @@ mod tests {
             assert_eq!(started["result"]["state"], "running", "{started}");
         }
 
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
         while server.verify_jobs.iter().any(|job| {
             matches!(&job.state, VerifyJobState::Running(task)
                 if !task.finished.load(std::sync::atomic::Ordering::Acquire))
@@ -2853,6 +2494,7 @@ mod tests {
                 spindle_rpm: 10_000,
                 feed_mm_per_min: 600.0,
                 plunge_mm_per_min: 200.0,
+                point_angle_deg: None,
             },
             CamSetup {
                 work_offset: CamWorkOffset::G54,
@@ -2871,12 +2513,8 @@ mod tests {
             solid,
         )
         .unwrap();
-        let proposal = server
-            .session
-            .plan_commands(CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(
-                plan,
-            )]))
-            .unwrap();
+        let batch = CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(plan)]);
+        let proposal = server.session.plan_commands(batch).unwrap();
         server.session.apply_proposal(&proposal).unwrap();
         let state = server.state();
         let preview_params = || {
@@ -2926,8 +2564,8 @@ mod tests {
         );
         assert_eq!(exported["result"]["exported"], true, "{exported}");
         let artifact = std::fs::read_to_string(&path).unwrap();
-        assert!(artifact.starts_with("%\n;KETCHUP_CAM_POSTPROCESSOR_V1\n"));
-        assert!(artifact.contains("\nG21\nG90\nG17\nG54\nT1 M6\nS10000 M3\n"));
+        assert!(artifact.starts_with("%\n(KETCHUP CAM POSTPROCESSOR V1)\n"));
+        assert!(artifact.contains("G40 G49 G80 G90 G94\nG54\nT1 M6\nS10000 M3\nG0 G43 H1 Z"));
         assert_eq!(server.state(), state);
 
         let second = request(&mut server, "cam_preview", preview_params());
@@ -2962,7 +2600,10 @@ mod tests {
                 "fixtures":[],"dialect":"iso_metric_gcode"
             }),
         );
-        assert_eq!(gouge["error"]["code"], "cam_postprocessing_rejected");
+        assert_eq!(
+            gouge["error"]["code"], "cam_postprocessing_rejected",
+            "{gouge}"
+        );
         let malformed = request(
             &mut server,
             "cam_preview",

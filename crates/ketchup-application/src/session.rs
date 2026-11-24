@@ -7,7 +7,8 @@ use crate::{
 use ketchup_assistant::sidecar::{AssistantCadEditProgram, AssistantRejectionDiagnostic};
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DocumentStore, OccurrenceId, Proposal,
-    ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot, VerifiedProposalCommit,
+    ProposalBudget, ProposalCommitError, ProposalContext, ProposalPrepareError, Snapshot,
+    VerifiedProposalCommit,
 };
 use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_model::persistence::{self, ContainerData};
@@ -516,6 +517,44 @@ impl DocumentSession {
         self.update_incremental_exact_plan(&before);
         self.rebind();
         Ok(self.snapshot())
+    }
+
+    /// Builds the model of a program already evaluated into this session's
+    /// still empty document, bound to `source`, for a scratch document a
+    /// program check measures and throws away. Unlike
+    /// [`Self::replace_with_rule_model`] it builds the model once: no proposal
+    /// trial builds, no second session to publish from, no Undo step and no
+    /// recovery checkpoint. It keeps the gate's size limit
+    /// ([`ProposalBudget::RULE_PROGRAM`]). `stop` is asked between the
+    /// commands; once it answers yes the build ends with `Ok(None)`.
+    ///
+    /// # Errors
+    /// The model is over the size limit or cannot be built as a document.
+    pub fn build_rule_model_scratch(
+        &mut self,
+        model: &ketchup_program::ProgramModel,
+        source: ketchup_model::document::RuleProgramSource,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<Snapshot>, crate::RuleProgramApplyError> {
+        if stop() {
+            return Ok(None);
+        }
+        let batch = crate::rule_groups::plan_rule_model_batch(&self.document, model)?;
+        self.document
+            .validate_batch_budget(&batch, ProposalBudget::RULE_PROGRAM)
+            .map_err(SessionError::Prepare)?;
+        if self
+            .document
+            .apply_batch_until(&batch, stop)
+            .map_err(SessionError::Canonical)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.document
+            .bind_rule_program(source)
+            .map_err(SessionError::Canonical)?;
+        Ok(Some(self.snapshot()))
     }
 
     /// Publishes a canonical program edit and its source in one undoable transaction.

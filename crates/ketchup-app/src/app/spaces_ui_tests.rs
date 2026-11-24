@@ -1,7 +1,7 @@
 use super::spaces_ui::SpaceRow;
 use crate::*;
 use egui::accesskit::Role;
-use egui_kittest::kittest::{Queryable, by};
+use egui_kittest::kittest::{NodeT as _, Queryable, by};
 use ketchup_assistant::sidecar::{
     AssistantCadEditOperation, AssistantClearanceOwner, AssistantClearanceSeverity,
 };
@@ -419,4 +419,46 @@ fn the_picked_row_is_edited_by_number() {
         harness.state().document.current().canonical_digest(),
         digest
     );
+}
+
+/// Review 2026-11-08 UI-250: the Checks count and the AI dot were only painted,
+/// so a screen reader heard "Checks" and "AI" alone; a tab the keyboard was on
+/// looked like any other.
+#[test]
+fn the_dock_tabs_say_what_their_badge_shows_and_open_from_the_keyboard() {
+    let mut harness = harness();
+    assert!(!clearance_findings(&mut harness).is_empty());
+    let text = |harness: &Shell, key: &str| harness.state().catalog.text(key);
+    let description = |harness: &Shell, key: &str| {
+        harness
+            .get_by_label(&text(harness, key))
+            .accesskit_node()
+            .description()
+    };
+    let count = harness
+        .state()
+        .validator_report()
+        .expect("a report")
+        .issue_count;
+    assert!(count > 0);
+    assert_eq!(
+        description(&harness, "dock-tab-checks"),
+        Some(harness.state().catalog.format(
+            "dock-tab-checks-issues",
+            &BTreeMap::from([("count", count.to_string())]),
+        ))
+    );
+    assert_eq!(
+        description(&harness, "dock-tab-ai"),
+        Some(text(&harness, "dock-tab-ai-not-connected"))
+    );
+    assert_eq!(description(&harness, "dock-tab-layers"), None);
+
+    harness
+        .get_by_label(&text(&harness, "dock-tab-views"))
+        .focus();
+    harness.run_steps(1);
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(1);
+    assert_eq!(harness.state().dock_tab(), DockTab::Views);
 }

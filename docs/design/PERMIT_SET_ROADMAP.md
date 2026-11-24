@@ -183,6 +183,17 @@ already writes DXF 2007 and keeps code pages, so share its encoding.
   - The title block is a block with attributes.
   - Done when the tiny-house set opens in AutoCAD or BricsCAD (checked by hand once) and in
     `ezdxf` with zero audit errors.
+  - **Status:** written (`ketchup_dwg::sheet`, `ketchup_manufacturing::sheet_cad`).
+    - Plans, sections and elevations are in model space at 1:1. A plan the sheet turns lies
+      unturned and its viewport turns it. A plan's north arrow and section marks go with it
+      on `MARK`; the revision table stays on paper beside the title block.
+    - One layout per sheet, with viewports at the set's scale.
+    - Test sheets pass the `ezdxf` audit with zero errors and render like the PDF.
+    - Still open:
+      - the title block as a block with attributes;
+      - shop drawings and cutting plans in model space (they are on paper only);
+      - S-JTSK placement from the site (WP-4.1);
+      - the manual check in AutoCAD or BricsCAD.
 - **WP-2.2 (M). Layers by content.**
   - Each layer stands for what it holds, not for a pen: walls cut, walls beyond, openings,
     hatching per material, dimensions, texts, levels, rooms, axes, underlay and so on.
@@ -191,6 +202,14 @@ already writes DXF 2007 and keeps code pages, so share its encoding.
     ships in the library.
   - Write the LTYPE table (DASHED, CENTER, HIDDEN, PHANTOM) with `$LTSCALE`, `$PSLTSCALE` and
     `$MSLTSCALE` set, so that dashes look right in model space and in layouts.
+  - **Status:** content layers written.
+    - The fixed default names are `CUT`, `CUT-FILL`, `VISIBLE`, `UNDERLAY`, `ON-CUT`,
+      `DIMENSION`, `LEVEL`, `MARK`, `ANNOTATION`, `VIEW-TITLE`, `SHEET` and `SHEET-TEXT`.
+    - Each entity keeps its pen as a lineweight. DASHED and CENTER are written, with
+      `$PSLTSCALE` on.
+    - Still open:
+      - the mapping file for office or ISO 13567 names;
+      - a split of `VISIBLE` by building element, which needs the model's tags on the marks.
 - **WP-2.3 (M). HATCH entities.**
   - Every hatch of WP-1.2 becomes a HATCH.
   - The library maps each material to a standard pattern name with its definition: ANSI31,
@@ -301,7 +320,7 @@ drawn, and they must survive the next regeneration.
 
 ## Phase 6. The submission package
 
-- **WP-6.1 (M). File > Export > Permit set.** In one step it writes:
+- **WP-6.1 (M). A permit-set export in the File menu.** In one step it writes:
   - every sheet as PDF/A plus the combined set;
   - the drawing register;
   - the reports of phase 5;

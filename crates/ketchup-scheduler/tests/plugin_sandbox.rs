@@ -297,7 +297,7 @@ fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
     });
     // Cancel only once the plugin has stopped reading, so the host is blocked
     // on its bounded response write rather than on process startup.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !stopped_reading.exists() {
         assert!(
             Instant::now() < deadline,

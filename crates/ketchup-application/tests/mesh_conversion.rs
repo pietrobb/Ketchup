@@ -40,6 +40,7 @@ fn prism(profile: &[[f64; 2]], height: f64) -> MeshBodySpec {
         triangles.push([index as u32, (count + next) as u32, (count + index) as u32]);
     }
     MeshBodySpec {
+        look: None,
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm,
         triangles,
@@ -154,6 +155,7 @@ fn dense_cylinder(side_count: usize, ring_count: usize, radius: f64, height: f64
         ]);
     }
     MeshBodySpec {
+        look: None,
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm,
         triangles,

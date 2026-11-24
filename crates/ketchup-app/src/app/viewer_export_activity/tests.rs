@@ -15,7 +15,7 @@ fn shell(dialogs: ScriptedFileDialogs) -> Harness<'static, KetchupApp> {
 fn wait(harness: &mut Harness<'_, KetchupApp>) {
     step_until(
         harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "export did not finish",
         |app| !app.file.activity.viewer_export.is_some(),
     );

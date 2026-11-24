@@ -5,12 +5,27 @@ use ketchup_assistant::sidecar::{
     AssistantCadEditProgram, AssistantCadEntitySelector, AssistantCadFeatureReference,
     AssistantCadLoftContinuity, AssistantCadLoftSection, AssistantCadPartFeature,
     AssistantCadProgramFeatureOutput, AssistantCadProgramFeatureReference, AssistantCadRotation,
-    AssistantCadShellDirection, AssistantCadSurfaceBodySource, AssistantHelixHandedness,
-    AssistantHelixParameters, AssistantPatternDirection, AssistantPrincipalPlane,
-    AssistantRejectionDiagnostic, AssistantRejectionPhase, AssistantSketchConstraint,
-    AssistantSketchEntity, AssistantSketchPointKind, AssistantSketchPointRef,
-    AssistantSketchProfileCopy, AssistantWorkplaneSpec,
+    AssistantCadShellDirection, AssistantCadSurfaceBodySource, AssistantCadSurfaceSeam,
+    AssistantHelixHandedness, AssistantHelixParameters, AssistantPatternDirection,
+    AssistantPrincipalPlane, AssistantRejectionDiagnostic, AssistantRejectionPhase,
+    AssistantSketchConstraint, AssistantSketchEntity, AssistantSketchPointKind,
+    AssistantSketchPointRef, AssistantSketchProfileCopy, AssistantWorkplaneSpec,
 };
+
+/// The field a refused CAD body feature names; each check names its field and
+/// rule instead of answering "CAD body feature is invalid" (R1120ac-EXA-902).
+fn refused_field(result: Result<(), AssistantRequestInvalid>) -> String {
+    let error = result.unwrap_err();
+    assert_eq!(error.subject(), "CAD body feature", "{error}");
+    assert!(
+        matches!(
+            error.problem(),
+            AssistantRequestProblem::Violates(_) | AssistantRequestProblem::ExceedsLimit(_)
+        ),
+        "{error}"
+    );
+    error.item_name().unwrap().to_owned()
+}
 
 #[test]
 fn shared_axis_two_points_matches_origin_direction_and_rejects_invalid_inputs() {
@@ -601,7 +616,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     *feature = AssistantCadPartFeature::Extrusion { distance_mm: 0.0 };
     assert_eq!(
         invalid_feature.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD part feature"))
+        Err(AssistantRequestInvalid::invalid("CAD part feature").at_operation(0))
     );
 
     let mut invalid_revolve = program;
@@ -618,7 +633,7 @@ fn cad_edit_part_contract_is_typed_bounded_and_round_trips() {
     };
     assert_eq!(
         invalid_revolve.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD part feature"))
+        Err(AssistantRequestInvalid::invalid("CAD part feature").at_operation(0))
     );
 }
 
@@ -833,7 +848,7 @@ fn cad_edit_append_boolean_contract_is_strict_bounded_and_host_id_assigned() {
     };
     assert_eq!(
         self_boolean.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD body feature"))
+        Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
     );
 }
 
@@ -878,7 +893,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
         };
         assert_eq!(
             invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -895,7 +910,7 @@ fn cad_edit_append_pocket_contract_is_strict_bounded_and_host_id_assigned() {
     };
     assert_eq!(
         same_input.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD body feature"))
+        Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
     );
 
     let injected_id = serde_json::json!({
@@ -961,7 +976,7 @@ fn cad_edit_append_planar_offset_contract_is_strict_bounded_and_host_id_assigned
     ] {
         assert_eq!(
             invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -1033,7 +1048,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
     };
     assert_eq!(
         same_input.validate(),
-        Err(AssistantRequestInvalid::invalid("CAD body feature"))
+        Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
     );
     for (profile_feature_id, path_feature_id) in [(0, 12), (11, 0)] {
         let zero_input = AssistantCadEditProgram {
@@ -1048,7 +1063,7 @@ fn cad_edit_append_sweep_contract_is_strict_and_host_id_assigned() {
         };
         assert_eq!(
             zero_input.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -1089,6 +1104,7 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
             feature: AssistantCadBodyFeature::Loft {
                 sections,
                 guide_feature_id: None,
+                rail_feature_id: None,
                 continuity: AssistantCadLoftContinuity::Position,
             },
         }],
@@ -1211,11 +1227,20 @@ fn cad_edit_append_loft_contract_is_strict_bounded_and_host_id_assigned() {
             },
         ],
     ];
-    for sections in invalid_sections {
-        assert_eq!(
-            program(sections).validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
-        );
+    let refused = [
+        "sections",
+        "sections",
+        "sections[0].profile_feature_id",
+        "sections[1].profile_feature_id",
+        "sections[1].elevation_mm",
+        "sections[1].elevation_mm",
+        "sections[1].elevation_mm",
+        "sections[1].elevation_mm",
+        "sections[1].elevation_mm",
+    ];
+    assert_eq!(invalid_sections.len(), refused.len());
+    for (sections, field) in invalid_sections.into_iter().zip(refused) {
+        assert_eq!(refused_field(program(sections).validate()), field);
     }
 
     for invalid in [
@@ -1405,7 +1430,7 @@ fn cad_edit_append_topology_shell_contract_is_strict_bounded_and_host_id_assigne
     ] {
         assert_eq!(
             invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            Err(AssistantRequestInvalid::invalid("CAD body feature").at_operation(0))
         );
     }
 
@@ -1496,16 +1521,22 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
             .validate(),
         Ok(())
     );
-    for radius_stations in [
-        serde_json::json!([
-            {"position": 0.75, "radius_mm": 2.5},
-            {"position": 0.5, "radius_mm": 1.0},
-            {"position": 1.0, "radius_mm": 1.5}
-        ]),
-        serde_json::json!([
-            {"position": 0.5, "radius_mm": 2.5},
-            {"position": 0.75, "radius_mm": 1.0}
-        ]),
+    for (radius_stations, field) in [
+        (
+            serde_json::json!([
+                {"position": 0.75, "radius_mm": 2.5},
+                {"position": 0.5, "radius_mm": 1.0},
+                {"position": 1.0, "radius_mm": 1.5}
+            ]),
+            "radius_stations[1].position",
+        ),
+        (
+            serde_json::json!([
+                {"position": 0.5, "radius_mm": 2.5},
+                {"position": 0.75, "radius_mm": 1.0}
+            ]),
+            "radius_stations",
+        ),
     ] {
         let invalid_profile = serde_json::json!({
             "operations": [{
@@ -1522,10 +1553,12 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
             }]
         });
         assert_eq!(
-            serde_json::from_value::<AssistantCadEditProgram>(invalid_profile)
-                .unwrap()
-                .validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
+            refused_field(
+                serde_json::from_value::<AssistantCadEditProgram>(invalid_profile)
+                    .unwrap()
+                    .validate()
+            ),
+            field
         );
     }
     assert_eq!(
@@ -1538,25 +1571,40 @@ fn cad_edit_append_topology_fillet_contract_is_strict_bounded_and_host_id_assign
         Ok(())
     );
 
-    for invalid in [
-        program(0, vec![reference_id.clone()], 1.5),
-        program(11, Vec::new(), 1.5),
-        program(11, vec![reference_id.clone(); 2], 1.5),
-        program(
-            11,
-            (0..65).map(|index| format!("{index:064x}")).collect(),
-            1.5,
+    for (invalid, field) in [
+        (
+            program(0, vec![reference_id.clone()], 1.5),
+            "target_feature_id",
         ),
-        program(11, vec!["short".to_owned()], 1.5),
-        program(11, vec!["z".repeat(64)], 1.5),
-        program(11, vec![reference_id.clone()], 0.009),
-        program(11, vec![reference_id.clone()], 100_000.1),
-        program(11, vec![reference_id.clone()], f64::NAN),
+        (program(11, Vec::new(), 1.5), "edge_reference_ids"),
+        (
+            program(11, vec![reference_id.clone(); 2], 1.5),
+            "edge_reference_ids",
+        ),
+        (
+            program(
+                11,
+                (0..65).map(|index| format!("{index:064x}")).collect(),
+                1.5,
+            ),
+            "edge_reference_ids",
+        ),
+        (
+            program(11, vec!["short".to_owned()], 1.5),
+            "edge_reference_ids",
+        ),
+        (program(11, vec!["z".repeat(64)], 1.5), "edge_reference_ids"),
+        (program(11, vec![reference_id.clone()], 0.009), "radius_mm"),
+        (
+            program(11, vec![reference_id.clone()], 100_000.1),
+            "radius_mm",
+        ),
+        (
+            program(11, vec![reference_id.clone()], f64::NAN),
+            "radius_mm",
+        ),
     ] {
-        assert_eq!(
-            invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
-        );
+        assert_eq!(refused_field(invalid.validate()), field);
     }
 
     for invalid in [
@@ -1692,28 +1740,46 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
         Ok(())
     );
 
-    for invalid in [
-        program(0, vec![reference_id.clone()], 1.5),
-        program(11, Vec::new(), 1.5),
-        program(11, vec![reference_id.clone(); 2], 1.5),
-        program(
-            11,
-            (0..65).map(|index| format!("{index:064x}")).collect(),
-            1.5,
+    for (invalid, field) in [
+        (
+            program(0, vec![reference_id.clone()], 1.5),
+            "target_feature_id",
         ),
-        program(11, vec!["short".to_owned()], 1.5),
-        program(11, vec!["z".repeat(64)], 1.5),
-        program(11, vec![reference_id.clone()], 0.009),
-        program(11, vec![reference_id.clone()], 100_000.1),
-        program(11, vec![reference_id.clone()], f64::NAN),
+        (program(11, Vec::new(), 1.5), "edge_reference_ids"),
+        (
+            program(11, vec![reference_id.clone(); 2], 1.5),
+            "edge_reference_ids",
+        ),
+        (
+            program(
+                11,
+                (0..65).map(|index| format!("{index:064x}")).collect(),
+                1.5,
+            ),
+            "edge_reference_ids",
+        ),
+        (
+            program(11, vec!["short".to_owned()], 1.5),
+            "edge_reference_ids",
+        ),
+        (program(11, vec!["z".repeat(64)], 1.5), "edge_reference_ids"),
+        (
+            program(11, vec![reference_id.clone()], 0.009),
+            "distance_mm",
+        ),
+        (
+            program(11, vec![reference_id.clone()], 100_000.1),
+            "distance_mm",
+        ),
+        (
+            program(11, vec![reference_id.clone()], f64::NAN),
+            "distance_mm",
+        ),
     ] {
-        assert_eq!(
-            invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature"))
-        );
+        assert_eq!(refused_field(invalid.validate()), field);
     }
 
-    for (index, invalid) in [
+    for (index, (invalid, field)) in [
         advanced_program(
             vec![reference_id.clone()],
             AssistantCadChamferMode::Symmetric,
@@ -1775,12 +1841,23 @@ fn cad_edit_append_topology_chamfer_contract_is_strict_bounded_and_host_id_assig
         ),
     ]
     .into_iter()
+    .zip([
+        "side_face_reference_ids",
+        "side_face_reference_ids",
+        "side_face_reference_ids",
+        "second_distance_mm",
+        "second_distance_mm",
+        "angle_degrees",
+        "angle_degrees",
+        "angle_degrees",
+        "side_face_reference_ids",
+    ])
     .enumerate()
     {
         assert_eq!(
-            invalid.validate(),
-            Err(AssistantRequestInvalid::invalid("CAD body feature")),
-            "invalid advanced Chamfer case {index} was accepted"
+            refused_field(invalid.validate()),
+            field,
+            "advanced Chamfer case {index}"
         );
     }
 
@@ -1969,7 +2046,7 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     assert_eq!(pattern(3, rows(2, [0.0, 40.0, 0.0])).validate(), Ok(()));
     assert_eq!(
         pattern(3, rows(2, [50.0, 0.0, 0.0])).validate(),
-        Err(AssistantRequestInvalid::invalid("CAD linear pattern")),
+        Err(AssistantRequestInvalid::invalid("CAD linear pattern").at_operation(0)),
         "rows parallel to the first direction would put copies on one line"
     );
 
@@ -1977,7 +2054,8 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     let copy_error = AssistantRequestInvalid::new(
         "CAD pattern copy count",
         AssistantRequestProblem::ExceedsLimit(512),
-    );
+    )
+    .at_operation(0);
     let copy_limit = Err(copy_error.clone());
     assert_eq!(pattern(513, None).validate(), Ok(()));
     assert_eq!(pattern(514, None).validate(), copy_limit);
@@ -2003,7 +2081,7 @@ fn linear_pattern_rows_keep_the_old_shape_and_name_the_copy_limit() {
     assert_eq!(circular(514).validate(), copy_limit);
     assert_eq!(
         copy_error.to_string(),
-        "assistant CAD pattern copy count exceeds its limit of 512"
+        "operation 0: assistant CAD pattern copy count exceeds its limit of 512"
     );
 }
 
@@ -2045,7 +2123,8 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         AssistantRequestProblem::Violates(
             "a hole is either depth_mm deep or through the part: give exactly one of them",
         ),
-    ));
+    )
+    .at_operation(0));
     assert_eq!(with(|op| op["through"] = true.into()), one_of);
     assert_eq!(
         with(|op| {
@@ -2066,7 +2145,8 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         AssistantRequestProblem::Violates(
             "a thread needs a size and a positive depth_mm no deeper than the hole",
         ),
-    ));
+    )
+    .at_operation(0));
     assert_eq!(
         with(|op| op["thread"] = serde_json::json!({"size": "M8", "depth_mm": 9.0})),
         thread
@@ -2080,7 +2160,8 @@ fn drill_holes_takes_a_depth_or_through_and_at_most_the_part_hole_limit() {
         Err(AssistantRequestInvalid::new(
             "part hole count",
             AssistantRequestProblem::ExceedsLimit(128),
-        ))
+        )
+        .at_operation(0))
     );
 }
 
@@ -2367,4 +2448,131 @@ fn assistant_rejection_diagnostic_rejects_unstable_codes_and_unbounded_text() {
         .validate()
         .is_err()
     );
+}
+
+#[test]
+fn surface_feature_refusals_name_their_field_and_rule() {
+    let program = |feature| AssistantCadEditProgram {
+        operations: vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: 7.into(),
+            name: "Surface".into(),
+            feature,
+        }],
+    };
+    let seam = |id: u64| AssistantCadSurfaceSeam {
+        surface_feature_id: id.into(),
+        continuity: AssistantCadLoftContinuity::Tangent,
+    };
+    let control_point = |offset_mm, weight, keep| AssistantCadBodyFeature::SurfaceBody {
+        source: AssistantCadSurfaceBodySource::ControlPoint {
+            target_feature_id: 11.into(),
+            u_index: 1,
+            v_index: 1,
+            from_mm: [0.0; 3],
+            offset_mm,
+            weight,
+            keep,
+        },
+    };
+    assert_eq!(
+        program(control_point([0.0, 0.0, 1.0], None, vec![seam(12)])).validate(),
+        Ok(())
+    );
+    for (feature, field, rule) in [
+        (
+            control_point([0.0, 0.0, 1.0], Some(0.0), Vec::new()),
+            "weight",
+            "between 0.000001 and 1000000",
+        ),
+        // Unbounded weights were taken (review 2026-11-20 ac P3).
+        (
+            control_point([0.0, 0.0, 1.0], Some(f64::MAX), Vec::new()),
+            "weight",
+            "between 0.000001 and 1000000",
+        ),
+        (
+            control_point([0.0; 3], None, Vec::new()),
+            "offset_mm",
+            "changes nothing",
+        ),
+        (
+            control_point([0.0, 0.0, 1.0], None, vec![seam(11)]),
+            "keep[0]",
+            "with itself",
+        ),
+        (
+            control_point([0.0, 0.0, 1.0], None, vec![seam(12), seam(12)]),
+            "keep[1]",
+            "already kept",
+        ),
+        (
+            AssistantCadBodyFeature::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Blend {
+                    first_feature_id: 11.into(),
+                    second_feature_id: 11.into(),
+                    first_continuity: AssistantCadLoftContinuity::Tangent,
+                    second_continuity: AssistantCadLoftContinuity::Tangent,
+                },
+            },
+            "second_feature_id",
+            "two different surfaces",
+        ),
+        (
+            AssistantCadBodyFeature::SurfaceTrim {
+                target_feature_id: 11.into(),
+                cutter_feature_id: 11.into(),
+            },
+            "cutter_feature_id",
+            "trim itself",
+        ),
+        (
+            AssistantCadBodyFeature::SurfaceKnit {
+                surface_feature_ids: vec![11.into(), 11.into()],
+                tolerance_mm: 0.01,
+                make_solid: false,
+            },
+            "surface_feature_ids[1]",
+            "already named",
+        ),
+        (
+            AssistantCadBodyFeature::SurfaceKnit {
+                surface_feature_ids: vec![11.into(), 12.into()],
+                tolerance_mm: 11.0,
+                make_solid: false,
+            },
+            "tolerance_mm",
+            "10 mm",
+        ),
+        (
+            AssistantCadBodyFeature::SurfaceExtend {
+                target_feature_id: 11.into(),
+                distance_mm: 0.0,
+            },
+            "distance_mm",
+            "0.01 mm",
+        ),
+        (
+            AssistantCadBodyFeature::Loft {
+                sections: vec![
+                    AssistantCadLoftSection {
+                        profile_feature_id: 11.into(),
+                        elevation_mm: 0.0,
+                    },
+                    AssistantCadLoftSection {
+                        profile_feature_id: 12.into(),
+                        elevation_mm: 10.0,
+                    },
+                ],
+                guide_feature_id: None,
+                continuity: AssistantCadLoftContinuity::Tangent,
+                rail_feature_id: Some(13.into()),
+            },
+            "rail_feature_id",
+            "needs a guide_feature_id",
+        ),
+    ] {
+        let refused = program(feature).validate().unwrap_err();
+        assert_eq!(refused_field(Err(refused.clone())), field);
+        assert!(refused.to_string().contains(rule), "{refused}");
+    }
 }

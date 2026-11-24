@@ -150,7 +150,9 @@ fn missing_face_and_non_adjacent_edge_are_named_worker_errors() {
     assert!(error.contains("face 'end#2' does not exist"), "{error}");
     assert!(error.contains("end"), "{error}");
 
-    let non_adjacent = "part = extrude(\"block\", profile=[[\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 60]], [\"back\", [100, 60], [0, 60]], [\"left\", [0, 60], [0, 0]]], distance=18)\nfillet(part, edges=[[\"start\", \"end\"]], radius=1, name=\"impossible\")";
+    // A cut corner keeps the block from being a plain cuboid, which the program
+    // itself refuses opposite faces on (review 2026-11-20 ac P3); here the worker does.
+    let non_adjacent = "part = extrude(\"block\", profile=[[\"front\", [0, 0], [100, 0]], [\"right\", [100, 0], [100, 40]], [\"corner\", [100, 40], [80, 60]], [\"back\", [80, 60], [0, 60]], [\"left\", [0, 60], [0, 0]]], distance=18)\nfillet(part, edges=[[\"start\", \"end\"]], radius=1, name=\"impossible\")";
     let mut edge_session = DocumentSession::new(SessionSettings::default());
     edge_session
         .apply_rule_program(source(non_adjacent, &[]), false)

@@ -5,17 +5,21 @@
 use crate::recent_files::Presence;
 use crate::*;
 
-const IMPORTS: [(AppCommand, &str); 7] = [
+const IMPORTS: [(AppCommand, &str); 8] = [
     (AppCommand::ImportMeshStl, "file-short-stl"),
     (AppCommand::ImportDrawingDxf, "file-short-dxf-2d"),
     (AppCommand::ImportDrawingUnderlay, "file-short-dxf-underlay"),
+    (
+        AppCommand::CompareUnderlayRevision,
+        "file-short-dxf-revision",
+    ),
     (AppCommand::ImportExactStep, "file-short-step"),
     (AppCommand::ImportExactIges, "file-short-iges"),
     (AppCommand::ImportSketchupScene, "file-short-sketchup"),
     (AppCommand::ImportBlenderGlb, "file-short-glb"),
 ];
 
-const EXPORTS: [(AppCommand, &str); 7] = [
+const EXPORTS: [(AppCommand, &str); 8] = [
     (AppCommand::ExportExactStep, "file-short-step"),
     (AppCommand::ExportExactIges, "file-short-iges"),
     (AppCommand::ExportMeshStl, "file-short-stl"),
@@ -23,6 +27,10 @@ const EXPORTS: [(AppCommand, &str); 7] = [
     (AppCommand::ExportBlenderGlb, "file-short-glb"),
     (AppCommand::ExportSketchupDae, "file-short-dae"),
     (AppCommand::ExportDrawingDxf, "file-short-dxf-profiles"),
+    (
+        AppCommand::ExportPresentationImage,
+        "file-short-presentation-image",
+    ),
 ];
 
 const VIEWER: [(AppCommand, &str); 2] = [
@@ -44,8 +52,9 @@ const MANUFACTURING: [(AppCommand, &str); 5] = [
     (AppCommand::ReviewCamExport, "file-short-cam"),
 ];
 
-const ANALYSIS: [(AppCommand, &str); 2] = [
+const ANALYSIS: [(AppCommand, &str); 3] = [
     (AppCommand::ReviewStaticFea, "file-short-static-fea"),
+    (AppCommand::ReviewSteadyThermal, "file-short-steady-thermal"),
     (AppCommand::ReviewLocalPdm, "file-short-local-pdm"),
 ];
 
@@ -70,6 +79,12 @@ impl KetchupApp {
             ui.separator();
             self.menu_command_as(ui, AppCommand::ExportHundeggerBtlx, "file-short-btlx");
             self.btlx_options_menu(ui);
+            ui.separator();
+            self.menu_command_as(
+                ui,
+                AppCommand::ExportWorkshopPackage,
+                "file-short-workshop-package",
+            );
         });
     }
 

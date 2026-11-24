@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 146] = [
+    pub(crate) const COMMANDS: [CommandSpec; 150] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -43,6 +43,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ImportDrawingUnderlay,
             label_key: "file-import-underlay",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::CompareUnderlayRevision,
+            label_key: "file-import-underlay-revision",
             tool: None,
             implemented: true,
         },
@@ -119,6 +125,12 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
+            id: AppCommand::ExportPresentationImage,
+            label_key: "file-export-presentation-image",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
             id: AppCommand::ExportViewer,
             label_key: "file-export-viewer",
             tool: None,
@@ -173,6 +185,12 @@ impl CommandRegistry {
             implemented: true,
         },
         CommandSpec {
+            id: AppCommand::ReviewSteadyThermal,
+            label_key: "file-review-steady-thermal",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
             id: AppCommand::ReviewLocalPdm,
             label_key: "file-review-local-pdm",
             tool: None,
@@ -181,6 +199,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportHundeggerBtlx,
             label_key: "file-export-hundegger-btlx",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportWorkshopPackage,
+            label_key: "file-export-workshop-package",
             tool: None,
             implemented: true,
         },

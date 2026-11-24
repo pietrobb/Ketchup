@@ -121,9 +121,18 @@ pub fn mark_chosen(root: &Path, instance_id: &str) -> io::Result<()> {
         return Err(invalid("not a window identity"));
     }
     let bytes = serde_json::to_vec(&json!({"version": 1, "instance_id": instance_id}))?;
+    // Under `sudo`, as the user whose runtime folder it is (review 2026-11-13
+    // r95 P3: root wrote the register there through the path).
+    let base = root.ancestors().nth(2).unwrap_or(root).to_owned();
+    ketchup_user_files::UserFolder::at(base, root.to_owned())
+        .as_owner(|| mark_chosen_as_found(root, &bytes))
+}
+
+/// [`mark_chosen`] of `bytes` as this process is.
+fn mark_chosen_as_found(root: &Path, bytes: &[u8]) -> io::Result<()> {
     let temporary = root.join(format!(".{CHOSEN_FILE}.{}", nonce()?));
     let written = crate::local_auth::create(&temporary)
-        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
+        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
         .and_then(|()| fs::rename(&temporary, root.join(CHOSEN_FILE)));
     let Err(error) = written else {
         return Ok(());
@@ -231,7 +240,9 @@ pub(crate) fn launched_window(
     ))
 }
 
-pub fn attach(window: &Window) -> io::Result<Grant> {
+/// Asks `window` for a connection, naming this AI as `client` so a window held
+/// by another AI can tell the user which one asks (review 2026-11-09 MCP-305).
+pub fn attach(window: &Window, client: Option<&str>) -> io::Result<Grant> {
     let entry: Value =
         serde_json::from_slice(&crate::local_auth::read_private(&window.registry_path)?)?;
     if entry["version"] != 1
@@ -247,13 +258,21 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
         .as_str()
         .filter(|value| is_lower_hex(value, 64))
         .ok_or_else(|| invalid("private registry has no bootstrap credential"))?;
-    let reply = exchange(
-        window.attach_address,
-        "attach",
-        &window.instance_id,
-        ATTACH_TIMEOUT,
-        bootstrap,
-    )?;
+    let ask = |client| {
+        exchange(
+            window.attach_address,
+            "attach",
+            &window.instance_id,
+            ATTACH_TIMEOUT,
+            bootstrap,
+            client,
+        )
+    };
+    let reply = match ask(client) {
+        // A window older than the name hangs up on a request with one.
+        Err(error) if client.is_some() && error.kind() == io::ErrorKind::InvalidData => ask(None)?,
+        reply => reply?,
+    };
     if let Some(refusal) = attach_refusal(reply["status"].as_str().unwrap_or("")) {
         return Err(refusal);
     }
@@ -340,6 +359,7 @@ fn probe(
         instance_id,
         PROBE_TIMEOUT,
         bootstrap,
+        None,
     )?;
     let document = reply["document"]
         .as_str()
@@ -360,6 +380,7 @@ fn exchange(
     instance_id: &str,
     timeout: Duration,
     bootstrap: &str,
+    client: Option<&str>,
 ) -> io::Result<Value> {
     let nonce = nonce()?;
     let mut stream = TcpStream::connect_timeout(&address, PROBE_TIMEOUT)?;
@@ -371,7 +392,17 @@ fn exchange(
     } else {
         client_list_proof(bootstrap, instance_id, &nonce)
     };
-    let request = json!({"version": 1, "action": action, "nonce": nonce, "proof": proof});
+    let mut request = json!({"version": 1, "action": action, "nonce": nonce, "proof": proof});
+    if let Some(client) = client {
+        // The window reads at most 512 bytes and shows 40 characters.
+        request["client"] = Value::from(
+            client
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(40)
+                .collect::<String>(),
+        );
+    }
     let mut line = request.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes())?;
@@ -452,6 +483,36 @@ fn is_lower_hex(text: &str, length: usize) -> bool {
 
 fn invalid(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, reason)
+}
+
+/// Review 2026-11-13 r95 P3: under `sudo -E` root wrote the register of
+/// windows into the user's runtime folder as root, through the path. It is the
+/// user's to write, or refused when `HOME` is another's; nothing is root's.
+#[cfg(all(test, unix))]
+#[test]
+fn under_sudo_the_chosen_window_is_marked_as_the_user_of_the_runtime_folder() {
+    use std::os::unix::fs::MetadataExt;
+    if ketchup_user_files::effective_user() != 0 {
+        return;
+    }
+    let user = (65534, 65534);
+    let runtime = tempfile::tempdir_in("/tmp").unwrap();
+    let root = runtime.path().join(DISCOVERY_DIRECTORY);
+    std::fs::create_dir_all(&root).unwrap();
+    for folder in [runtime.path(), &runtime.path().join("Ketchup"), &root] {
+        std::os::unix::fs::chown(folder, Some(user.0), Some(user.1)).unwrap();
+    }
+    match mark_chosen(&root, &"a".repeat(32)) {
+        Ok(()) => {
+            let written = fs::metadata(root.join(CHOSEN_FILE)).unwrap();
+            assert_eq!((written.uid(), written.gid()), user);
+        }
+        Err(refused) => {
+            assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        }
+    }
+    assert_eq!(ketchup_user_files::effective_user(), 0);
 }
 
 #[cfg(test)]

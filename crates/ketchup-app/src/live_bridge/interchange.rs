@@ -1,17 +1,27 @@
 //! `file action=import` and `file action=export`: the exchange formats of the
 //! File menu for a client. Imports run the window's review plan and commit it as
-//! one Undo step; exports run the window's exporters. A lossy conversion writes
-//! only new files and returns its loss report instead of asking; a release to
-//! manufacturing waits for the user's confirmation in the window as after the menu,
-//! and writes nothing if the client disconnected before the user confirmed.
+//! one Undo step; exports run the window's exporters. Every new file is written
+//! without asking (owner decision R1): a lossy conversion returns its loss report,
+//! a CAM program what its simulation found and does not check. Only replacing a
+//! file waits for the user in the window, and writes nothing if the client
+//! disconnected before the user confirmed.
 
-use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
+use super::{LiveBridge, Request, Stamp, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
+use crate::app::presentation_export::PresentationRequest;
 use crate::export_bundle::{ExportError, Written};
 use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
+use ketchup_manufacturing::presentation::{
+    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, MAX_PRESENTATION_SAMPLES,
+    MAX_PRESENTATION_SIDE, PresentationError, PresentationLabel, check_labels,
+    presentation_supersample,
+};
+use ketchup_model::cam::{CamContourSide, CamOperation, CamPostprocessorDialect};
+use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -23,11 +33,24 @@ pub(super) enum ReadAlready {
     Nothing,
     /// The bytes of a `.dwg` file.
     Drawing(Vec<u8>),
+    /// The bytes of a `.skp` file.
+    Model(Vec<u8>),
     /// The bytes of a STEP or IGES file and what the exact worker read of them.
     Exact(
         Vec<u8>,
         crate::app::exact_import_activity::ExactImportEvidence,
     ),
+}
+
+/// What an import request reads: the file, its format, the unit of a unitless drawing
+/// and the code page an underlay drawing is read in.
+pub(super) struct ImportTarget {
+    pub(super) path: String,
+    pub(super) format: ImportFormat,
+    pub(super) unit: Option<ImportLengthUnit>,
+    pub(super) code_page: Option<DxfCodePage>,
+    /// `code_page` is that of the underlay the drawing is a revision of.
+    pub(super) code_page_inherited: bool,
 }
 
 /// Records why the import of `path` failed for the answer.
@@ -40,7 +63,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 17] = [
     (
         "step",
         &["step", "stp"],
@@ -87,7 +110,288 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
         KetchupApp::export_current_model_homag_mpr_to,
     ),
     ("btlx", &["btlx"], KetchupApp::export_current_model_btlx_to),
+    (
+        "workshop_package",
+        &["zip"],
+        KetchupApp::export_current_workshop_package_to,
+    ),
+    // The program of the CAM plan, written for the controller dialect `export_target`
+    // resolves (`export_file`).
+    (
+        "cam_nc",
+        &["nc", "ngc", "gcode", "tap", "json"],
+        |_app, _path| {
+            Err(ExportError::failed(
+                "a CAM program is written for the controller dialect its request names",
+            ))
+        },
+    ),
+    // Made only as a job on a thread of its own (`exchange_export::presents`); review 2026-11-13
+    // P3: a synchronous copy here was taken by the tests alone.
+    ("presentation_png", &["png"], |_app, _path| {
+        Err(ExportError::failed(
+            "a presentation image is made on a thread of its own",
+        ))
+    }),
 ];
+
+/// The most operations one cam_nc program of a client runs.
+const MAX_CAM_OPERATIONS: usize = 64;
+
+/// A CAM operation a client names by a face of the plan's part, numbered as `query kind=faces`
+/// numbers it; Ketchup reads the region, depth or hole from the exact part.
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum CamFaceOperationRequest {
+    /// Clears the pocket whose floor is this planar face.
+    #[serde(rename = "face_pocket")]
+    Pocket { face_ordinal: u32 },
+    /// Runs the cutter one radius off this planar face's boundary, on `side`.
+    #[serde(rename = "face_contour")]
+    Contour {
+        face_ordinal: u32,
+        side: CamContourSideRequest,
+    },
+    /// Drills the hole whose wall is this cylindrical face.
+    #[serde(rename = "face_drill")]
+    Drill { face_ordinal: u32 },
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CamContourSideRequest {
+    Outside,
+    Inside,
+}
+
+impl CamFaceOperationRequest {
+    /// The plan operation numbered `id`.
+    fn operation(self, id: u64) -> CamOperation {
+        match self {
+            Self::Pocket { face_ordinal } => CamOperation::FacePocket { id, face_ordinal },
+            Self::Contour { face_ordinal, side } => CamOperation::FaceContour {
+                id,
+                face_ordinal,
+                side: match side {
+                    CamContourSideRequest::Outside => CamContourSide::Outside,
+                    CamContourSideRequest::Inside => CamContourSide::Inside,
+                },
+            },
+            Self::Drill { face_ordinal } => CamOperation::FaceDrill { id, face_ordinal },
+        }
+    }
+}
+
+/// How a client's presentation image looks; what it leaves out is as the window shows first.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresentationImage {
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    /// `white`, `transparent` or `#rrggbb`.
+    #[serde(default)]
+    background: Option<String>,
+    #[serde(default)]
+    shadows: Option<bool>,
+    #[serde(default)]
+    ambient_occlusion: Option<bool>,
+    #[serde(default)]
+    outlines: Option<bool>,
+    #[serde(default)]
+    dimensions: Option<bool>,
+    #[serde(default)]
+    part_labels: Option<bool>,
+    #[serde(default)]
+    labels: Vec<ImageLabel>,
+    /// Percent opaque (0–100) of the parts of each named material.
+    #[serde(default)]
+    opacity_percent: BTreeMap<String, u8>,
+}
+
+/// A client's text at a model point, in millimetres.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageLabel {
+    text: String,
+    at_mm: [f64; 3],
+}
+
+/// Which `image` field a client gave a value it cannot have, and that value.
+pub(super) struct InvalidImage {
+    reason: &'static str,
+    details: Value,
+}
+
+impl PresentationImage {
+    fn request(self) -> Result<PresentationRequest, InvalidImage> {
+        let mut request = PresentationRequest::default();
+        let options = &mut request.options;
+        let background = match self.background.as_deref() {
+            None => options.background,
+            Some("white") => Background::White,
+            Some("transparent") => Background::Transparent,
+            Some(color) => Background::Color(hex_color(color).ok_or_else(|| InvalidImage {
+                reason: "image.background is white, transparent or a colour #rrggbb.",
+                details: json!({"background": color}),
+            })?),
+        };
+        options.background = background;
+        options.width = self.width.unwrap_or(options.width);
+        options.height = self.height.unwrap_or(options.height);
+        // Review 2026-11-12 R1112-IMG-501: a size the renderer refuses was export_failed,
+        // asking to lower an edge smoothing no one can set.
+        presentation_supersample(options.width, options.height, options.supersample).map_err(
+            |error| InvalidImage {
+                reason: "image.width × image.height is at most max_pixels, each side at most max_side; make the image smaller.",
+                details: json!({
+                    "width": options.width,
+                    "height": options.height,
+                    "max_side": MAX_PRESENTATION_SIDE,
+                    "max_pixels": MAX_PRESENTATION_SAMPLES,
+                    "refused": error.to_string(),
+                }),
+            },
+        )?;
+        options.shadows = self.shadows.unwrap_or(options.shadows);
+        options.ambient_occlusion = self.ambient_occlusion.unwrap_or(options.ambient_occlusion);
+        options.outlines = self.outlines.unwrap_or(options.outlines);
+        options.dimensions = self.dimensions.unwrap_or(options.dimensions);
+        request.part_labels = self.part_labels.unwrap_or(request.part_labels);
+        request.labels = self
+            .labels
+            .into_iter()
+            .map(|ImageLabel { text, at_mm }| PresentationLabel { text, at_mm })
+            .collect();
+        // A letter the image cannot draw gets its own advice, as the window gives it (review
+        // 2026-11-13 r95 P3: the client was told only that labels are single-line texts).
+        check_labels(&request.labels).map_err(|error| InvalidImage {
+            reason: if matches!(error, PresentationError::LabelLetter { .. }) {
+                "image.labels: write each label in Latin, Greek or Cyrillic letters, common symbols or emoji; other scripts cannot be drawn yet."
+            } else {
+                "image.labels holds single-line texts at finite points, as many and as long as details allow."
+            },
+            details: json!({
+                "labels": error.to_string(),
+                "max_labels": MAX_PRESENTATION_LABELS,
+                "max_label_chars": MAX_LABEL_CHARS,
+            }),
+        })?;
+        if let Some((name, percent)) = self
+            .opacity_percent
+            .iter()
+            .find(|(_, percent)| **percent > 100)
+        {
+            return Err(InvalidImage {
+                reason: "image.opacity_percent gives each material 0 (invisible) to 100 (opaque).",
+                details: json!({"material": name, "opacity_percent": percent}),
+            });
+        }
+        request.opacity_percent = self.opacity_percent;
+        Ok(request)
+    }
+}
+
+/// How a client's presentation image looks: as `image` says, or as the window shows first.
+pub(super) fn presentation_request(
+    image: Option<PresentationImage>,
+) -> Result<PresentationRequest, InvalidImage> {
+    image.map_or_else(
+        || Ok(PresentationRequest::default()),
+        PresentationImage::request,
+    )
+}
+
+impl InvalidImage {
+    /// The answer to a client's image that cannot be.
+    pub(super) fn refused(self) -> &'static str {
+        failure("invalid_params", self.reason, self.details)
+    }
+}
+
+/// `#rrggbb` as its three channels.
+fn hex_color(text: &str) -> Option<[u8; 3]> {
+    let digits = text.strip_prefix('#').filter(|digits| digits.len() == 6)?;
+    let channel = |at: usize| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
+}
+
+/// The code of why an export was not written, whose hint repairs that cause:
+/// every refusal was `export_failed`, a model the format cannot carry as a
+/// full disk (review 2026-11-08, the class of CD-72).
+pub(super) fn export_code(error: &ExportError) -> &'static str {
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    use ketchup_rejection::Rejection;
+    match error {
+        ExportError::NothingToExport { .. }
+        | ExportError::Ambiguous { .. }
+        | ExportError::UnsupportedContent { .. }
+        | ExportError::OccurrenceNotExportable { .. } => "export_refused",
+        ExportError::Failed(cause) => {
+            // A projection refusal arrives inside the rejection of its step.
+            let mut causes = std::iter::successors(
+                Some(cause.as_ref() as &(dyn std::error::Error + 'static)),
+                |cause| cause.source(),
+            );
+            causes
+                .find_map(|cause| {
+                    if let Some(error) = cause.downcast_ref::<GeneralFabricationError>() {
+                        return (!matches!(error, GeneralFabricationError::Package(..)))
+                            .then_some("export_refused");
+                    }
+                    match cause.downcast_ref::<Rejection>()?.code() {
+                        "side_effect.declined" => Some("export_declined"),
+                        "fabrication.mesh_body"
+                        | "presentation.material"
+                        | "presentation.image" => Some("export_refused"),
+                        _ => None,
+                    }
+                })
+                .unwrap_or("export_failed")
+        }
+        ExportError::Destination { .. }
+        | ExportError::ChangedDuringConsent
+        | ExportError::ArtifactUnverified { .. }
+        | ExportError::Transaction(..) => "export_failed",
+    }
+}
+
+/// The parameters of `file action=export`: the visible model in one File menu
+/// export format.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportRequest {
+    #[serde(default)]
+    pub expected: Option<Stamp>,
+    pub path: String,
+    pub export_format: String,
+    /// For dxf: N of the scale 1:N the annotations are drawn at.
+    pub drawing_scale: Option<f64>,
+    pub image: Option<PresentationImage>,
+    /// For cam_nc: the library dialect of the controller the program is written for.
+    #[serde(default)]
+    pub cam_dialect: Option<String>,
+    /// For cam_nc: the operations of the program, each naming a face of the plan's part.
+    #[serde(default)]
+    pub cam_operations: Option<Vec<CamFaceOperationRequest>>,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// An export request the window takes now.
+pub(super) struct ExportTarget {
+    pub(super) path: String,
+    pub(super) export_format: String,
+    pub(super) exporter: Exporter,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    pub(super) overwrite: bool,
+    /// The controller dialect a cam_nc program is written for, when the client named one.
+    pub(super) cam_dialect: Option<CamPostprocessorDialect>,
+    /// The operations of a cam_nc program, in order; none faces the stock.
+    pub(super) cam_operations: Vec<CamOperation>,
+}
 
 impl LiveBridge {
     /// Imports the file `request` names, from what a job's thread has `read` of
@@ -99,7 +403,13 @@ impl LiveBridge {
         cancelled: &AtomicBool,
         read: ReadAlready,
     ) -> Result<Value, &'static str> {
-        let (path, format, unit) = Self::import_target(app, request, ui_busy)?;
+        let ImportTarget {
+            path,
+            format,
+            unit,
+            code_page,
+            code_page_inherited,
+        } = Self::import_target(app, request, ui_busy)?;
         if matches!(
             request,
             Request::Import {
@@ -111,6 +421,8 @@ impl LiveBridge {
                 Path::new(&path),
                 unit,
                 ketchup_model::underlay::placement::geo_origin(&app.document.current()),
+                code_page,
+                code_page_inherited,
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| import_failed(&path, error))?;
@@ -120,6 +432,7 @@ impl LiveBridge {
         let summary = match read {
             ReadAlready::Nothing => app.import_file(format, Path::new(&path), unit),
             ReadAlready::Drawing(source) => app.import_drawing(Path::new(&path), source, unit),
+            ReadAlready::Model(source) => app.import_glb_source(Path::new(&path), source),
             ReadAlready::Exact(source, evidence) => {
                 app.import_exact_read(format, Path::new(&path), source, evidence)
             }
@@ -128,17 +441,20 @@ impl LiveBridge {
         Ok(json!({"imported": true, "path": path, "review": summary, "dirty": app.is_dirty()}))
     }
 
-    /// The file, format and unit of an import request the window takes now.
+    /// The file, format, unit and code page of an import request the window takes now.
     pub(super) fn import_target(
         app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
-    ) -> Result<(String, ImportFormat, Option<ImportLengthUnit>), &'static str> {
+    ) -> Result<ImportTarget, &'static str> {
         let Request::Import {
             expected,
             path,
             unit,
             as_underlay,
+            revision_of,
+            code_page,
+            ..
         } = request
         else {
             return Err("invalid_request");
@@ -168,6 +484,19 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
+        if let Some(of) = revision_of {
+            if !*as_underlay {
+                return Err(failure(
+                    "invalid_params",
+                    "revision_of compares a drawing imported as_underlay with an underlay.",
+                    json!({"revision_of": of}),
+                ));
+            }
+            let of = ketchup_model::underlay::UnderlayId(*of);
+            if app.document.current().underlay(of).is_none() {
+                return Err("entity_not_found");
+            }
+        }
         let unit = unit
             .as_deref()
             .map(|name| {
@@ -180,7 +509,42 @@ impl LiveBridge {
                 })
             })
             .transpose()?;
-        Ok((path.clone(), format, unit))
+        // The code page an underlay drawing is read in: the one the request names, else
+        // that of the underlay it is a revision of (review 2026-11-09 UL-303), which one of
+        // DXF 2007 or later ignores (review 2026-11-10 UL-400).
+        let code_page_inherited = code_page.is_none();
+        let code_page = match code_page {
+            None => revision_of.and_then(|of| {
+                app.document
+                    .current()
+                    .underlay(ketchup_model::underlay::UnderlayId(of))
+                    .and_then(|under| under.code_page)
+            }),
+            Some(name) if !*as_underlay => {
+                return Err(failure(
+                    "invalid_params",
+                    "code_page reads a drawing imported as_underlay.",
+                    json!({"code_page": name}),
+                ));
+            }
+            Some(name) => Some(DxfCodePage::parse(name).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "code_page is the $DWGCODEPAGE name of a code page, such as ANSI_1250.",
+                    json!({
+                        "code_page": name,
+                        "code_pages": DxfCodePage::ALL.map(DxfCodePage::name),
+                    }),
+                )
+            })?),
+        };
+        Ok(ImportTarget {
+            path: path.clone(),
+            format,
+            unit,
+            code_page,
+            code_page_inherited,
+        })
     }
 
     pub(super) fn export_file(
@@ -190,17 +554,32 @@ impl LiveBridge {
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
         let drawing_scale = match &request {
-            Request::Export { drawing_scale, .. } => *drawing_scale,
+            Request::Export(ExportRequest { drawing_scale, .. }) => *drawing_scale,
             _ => None,
         };
-        let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
+        let ExportTarget {
+            path,
+            export_format,
+            exporter,
+            overwrite,
+            cam_dialect,
+            cam_operations,
+        } = Self::export_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
-        let exported = match drawing_scale {
-            Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
-            None => exporter(app, Path::new(&path)),
+        app.live.client_overwrite = overwrite;
+        let exported = match (drawing_scale, cam_dialect) {
+            (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
+            (None, Some(dialect)) => app.export_current_cam_program_to(
+                Path::new(&path),
+                dialect,
+                cam_operations,
+                cancelled,
+            ),
+            (None, None) => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
+        app.live.client_overwrite = false;
         Self::exported(&path, &export_format, exported)
     }
 
@@ -209,16 +588,85 @@ impl LiveBridge {
         app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
-    ) -> Result<(String, String, Exporter), &'static str> {
-        let Request::Export {
+    ) -> Result<ExportTarget, &'static str> {
+        let Request::Export(ExportRequest {
             expected,
             path,
             export_format,
             drawing_scale,
-        } = request
+            image,
+            cam_dialect,
+            cam_operations,
+            overwrite,
+        }) = request
         else {
             return Err("invalid_request");
         };
+        let cam_operations = match cam_operations {
+            None => Vec::new(),
+            Some(operations)
+                if export_format == "cam_nc"
+                    && (1..=MAX_CAM_OPERATIONS).contains(&operations.len()) =>
+            {
+                (1..)
+                    .zip(operations)
+                    .map(|(id, operation)| operation.operation(id))
+                    .collect()
+            }
+            Some(operations) => {
+                return Err(failure(
+                    "invalid_params",
+                    format!(
+                        "cam_operations are 1 to {MAX_CAM_OPERATIONS} operations of a cam_nc export."
+                    ),
+                    json!({"operations": operations.len(), "export_format": export_format}),
+                ));
+            }
+        };
+        // A cam_nc program is for the controller the client names, else the library's first.
+        let cam_dialect = match (export_format == "cam_nc", cam_dialect) {
+            (false, None) => None,
+            (false, Some(id)) => {
+                return Err(failure(
+                    "invalid_params",
+                    "cam_dialect names the controller of a cam_nc export.".to_owned(),
+                    json!({"cam_dialect": id, "export_format": export_format}),
+                ));
+            }
+            (true, id) => {
+                let unreadable = |refused: String| {
+                    failure(
+                        "export_failed",
+                        "the CAM dialect library cannot be read.".to_owned(),
+                        json!({"export_format": "cam_nc", "refused": refused}),
+                    )
+                };
+                let dialects = CamPostprocessorDialect::library_ids()
+                    .map_err(|error| unreadable(error.to_string()))?;
+                let id = match id {
+                    Some(id) => id,
+                    None => dialects
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| unreadable("it holds no dialect".to_owned()))?,
+                };
+                let dialect = CamPostprocessorDialect::library(&id).map_err(|error| {
+                    failure(
+                        "invalid_params",
+                        format!("cam_dialect is one of {}.", dialects.join(", ")),
+                        json!({"cam_dialect": id, "dialects": dialects, "refused": error.to_string()}),
+                    )
+                })?;
+                Some(dialect)
+            }
+        };
+        if image.is_some() && export_format != "presentation_png" {
+            return Err(failure(
+                "invalid_params",
+                "image describes the picture of a presentation_png export.".to_owned(),
+                json!({"export_format": export_format}),
+            ));
+        }
         if let Some(scale) = drawing_scale
             && (!matches!(export_format.as_str(), "dxf" | "dwg")
                 || !(1.0..=MAX_PLAN_SCALE).contains(&scale))
@@ -261,20 +709,28 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        Ok((path, export_format, *exporter))
+        Ok(ExportTarget {
+            path,
+            export_format,
+            exporter: *exporter,
+            overwrite,
+            cam_dialect,
+            cam_operations,
+        })
     }
 
-    /// Records why the export of `path` failed for the answer.
+    /// Records why the export of `path` failed for the answer, and its code.
     pub(super) fn export_failed(
         path: &str,
         export_format: &str,
         error: ExportError,
     ) -> &'static str {
+        let code = export_code(&error);
         record_rejection(
-            &rejected("export_failed").caused_by(error),
+            &rejected(code).caused_by(error),
             json!({"path": path, "export_format": export_format}),
         );
-        "export_failed"
+        code
     }
 
     /// The answer to an export of `path` as `export_format`.
@@ -297,6 +753,18 @@ impl LiveBridge {
             "companions": written.companions.iter().map(|path| shown(path)).collect::<Vec<_>>(),
             // A plan DXF/DWG draws the rest and names the parts it could not.
             "omitted_parts": written.omitted_parts,
+            // A machine file names what it leaves unmade, such as the pin
+            // holes in a bought part.
+            "lost": written.lost,
+            // A CAM program is written without a prompt: its simulation and what that
+            // does not check are told here (owner decisions R1 and R3).
+            "machining": written.machining.map(|machining| json!({
+                "dialect": machining.dialect,
+                "removed_stock_mm3": machining.removed_stock_mm3,
+                "residual_stock_mm3": machining.residual_stock_mm3,
+                "gouge_mm3": machining.gouge_mm3,
+                "not_checked": crate::app::Machining::NOT_CHECKED,
+            })),
             "basis": "visible_parts",
         }))
     }

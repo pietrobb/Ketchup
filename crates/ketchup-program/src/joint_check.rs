@@ -162,7 +162,9 @@ fn utilization(
             let total: f64 = down.values().sum();
             offer(total / load_n, "characteristic sum".to_owned());
         } else {
-            for (value, duration, label) in ultimate(&down) {
+            for (value, duration, label) in
+                ultimate(&down, crate::site::Site::snow_psi(model.site.as_ref()))
+            {
                 offer(value.max(0.0) / capacity(load_n, duration), label);
             }
         }

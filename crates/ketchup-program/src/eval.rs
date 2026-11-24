@@ -318,11 +318,11 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("{what} must be a number, got {}", value.get_type()))?
         .0;
-    if !number.is_finite() || number.abs() > MAX_COORDINATE_MM {
-        anyhow::bail!(
-            "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {number}"
-        );
-    }
+    anyhow::ensure!(
+        number.is_finite() && number.abs() <= MAX_COORDINATE_MM,
+        "{what} must be a finite number within ±{MAX_COORDINATE_MM}, got {}", // also λ, μ, r: no "mm"
+        number_text(number)
+    );
     Ok(number)
 }
 
@@ -1060,9 +1060,8 @@ impl Look {
                                 key.get_type()
                             )
                         })?;
-                        // An attribute given as None is left out.
                         let value = owned_text(Some(value), &format!("attribute {key:?}"))?;
-                        Ok(value.map(|value| (key, value)))
+                        bracing::attribute(key, value)
                     })
                     .filter_map(Result::transpose)
                     .collect::<anyhow::Result<BTreeMap<_, _>>>()
@@ -1133,9 +1132,7 @@ fn insert_profile_part(
             let radius = max[0].abs().max(min[0].abs());
             [radius * 2.0, max[1] - min[1], radius * 2.0]
         }
-        ProgramPartBody::Profile { .. }
-        | ProgramPartBody::Sweep { .. }
-        | ProgramPartBody::Loft { .. } => {
+        _ => {
             let (min, max) = new_part(name, [0.0; 3], at_mm, body.clone()).local_bounds();
             std::array::from_fn(|axis| max[axis] - min[axis])
         }
@@ -1562,7 +1559,7 @@ fn boolean_depth(part: &Part) -> usize {
 
 /// Appends one operation to a part, keeping operation names unique.
 fn add_operation(part: &mut Part, operation: ProgramOperation) -> anyhow::Result<()> {
-    let name = operation.name();
+    let name = crate::imported::operation_name(part, &operation)?;
     if part
         .operations
         .iter()
@@ -1592,26 +1589,8 @@ fn apply_named_edge_finish(
     if edges.is_empty() {
         anyhow::bail!("{operation} on {part_name:?}: edges must not be empty");
     }
-    if amount_mm <= CONTACT_FIT_MM {
-        anyhow::bail!("{operation} on {part_name:?}: amount must be positive");
-    }
     with_part(state, part_name, |part| {
-        let mut unique = BTreeSet::new();
-        for [first, second] in &edges {
-            if first == second {
-                anyhow::bail!("{operation} edge faces must be different, got {first:?} twice");
-            }
-            let mut pair = [
-                part.exact_face_label(first)
-                    .map_err(|error| anyhow::anyhow!("{operation} on {part_name:?}: {error}"))?,
-                part.exact_face_label(second)
-                    .map_err(|error| anyhow::anyhow!("{operation} on {part_name:?}: {error}"))?,
-            ];
-            pair.sort_unstable();
-            if !unique.insert(pair) {
-                anyhow::bail!("{operation} edge ({first:?}, {second:?}) is listed more than once");
-            }
-        }
+        crate::edge_finish_fit::check_edge_finish(part, operation, &edges, amount_mm)?;
         let count = part.finishes().count();
         let name = requested_name
             .clone()
@@ -1741,16 +1720,18 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
 
 mod annotations;
 mod assemblies;
+mod bracing;
 mod conditions;
 mod continuity;
 mod error_location;
 mod pricing;
 pub use error_location::{CallFrame, ErrorLocation, NumberedLine, Position};
 mod face_cache;
+mod imported;
 mod joints;
 mod machining;
 mod params;
-pub use params::{WHOLE_ONLY, is_whole_override, range_text};
+pub use params::{WHOLE_ONLY, is_whole_override, number_text, range_text};
 mod support;
 
 /// Booleans between parts and tool bodies.
@@ -2655,18 +2636,20 @@ fn globals() -> Globals {
     .with(machining::builtins)
     .with(assemblies::builtins)
     .with(conditions::builtins)
+    .with(bracing::builtins)
     .with(pricing::builtins)
     .with(continuity::builtins)
     .with(joints::builtins)
     .with(support::builtins)
     .with(annotations::builtins)
+    .with(imported::builtins)
     .with(path_builtins)
     .with(boolean_builtins)
     .with_namespace("math", math_functions)
     .build()
 }
 
-fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> ProgramError {
+pub(crate) fn evaluation_error(code: &'static str, error: impl std::fmt::Display) -> ProgramError {
     ProgramError {
         code,
         message: error.to_string(),
@@ -2861,13 +2844,8 @@ pub fn evaluate_cancellable(
     overrides: &BTreeMap<String, f64>,
     cancel: &CancelToken,
 ) -> Result<Evaluated, ProgramError> {
-    evaluate_bounded(
-        file_name,
-        source,
-        overrides,
-        cancel,
-        crate::execution_budget::MAX_HEAP_BYTES,
-    )
+    let heap = crate::execution_budget::MAX_HEAP_BYTES;
+    crate::nesting::on_own_stack(|| evaluate_bounded(file_name, source, overrides, cancel, heap))
 }
 
 /// [`evaluate_cancellable`] with a heap bound of `heap_bytes`, so tests reach it cheaply.
@@ -2879,6 +2857,7 @@ fn evaluate_bounded(
     heap_bytes: usize,
 ) -> Result<Evaluated, ProgramError> {
     let (globals, prelude) = library()?;
+    crate::nesting::refuse_too_deep(file_name, source)?;
     let ast = AstModule::parse(file_name, source.to_owned(), &dialect())
         .map_err(|error| {
             // Before a trailing newline the parser reports an unclosed bracket at 1:1;
@@ -3125,6 +3104,7 @@ mod tests {
             .with(machining::builtins)
             .with(assemblies::builtins)
             .with(conditions::builtins)
+            .with(bracing::builtins)
             .with(pricing::builtins)
             .with(continuity::builtins)
             .with(joints::builtins)

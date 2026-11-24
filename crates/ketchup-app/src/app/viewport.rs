@@ -1,5 +1,6 @@
 //! The 3D viewport: drawing, picking at screen positions, projection, inference and measurement.
 
+use super::viewport_paint::facing;
 use crate::*;
 
 impl KetchupApp {
@@ -1237,10 +1238,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn clear_measurement(&mut self) {
-        self.gesture.measure.start = None;
-        self.gesture.measure.cursor = None;
-        self.gesture.measure.end = None;
-        self.gesture.measure.edge = None;
+        self.gesture.measure = crate::gesture::MeasureGesture::default();
     }
 
     /// The length in millimetres of the edge read with Ctrl held, if any.
@@ -2796,9 +2794,7 @@ impl KetchupApp {
             let needs_cpu_overlay = !camera_dragging
                 && (self.selection.contains(&item.instance_path)
                     || self
-                        .hover
-                        .target
-                        .as_ref()
+                        .painted_hover_target()
                         .is_some_and(|hovered| hovered.instance_path == item.instance_path)
                     || proxy_preview
                     || out_of_context);
@@ -2884,7 +2880,7 @@ impl KetchupApp {
                         };
                         let front = point_depth(normal, forward) < -ROUNDING;
                         if !front
-                            && self.hover.target.as_ref() != Some(&selection)
+                            && self.painted_hover_target() != Some(&selection)
                             && !self.paints_back_faces()
                         {
                             continue;
@@ -2922,7 +2918,7 @@ impl KetchupApp {
             for face in box_faces() {
                 let front = face_is_visible(&face.element, forward);
                 let outlined = front
-                    || self.hover.target.as_ref().is_some_and(|hovered| {
+                    || self.painted_hover_target().is_some_and(|hovered| {
                         hovered.definition_id == item.definition_id
                             && hovered.instance_path == item.instance_path
                             && hovered.element == face.element
@@ -3055,13 +3051,12 @@ impl KetchupApp {
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay =
-                !camera_dragging
-                    && (self.selection.contains(&occurrence.instance_path)
-                        || self.hover.target.as_ref().is_some_and(|hovered| {
-                            hovered.instance_path == occurrence.instance_path
-                        })
-                        || out_of_context);
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&occurrence.instance_path)
+                    || self
+                        .painted_hover_target()
+                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                    || out_of_context);
             // The GPU scene paints draft analysis colors from its own geometry.
             let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
@@ -3172,7 +3167,7 @@ impl KetchupApp {
                     normal,
                 );
                 let hovered = !previewed
-                    && self.hover.target.as_ref().is_some_and(|hovered| {
+                    && self.painted_hover_target().is_some_and(|hovered| {
                         hovered.definition_id == occurrence.body.definition_id
                             && hovered.instance_path == occurrence.instance_path
                             && hovered.element == element
@@ -3267,13 +3262,12 @@ impl KetchupApp {
         {
             let occurrence_color = occurrence_colors.get(&occurrence.instance_path).copied();
             let out_of_context = !active_context_paths.contains(&occurrence.instance_path);
-            let needs_cpu_overlay =
-                !camera_dragging
-                    && (self.selection.contains(&occurrence.instance_path)
-                        || self.hover.target.as_ref().is_some_and(|hovered| {
-                            hovered.instance_path == occurrence.instance_path
-                        })
-                        || out_of_context);
+            let needs_cpu_overlay = !camera_dragging
+                && (self.selection.contains(&occurrence.instance_path)
+                    || self
+                        .painted_hover_target()
+                        .is_some_and(|hovered| hovered.instance_path == occurrence.instance_path)
+                    || out_of_context);
             let needs_cpu_fill = !use_wgpu_scene || copy_transform.is_some();
             if use_wgpu_scene && !needs_cpu_overlay && !needs_cpu_fill {
                 continue;
@@ -3343,8 +3337,7 @@ impl KetchupApp {
             }
             for triangle in &mesh.triangles {
                 let corners = triangle.map(|index| points_mm[index as usize]);
-                let normal = triangle_normal(corners);
-                let front = point_depth(normal, forward) < -ROUNDING;
+                let (front, normal) = facing(triangle_normal(corners), forward, mesh.is_sheet());
                 if !front && !self.paints_back_faces() {
                     continue;
                 }
@@ -3509,12 +3502,8 @@ impl KetchupApp {
             if self.active_tool == ActiveTool::Line {
                 let from = self.project(start, response.rect);
                 let to = self.project(cursor, response.rect);
-                let color = match self.gesture.sketch.axis_lock {
-                    Some(Axis::X) => Color32::from_rgb(230, 80, 80),
-                    Some(Axis::Y) => Color32::from_rgb(80, 205, 120),
-                    Some(Axis::Z) => Color32::from_rgb(80, 145, 255),
-                    None => Color32::from_rgb(255, 199, 68),
-                };
+                let color = super::measure_axis::axis_color(self.gesture.sketch.axis_lock)
+                    .unwrap_or(Color32::from_rgb(255, 199, 68));
                 painter.line_segment([from, to], Stroke::new(2.5_f32, color));
                 let axis_label = self
                     .gesture
@@ -3652,28 +3641,7 @@ impl KetchupApp {
         self.paint_mirror_preview(painter, response.rect);
         self.paint_received_comment(painter, response.rect);
 
-        if let Some((start, end)) = self.measure_span() {
-            let from = self.project(start, response.rect);
-            let to = self.project(end, response.rect);
-            let stroke = Stroke::new(2.0_f32, Color32::from_rgb(120, 205, 255));
-            painter.line_segment([from, to], stroke);
-            painter.circle_filled(from, 3.5, stroke.color);
-            painter.circle_filled(to, 3.5, stroke.color);
-            painter.text(
-                from.lerp(to, 0.5) - Vec2::new(0.0, 14.0),
-                egui::Align2::CENTER_CENTER,
-                format!(
-                    "{} mm",
-                    format_height(length(Vec3::new(
-                        end.x - start.x,
-                        end.y - start.y,
-                        end.z - start.z,
-                    )))
-                ),
-                egui::FontId::proportional(14.0),
-                Color32::WHITE,
-            );
-        }
+        self.paint_measure_span(painter, response.rect);
         if let Some((points, edge_length)) = &self.gesture.measure.edge {
             let stroke = Stroke::new(3.0_f32, Color32::from_rgb(120, 205, 255));
             let screen: Vec<_> = points
@@ -4392,18 +4360,6 @@ impl KetchupApp {
                 .map(|(point, _)| point)
             })
             .or_else(|| self.screen_to_plane(pointer, rect, plane_z))
-    }
-
-    pub fn measurement_point_at_screen(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-        plane_z: f64,
-    ) -> Option<Vec3> {
-        self.scene_snap_at_screen(pointer, rect, 8.0, None)
-            .map(|snap| snap.position_mm)
-            .or_else(|| self.viewport_point_at_screen(pointer, rect, plane_z))
-            .or_else(|| self.surface_point_at_screen(pointer, rect))
     }
 
     pub(crate) fn world_to_clip(&self, rect: Rect) -> [f32; 16] {

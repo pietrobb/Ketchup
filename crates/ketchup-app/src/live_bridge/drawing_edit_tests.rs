@@ -152,6 +152,7 @@ fn a_client_removes_objects_of_a_drawing_in_one_undo_step_that_save_and_open_kee
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&path);
     bridge
         .execute(
             &mut app,
@@ -440,6 +441,8 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         path: path.display().to_string(),
         unit: None,
         as_underlay: true,
+        revision_of: None,
+        code_page: None,
     };
     bridge.execute(&mut app, import(&source), false).unwrap();
     let objects = top_level(&mut bridge, &mut app);
@@ -574,6 +577,84 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
             .unwrap()
             .contains("1.01 Kitchen")
     );
+
+    // Review 2026-11-09 CD-300: the hint told the AI to have the user press Discard, but
+    // an export by the AI left the window none, and the AI had no Discard of its own. The
+    // refusal names the objects in its details, the window offers Discard for them, and
+    // `discard_refused` lets them go, keeping the other edits.
+    std::fs::remove_file(&refused).unwrap();
+    assert_eq!(
+        export_from(&DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap_err(),
+        "drawing_edit_not_writable"
+    );
+    let details = take_error_details().unwrap_or_default();
+    assert_eq!(details["details"]["object_ids"], json!([wall]), "{details}");
+    assert_eq!(
+        app.file.activity.underlay.refused_edit,
+        Some((
+            ketchup_model::underlay::UnderlayId(1),
+            vec![u32::try_from(wall).unwrap()]
+        ))
+    );
+    assert!(app.digest.contains("Discard"), "{}", app.digest);
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask("drawing_discard_refused", json!({"underlay_id": 1})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(answer["object_ids"], json!([wall]), "{answer}");
+    assert_eq!(app.file.activity.underlay.refused_edit, None);
+    let objects = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"underlay_id": 1})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(objects["kinds"], edited["kinds"], "{objects}\n{edited}");
+    std::fs::write(&other, DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap();
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_export",
+                json!({"underlay_id": 1, "path": refused.display().to_string(), "source": other.display().to_string()}),
+            ),
+            false,
+        )
+        .unwrap();
+    // The removed door and the line drawn are still written; only the move went.
+    assert_eq!(
+        answer["changes"],
+        json!({"removed": 1, "moved": 0, "stretched": 0, "added": 1}),
+        "{answer}"
+    );
+    // Named by id, without an export refused before; an object with no edit is refused.
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask(
+                    "drawing_discard_refused",
+                    json!({"underlay_id": 1, "object_ids": [wall]}),
+                ),
+                false,
+            )
+            .unwrap_err(),
+        "entity_not_found"
+    );
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask("drawing_discard_refused", json!({"underlay_id": 1})),
+                false,
+            )
+            .unwrap_err(),
+        "invalid_params"
+    );
 }
 
 /// Each reason a drawing is not written back has a code of its own whose hint repairs
@@ -665,6 +746,69 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
             })),
             "drawing_edit_not_writable",
         ),
+        // Review 2026-11-07 r26 P3: every text too long is named at once.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(
+                [0xB1, 0xB2]
+                    .map(|handle| DxfEditRefusal::TextTooLong {
+                        kind: "TEXT".into(),
+                        handle,
+                        code: 1,
+                        characters: 2800,
+                        written: ketchup_model::import::TextWritten::Escaped,
+                    })
+                    .into(),
+            ))),
+            "drawing_text_too_long",
+        ),
+        // Review 2026-11-09 CD-301: a text of the file and one drawn in Kečup together
+        // were told to press a Discard that is not there.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::TextTooLong {
+                    kind: "TEXT".into(),
+                    handle: 0xB1,
+                    code: 1,
+                    characters: 2800,
+                    written: ketchup_model::import::TextWritten::Escaped,
+                },
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+            ]))),
+            "drawing_text_too_long",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+                DxfEditRefusal::Several(vec![DxfEditRefusal::TextTooLong {
+                    kind: "MTEXT".into(),
+                    handle: 0xB2,
+                    code: 3,
+                    characters: 2800,
+                    written: ketchup_model::import::TextWritten::CodePage,
+                }]),
+            ]))),
+            "drawing_text_too_long",
+        ),
+        // An edit Discard repairs among them: the code whose hint tells of Discard.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+                DxfEditRefusal::NoHandle { object: 4 },
+            ]))),
+            "drawing_edit_not_writable",
+        ),
         (
             Error::Worker(UnderlayWorkerError::Unavailable(
                 WorkerUnavailable::NotInstalled,
@@ -720,6 +864,8 @@ fn edited_beside_another_file() -> (
                 path: source.display().to_string(),
                 unit: None,
                 as_underlay: true,
+                revision_of: None,
+                code_page: None,
             },
             false,
         )
@@ -761,6 +907,68 @@ fn a_client_exporting_a_drawing_replaces_neither_its_source_nor_another_file() {
     }
     assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
     assert_eq!(std::fs::read_to_string(&other).unwrap(), "not a drawing");
+    // The client is told how to ask the user (owner decision R1.2).
+    let kept = ask(
+        "drawing_export",
+        json!({"path": other.display().to_string()}),
+    );
+    assert_eq!(
+        bridge.execute(&mut app, kept, false).unwrap_err(),
+        "drawings_target_exists"
+    );
+    let details = take_error_details().unwrap().to_string();
+    assert!(details.contains("replace: true"), "{details}");
+}
+
+/// Owner decision R1.2 (review 2026-11-19 og): with replace a client's drawing export
+/// replaces another file once the user agrees in the window, as every export asks; a
+/// refusal keeps it, and the drawing's source is never asked about nor replaced.
+#[test]
+fn a_client_replaces_another_file_with_the_drawing_once_the_user_agrees() {
+    let (_directory, source, other, app, mut bridge) = edited_beside_another_file();
+    let replace = |path: &std::path::Path| {
+        ask(
+            "drawing_export",
+            json!({"path": path.display().to_string(), "replace": true}),
+        )
+    };
+    let declining = crate::dialogs::ScriptedFileDialogs::new();
+    let asked = declining.clone();
+    let mut app = app.with_dialogs(Box::new(declining));
+    assert_eq!(
+        bridge
+            .execute(&mut app, replace(&other), false)
+            .unwrap_err(),
+        "drawings_replace_declined"
+    );
+    assert_eq!(asked.high_risk_prompts().len(), 1);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "not a drawing");
+
+    let agreeing = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = agreeing.clone();
+    let mut app = app.with_dialogs(Box::new(agreeing));
+    assert_eq!(
+        bridge
+            .execute(&mut app, replace(&source), false)
+            .unwrap_err(),
+        "drawings_target_exists"
+    );
+    assert!(
+        probe.high_risk_prompts().is_empty(),
+        "the source is not asked about"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
+
+    bridge
+        .execute(&mut app, replace(&other), false)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+    let written = std::fs::read_to_string(&other).unwrap();
+    assert!(
+        written.contains("EOF"),
+        "the drawing took its place: {written}"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
 }
 
 /// Review 2026-10-29 SEC-60: the window's drawing export never replaces the drawing's

@@ -38,7 +38,7 @@ impl DockTab {
         }
     }
 
-    const fn icon(self) -> Icon {
+    pub(crate) const fn icon(self) -> Icon {
         match self {
             Self::Layers => Icon::Layers,
             Self::Program => Icon::Code,
@@ -247,7 +247,7 @@ impl KetchupApp {
             .validator_report()
             .map_or(0, |report| report.issue_count);
         let connected = self.live.consent_attached || self.live.launch_attached;
-        let width = ui.available_width() * TAB_SHARE;
+        let width = (ui.available_width() - super::dock_fold::DOCK_FOLD_WIDTH) * TAB_SHARE;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             for tab in DockTab::ALL {
@@ -263,7 +263,34 @@ impl KetchupApp {
                         &label,
                     )
                 });
+                // What the badge and the dot show, for a screen reader too
+                // (review 2026-11-08 UI-250); the name stays the tab's.
+                let status = match tab {
+                    DockTab::Checks if issues > 0 => Some(self.catalog.format(
+                        "dock-tab-checks-issues",
+                        &std::collections::BTreeMap::from([("count", issues.to_string())]),
+                    )),
+                    DockTab::Ai => Some(self.catalog.text(if connected {
+                        "dock-tab-ai-connected"
+                    } else {
+                        "dock-tab-ai-not-connected"
+                    })),
+                    _ => None,
+                };
+                if let Some(status) = status {
+                    ui.ctx()
+                        .accesskit_node_builder(response.id, |node| node.set_description(status));
+                }
                 let painter = ui.painter();
+                // The tab the keyboard is on (Tab, then Enter or Space opens it).
+                if response.has_focus() {
+                    painter.rect_stroke(
+                        rect.shrink(1.5),
+                        2.0,
+                        Stroke::new(1.5_f32, palette.accent),
+                        egui::StrokeKind::Inside,
+                    );
+                }
                 if selected {
                     painter.rect_filled(rect, 0.0, palette.surface);
                     painter.rect_filled(
@@ -324,6 +351,7 @@ impl KetchupApp {
                     self.window.dock_tab = Some(tab);
                 }
             }
+            self.dock_fold_button(ui, Vec2::new(super::dock_fold::DOCK_FOLD_WIDTH, TAB_HEIGHT));
         });
         let line = ui.cursor().top();
         ui.painter().hline(

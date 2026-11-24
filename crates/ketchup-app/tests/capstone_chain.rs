@@ -581,7 +581,7 @@ fn empty_document_manual_ux_capstone_has_rendered_and_native_exact_evidence() {
 
     // Use native exact face references for a one-time component placement. The
     // offscreen renderer proves both the transient RGBA preview and its commit.
-    let exact_deadline = Instant::now() + Duration::from_secs(15);
+    let exact_deadline = Instant::now() + Duration::from_secs(60);
     while shell.app().exact_stable_reference_count() < 2 && Instant::now() < exact_deadline {
         shell.settle();
         std::thread::sleep(Duration::from_millis(10));

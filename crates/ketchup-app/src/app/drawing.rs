@@ -750,11 +750,7 @@ impl KetchupApp {
             id: generated_feature_id,
             definition_id: source.definition_id,
             name: self.catalog.text("model-loft-feature"),
-            kind: FeatureKind::Loft {
-                sections: source.sections.clone(),
-                guide: None,
-                continuity: LoftContinuity::Position,
-            },
+            kind: FeatureKind::loft(source.sections.clone()),
         };
         let batch = CommandBatch::new(vec![command.clone()]);
         let preview_snapshot = self.document.preview_batch(&batch).ok()?;
@@ -3318,6 +3314,7 @@ impl KetchupApp {
                 | ActiveTool::Polygon
                 | ActiveTool::Ellipse
                 | ActiveTool::Spline
+                | ActiveTool::Measure
         ) && (!context.wants_keyboard_input()
             || context.memory(|memory| memory.has_focus(egui::Id::new("value-box-input"))))
         {
@@ -3332,6 +3329,7 @@ impl KetchupApp {
                     ActiveTool::Move => self.gesture.transform.move_axis_lock,
                     ActiveTool::Scale => self.gesture.transform.scale_axis_lock,
                     ActiveTool::Line => self.gesture.sketch.axis_lock,
+                    ActiveTool::Measure => self.gesture.measure.axis_lock,
                     _ if self.uses_drawing_plane() => Some(match self.face_workflow_datum() {
                         PrincipalPlane::Xy => Axis::Z,
                         PrincipalPlane::Xz => Axis::Y,
@@ -3349,17 +3347,8 @@ impl KetchupApp {
                 match self.active_tool {
                     ActiveTool::Move => self.set_move_axis_lock(axis),
                     ActiveTool::Scale => self.set_scale_axis_lock(axis),
-                    ActiveTool::Line => {
-                        self.gesture.sketch.axis_lock = axis;
-                        self.digest = self.catalog.format(
-                            "digest-line-axis-locked",
-                            &BTreeMap::from([(
-                                "axis",
-                                self.catalog
-                                    .text(axis.map_or("axis-name-plane", axis_name_key)),
-                            )]),
-                        );
-                    }
+                    ActiveTool::Line => self.set_line_axis_lock(axis),
+                    ActiveTool::Measure => self.set_measure_axis_lock(axis),
                     _ if self.uses_drawing_plane() => self.set_drawing_plane(match axis {
                         Some(Axis::X) => PrincipalPlane::Yz,
                         Some(Axis::Y) => PrincipalPlane::Xz,

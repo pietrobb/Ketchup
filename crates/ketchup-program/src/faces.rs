@@ -562,7 +562,8 @@ impl Part {
             } => revolve_faces(segments, *axis_start_mm, *axis_end_mm, *angle_degrees),
             ProgramPartBody::Profile { .. }
             | ProgramPartBody::Sweep { .. }
-            | ProgramPartBody::Loft { .. } => Vec::new(),
+            | ProgramPartBody::Loft { .. }
+            | ProgramPartBody::Imported(_) => Vec::new(),
         }
     }
 

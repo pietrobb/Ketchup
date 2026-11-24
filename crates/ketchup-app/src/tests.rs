@@ -390,5 +390,6 @@ pub(crate) mod shell;
 mod tool_gesture;
 mod transform;
 mod underlay_layer_rows;
+mod underlay_revision_menu;
 mod viewer_comments;
 mod viewport;

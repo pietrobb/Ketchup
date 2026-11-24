@@ -54,7 +54,7 @@ https://example.com https://partner.example`.
 The customer's comments stay in the page until they press *Save comments for
 the author*, which saves `<model>.ketchup-comments` (or *Save model copy
 with comments*, a `.ketchup-view`). They send that file to the author, who
-opens it in Kečup (*File → Open Viewer Comments…*). Leaving the page with
+opens it in Kečup (*File → Viewer → Open comments…*). Leaving the page with
 unsaved comments asks for confirmation. Chrome and Edge save through their
 save dialog and count the comments as saved once the file is written, not
 when the dialog is cancelled. Firefox and Safari only download, which does

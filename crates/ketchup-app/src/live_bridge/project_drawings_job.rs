@@ -21,6 +21,7 @@ use crate::app::project_drawings::ProjectDrawingsError;
 use crate::app::underlay_export::PublishGate;
 use crate::delivery::Deliver;
 use crate::export_bundle::ExportTransactionError;
+use crate::live_bridge::drawings::ExportDrawingsRequest;
 use ketchup_manufacturing::project_drawings::DrawingSet;
 
 type Made = Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>;
@@ -79,13 +80,16 @@ impl ProjectDrawingsExportJob {
 
 /// Whether `request` exports the project set, which runs as a job.
 pub(super) fn exports_project_drawings(request: &Request) -> bool {
-    matches!(request, Request::ExportDrawings { sheet_id: None, .. })
+    matches!(
+        request,
+        Request::ExportDrawings(ExportDrawingsRequest { sheet_id: None, .. })
+    )
 }
 
 /// Whether `request` exports drawings while the exact evaluation runs, so it
 /// waits for the evaluation as a job.
 pub(super) fn waits_for_exact(app: &KetchupApp, request: &Request) -> bool {
-    app.exact.task.is_some() && matches!(request, Request::ExportDrawings { .. })
+    app.exact.task.is_some() && matches!(request, Request::ExportDrawings(_))
 }
 
 /// Moves the stamp of a waiting `request` past the exact solids published
@@ -93,10 +97,10 @@ pub(super) fn waits_for_exact(app: &KetchupApp, request: &Request) -> bool {
 /// change since leaves it stale (review 2026-11-04 P3). Called each frame the
 /// export waits, so a change and a publication in one frame stay stale.
 fn carry_past_publication(app: &KetchupApp, request: &mut Request) {
-    if let Request::ExportDrawings {
+    if let Request::ExportDrawings(ExportDrawingsRequest {
         expected: Some(stamp),
         ..
-    } = request
+    }) = request
         && let Some((before, after)) = app.exact.published_epochs
         && stamp.mutation_epoch == before
     {
@@ -135,7 +139,7 @@ impl LiveBridge {
         if waits_for_exact(app, &request) {
             // The stamp is checked again when the export starts, past the
             // publication of the solids (`carry_past_publication`).
-            if let Request::ExportDrawings { expected, .. } = &request
+            if let Request::ExportDrawings(ExportDrawingsRequest { expected, .. }) = &request
                 && let Err(code) = Self::guard(app, expected)
             {
                 Self::reply(app, id, &reply, Err(code));

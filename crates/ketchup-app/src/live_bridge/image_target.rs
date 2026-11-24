@@ -159,7 +159,7 @@ impl IsolatedCapture {
         if self.scene {
             renderer
                 .callback_resources
-                .insert(crate::GpuInstancedRenderer::new(device, format));
+                .insert(crate::GpuInstancedRenderer::new(device, queue, format));
         }
         renderer
             .callback_resources

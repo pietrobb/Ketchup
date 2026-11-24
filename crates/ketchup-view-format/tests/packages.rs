@@ -658,6 +658,37 @@ fn glb_rejects_external_resources_overflow_indices_nan_and_hierarchy_cycles() {
     }
 }
 
+/// Review 2026-11-22 R1122ac-VW-1100: tens of thousands of nodes placing one
+/// large mesh passed every byte limit and froze the Viewer drawing and
+/// picking each copy. Every copy draws its mesh again: past 48 M indices
+/// drawn the package is refused, saying so; at the limit it is not.
+#[test]
+fn copies_of_a_mesh_count_towards_what_the_viewer_draws() {
+    let (manifest, mut doc, mut binary) = fixture();
+    let json = serde_json::to_vec(&manifest).expect("manifest");
+    // One mesh of 1 000 triangles.
+    let indices = 3_000;
+    binary.truncate(36);
+    for _ in 0..indices / 3 {
+        for index in [0_u32, 1, 2] {
+            binary.extend_from_slice(&index.to_le_bytes());
+        }
+    }
+    doc["buffers"][0]["byteLength"] = json!(binary.len());
+    doc["bufferViews"][1]["byteLength"] = json!(indices * 4);
+    doc["accessors"][1]["count"] = json!(indices);
+    let copies = |count: usize| {
+        let mut many = doc.clone();
+        let identity = doc["nodes"][0]["matrix"].clone();
+        let nodes = many["nodes"].as_array_mut().expect("nodes");
+        nodes.extend((2..count).map(|_| json!({"matrix": identity, "mesh": 0})));
+        many["scenes"][0]["nodes"] = json!((0..count).collect::<Vec<_>>());
+        Package::read(raw_package(&json, &encode_glb(&many, &binary)).as_slice())
+    };
+    assert_refused(copies(16_001), "glb.nodes", "copies of its meshes");
+    copies(16_000).expect("at the limit the package is read");
+}
+
 #[test]
 fn existing_model_glb_export_is_accepted_without_flattening_or_new_identity() {
     use ketchup_manufacturing::blender_export::{ExactGlbInstance, exact_model_glb_export};

@@ -130,6 +130,56 @@ fn vertical_line_typed_length_follows_the_hovered_direction() {
     assert_point(points[1], Vec3::new(0.0, 0.0, 35.0));
 }
 
+/// The Measure tool read only the straight distance between two points. The
+/// arrows now pin the second point to an axis through the first, as they pin a
+/// line, so a height or a run is read off a corner even when the point clicked,
+/// or snapped to, lies off that axis.
+#[test]
+fn arrow_locked_measure_reads_the_distance_along_one_axis() {
+    let mut app = ketchup_app::KetchupApp::new();
+    assert!(app.create_box());
+    let mut shell = Shell::from_app(app);
+    let before = shell.app().canonical_digest();
+    let corner = Vec3::new(0.0, 0.0, 20.0);
+    let far_corner = Vec3::new(100.0, 60.0, 20.0);
+    let measure = |shell: &mut Shell, end: Vec3| {
+        shell.click_at(shell.app().viewport_position(corner).unwrap());
+        shell.click_at(shell.app().viewport_position(end).unwrap());
+        shell.app().measured_points().unwrap()
+    };
+    shell.click_command(AppCommand::Measure);
+
+    shell.press_key(Key::ArrowUp);
+    assert_eq!(shell.app().measure_axis_lock(), Some(Axis::Z));
+    let catalog = shell.catalog();
+    assert!(
+        shell
+            .app()
+            .action_digest()
+            .contains(&catalog.text("axis-name-z"))
+    );
+    let (start, end) = measure(&mut shell, Vec3::new(0.0, 0.0, 45.0));
+    assert_point(start, corner);
+    // Nothing to snap to in the air: the pointer's ray is projected on the
+    // axis, as precise as a screen pixel, and stays exactly on it.
+    assert_eq!((end.x, end.y), (0.0, 0.0));
+    assert!((end.z - 45.0).abs() < 1.0e-3, "{end:?}");
+
+    // The lock stays for the next measurement; another arrow swaps the axis,
+    // and a snapped corner off the axis counts only its run along it.
+    shell.press_key(Key::ArrowRight);
+    assert_eq!(shell.app().measure_axis_lock(), Some(Axis::X));
+    let (_, end) = measure(&mut shell, far_corner);
+    assert_point(end, Vec3::new(100.0, 0.0, 20.0));
+    assert!((shell.app().measured_distance_mm().unwrap() - 100.0).abs() < 1.0e-6);
+
+    shell.press_key(Key::ArrowRight);
+    assert_eq!(shell.app().measure_axis_lock(), None);
+    let (_, end) = measure(&mut shell, far_corner);
+    assert_point(end, far_corner);
+    assert_eq!(shell.app().canonical_digest(), before);
+}
+
 #[test]
 fn arrow_locked_line_preview_and_exact_commit_share_the_same_world_axis() {
     for (key, axis, direction) in [

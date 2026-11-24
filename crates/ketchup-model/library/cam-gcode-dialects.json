@@ -1,0 +1,190 @@
+[
+  {
+    "schema": "ketchup.cam-gcode-dialect.v1",
+    "id": "iso_metric_gcode",
+    "name": "ISO 6983 metric G-code, Ketchup layout",
+    "sources": [
+      "ISO 6983-1:2009 word-address format: G0/G1/G2/G3 with X Y Z, incremental I J arc centres, F feed, S speed, T tool with M6, M3/M5 spindle, M30 end, G21 millimetres, G90 absolute, G17 XY plane, G54-G59 work offsets.",
+      "The program first cancels cutter radius and tool length compensation and canned cycles and sets feed per minute (G40 G49 G80 G94), then applies the length of the tool it changes to with G43 H on the rapid to the safe Z (R1119og-MF-801), so a controller measuring Z from the spindle nose keeps the tip at the programmed Z. The first move across starts only at the safe Z (MF-804).",
+      "The Ketchup records (plan, toolpath and simulation digests, feeds, safe height) are comments in parentheses, which ISO 6983 controllers skip; a ';' comment ends the block on some controllers.",
+      "A whole value is written without a decimal point (X10, F900). A controller without decimal point programming reads such a value in its least input increment, X10 as 0.010 mm; for such a controller use the FANUC dialect, which writes every value with a decimal point."
+    ],
+    "decimals": 6,
+    "decimal_point": "when_fractional",
+    "uppercase": false,
+    "line_numbers": null,
+    "start": [
+      "%"
+    ],
+    "header": [
+      "(KETCHUP CAM POSTPROCESSOR V1)",
+      "(PLAN {plan_digest})",
+      "(TOOLPATH {toolpath_digest})",
+      "(SIMULATION {simulation_fingerprint})",
+      "(CUTTING FEED {cutting_feed} MM/MIN)",
+      "(PLUNGE FEED {plunge_feed} MM/MIN)",
+      "(SAFE Z {safe_z})",
+      "G21 G17 G40 G49 G80 G90 G94",
+      "{work_offset}",
+      "T{tool} M6",
+      "S{spindle_rpm} M3",
+      "G0 G43 H{tool} Z{safe_z}"
+    ],
+    "motions": {
+      "rapid": "G0 X{x} Y{y} Z{z} (RAPID)",
+      "retract": "G0 X{x} Y{y} Z{z} (RETRACT)",
+      "plunge": "G1 X{x} Y{y} Z{z} F{feed} (PLUNGE)",
+      "cut": "G1 X{x} Y{y} Z{z} F{feed} (CUT)",
+      "arc_clockwise": "G2 X{x} Y{y} Z{z} I{i} J{j} F{feed} (CUT ARC)",
+      "arc_counterclockwise": "G3 X{x} Y{y} Z{z} I{i} J{j} F{feed} (CUT ARC)"
+    },
+    "footer": [
+      "M5",
+      "G49",
+      "M30"
+    ],
+    "end": [
+      "%"
+    ]
+  },
+  {
+    "schema": "ketchup.cam-gcode-dialect.v1",
+    "id": "fanuc",
+    "name": "FANUC milling (Series 0i/30i style), metric",
+    "sources": [
+      "FANUC milling programming conventions: a program between '%' lines with an O program number, N sequence numbers, comments only in parentheses, G00/G01/G02/G03 with incremental I J arc centres, T M06 tool change, G43 H tool length compensation before the first Z move, M03/M05 spindle, M30 end.",
+      "FANUC reads an axis or feed value written without a decimal point in least input increments (0.001 mm on IS-B), so every X, Y, Z, I, J and F value is written with a decimal point and three decimals at most.",
+      "Older FANUC controls accept only upper-case letters, so the whole program, digests included, is upper case."
+    ],
+    "decimals": 3,
+    "decimal_point": "always",
+    "uppercase": true,
+    "line_numbers": {
+      "prefix": "N",
+      "first": 10,
+      "step": 10,
+      "last": 99990
+    },
+    "start": [
+      "%",
+      "O1000 (KETCHUP CAM)"
+    ],
+    "header": [
+      "(PLAN {plan_digest})",
+      "(TOOLPATH {toolpath_digest})",
+      "(SIMULATION {simulation_fingerprint})",
+      "(CUTTING FEED {cutting_feed} MM/MIN)",
+      "(PLUNGE FEED {plunge_feed} MM/MIN)",
+      "G21 G17 G40 G49 G80 G90 G94",
+      "{work_offset}",
+      "T{tool} M06",
+      "S{spindle_rpm} M03",
+      "G00 G43 H{tool} Z{safe_z}"
+    ],
+    "motions": {
+      "rapid": "G00 X{x} Y{y} Z{z} (RAPID)",
+      "retract": "G00 X{x} Y{y} Z{z} (RETRACT)",
+      "plunge": "G01 X{x} Y{y} Z{z} F{feed} (PLUNGE)",
+      "cut": "G01 X{x} Y{y} Z{z} F{feed} (CUT)",
+      "arc_clockwise": "G02 X{x} Y{y} Z{z} I{i} J{j} F{feed} (ARC)",
+      "arc_counterclockwise": "G03 X{x} Y{y} Z{z} I{i} J{j} F{feed} (ARC)"
+    },
+    "footer": [
+      "M05",
+      "G49",
+      "M30"
+    ],
+    "end": [
+      "%"
+    ]
+  },
+  {
+    "schema": "ketchup.cam-gcode-dialect.v1",
+    "id": "grbl",
+    "name": "Grbl 1.1",
+    "sources": [
+      "https://github.com/gnea/grbl/blob/master/README.md, 'List of Supported G-Codes in Grbl v1.1' (read 2026-11-16): G0, G1, G2, G3, G4, G17, G21, G40, G49, G54-G59, G80, G90, G94, M2, M3, M5, M30 and the words F I J P S T X Y Z.",
+      "M6 is not in that list, so Grbl cannot change a tool: the program names the tool in a comment and it must be in the spindle, touched off, before the start.",
+      "Grbl does not wait for the spindle to reach speed, so the program dwells three seconds (G4 P3, P in seconds) after M3."
+    ],
+    "decimals": 3,
+    "decimal_point": "when_fractional",
+    "uppercase": false,
+    "line_numbers": null,
+    "start": [],
+    "header": [
+      "(KETCHUP CAM POSTPROCESSOR V1)",
+      "(PLAN {plan_digest})",
+      "(TOOLPATH {toolpath_digest})",
+      "(SIMULATION {simulation_fingerprint})",
+      "(CUTTING FEED {cutting_feed} MM/MIN)",
+      "(PLUNGE FEED {plunge_feed} MM/MIN)",
+      "(SAFE Z {safe_z})",
+      "(LOAD TOOL {tool} BEFORE START)",
+      "G21 G17 G40 G49 G80 G90 G94",
+      "{work_offset}",
+      "S{spindle_rpm} M3",
+      "G4 P3",
+      "G0 Z{safe_z}"
+    ],
+    "motions": {
+      "rapid": "G0 X{x} Y{y} Z{z} (RAPID)",
+      "retract": "G0 X{x} Y{y} Z{z} (RETRACT)",
+      "plunge": "G1 X{x} Y{y} Z{z} F{feed} (PLUNGE)",
+      "cut": "G1 X{x} Y{y} Z{z} F{feed} (CUT)",
+      "arc_clockwise": "G2 X{x} Y{y} Z{z} I{i} J{j} F{feed} (ARC)",
+      "arc_counterclockwise": "G3 X{x} Y{y} Z{z} I{i} J{j} F{feed} (ARC)"
+    },
+    "footer": [
+      "M5",
+      "M30"
+    ],
+    "end": []
+  },
+  {
+    "schema": "ketchup.cam-gcode-dialect.v1",
+    "id": "linuxcnc",
+    "name": "LinuxCNC (RS274/NGC), metric",
+    "sources": [
+      "https://linuxcnc.org/docs/html/gcode/overview.html (read 2026-11-16): a file that starts with a '%' line must end with one; M2 or M30 ends the program; comments in parentheses; at most 256 characters on a line; M6 T tool change; G43 tool length offset (modal group 8).",
+      "Arc centres I J are incremental, the RS274/NGC default (G91.1)."
+    ],
+    "decimals": 4,
+    "decimal_point": "when_fractional",
+    "uppercase": false,
+    "line_numbers": null,
+    "start": [
+      "%"
+    ],
+    "header": [
+      "(KETCHUP CAM POSTPROCESSOR V1)",
+      "(PLAN {plan_digest})",
+      "(TOOLPATH {toolpath_digest})",
+      "(SIMULATION {simulation_fingerprint})",
+      "(CUTTING FEED {cutting_feed} MM/MIN)",
+      "(PLUNGE FEED {plunge_feed} MM/MIN)",
+      "(SAFE Z {safe_z})",
+      "G21 G17 G40 G49 G80 G90 G94",
+      "{work_offset}",
+      "T{tool} M6",
+      "S{spindle_rpm} M3",
+      "G0 G43 H{tool} Z{safe_z}"
+    ],
+    "motions": {
+      "rapid": "G0 X{x} Y{y} Z{z} (RAPID)",
+      "retract": "G0 X{x} Y{y} Z{z} (RETRACT)",
+      "plunge": "G1 X{x} Y{y} Z{z} F{feed} (PLUNGE)",
+      "cut": "G1 X{x} Y{y} Z{z} F{feed} (CUT)",
+      "arc_clockwise": "G2 X{x} Y{y} Z{z} I{i} J{j} F{feed} (ARC)",
+      "arc_counterclockwise": "G3 X{x} Y{y} Z{z} I{i} J{j} F{feed} (ARC)"
+    },
+    "footer": [
+      "M5",
+      "G49",
+      "M2"
+    ],
+    "end": [
+      "%"
+    ]
+  }
+]

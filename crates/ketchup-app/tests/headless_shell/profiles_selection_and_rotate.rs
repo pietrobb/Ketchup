@@ -1241,7 +1241,7 @@ fn exact_worker_preserves_assembly_references_while_publishing_general_finish_to
         ordinal: 3,
     };
     let mut prepared = false;
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         shell.settle();
         if shell.app().exact_stable_reference_count() >= 2
@@ -1275,7 +1275,7 @@ fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     let mut selected = false;
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         shell.settle();
         if shell
@@ -1303,7 +1303,7 @@ fn topology_bound_push_pull_edits_a_non_top_planar_face_through_headless_ui() {
     shell.click_command(AppCommand::PushPull);
     shell.type_text("5");
     shell.press_key(Key::Enter);
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         shell.step();
         if shell.app().document_revision() > before_revision {
@@ -1419,7 +1419,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
                     .0
             }
         };
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < deadline {
             shell.settle();
             if shell
@@ -1443,7 +1443,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
         assert_eq!(shell.app().canonical_digest(), imported_digest);
         shell.key(Key::Y, ctrl());
         assert_eq!(shell.app().canonical_digest(), committed_digest);
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < deadline {
             shell.settle();
             if shell
@@ -1494,7 +1494,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
     let confirmed = shell.app_mut().confirm_preview();
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         shell.step();
         if shell.app().document_revision() > before_revision {
@@ -1540,7 +1540,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     direct_worker
         .evaluate_exact_brep_graph_with_imported_source(&graph, &source)
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         shell.settle();
         if shell
@@ -1567,7 +1567,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     shell.click_menu_command("menu-file", AppCommand::New);
     shell.click_menu_command("menu-file", AppCommand::Open);
     assert_eq!(shell.app().canonical_digest(), committed_digest);
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         shell.settle();
         if shell

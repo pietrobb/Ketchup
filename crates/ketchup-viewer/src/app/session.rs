@@ -326,7 +326,7 @@ fn write_durably(
 
 /// A rename, creation or removal in `dir` survives a power loss only once the
 /// directory itself is synced; elsewhere there is no such call.
-fn sync_directory(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn sync_directory(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
     #[cfg(not(unix))]

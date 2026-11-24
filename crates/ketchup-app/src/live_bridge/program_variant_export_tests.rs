@@ -18,6 +18,7 @@ fn run(bridge: &mut LiveBridge, app: &mut KetchupApp, request: Request) -> Value
 fn cabinet_with_variants() -> (KetchupApp, LiveBridge) {
     let (mut app, mut bridge) = setup();
     let apply = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: CABINET.to_owned(),
         overrides: None,
@@ -50,7 +51,17 @@ fn export(app: &KetchupApp, path: &Path) -> Request {
         expected: app.live_bridge_stamp(),
         path: path.display().to_string(),
         decimal: CsvDecimal::Point,
+        replace: false,
     }
+}
+
+/// [`export`] asking the user to replace a file there.
+fn export_replacing(app: &KetchupApp, path: &Path) -> Request {
+    let mut request = export(app, path);
+    if let Request::ExportProgramVariants { replace, .. } = &mut request {
+        *replace = true;
+    }
+    request
 }
 
 fn read(path: &Path) -> String {
@@ -75,10 +86,10 @@ fn every_variant_is_exported_from_a_worker_and_the_document_stays_as_it_is() {
         cancelled: Arc::new(AtomicBool::new(false)),
     };
     let request = export(&app, &target);
-    bridge.start_queued_variant_export(&app, &context, queued, request);
+    bridge.start_queued_variant_export(&mut app, &context, queued, request);
     // The UI thread only started the job; the worker evaluates and writes.
     assert!(bridge.program_check_job.is_some());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let answer = loop {
         bridge.poll_program_check_job(&mut app, &context);
         if let Ok(answer) = response.try_recv() {
@@ -159,9 +170,14 @@ fn a_variant_export_writes_numbers_as_the_request_names_them() {
     }
 }
 
+/// Owner decision R1.2 (review 2026-11-19 og): a file there is replaced only with
+/// replace and once the user agrees in the window, as every export asks.
 #[test]
-fn an_export_never_replaces_a_file_and_needs_variants() {
-    let (mut app, mut bridge) = cabinet_with_variants();
+fn an_export_replaces_a_file_once_the_user_agrees_and_needs_variants() {
+    let (app, mut bridge) = cabinet_with_variants();
+    let declining = crate::dialogs::ScriptedFileDialogs::new();
+    let asked = declining.clone();
+    let mut app = app.with_dialogs(Box::new(declining));
     let folder = tempfile::tempdir().unwrap();
     let takeoff = folder.path().join("cabinet.takeoff.xlsx");
     std::fs::write(&takeoff, b"user file").unwrap();
@@ -171,8 +187,40 @@ fn an_export_never_replaces_a_file_and_needs_variants() {
         bridge.execute(&mut app, request, false),
         Err("export_target_exists")
     );
+    let reason = take_error_details().unwrap().to_string();
+    assert!(reason.contains("replace: true"), "{reason}");
+    assert!(
+        asked.high_risk_prompts().is_empty(),
+        "without replace no one is asked"
+    );
+    let request = export_replacing(&app, &target);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("export_replace_declined")
+    );
+    assert_eq!(asked.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&takeoff).unwrap(), b"user file");
     assert!(!target.exists(), "neither table is written");
+
+    let agreeing = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = agreeing.clone();
+    let mut app = app.with_dialogs(Box::new(agreeing));
+    let request = export_replacing(&app, &target);
+    let result = run(&mut bridge, &mut app, request);
+    assert_eq!(result["exported"], 2, "{result}");
+    assert_eq!(
+        probe.high_risk_prompts().len(),
+        1,
+        "only the file there is asked about"
+    );
+    assert!(
+        std::fs::read(&takeoff).unwrap().starts_with(b"PK"),
+        "replaced"
+    );
+    assert!(
+        std::fs::read(&target).unwrap().starts_with(b"PK"),
+        "written new"
+    );
 
     for path in [
         folder.path().join("cabinet.pdf"),

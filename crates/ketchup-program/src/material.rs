@@ -42,8 +42,34 @@ impl Part {
         recess: f64,
         limit: f64,
     ) -> Option<f64> {
-        let material = self.material_test()?;
-        let mut least = leaves(&material, entry, inward, recess, limit);
+        let material = self.material_test(true)?;
+        Some(Self::along(&material, entry, inward, radius, recess, limit))
+    }
+
+    /// As [`Part::material_along`], but to where the drill leaves the part's
+    /// outer surface: its own cuts and pockets count as part of it, so a
+    /// blind hole that runs into one of them is still inside the part.
+    #[must_use]
+    pub fn stock_along(
+        &self,
+        entry: [f64; 3],
+        inward: [f64; 3],
+        radius: f64,
+        limit: f64,
+    ) -> Option<f64> {
+        let stock = self.material_test(false)?;
+        Some(Self::along(&stock, entry, inward, radius, 0.0, limit))
+    }
+
+    fn along(
+        material: &impl Fn([f64; 3]) -> bool,
+        entry: [f64; 3],
+        inward: [f64; 3],
+        radius: f64,
+        recess: f64,
+        limit: f64,
+    ) -> f64 {
+        let mut least = leaves(material, entry, inward, recess, limit);
         let rim = radius - CONTACT_FIT_MM;
         if rim > 0.0 {
             // Two unit vectors across `inward`, from the world axis least
@@ -59,17 +85,18 @@ impl Part {
             for i in 0..RIM_LINES {
                 let angle = std::f64::consts::TAU * f64::from(i) / f64::from(RIM_LINES);
                 let across = add(scale(u, rim * angle.cos()), scale(v, rim * angle.sin()));
-                least = least.min(leaves(&material, add(entry, across), inward, recess, least));
+                least = least.min(leaves(material, add(entry, across), inward, recess, least));
             }
         }
-        Some(least)
+        least
     }
 
     /// Whether a point in the part's frame is in its material, built once for
     /// all the lines of a drill. Holes and edge finishes are left out of it,
     /// so a part with thousands of holes is not walked through them for
-    /// every point (review PRG-7).
-    fn material_test(&self) -> Option<impl Fn([f64; 3]) -> bool + '_> {
+    /// every point (review PRG-7). Without `voids`, cuts and pockets are
+    /// left out too.
+    fn material_test(&self, voids: bool) -> Option<impl Fn([f64; 3]) -> bool + '_> {
         let ProgramPartBody::Extrusion {
             segments,
             distance_mm,
@@ -131,7 +158,7 @@ impl Part {
                     }
                     _ => false,
                 };
-                if removed {
+                if voids && removed {
                     return false;
                 }
             }

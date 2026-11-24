@@ -4,13 +4,16 @@
 
 use ketchup_tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_ANGULAR_TOLERANCE_RAD,
-    DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, ROUNDING,
+    DEFAULT_LINEAR_TOLERANCE_MM, MAX_COORDINATE_MM, NEGLIGIBLE, NETWORK_SURFACE_APPROXIMATION_MM,
+    RAIL_LOFT_APPROXIMATION_MM, ROUNDING, SURFACE_BLEND_ANGLE_RAD, SURFACE_BLEND_CURVATURE_SHARE,
 };
 use std::fmt;
 
 pub mod naming;
 
+mod blend;
 mod booleans;
+mod control_points;
 mod evidence;
 mod exchange;
 mod mesh;
@@ -22,6 +25,8 @@ mod spec;
 mod sweep_loft;
 mod thread;
 mod validation;
+pub use blend::SeamContinuity;
+pub use control_points::{SurfaceControlNet, SurfaceControlPoint};
 pub use evidence::*;
 pub use exchange::*;
 pub use ketchup_geometry::contact_patch::ContactPatch;
@@ -54,6 +59,11 @@ const fn native_tolerances() -> ffi::NativeTolerances {
         approximation: APPROXIMATION,
         negligible: NEGLIGIBLE,
         angular_rad: DEFAULT_ANGULAR_TOLERANCE_RAD,
+        rail_loft_approximation_mm: RAIL_LOFT_APPROXIMATION_MM,
+        network_surface_approximation_mm: NETWORK_SURFACE_APPROXIMATION_MM,
+        surface_blend_angle_rad: SURFACE_BLEND_ANGLE_RAD,
+        surface_blend_curvature_share: SURFACE_BLEND_CURVATURE_SHARE,
+        planar_profile_segments: ketchup_tolerance::limits::PLANAR_PROFILE_SEGMENTS,
     }
 }
 
@@ -69,6 +79,35 @@ mod ffi {
         approximation: f64,
         negligible: f64,
         angular_rad: f64,
+        rail_loft_approximation_mm: f64,
+        network_surface_approximation_mm: f64,
+        surface_blend_angle_rad: f64,
+        surface_blend_curvature_share: f64,
+        planar_profile_segments: usize,
+    }
+
+    /// How two surfaces meet along the edges they share: the largest gap,
+    /// angle between normals and difference of the curvatures across the
+    /// seam over interior samples, and the second surface's largest cross
+    /// curvature (signed by the first surface's normal).
+    struct NativeSeam {
+        status: u8,
+        diagnostic: String,
+        length_mm: f64,
+        gap_mm: f64,
+        normal_angle_rad: f64,
+        curvature_difference_per_mm: f64,
+        second_curvature_per_mm: f64,
+    }
+
+    /// The control net of a surface's B-spline form: x, y, z and weight of
+    /// every control point, v fastest.
+    struct NativeControlNet {
+        status: u8,
+        diagnostic: String,
+        u_count: u32,
+        v_count: u32,
+        values: Vec<f64>,
     }
 
     extern "Rust" {
@@ -324,9 +363,31 @@ mod ffi {
         fn planar_surface_profile_native(
             segments: &[NativeSegment],
         ) -> UniquePtr<NativeOperationResult>;
+        fn fill_network_surface_native(
+            boundary: &[NativeSegment],
+            inner: &[NativeSegment],
+        ) -> UniquePtr<NativeOperationResult>;
         fn trim_surface_native(
             target: &NativeOperationResult,
             cutter: &NativeOperationResult,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn blend_surfaces_native(
+            first: &NativeOperationResult,
+            first_order: u8,
+            second: &NativeOperationResult,
+            second_order: u8,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn measure_seam_native(
+            first: &NativeOperationResult,
+            second: &NativeOperationResult,
+        ) -> NativeSeam;
+        fn surface_control_net_native(body: &NativeOperationResult) -> NativeControlNet;
+        fn move_surface_control_point_native(
+            body: &NativeOperationResult,
+            u_index: u32,
+            v_index: u32,
+            offset: NativePoint,
+            weight: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn extend_planar_surface_native(
             target: &NativeOperationResult,
@@ -388,6 +449,7 @@ mod ffi {
             segments: &[NativeSegment],
             spline_points: &[NativePoint],
             guide_segments: &[NativeSegment],
+            rail_segments: &[NativeSegment],
             continuity: u8,
             make_solid: bool,
         ) -> UniquePtr<NativeOperationResult>;
@@ -407,6 +469,13 @@ mod ffi {
             motion: &NativeSegment,
             radius: f64,
             axial_length: f64,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn sweep_tipped_axial_tool_native(
+            motion: &NativeSegment,
+            radius: f64,
+            axial_length: f64,
+            tip_kind: u8,
+            tip_length: f64,
         ) -> UniquePtr<NativeOperationResult>;
         fn extrude_mixed_profile_native(
             segments: &[NativeSegment],
@@ -511,6 +580,15 @@ mod ffi {
             target: &NativeOperationResult,
             tool: &NativeOperationResult,
             operation: u8,
+        ) -> UniquePtr<NativeOperationResult>;
+        fn cut_axial_sweeps_native(
+            target: &NativeOperationResult,
+            motions: &[NativeSegment],
+            radius: f64,
+            axial_length: f64,
+            tip_kind: u8,
+            tip_length: f64,
+            matrix: &[f64],
         ) -> UniquePtr<NativeOperationResult>;
         fn named_prism_native(
             segments: &[NativeSegment],

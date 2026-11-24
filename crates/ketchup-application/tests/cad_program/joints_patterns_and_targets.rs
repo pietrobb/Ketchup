@@ -2670,6 +2670,315 @@ fn public_program_sweeps_a_general_sketch_profile_along_a_spatial_path_atomicall
     );
 }
 
+/// The AI fills a loop of 3D curves with a surface in one operation; a loop that
+/// does not close is refused before anything changes.
+#[test]
+fn public_boundary_surface_program_fills_a_closed_loop_of_curves() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Boundary surfaces".into(),
+            },
+        ]))
+        .unwrap();
+    let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
+    let networked = |segments, inner| {
+        program(vec![AssistantCadEditOperation::AppendFeature {
+            definition_id: definition.0.into(),
+            name: "Patch".into(),
+            feature: AssistantCadBodyFeature::SurfaceBody {
+                source: AssistantCadSurfaceBodySource::Boundary { segments, inner },
+            },
+        }])
+    };
+    let boundary = |segments| networked(segments, Vec::new());
+    let square = || {
+        vec![
+            line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+            line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+            line([40.0, 30.0, 0.0], [0.0, 30.0, 10.0]),
+            line([0.0, 30.0, 10.0], [0.0, 0.0, 0.0]),
+        ]
+    };
+    let input = boundary(square());
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][0]["feature"]["source"]["type"],
+        "boundary"
+    );
+    assert!(
+        serialized["operations"][0]["feature"]["source"]
+            .get("inner")
+            .is_none(),
+        "a loop without a network serializes as before"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(1)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { segments, inner })
+            if segments.len() == 4 && inner.is_empty()
+    ));
+
+    // A network: the surface also passes through a curve across the loop.
+    let through = networked(square(), vec![line([0.0, 15.0, 5.0], [40.0, 15.0, 5.0])]);
+    assert_eq!(through.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &through,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(1)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary { inner, .. }) if inner.len() == 1
+    ));
+    let too_many = networked(
+        square(),
+        (0..65)
+            .map(|index| {
+                let x = 0.5 + f64::from(index) * 0.5;
+                line([x, 0.0, 5.0], [x, 30.0, 5.0])
+            })
+            .collect(),
+    );
+    assert!(too_many.validate().is_err());
+
+    let baseline = document.current().canonical_digest();
+    let open = boundary(vec![
+        line([0.0, 0.0, 0.0], [40.0, 0.0, 10.0]),
+        line([40.0, 0.0, 10.0], [40.0, 30.0, 0.0]),
+    ]);
+    // Refused while planning or, at the latest, by the model's preview.
+    let refused = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &open,
+    )
+    .map(|batch| document.preview_batch(&batch).is_err());
+    assert!(matches!(refused, Err(_) | Ok(true)));
+    assert_eq!(document.current().canonical_digest(), baseline);
+}
+
+/// The AI blends two surfaces it has just made, choosing how the blend meets
+/// each; a blend of a surface with itself is refused before planning.
+#[test]
+fn public_blend_program_joins_two_earlier_surfaces() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Blended surfaces".into(),
+            },
+        ]))
+        .unwrap();
+    let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
+    let plate = |x: f64, z: f64| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Plate".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::Boundary {
+                segments: vec![
+                    line([x, 0.0, z], [x + 30.0, 0.0, z]),
+                    line([x + 30.0, 0.0, z], [x + 30.0, 20.0, z]),
+                    line([x + 30.0, 20.0, z], [x, 20.0, z]),
+                    line([x, 20.0, z], [x, 0.0, z]),
+                ],
+                inner: Vec::new(),
+            },
+        },
+    };
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let blend = |first, second| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Blend".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::Blend {
+                first_feature_id: first,
+                first_continuity: AssistantCadLoftContinuity::Curvature,
+                second_feature_id: second,
+                second_continuity: AssistantCadLoftContinuity::Tangent,
+            },
+        },
+    };
+    let input = program(vec![
+        plate(0.0, 0.0),
+        plate(60.0, 20.0),
+        blend(earlier_body(0), earlier_body(1)),
+    ]);
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][2]["feature"]["source"]["type"],
+        "blend"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    assert!(matches!(
+        preview.feature(FeatureId(3)).unwrap().kind(),
+        FeatureKind::SurfaceBody(SurfaceBodySpec::Blend {
+            first: FeatureId(1),
+            first_continuity: ketchup_model::document::LoftContinuity::Curvature,
+            second: FeatureId(2),
+            second_continuity: ketchup_model::document::LoftContinuity::Tangent,
+        })
+    ));
+    assert_eq!(
+        preview.feature(FeatureId(3)).unwrap().kind().body_kind(),
+        Some(BodyKind::Surface)
+    );
+
+    let itself = program(vec![
+        plate(0.0, 0.0),
+        blend(earlier_body(0), earlier_body(0)),
+    ]);
+    assert!(itself.validate().is_err());
+}
+
+/// The AI moves a control point of a surface it has just made and keeps the
+/// seam with a neighbour tangent; keeping the moved surface's own seam with
+/// itself, or a move that changes nothing, is refused before planning.
+#[test]
+fn public_control_point_program_reshapes_an_earlier_surface() {
+    let definition = DefinitionId(1);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Reshaped surface".into(),
+            },
+        ]))
+        .unwrap();
+    let line = |start_mm, end_mm| AssistantSpatialPathSegment::Line { start_mm, end_mm };
+    let plate = |x: f64| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Plate".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::Boundary {
+                segments: vec![
+                    line([x, 0.0, 0.0], [x + 30.0, 0.0, 0.0]),
+                    line([x + 30.0, 0.0, 0.0], [x + 30.0, 20.0, 0.0]),
+                    line([x + 30.0, 20.0, 0.0], [x, 20.0, 0.0]),
+                    line([x, 20.0, 0.0], [x, 0.0, 0.0]),
+                ],
+                inner: Vec::new(),
+            },
+        },
+    };
+    let earlier_body = |operation_index| {
+        AssistantCadFeatureReference::ProgramOutput(AssistantCadProgramFeatureReference {
+            operation_index,
+            output: AssistantCadProgramFeatureOutput::BodyFeature,
+        })
+    };
+    let moved = |offset_mm, neighbour| AssistantCadEditOperation::AppendFeature {
+        definition_id: definition.0.into(),
+        name: "Moved".into(),
+        feature: AssistantCadBodyFeature::SurfaceBody {
+            source: AssistantCadSurfaceBodySource::ControlPoint {
+                target_feature_id: earlier_body(1),
+                u_index: 1,
+                v_index: 1,
+                from_mm: [15.0, 10.0, 0.0],
+                offset_mm,
+                weight: None,
+                keep: vec![AssistantCadSurfaceSeam {
+                    surface_feature_id: neighbour,
+                    continuity: AssistantCadLoftContinuity::Tangent,
+                }],
+            },
+        },
+    };
+    let input = program(vec![
+        plate(0.0),
+        plate(30.0),
+        moved([0.0, 0.0, 2.0], earlier_body(0)),
+    ]);
+    let serialized = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        serialized["operations"][2]["feature"]["source"]["type"],
+        "control_point"
+    );
+    assert_eq!(
+        serde_json::from_value::<AssistantCadEditProgram>(serialized).unwrap(),
+        input
+    );
+    assert_eq!(input.validate(), Ok(()));
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &input,
+    )
+    .unwrap();
+    let preview = document.preview_batch(&batch).unwrap();
+    let FeatureKind::SurfaceBody(SurfaceBodySpec::ControlPoint {
+        target,
+        from_mm,
+        offset_mm,
+        keep,
+        ..
+    }) = preview.feature(FeatureId(3)).unwrap().kind()
+    else {
+        panic!("not a control-point move");
+    };
+    assert_eq!(
+        (*target, *from_mm, *offset_mm),
+        (FeatureId(2), [15.0, 10.0, 0.0], [0.0, 0.0, 2.0])
+    );
+    assert_eq!(keep[0].surface, FeatureId(1));
+    assert_eq!(
+        preview.feature(FeatureId(3)).unwrap().kind().body_kind(),
+        Some(BodyKind::Surface)
+    );
+
+    for refused in [
+        moved([0.0, 0.0, 2.0], earlier_body(1)),
+        moved([0.0, 0.0, 0.0], earlier_body(0)),
+    ] {
+        assert!(
+            program(vec![plate(0.0), plate(30.0), refused])
+                .validate()
+                .is_err()
+        );
+    }
+}
+
 #[test]
 fn public_surface_program_is_typed_atomic_and_refuses_solid_surface_targets() {
     let definition = DefinitionId(1);

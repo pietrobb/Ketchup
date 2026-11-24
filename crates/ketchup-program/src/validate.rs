@@ -1,6 +1,7 @@
 //! Generic checks over an evaluated model. They report issues; they never
 //! reject the model. Production export decides whether issues block.
 
+use crate::connectivity::{join, root};
 use crate::contact::ContactFaces;
 use crate::exact::ExactShapes;
 use crate::faces::FaceKind;
@@ -8,12 +9,22 @@ use crate::frame::{self, Obb};
 use crate::model::{
     Part, ProgramBooleanKind, ProgramModel, ProgramPartBody, ProgramProfileSegment,
 };
+use crate::near_pairs::near_pairs;
 use ketchup_geometry::linalg::dot;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
+use std::ops::ControlFlow;
+
+#[cfg(test)]
+#[path = "validate_joint_tests.rs"]
+mod joint_tests;
 
 /// Issue kind for a box overlap that only the exact solids can decide.
 pub const COLLISION_UNVERIFIED: &str = "collision_unverified";
+/// Issue kind of two parts of one bought assembly file whose solids overlap
+/// where the file's maker placed them (a fitting on its mounting plate): told,
+/// but no collision ([`crate::imported::same_assembly_placement`]).
+pub const PURCHASED_ASSEMBLY_CONTACT: &str = "purchased_assembly_contact";
 
 /// Issue kind of a report whose checks did not finish within the program
 /// worker's limits: nothing was checked, and nothing was found to pass.
@@ -378,7 +389,8 @@ pub(crate) fn is_box(part: &Part) -> bool {
             | ProgramPartBody::Extrusion { .. }
             | ProgramPartBody::Revolve { .. }
             | ProgramPartBody::Sweep { .. }
-            | ProgramPartBody::Loft { .. } => false,
+            | ProgramPartBody::Loft { .. }
+            | ProgramPartBody::Imported(_) => false,
         }
 }
 
@@ -415,108 +427,193 @@ fn round(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0 + 0.0
 }
 
+/// How many overlapping pairs of parts [`collisions`] lists before it stops
+/// looking: a loop placing every part at the same spot overlaps each with
+/// every other, and checking each pair took minutes (review 2026-11-22
+/// R1122ac-PG-1102: 1 000 parts at the origin, 28 s and 499 500 issues).
+const MAX_COLLISIONS: usize = 100;
+
+/// How many pairs whose boxes overlap but whose solids only the exact shapes
+/// settle [`collisions`] lists before it stops looking. Counted apart from
+/// [`MAX_COLLISIONS`]: a model of many turned members seated on others has hundreds,
+/// none of them a collision once the window measures the solids.
+const MAX_UNVERIFIED_COLLISIONS: usize = 2_000;
+
+/// The issue in place of overlapping pairs past `limit` of kind `kind`.
+fn too_many_collisions(kind: &'static str, limit: usize) -> Issue {
+    let (severity, what) = if kind == COLLISION_UNVERIFIED {
+        (
+            Severity::Warning,
+            "pairs of parts whose bounding boxes overlap",
+        )
+    } else {
+        (Severity::Error, "pairs of parts overlap")
+    };
+    Issue {
+        source_lines: Vec::new(),
+        severity,
+        kind,
+        parts: Vec::new(),
+        message: format!(
+            "more than {limit} {what}; the first {limit} are listed and the rest of the pairs \
+             not checked"
+        ),
+        where_mm: None,
+        hint: "Parts placed in a loop that does not move them lie on top of each other: give \
+               each its own place, then check again."
+            .to_owned(),
+    }
+}
+
 fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>) {
     let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..model.parts.len())
+    let solids = (0..model.parts.len())
         .filter(|i| model.parts[*i].is_solid())
         .collect();
-    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
-    for (position, &left) in order.iter().enumerate() {
-        let a = &model.parts[left];
-        for &right in &order[position + 1..] {
-            let b = &model.parts[right];
-            if bounds[right].0[0] >= bounds[left].1[0] - CONTACT_FIT_MM {
-                break;
-            }
-            if model.are_alternatives(a, b) {
-                continue;
-            }
-            let Some(region) = overlap(a, b) else {
-                continue;
-            };
-            if !booleans_leave_overlap(a, b)
-                || !booleans_leave_overlap(b, a)
-                || trims_separate(a, b)
-            {
-                continue;
-            }
-            let seated = seated_in_pocket(a, b);
-            let declared = model.joints.iter().any(|joint| {
-                joint.parts.contains(&a.name)
-                    && joint.parts.contains(&b.name)
-                    && joint
-                        .volume_mm
-                        .is_some_and(|volume| contains(volume, region))
-            });
-            if seated || declared || threaded_into(a, b, region) {
-                continue;
-            }
-            let (min, max) = region;
-            if needs_exact_shapes(a, b) {
-                match exact.between(a, b) {
-                    Some(pair) if pair.penetrating() => {
-                        issues.push(Issue {
-                            source_lines: Vec::new(),
-                            severity: Severity::Error,
-                            kind: "collision",
-                            parts: vec![a.name.clone(), b.name.clone()],
-                            message: format!(
-                                "the solids of {} and {} overlap ({} mm³)",
-                                a.name,
-                                b.name,
-                                (pair.common_volume_mm3 * 10.0).round() / 10.0
-                            ),
-                            where_mm: Some((min.map(round), max.map(round))),
-                            hint: "Move or resize one part so they only touch, or subtract one \
-                                   from the other, or declare a joint with a volume."
-                                .to_owned(),
-                        });
-                        continue;
-                    }
-                    Some(_) => continue,
-                    None => {}
-                }
+    let (mut collided, mut unverified) = (0, 0);
+    // Solids whose bounds do not meet on some axis do not overlap.
+    near_pairs(&bounds, solids, 0.0, |left, right| {
+        if bounds[right].0[0] >= bounds[left].1[0] - CONTACT_FIT_MM {
+            return ControlFlow::Continue(());
+        }
+        let before = issues.len();
+        collision(
+            model,
+            exact,
+            &model.parts[left],
+            &model.parts[right],
+            issues,
+        );
+        let Some(found) = issues.get(before) else {
+            return ControlFlow::Continue(());
+        };
+        let kind = found.kind;
+        let (count, limit) = if kind == COLLISION_UNVERIFIED {
+            (&mut unverified, MAX_UNVERIFIED_COLLISIONS)
+        } else {
+            (&mut collided, MAX_COLLISIONS)
+        };
+        *count += 1;
+        if *count <= limit {
+            return ControlFlow::Continue(());
+        }
+        issues.truncate(before);
+        issues.push(too_many_collisions(kind, limit));
+        ControlFlow::Break(())
+    });
+}
+
+/// Reports the overlap of parts `a` and `b` that nothing allows.
+fn collision(
+    model: &ProgramModel,
+    exact: &ExactShapes,
+    a: &Part,
+    b: &Part,
+    issues: &mut Vec<Issue>,
+) {
+    if model.are_alternatives(a, b) {
+        return;
+    }
+    let Some(region) = overlap(a, b) else {
+        return;
+    };
+    if !booleans_leave_overlap(a, b) || !booleans_leave_overlap(b, a) || trims_separate(a, b) {
+        return;
+    }
+    let seated = seated_in_pocket(a, b);
+    let declared = model.joints.iter().any(|joint| {
+        joint.parts.contains(&a.name)
+            && joint.parts.contains(&b.name)
+            && joint
+                .volume_mm
+                .is_some_and(|volume| contains(volume, region))
+    });
+    if seated || declared || threaded_into(a, b, region) {
+        return;
+    }
+    let (min, max) = region;
+    if needs_exact_shapes(a, b) {
+        match exact.between(a, b) {
+            Some(pair) if pair.penetrating() && crate::imported::same_assembly_placement(a, b) => {
                 issues.push(Issue {
                     source_lines: Vec::new(),
                     severity: Severity::Warning,
-                    kind: COLLISION_UNVERIFIED,
+                    kind: PURCHASED_ASSEMBLY_CONTACT,
                     parts: vec![a.name.clone(), b.name.clone()],
                     message: format!(
-                        "the bounding boxes of {} and {} overlap by {} x {} x {} mm; \
-                         whether the solids themselves overlap needs the exact shapes",
+                        "the solids of {} and {} overlap ({} mm³) where their assembly file \
+                         places them: a contact in the bought assembly, not a collision",
                         a.name,
                         b.name,
-                        round(max[0] - min[0]),
-                        round(max[1] - min[1]),
-                        round(max[2] - min[2]),
+                        (pair.common_volume_mm3 * 10.0).round() / 10.0
                     ),
                     where_mm: Some((min.map(round), max.map(round))),
-                    hint: "The Kečup window (program apply) settles this on the exact solids; \
-                           a box-only check cannot."
+                    hint: "Nothing to fix in the program: the file's maker assembled them so."
                         .to_owned(),
                 });
-                continue;
+                return;
             }
-            issues.push(Issue {
-                source_lines: Vec::new(),
-                severity: Severity::Error,
-                kind: "collision",
-                parts: vec![a.name.clone(), b.name.clone()],
-                message: format!(
-                    "{} and {} overlap by {} x {} x {} mm",
-                    a.name,
-                    b.name,
-                    round(max[0] - min[0]),
-                    round(max[1] - min[1]),
-                    round(max[2] - min[2]),
-                ),
-                where_mm: Some((min.map(round), max.map(round))),
-                hint: "Move or resize one part so they only touch, or cut a pocket/groove \
-                       for the other part, or declare a joint with a volume."
-                    .to_owned(),
-            });
+            Some(pair) if pair.penetrating() => {
+                issues.push(Issue {
+                    source_lines: Vec::new(),
+                    severity: Severity::Error,
+                    kind: "collision",
+                    parts: vec![a.name.clone(), b.name.clone()],
+                    message: format!(
+                        "the solids of {} and {} overlap ({} mm³)",
+                        a.name,
+                        b.name,
+                        (pair.common_volume_mm3 * 10.0).round() / 10.0
+                    ),
+                    where_mm: Some((min.map(round), max.map(round))),
+                    hint: "Move or resize one part so they only touch, or subtract one \
+                           from the other, or declare a joint with a volume."
+                        .to_owned(),
+                });
+                return;
+            }
+            Some(_) => return,
+            None => {}
         }
+        issues.push(Issue {
+            source_lines: Vec::new(),
+            severity: Severity::Warning,
+            kind: COLLISION_UNVERIFIED,
+            parts: vec![a.name.clone(), b.name.clone()],
+            message: format!(
+                "the bounding boxes of {} and {} overlap by {} x {} x {} mm; \
+                 whether the solids themselves overlap needs the exact shapes",
+                a.name,
+                b.name,
+                round(max[0] - min[0]),
+                round(max[1] - min[1]),
+                round(max[2] - min[2]),
+            ),
+            where_mm: Some((min.map(round), max.map(round))),
+            hint: "The Kečup window (program apply) settles this on the exact solids; \
+                   a box-only check cannot."
+                .to_owned(),
+        });
+        return;
     }
+    issues.push(Issue {
+        source_lines: Vec::new(),
+        severity: Severity::Error,
+        kind: "collision",
+        parts: vec![a.name.clone(), b.name.clone()],
+        message: format!(
+            "{} and {} overlap by {} x {} x {} mm",
+            a.name,
+            b.name,
+            round(max[0] - min[0]),
+            round(max[1] - min[1]),
+            round(max[2] - min[2]),
+        ),
+        where_mm: Some((min.map(round), max.map(round))),
+        hint: "Move or resize one part so they only touch, or cut a pocket/groove \
+               for the other part, or declare a joint with a volume."
+            .to_owned(),
+    });
 }
 
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
@@ -559,8 +656,19 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             } else {
                 let limit = span.min(hole.depth_mm + THIN_WALL_MM + 1.0);
                 let rim = if off_face { 0.0 } else { radius };
-                part.material_along(local_entry, local_inward, rim, hole.depth_mm, limit)
-                    .unwrap_or(span)
+                let material = part
+                    .material_along(local_entry, local_inward, rim, hole.depth_mm, limit)
+                    .unwrap_or(span);
+                // A hole that drills material and then runs into a pocket or
+                // cut-out of the same part ends there, inside the part: only
+                // leaving its outer surface breaks through (owner 2026-11-23,
+                // a fitting's pin hole into the pocket of its support unit).
+                if material > CONTACT_FIT_MM && hole.depth_mm >= material - CONTACT_FIT_MM {
+                    part.stock_along(local_entry, local_inward, rim, limit)
+                        .unwrap_or(material)
+                } else {
+                    material
+                }
             };
             if let Some((false, at, face)) = fit {
                 issues.push(Issue {
@@ -661,10 +769,15 @@ fn joints<'a>(
             Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
                 (gap > joint.max_gap_mm + CONTACT_FIT_MM).then_some(Some(gap))
             }),
-            None => (faces.contact(a, b).is_none()
-                && overlap(a, b).is_none()
-                && gap(a, b) > joint.max_gap_mm + CONTACT_FIT_MM)
-                .then(|| Some(gap(a, b))),
+            // Boxes within the allowed gap settle it before any face is
+            // measured.
+            None => {
+                let gap = gap(a, b);
+                (gap > joint.max_gap_mm + CONTACT_FIT_MM
+                    && faces.contact(a, b).is_none()
+                    && overlap(a, b).is_none())
+                .then_some(Some(gap))
+            }
         };
         if let Some(apart) = apart {
             if apart.is_none() && joint.max_gap_mm > CONTACT_FIT_MM {
@@ -699,34 +812,38 @@ fn joints<'a>(
 fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for param in &model.params {
         if let Some(value) = param.refused_override {
-            // 1e300 in a sentence, not its 301 digits.
-            let refused = if value.abs() >= 1.0e15 {
-                format!("{value:e}")
-            } else {
-                value.to_string()
-            };
+            let refused = crate::eval::number_text(value);
             // A count given 2.5 is refused as one outside its range is
             // (review 2026-11-06 r23 P3: it failed the whole program); one
             // refused for both is told both (review 2026-11-07 P3).
             let outside = param.min.is_some_and(|min| value < min)
                 || param.max.is_some_and(|max| value > max);
             let whole = crate::eval::is_whole_override(param, value);
-            let range = format!(
-                "is outside {}",
-                crate::eval::range_text(param.min, param.max)
-            );
+            let bounds = crate::eval::range_text(param.min, param.max);
+            let range = format!("is outside {bounds}");
             let (why, hint) = match (outside, whole) {
                 (true, true) => (
                     range,
-                    "Set a value inside the declared range, or widen the range.",
+                    "Set a value inside the declared range, or widen the range.".to_owned(),
                 ),
-                (true, false) => (
-                    format!("{range} and {}", crate::eval::WHOLE_ONLY),
-                    "Set a whole number inside the declared range, or widen the range.",
-                ),
+                // Widening the range takes no fraction either (review r26 P3):
+                // the whole number of the range nearest it.
+                (true, false) => {
+                    let mut nearest = value.round();
+                    if let Some(max) = param.max {
+                        nearest = nearest.min(max.floor());
+                    }
+                    if let Some(min) = param.min {
+                        nearest = nearest.max(min.ceil());
+                    }
+                    (
+                        format!("{range} and {}", crate::eval::WHOLE_ONLY),
+                        format!("Set a whole number inside {bounds}, as {nearest}."),
+                    )
+                }
                 (false, _) => (
                     crate::eval::WHOLE_ONLY.to_owned(),
-                    "Set a whole number, or drop whole = True from the param.",
+                    "Set a whole number, or drop whole = True from the param.".to_owned(),
                 ),
             };
             issues.push(Issue {
@@ -736,10 +853,11 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 parts: Vec::new(),
                 message: format!(
                     "param {} = {refused} {why}; the default {} is used",
-                    param.name, param.default,
+                    param.name,
+                    crate::eval::number_text(param.default),
                 ),
                 where_mm: None,
-                hint: hint.to_owned(),
+                hint,
             });
         }
         let low = param.min.is_some_and(|min| param.value < min);
@@ -753,7 +871,7 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 message: format!(
                     "param {} = {} is outside {}",
                     param.name,
-                    param.value,
+                    crate::eval::number_text(param.value),
                     crate::eval::range_text(param.min, param.max),
                 ),
                 where_mm: None,
@@ -774,7 +892,7 @@ fn support<'a>(
     let count = model.parts.len();
     let floor = model.floor_z_mm.unwrap_or(0.0);
     let grounded = model.grounded_parts();
-    let mut supported: Vec<bool> = model
+    let supported: Vec<bool> = model
         .parts
         .iter()
         .map(|part| grounded.contains(&part.name) || crate::load_path::on_floor(part, floor))
@@ -782,39 +900,12 @@ fn support<'a>(
     if model.floor_z_mm.is_none() && !supported.iter().any(|value| *value) {
         return;
     }
-    // Who touches or is joined to whom, decided once per pair; support then
-    // spreads through it from the parts that stand.
-    let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); count];
-    let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..count).filter(|i| model.parts[*i].is_solid()).collect();
-    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
-    for (position, &left) in order.iter().enumerate() {
-        for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                break;
-            }
-            if (0..3).any(|axis| {
-                bounds[left].0[axis] > bounds[right].1[axis] + CONTACT_FIT_MM
-                    || bounds[right].0[axis] > bounds[left].1[axis] + CONTACT_FIT_MM
-            }) {
-                continue;
-            }
-            let (part, other) = (&model.parts[left], &model.parts[right]);
-            let touching = match exact.decides(part, other) {
-                Some(pair) => pair.in_contact(),
-                None => {
-                    faces.contact(part, other).is_some()
-                        || overlap(part, other).is_some()
-                        || ((part.is_rotated() || other.is_rotated())
-                            && gap(part, other) <= CONTACT_FIT_MM)
-                }
-            };
-            if touching {
-                neighbours[left].push(right);
-                neighbours[right].push(left);
-            }
-        }
-    }
+    // Which parts touch or are joined, through each other, as groups; a part
+    // is supported where its group holds one that stands. A pair already in
+    // one group is not measured (review 2026-11-22 R1122ac-PG-1102: 1 000
+    // parts at one spot measured 499 500 contacts). Joints are grouped first,
+    // so a jointed pair's faces are not measured either.
+    let mut groups: Vec<usize> = (0..count).collect();
     let index: std::collections::BTreeMap<&str, usize> = model
         .parts
         .iter()
@@ -835,21 +926,36 @@ fn support<'a>(
                 .decides(part, other)
                 .is_none_or(|pair| pair.gap_mm().is_some_and(|gap| gap <= reach))
         {
-            neighbours[left].push(right);
-            neighbours[right].push(left);
+            join(&mut groups, left, right);
         }
     }
-    let mut pending: Vec<usize> = (0..count).filter(|item| supported[*item]).collect();
-    while let Some(item) = pending.pop() {
-        for &next in &neighbours[item] {
-            if !supported[next] {
-                supported[next] = true;
-                pending.push(next);
+    let bounds: Vec<_> = model.parts.iter().map(Part::world_bounds).collect();
+    let solids = (0..count).filter(|i| model.parts[*i].is_solid()).collect();
+    near_pairs(&bounds, solids, CONTACT_FIT_MM, |left, right| {
+        if root(&groups, left) == root(&groups, right) {
+            return ControlFlow::Continue(());
+        }
+        let (part, other) = (&model.parts[left], &model.parts[right]);
+        let touching = match exact.decides(part, other) {
+            Some(pair) => pair.in_contact(),
+            None => {
+                faces.contact(part, other).is_some()
+                    || overlap(part, other).is_some()
+                    || ((part.is_rotated() || other.is_rotated())
+                        && gap(part, other) <= CONTACT_FIT_MM)
             }
+        };
+        if touching {
+            join(&mut groups, left, right);
         }
-    }
+        ControlFlow::Continue(())
+    });
+    let standing: std::collections::BTreeSet<usize> = (0..count)
+        .filter(|item| supported[*item])
+        .map(|item| root(&groups, item))
+        .collect();
     for (index, part) in model.parts.iter().enumerate() {
-        if part.is_solid() && !supported[index] {
+        if part.is_solid() && !standing.contains(&root(&groups, index)) {
             issues.push(Issue {
                 source_lines: Vec::new(),
                 severity: Severity::Warning,

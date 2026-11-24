@@ -12,6 +12,7 @@
 
 pub mod bom;
 pub mod cad;
+pub mod calculation;
 pub mod clearance;
 pub mod cnc_dxf;
 mod connectivity;
@@ -20,6 +21,7 @@ mod continuous_span;
 pub mod cut_list;
 pub mod cutting;
 pub mod document;
+mod edge_finish_fit;
 pub mod eval;
 pub mod exact;
 mod execution_budget;
@@ -27,21 +29,28 @@ pub mod expect;
 mod face_at;
 pub mod faces;
 pub mod frame;
+pub mod imported;
 pub mod joint_check;
+pub mod joint_kind;
 pub mod load_path;
 pub mod loads;
 mod material;
 pub mod member_check;
 pub mod model;
 pub mod motion;
+mod near_pairs;
+mod nesting;
 mod opposing_holes;
 pub mod path;
 pub mod quote;
 pub mod relations;
+pub mod sheet;
 pub mod shop_drawing;
+pub mod site;
 pub mod source_edit;
 pub mod table;
 pub mod takeoff;
+pub mod thermal;
 pub mod validate;
 mod wire_names;
 
@@ -53,6 +62,13 @@ pub use eval::{
 };
 pub use exact::{ExactPair, ExactShapes, exact_candidates, rechecked};
 pub use execution_budget::{MAX_HEAP_BYTES as EVALUATION_HEAP_BYTES, MAX_TIME as EVALUATION_TIME};
+
+/// How long evaluating a program and every check of its model may take
+/// together, in the window's worker and in `ketchup-program check` alike
+/// (review 2026-11-22 R1122ac-PG-1102: the command had no deadline): the
+/// checks of the largest example program (1 854 parts) take far longer than
+/// its evaluation, 1.5 s in a release build and 28 s in a debug build.
+pub const CHECK_TIME: std::time::Duration = std::time::Duration::from_secs(60);
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
@@ -96,6 +112,9 @@ pub struct Report {
     /// EN 1995-1-1 check of every load-path member, when timber strength classes are declared.
     #[serde(default, skip_serializing_if = "member_check::DesignReport::is_empty")]
     pub design: member_check::DesignReport,
+    /// The thermal check of every `thermal_check()` build-up.
+    #[serde(default, skip_serializing_if = "thermal::ThermalReport::is_empty")]
+    pub thermal: thermal::ThermalReport,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
     /// The counts of the whole report when this one lists only its first issues
@@ -161,6 +180,29 @@ impl Report {
         verdict
     }
 
+    /// The exit code of the command line for this report: 2 when a `--set`
+    /// named no parameter of the program (review 2026-11-09 PG-245: it was
+    /// evaluated otherwise than asked, so its verdict is not one), 1 when an
+    /// error stands or a member or joint fails, 3 when something is not
+    /// verified or a load reaches no member, else 0. A build-up whose thermal
+    /// check is not verified (e.g. Glaser finds condensation, review
+    /// 2026-11-20 ac TH-900) exits 3 like statics; a failed one is an error.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        let thermal_unverified = self
+            .thermal
+            .buildups
+            .iter()
+            .any(|check| check.status == "not_verified");
+        match (self.ok, self.statics()) {
+            _ if !self.unused_overrides.is_empty() => 2,
+            (false, _) | (_, Statics::Failed) => 1,
+            (true, Statics::NotVerified) => 3,
+            _ if thermal_unverified => 3,
+            _ => 0,
+        }
+    }
+
     /// Replaces the issues (e.g. after an exact check) and recounts them. A
     /// report whose checks did not finish is not `ok`: nothing says it is.
     pub fn set_issues(&mut self, mut issues: Vec<Issue>) {
@@ -201,6 +243,7 @@ impl Report {
             joints: Vec::new(),
             loads: loads::LoadReport::default(),
             design: member_check::DesignReport::default(),
+            thermal: thermal::ThermalReport::default(),
             log: evaluated.log.clone(),
             unused_overrides: evaluated.unused_overrides.clone(),
             truncated: None,
@@ -225,7 +268,7 @@ impl Report {
     /// Takes the issues and relations [`refine`] re-derived. Refining checks
     /// collisions and relations only, so a report whose checks stopped keeps
     /// saying that joints and loads were not checked, and the issues of its
-    /// loads and cutting plans stay.
+    /// loads, cutting plans and thermal checks stay.
     pub fn apply_refined(&mut self, refined: Refined) {
         let mut issues = refined.issues;
         issues.extend(
@@ -239,7 +282,10 @@ impl Report {
                         loads::AREA_LOAD_EDGE_ON,
                         loads::ANCHORAGE_SMALL,
                         loads::JOINT_KIND_DOUBTFUL,
+                        loads::JOINT_KIND_UNKNOWN,
                         cutting::CUTTING_UNPLACED,
+                        thermal::THERMAL_FAILED,
+                        thermal::THERMAL_NOT_VERIFIED,
                     ]
                     .contains(&issue.kind)
                 })
@@ -380,9 +426,12 @@ pub struct Refined {
 /// of [`report`], so the editor runs it in the program worker too.
 #[must_use]
 pub fn refine(model: &ProgramModel, exact: &ExactShapes) -> Refined {
+    // The relations reuse the faces the checks took of each part.
+    let mut faces = contact::ContactFaces::default();
+    let issues = validate::validate_with_faces(model, exact, &mut faces);
     Refined {
-        relations: relations_with(model, &[], exact),
-        issues: validate_with(model, exact),
+        relations: relations::relations_with_faces(model, &[], exact, &mut faces),
+        issues,
         truncated: None,
     }
 }
@@ -414,6 +463,8 @@ pub fn report(evaluated: &Evaluated) -> Report {
     issues.extend(loads.issues());
     let bom = bom(&evaluated.model);
     issues.extend(cutting::issues(&bom.cutting));
+    let thermal = thermal::thermal_checks(&evaluated.model);
+    issues.extend(thermal.issues());
     locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
@@ -423,12 +474,18 @@ pub fn report(evaluated: &Evaluated) -> Report {
         ok: errors == 0,
         errors,
         warnings: issues.len() - errors,
-        relations: relations(&evaluated.model, &issues),
+        relations: relations::relations_with_faces(
+            &evaluated.model,
+            &issues,
+            &ExactShapes::default(),
+            &mut faces,
+        ),
         issues,
         params: evaluated.model.params.clone(),
         bom,
         joints: joint_check::joint_checks(&evaluated.model, &loads),
         design: member_check::member_checks(&evaluated.model, &loads),
+        thermal,
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
@@ -456,6 +513,7 @@ pub fn report_before_exact(evaluated: &Evaluated) -> Report {
         bom: bom(&evaluated.model),
         joints: joint_check::joint_checks(&evaluated.model, &loads),
         design: member_check::member_checks(&evaluated.model, &loads),
+        thermal: thermal::thermal_checks(&evaluated.model),
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
@@ -465,6 +523,7 @@ pub fn report_before_exact(evaluated: &Evaluated) -> Report {
     };
     let mut issues = validate::collisions_only(&evaluated.model);
     issues.extend(report.loads.issues());
+    issues.extend(report.thermal.issues());
     issues.extend(cutting::issues(&report.bom.cutting));
     report.set_issues(issues);
     report

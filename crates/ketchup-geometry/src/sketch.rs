@@ -2554,7 +2554,7 @@ impl SketchSpec {
             entities.insert(entity.id(), entity);
         }
 
-        let (variable_layouts, variable_count) = variable_layouts(&self.entities)?;
+        let (layouts, variable_count) = variable_layouts(&self.entities, &self.constraints)?;
         debug_assert_eq!(variable_count, degrees_of_freedom);
         let mut rank_equations = Vec::<Vec<usize>>::new();
         let mut constraint_equation_ranges = Vec::new();
@@ -2601,10 +2601,7 @@ impl SketchSpec {
                 .checked_add(equations)
                 .ok_or(SketchError::ResourceLimit)?;
             let start = rank_equations.len();
-            rank_equations.extend(constraint_variable_equations(
-                constraint,
-                &variable_layouts,
-            )?);
+            rank_equations.extend(constraint_variable_equations(constraint, &layouts)?);
             constraint_equation_ranges.push((constraint.id, start..rank_equations.len()));
         }
         let mut dimensional_targets = BTreeMap::new();
@@ -2634,7 +2631,7 @@ impl SketchSpec {
         let (status, unconstrained_entity_ids) = rank::analyze(
             &solved_entities,
             &self.constraints,
-            &variable_layouts,
+            &layouts,
             &rank_equations,
             &constraint_equation_ranges,
             variable_count,

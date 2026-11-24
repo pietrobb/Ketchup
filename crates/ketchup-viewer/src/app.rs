@@ -26,7 +26,7 @@ use std::{
 pub mod benchmark;
 mod comments_section;
 mod measure_section;
-mod session;
+pub(crate) mod session;
 mod settings_section;
 mod startup;
 pub use session::{SessionKeeper, SessionMark};

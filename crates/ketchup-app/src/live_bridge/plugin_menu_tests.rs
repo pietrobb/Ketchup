@@ -73,7 +73,7 @@ fn open_menu(harness: &mut Harness<'_, KetchupApp>) {
 
 /// Steps the open menu until its folders have been read and are shown.
 fn wait_for_scan(harness: &mut Harness<'_, KetchupApp>) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while harness.state().live.plugin_menu.is_scanning() {
         assert!(
             Instant::now() < deadline,

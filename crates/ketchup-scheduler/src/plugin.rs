@@ -1,3 +1,4 @@
+use crate::memory_budget;
 use ketchup_assistant::extension::{
     PLUGIN_PROTOCOL_V1, PluginCapability, PluginGateway, PluginGatewayError, PluginGrant,
     PluginLimits, PluginManifest, PluginProgram, PluginRequest, PluginResponse,
@@ -5,7 +6,7 @@ use ketchup_assistant::extension::{
 use ketchup_model::document::Snapshot;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
-use process_wrap::std::{ChildWrapper, CommandWrap, KillOnDrop};
+use process_wrap::std::{ChildWrapper, CommandWrap, JobMemoryLimit, KillOnDrop};
 #[cfg(windows)]
 use process_wrap::std::{CreationFlags, JobObject};
 use std::ffi::OsString;
@@ -62,13 +63,18 @@ pub(crate) fn plugin_command(
     #[cfg(windows)]
     command
         .wrap(CreationFlags(CREATE_NO_WINDOW))
-        .wrap(KillOnDrop)
-        .wrap(JobObject);
+        .wrap(KillOnDrop);
     // Its own process group: stopping the plugin signals the group, so a
     // process the plugin started does not outlive it (SEC-6). On Linux it is
     // also killed when the host dies (EX-7); the thread that spawns it waits for it.
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader()).wrap(KillOnDrop);
+    // It may commit what an exact worker may, so a plugin that allocates without end
+    // stops itself, not the window (review 2026-11-03 PL-141: it had no cap). On Windows
+    // the job takes the limit, so it comes before the job.
+    command.wrap(JobMemoryLimit(crate::exact_worker_memory_bytes()));
+    #[cfg(windows)]
+    command.wrap(JobObject);
     command
 }
 
@@ -128,6 +134,16 @@ pub fn run_plugin_command(
         &command.arguments,
         command.working_directory.as_deref(),
     )?;
+    // The plugin is busy from start to end: the window's budget stops it only when
+    // the processes doing work together pass it.
+    let budget = memory_budget::track(memory_budget::window_memory_budget(), &*child);
+    let _guard = budget.as_ref().map(memory_budget::Registration::busy);
+    let blamed = |error| {
+        budget
+            .as_ref()
+            .and_then(memory_budget::Registration::stopped)
+            .map_or(error, PluginHostError::MemoryBudget)
+    };
     let stdin = child
         .stdin()
         .take()
@@ -210,11 +226,11 @@ pub fn run_plugin_command(
             // Descendants must be terminated even when the plugin exits unsuccessfully.
             let exit = wait_for_exit(child.as_mut(), deadline, cancelled);
             terminate(child.as_mut())?;
-            exit?;
+            exit.map_err(blamed)?;
             Ok(result)
         }
         Err(error) => match terminate(child.as_mut()) {
-            Ok(()) => Err(error),
+            Ok(()) => Err(blamed(error)),
             Err(cleanup_error) => Err(cleanup_error),
         },
     }
@@ -535,6 +551,9 @@ pub enum PluginHostError {
     InvalidTimeout,
     TimedOut,
     Cancelled,
+    /// The background jobs of the window together used more than its memory budget,
+    /// and the plugin was stopped.
+    MemoryBudget(memory_budget::BudgetStop),
 }
 
 impl fmt::Display for PluginHostError {
@@ -560,6 +579,7 @@ impl fmt::Display for PluginHostError {
             Self::InvalidTimeout => formatter.write_str("plugin timeout is not representable"),
             Self::TimedOut => formatter.write_str("plugin process timed out"),
             Self::Cancelled => formatter.write_str("plugin process was cancelled"),
+            Self::MemoryBudget(stop) => stop.fmt(formatter),
         }
     }
 }

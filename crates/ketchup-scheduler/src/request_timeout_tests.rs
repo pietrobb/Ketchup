@@ -41,6 +41,7 @@ fn controlled_worker() -> (
             response_receiver,
             memory_limit: 0,
             stderr_tail: None,
+            budget: None,
             _temp_directory: tempfile::tempdir().unwrap(),
         },
         write_receiver,
@@ -73,6 +74,7 @@ fn request_timeout_terminates_exact_worker_descendants() {
         response_receiver,
         memory_limit: 0,
         stderr_tail: None,
+        budget: None,
         _temp_directory: tempfile::tempdir().unwrap(),
     };
     let responder = std::thread::spawn(move || {
@@ -117,6 +119,7 @@ fn dropping_exact_worker_terminates_descendants() {
         response_receiver,
         memory_limit: 0,
         stderr_tail: None,
+        budget: None,
         _temp_directory: tempfile::tempdir().unwrap(),
     };
     std::thread::sleep(Duration::from_millis(300));
@@ -202,6 +205,56 @@ fn workers_and_plugins_start_without_a_console_window_inside_their_job() {
         );
         assert!(command.has_wrap::<JobObject>() && command.has_wrap::<KillOnDrop>());
     }
+}
+
+/// Review 2026-11-03 PL-141: a plugin had no memory cap on any platform.
+#[test]
+fn workers_and_plugins_have_a_memory_cap() {
+    use process_wrap::std::JobMemoryLimit;
+    let worker = limited_worker_command(Command::new("ketchup-exact-worker"), Some(1 << 30));
+    let plugin = crate::plugin::plugin_command(Path::new("python3"), &[], None);
+    for command in [worker, plugin] {
+        assert!(command.has_wrap::<JobMemoryLimit>());
+    }
+}
+
+/// Linux sends PR_SET_PDEATHSIG when the thread that started the child ends, not
+/// the process. Exact workers are started on threads that end long before them, so
+/// KillOnDrop there killed them mid-request ("worker exited before replying"). The
+/// worker dies with its handle through ExactWorkerClient::drop and with the host
+/// through exit_with_parent instead. The worker reads its own parent-death signal,
+/// so the test does not guess how long the starting thread takes to end.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "subprocess used by request timeout tests"]
+fn worker_reporting_its_parent_death_signal() {
+    println!("PDEATHSIG {:?}", nix::sys::prctl::get_pdeathsig().unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_outlives_the_thread_that_started_it() {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "request_timeout_tests::worker_reporting_its_parent_death_signal",
+            "--ignored",
+            "--nocapture",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = spawn_limited_worker_command(command, None).unwrap();
+    let signal = BufReader::new(child.stdout().take().unwrap())
+        .lines()
+        .map(Result::unwrap)
+        .find(|line| line.starts_with("PDEATHSIG "));
+    child.wait().unwrap();
+    assert_eq!(
+        signal.as_deref(),
+        Some("PDEATHSIG None"),
+        "the worker would die with the thread that started it"
+    );
 }
 
 // The worker compares its parent with this pid, not with the parent it finds
@@ -427,12 +480,15 @@ fn converted_iges_past_32_mib_is_returned_whole() {
 }
 
 /// A graph request and an exchange request (converting a STEP file) are
-/// given their own budgets, not the 5 s of a simple call (EX-2): both workers
-/// answer only after that and both answers are taken.
+/// given their own budgets, not the 5 s of a simple call (EX-2), and so is the
+/// handshake: a worker just started is still loading its libraries (OCCT), which
+/// under load takes longer, and a slow start is not a hung worker (idea #40). All
+/// three workers answer only after 5 s and all answers are taken.
 #[test]
-fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
+fn handshake_graph_and_exchange_requests_outlast_the_simple_call_budget() {
     assert_eq!(DEFAULT_WORKER_REQUEST_TIMEOUT, Duration::from_secs(5));
     assert_eq!(EXACT_BREP_GRAPH_REQUEST_TIMEOUT, Duration::from_secs(60));
+    let (mut starting_worker, starting_writes, starting_responses) = controlled_worker();
     let (mut graph_worker, graph_writes, graph_responses) = controlled_worker();
     let (mut exchange_worker, exchange_writes, exchange_responses) = controlled_worker();
     let output = tempfile::NamedTempFile::new().unwrap();
@@ -442,10 +498,16 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
         sha256: None,
     });
     let responder = std::thread::spawn(move || {
-        for writes in [graph_writes, exchange_writes] {
+        for writes in [starting_writes, graph_writes, exchange_writes] {
             writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
         }
         std::thread::sleep(DEFAULT_WORKER_REQUEST_TIMEOUT + Duration::from_millis(500));
+        let hello = WorkerReply::Hello {
+            protocol: crate::protocol::protocol_identity().to_owned(),
+        };
+        starting_responses
+            .send(WorkerResponse::Reply(Box::new(hello)))
+            .unwrap();
         graph_responses
             .send(WorkerResponse::Reply(Box::new(WorkerReply::Done)))
             .unwrap();
@@ -455,6 +517,7 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
     });
     let started = Instant::now();
     std::thread::scope(|scope| {
+        let handshake = scope.spawn(|| starting_worker.ping());
         let graph = scope.spawn(|| {
             graph_worker.request_with_timeout(
                 &WorkerRequest::Hello,
@@ -471,6 +534,7 @@ fn graph_and_exchange_requests_outlast_the_simple_call_budget() {
         );
         assert_eq!(converted, Ok(b"converted IGES".to_vec()));
         assert_eq!(graph.join().unwrap(), Ok(WorkerReply::Done));
+        assert_eq!(handshake.join().unwrap(), Ok(()));
     });
     assert!(started.elapsed() > DEFAULT_WORKER_REQUEST_TIMEOUT);
     responder.join().unwrap();
@@ -497,6 +561,70 @@ fn simple_calls_time_out_at_the_default_budget() {
     assert!(started.elapsed() >= DEFAULT_WORKER_REQUEST_TIMEOUT);
     assert!(worker.child.inner_mut().wait().is_ok());
     responder.join().unwrap();
+}
+
+/// Standard error that says one line and then stays open, as a killed worker's does
+/// while Windows is still ending it, until the test drops the sender of `open`.
+struct OpenStderr {
+    line: Option<&'static [u8]>,
+    open: Receiver<()>,
+}
+
+impl Read for OpenStderr {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.line.take() {
+            Some(line) => {
+                buffer[..line.len()].copy_from_slice(line);
+                Ok(line.len())
+            }
+            // The stream ends when the test is done with it.
+            None => Ok(self.open.recv().map_or(0, |()| 0)),
+        }
+    }
+}
+
+/// Nightly 2026-11-23: each request a check past its deadline stopped waited 3 s
+/// more for the killed worker's standard error to end, and the check took 14 s for
+/// its 1.3 s. A timed-out worker is not waited for, and the allocation failure it
+/// said before it was held still makes the timeout the memory limit.
+#[test]
+fn a_timed_out_worker_is_not_waited_for_its_standard_error() {
+    let said: [(&'static [u8], bool); 2] = [
+        (b"loading\n", false),
+        (b"memory allocation of 99 bytes failed\n", true),
+    ];
+    let timed_out = WorkerError::RequestTimedOut(Duration::from_millis(80));
+    assert_eq!(worker_client::stderr_wait(&timed_out), Duration::ZERO);
+    for (line, memory) in said {
+        let (mut worker, writes, _responses) = controlled_worker();
+        let (_open, open) = mpsc::channel();
+        let stderr = OpenStderr {
+            line: Some(line),
+            open,
+        };
+        worker.stderr_tail = Some(worker_client::stderr_tail(Some(stderr)));
+        let responder = std::thread::spawn(move || {
+            writes.recv().unwrap().acknowledgment.send(Ok(())).unwrap();
+        });
+        // The line is read while the request waits its 80 ms; the stream stays
+        // open, and the wait for its end is the one asserted above.
+        let error = worker
+            .request_with_timeout(
+                &WorkerRequest::Hello,
+                &NEVER_CANCELLED,
+                Duration::from_millis(80),
+            )
+            .unwrap_err();
+        if memory {
+            assert_eq!(error, WorkerError::MemoryLimit { bytes: 0 });
+        } else {
+            assert_eq!(
+                error,
+                WorkerError::RequestTimedOut(Duration::from_millis(80))
+            );
+        }
+        responder.join().unwrap();
+    }
 }
 
 #[test]

@@ -54,6 +54,64 @@ def test_a_new_variant_fails_until_reviewed_and_a_removed_one_always_fails():
     ]
 
 
+def test_an_extension_field_a_release_lacks_must_be_marked():
+    # Review 2026-11-10 REL-404: 0.3.2 dropped the north it did not know.
+    old = """
+pub struct SheetSettings {
+    #[serde(default)]
+    pub format: Option<SheetFormat>,
+    // pub north: Option<i32>,
+}
+"""
+    head = """
+pub struct SheetSettings {
+    pub format: Option<SheetFormat>,
+    pub north: Option<i32>,
+    pub scale: Option<u32>,
+}
+
+impl SheetSettings {
+    pub fn lost_by_released_readers(&self) -> bool {
+        let Self { format: _, scale: _, north } = self;
+        north.is_some()
+    }
+}
+"""
+    assert checker.struct_fields(old, "SheetSettings") == {"format"}
+    assert checker.field_problems("SheetSettings", "lost_by_released_readers", head, old, "0.3.2") == [
+        "SheetSettings::scale: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"
+    ]
+    assert checker.field_problems("SheetSettings", "lost_by_released_readers", head, "", "0.1.0") == []
+    # Review 2026-11-20 ac P3: the last field of a one-line pattern, a field `..` leaves
+    # out and a function that takes nothing apart were not read as ignored.
+    for function in (
+        "let Self { north, format: _, scale: _ } = self;\n        north.is_some()",
+        "let Self { north, format: _, .. } = self;\n        north.is_some()",
+        "self.north.is_some()",
+    ):
+        changed = head.replace("let Self { format: _, scale: _, north } = self;\n        north.is_some()", function)
+        assert function in changed
+        assert checker.field_problems(
+            "SheetSettings", "lost_by_released_readers", changed, old, "0.3.2"
+        ) == [
+            *(["SheetSettings::north: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"]
+              if function.startswith("self.") else []),
+            "SheetSettings::scale: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers",
+        ]
+    # Review 2026-11-21 ac P3: a field bound to an unused `_name` was read as marked, and
+    # of two patterns only the first was read.
+    for function, unmarked in (
+        ("let Self { north: _north, format: _, scale } = self;\n        scale.is_some()", "north"),
+        ("let Self { north, format: _, scale } = self;\n"
+         "        let Self { north, format: _, .. } = self;\n        north.is_some()", "scale"),
+    ):
+        changed = head.replace("let Self { format: _, scale: _, north } = self;\n        north.is_some()", function)
+        assert function in changed
+        assert checker.field_problems(
+            "SheetSettings", "lost_by_released_readers", changed, old, "0.3.2"
+        ) == [f"SheetSettings::{unmarked}: 0.3.2 drops it at its next Save; mark it in lost_by_released_readers"]
+
+
 def test_what_a_release_reads_is_a_product_of_integers():
     assert checker.product("64 * 1024 * 1024") == 64 * 1024 * 1024
     assert checker.product("1_000") == 1000
@@ -103,6 +161,7 @@ spec = importlib.util.spec_from_file_location("release_reads", {str(ROOT / "scri
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 checker.serde_enums = lambda tag: {{}}
+checker.extension_problems = lambda tag: []
 checker.version = lambda tag: "0.3.0"
 checker.what_it_reads = lambda tag: []
 checker.old_workspace = lambda tag, target: pathlib.Path(".")
@@ -129,7 +188,8 @@ def test_every_job_that_tests_its_crates_keeps_their_saved_files_for_the_release
     # Review 2026-10-29 proposal 5.4: the application tests save documents too.
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     runs = re.findall(r"cargo test --locked \$(?:env:)?CRATES[^\n]*", ci)
-    tests = [run for run in runs if "--ignored" not in run]
+    # A build with --no-run (for the tests run as root) saves nothing.
+    tests = [run for run in runs if "--ignored" not in run and "--no-run" not in run]
     # Crates without OCCT, and those with it on Windows and on Linux.
     assert len(tests) == 3
     assert all("--features ketchup-model/saved-files" in run for run in tests)
@@ -153,6 +213,7 @@ def test_a_failing_test_does_not_stop_the_reads_of_the_files_others_saved(tmp_pa
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker.subprocess, "CalledProcessError", subprocess.CalledProcessError)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "version", lambda tag: "0.3.0")
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: [])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
@@ -174,6 +235,7 @@ def test_a_file_a_release_opens_but_loses_a_field_of_when_saving_fails(tmp_path,
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
@@ -198,6 +260,7 @@ def test_no_release_restoring_the_history_fails(tmp_path, monkeypatch, capsys, r
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
@@ -218,6 +281,7 @@ def test_a_release_restoring_no_history_fails_while_another_restores_it(tmp_path
 
     monkeypatch.setattr(checker.subprocess, "run", run)
     monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
     monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
     monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
     monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
@@ -226,6 +290,31 @@ def test_a_release_restoring_no_history_fails_while_another_restores_it(tmp_path
     for tag in checker.RELEASES:
         named = f"Kečup {checker.version(tag)} restored the Undo history of no file" in out
         assert named == (tag != "v0.3.1"), out
+
+
+def test_a_file_the_tests_saved_but_did_not_keep_fails_the_reads(tmp_path, monkeypatch, capsys):
+    # Review 2026-11-03 TST-122: a file Save could not keep was only logged, which libtest
+    # captures, so the reads lost it without a word. It leaves a `.lost` mark instead.
+    files = tmp_path / "files"
+    files.mkdir()
+    (files / "saved-108-a.ketchup").write_bytes(b"x")
+    (files / "lost-1.lost").write_text("Access is denied. (os error 5)", encoding="utf-8")
+
+    def run(command, **kwargs):
+        if "release-reader" in command:
+            history = Path(command[-1]) / "history"
+            history.mkdir(parents=True)
+            (history / "saved-108-a.ketchup").write_bytes(b"x")
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "extension_problems", lambda tag: [])
+    monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
+    monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
+    monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
+    assert checker.main(["--tag", "v0.3.1", "--files", str(files)]) == 1
+    assert "Access is denied. (os error 5)" in capsys.readouterr().out
 
 
 class _Here:

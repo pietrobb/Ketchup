@@ -16,6 +16,7 @@ default = []
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-assistant = { path = "../ketchup-assistant" }
 ketchup-dwg = { path = "../ketchup-dwg" }
+ketchup-skp = { path = "../ketchup-skp" }
 ciborium = "0.2"
 ketchup-model = { path = "../ketchup-model" }
 ketchup-exact = { path = "../ketchup-exact" }
@@ -30,7 +31,7 @@ wasmi = "1.1.0"
 process-wrap = { version = "10.0.0", default-features = false, features = ["std", "creation-flags", "job-object", "kill-on-drop", "process-group"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.31", default-features = false, features = ["process", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }

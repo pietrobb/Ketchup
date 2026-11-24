@@ -1,6 +1,9 @@
 use super::*;
 use ketchup_geometry::linalg::Affine3;
 
+mod mesh_look;
+pub use mesh_look::*;
+
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -527,6 +530,9 @@ pub enum BooleanOperation {
 }
 
 pub const MESH_BODY_SCHEMA_V1: &str = "ketchup.mesh-body.v1";
+/// A mesh that closes no solid, such as a SketchUp face or a pane of glass:
+/// shown, selected and snapped to, with no volume (see [`MeshBodySpec::is_sheet`]).
+pub const MESH_SHEET_SCHEMA_V1: &str = "ketchup.mesh-sheet.v1";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V1: &str = "ketchup.imported-exact-body.v1";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V2: &str = "ketchup.imported-exact-body.v2";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V3: &str = "ketchup.imported-exact-body.v3";
@@ -579,6 +585,12 @@ pub struct ImportedExactBodySpec {
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
+    /// Where the source assembly places the part `source_part_index` (every
+    /// placement from its root down to it), which a program's occurrence of
+    /// it composes; the body itself stays in the part's own frame. None when
+    /// that is no move. Format 121.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_placement: Option<Transform>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -587,9 +599,19 @@ pub struct MeshBodySpec {
     pub vertices_mm: Vec<[f64; 3]>,
     pub triangles: Vec<[u32; 3]>,
     pub authority: MeshAuthority,
+    /// The pictures it shows, as an imported SketchUp texture. Format 112.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<MeshLook>,
 }
 
 impl MeshBodySpec {
+    /// An open mesh, a surface: what needs a solid, as a volume, a boolean or
+    /// a made part, refuses it.
+    #[must_use]
+    pub fn is_sheet(&self) -> bool {
+        self.schema == MESH_SHEET_SCHEMA_V1
+    }
+
     #[must_use]
     pub fn exact_conversion_loss_report(&self) -> Option<String> {
         let MeshAuthority::ExactConversion(conversion) = &self.authority else {
@@ -881,7 +903,58 @@ pub enum SurfaceBodySpec {
         sections: Vec<LoftSection>,
         guide: Option<FeatureId>,
         continuity: LoftContinuity,
+        /// A second spatial path, from the first section's border to the
+        /// last's: every section is stretched so its border stays on it.
+        /// Needs `guide`. Format 116.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<FeatureId>,
     },
+    /// The smoothest surface spanning one closed loop of spatial lines, arcs
+    /// and cubic Beziers, which may meet at corners.
+    Boundary {
+        segments: Vec<SpatialPathSegment>,
+        /// Curves of a network inside the loop the surface must also pass
+        /// through, each on its own: up to 64 lines, arcs and cubic Beziers.
+        /// Format 117.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inner: Vec<SpatialPathSegment>,
+    },
+    /// A surface across the gap between two earlier single-face surfaces,
+    /// from the edge of each that faces the other, meeting each in position,
+    /// tangent plane or curvature. Both stay as they are. Format 118.
+    Blend {
+        first: FeatureId,
+        first_continuity: LoftContinuity,
+        second: FeatureId,
+        second_continuity: LoftContinuity,
+    },
+    /// An earlier single-face surface with one control point of its B-spline
+    /// form (row `u_index`, column `v_index`, from 0), which lies at `from_mm`,
+    /// moved by `offset_mm` and, with `weight`, given a new positive weight.
+    /// Every seam in `keep` must hold its continuity after the move or the
+    /// move is refused. When an earlier edit changes the control net so the
+    /// point of these indices no longer lies at `from_mm`, the move is refused
+    /// with both positions instead of moving another point (review 2026-11-19
+    /// og EXA-800). The earlier surface stays as it is. Format 119.
+    ControlPoint {
+        target: FeatureId,
+        u_index: u32,
+        v_index: u32,
+        from_mm: [f64; 3],
+        offset_mm: [f64; 3],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<SurfaceSeam>,
+    },
+}
+
+/// A neighbouring surface whose seam with a reshaped surface keeps its
+/// continuity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SurfaceSeam {
+    pub surface: FeatureId,
+    pub continuity: LoftContinuity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1044,6 +1117,11 @@ pub enum FeatureKind {
         sections: Vec<LoftSection>,
         guide: Option<FeatureId>,
         continuity: LoftContinuity,
+        /// A second spatial path, from the first section's border to the
+        /// last's: every section is stretched so its border stays on it.
+        /// Needs `guide`. Format 116.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rail: Option<FeatureId>,
     },
     SheetMetal(SheetMetalSpec),
     ImportedExactBody(ImportedExactBodySpec),
@@ -1173,6 +1251,17 @@ impl FeatureKind {
             profile,
             path,
             up: None,
+        }
+    }
+
+    /// A solid Loft straight up through `sections`, with neither guide nor rail.
+    #[must_use]
+    pub fn loft(sections: Vec<LoftSection>) -> Self {
+        Self::Loft {
+            sections,
+            guide: None,
+            continuity: LoftContinuity::Position,
+            rail: None,
         }
     }
 
@@ -1496,7 +1585,12 @@ impl FeatureKind {
             | Self::ConstructionAxis { .. }
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
-            | Self::SurfaceBody(SurfaceBodySpec::Planar { .. })
+            | Self::SurfaceBody(
+                SurfaceBodySpec::Planar { .. }
+                | SurfaceBodySpec::Boundary { .. }
+                | SurfaceBodySpec::Blend { .. }
+                | SurfaceBodySpec::ControlPoint { .. },
+            )
             | Self::SurfaceTrim { .. }
             | Self::RigidTransform { .. }
             | Self::Scale { .. }
@@ -1543,6 +1637,7 @@ impl FeatureKind {
             | Self::ConstructionAxis { .. }
             | Self::ConstructionPlane { .. }
             | Self::ImportedExactBody(_)
+            | Self::SurfaceBody(SurfaceBodySpec::Boundary { .. })
             | Self::MeshBody(_) => BTreeSet::new(),
             Self::RigidTransform { target, .. } | Self::Scale { target, .. } => {
                 [*target].into_iter().collect()
@@ -1567,19 +1662,36 @@ impl FeatureKind {
                 .into_iter()
                 .collect(),
             Self::Loft {
-                sections, guide, ..
+                sections,
+                guide,
+                rail,
+                ..
             }
             | Self::SurfaceBody(SurfaceBodySpec::Loft {
-                sections, guide, ..
+                sections,
+                guide,
+                rail,
+                ..
             }) => sections
                 .iter()
                 .map(|section| section.profile)
                 .chain(*guide)
+                .chain(*rail)
                 .collect(),
             Self::SurfaceBody(SurfaceBodySpec::Planar { profile }) => {
                 [*profile].into_iter().collect()
             }
-            Self::SurfaceTrim { target, cutter } => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceTrim { target, cutter }
+            | Self::SurfaceBody(SurfaceBodySpec::Blend {
+                first: target,
+                second: cutter,
+                ..
+            }) => [*target, *cutter].into_iter().collect(),
+            Self::SurfaceBody(SurfaceBodySpec::ControlPoint { target, keep, .. }) => {
+                std::iter::once(*target)
+                    .chain(keep.iter().map(|seam| seam.surface))
+                    .collect()
+            }
             Self::SurfaceExtend { target, .. } | Self::SurfaceThicken { target, .. } => {
                 [*target].into_iter().collect()
             }
@@ -1602,8 +1714,9 @@ impl FeatureKind {
     }
 
     #[must_use]
-    pub const fn body_kind(&self) -> Option<BodyKind> {
+    pub fn body_kind(&self) -> Option<BodyKind> {
         match self {
+            Self::MeshBody(spec) if spec.is_sheet() => Some(BodyKind::Surface),
             Self::SurfaceBody(_)
             | Self::SurfaceTrim { .. }
             | Self::SurfaceExtend { .. }
@@ -1635,7 +1748,7 @@ impl FeatureKind {
     }
 
     #[must_use]
-    pub const fn produces_body(&self) -> bool {
+    pub fn produces_body(&self) -> bool {
         self.body_kind().is_some()
     }
 

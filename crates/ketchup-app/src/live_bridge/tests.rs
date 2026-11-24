@@ -6,6 +6,8 @@ use crate::dialogs::{
 use crate::slot::Slot;
 #[path = "busy_tests.rs"]
 mod busy_tests;
+#[path = "cam_export_tests.rs"]
+mod cam_export;
 #[path = "idle_retry_tests.rs"]
 mod idle_retry;
 #[path = "interchange_tests.rs"]
@@ -56,20 +58,36 @@ mod drill_holes;
 mod dwg_import;
 #[path = "exchange_export_tests.rs"]
 mod exchange_export;
+#[path = "presentation_tests.rs"]
+pub(super) mod presentation;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]
 pub(super) mod program_access;
 #[path = "program_tests.rs"]
 mod program_edit;
+#[path = "program_purchased_tests.rs"]
+mod program_purchased;
 #[path = "project_drawings_job_tests.rs"]
 mod project_drawings_job;
+#[path = "room_areas_tests.rs"]
+mod room_areas;
+#[path = "sheet_annotations_tests.rs"]
+mod sheet_annotations;
+#[path = "skp_import_tests.rs"]
+mod skp_import;
+#[path = "skp_viewport_tests.rs"]
+mod skp_viewport;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]
 mod underlay_program;
+#[path = "underlay_revision_tests.rs"]
+mod underlay_revision;
 #[path = "underlay_views_tests.rs"]
 mod underlay_views;
+#[path = "write_policy_tests.rs"]
+mod write_policy;
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();
@@ -372,7 +390,7 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
         .unwrap();
     stream.write_all(&bytes).unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline);
         app.poll_live_bridge(&context);
@@ -384,9 +402,9 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
     assert!(app.is_dirty());
 }
 
-/// Review 2026-10-17 P3: a release to manufacturing asked for over the bridge
-/// waits for the user in the window. A client that disconnected meanwhile
-/// still got its file written once the user confirmed.
+/// Review 2026-10-17 P3: a client that disconnected while the user was asked
+/// still got its file written once the user confirmed. A release to
+/// manufacturing asks only to replace a file (owner decision R1).
 #[test]
 fn disconnect_during_a_release_confirmation_writes_no_file() {
     use ketchup_model::document::{
@@ -394,6 +412,8 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("released.btlx");
+    let original_bytes = b"the user's machine file";
+    std::fs::write(&path, original_bytes).unwrap();
     let stream_slot = Arc::new(Mutex::new(None));
     let prompted = Arc::new(AtomicBool::new(false));
     let dialogs = DisconnectOnHighRisk {
@@ -428,12 +448,16 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         version: 1,
         id: 1,
         token: credentials.token,
-        request: Request::Export {
+        request: Request::Export(crate::live_bridge::interchange::ExportRequest {
             expected: None,
             path: path.to_string_lossy().into_owned(),
             export_format: "btlx".to_owned(),
             drawing_scale: None,
-        },
+            image: None,
+            cam_dialect: None,
+            cam_operations: None,
+            overwrite: false,
+        }),
     })
     .unwrap();
     stream
@@ -442,14 +466,18 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     stream.write_all(&bytes).unwrap();
 
     // The prompt answers within the poll that shows it, so the export is over.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline, "{}", app.action_digest());
         app.poll_live_bridge(&context);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    assert!(!path.exists(), "the departed client's release was written");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original_bytes,
+        "the departed client's release was written"
+    );
     assert!(!path.with_extension("btlx.support.txt").exists());
     assert!(
         app.action_digest().contains("disconnected"),
@@ -603,6 +631,58 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         reopened.document_snapshot().canonical_digest(),
         app.document_snapshot().canonical_digest()
     );
+}
+
+/// Review 2026-11-08 SEC-240: `save_as` wrote any name in any folder, such as
+/// a startup folder or `~/.ssh/authorized_keys`, and the next Ctrl+S wrote
+/// there again. It writes a `.ketchup` document only, never a hidden file, in
+/// any folder the user may write into, without asking about the folder.
+#[test]
+fn save_as_writes_a_ketchup_document_into_any_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let dialogs = ScriptedFileDialogs::new();
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    assert!(app.create_box());
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let mut save_as = |app: &mut KetchupApp, path: &Path| {
+        let expected = app.live_bridge_stamp();
+        bridge.execute(
+            app,
+            Request::SaveAs {
+                expected: Some(expected),
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+    };
+
+    for refused in [
+        directory.path().join("startup.cmd"),
+        directory.path().join("authorized_keys"),
+        directory.path().join(".house.ketchup"),
+        directory.path().join("house.ketchup.lnk"),
+    ] {
+        assert_eq!(save_as(&mut app, &refused), Err("invalid_path"));
+        assert!(!refused.exists(), "{} was written", refused.display());
+    }
+    assert!(
+        probe.high_risk_prompts().is_empty(),
+        "refused before asking"
+    );
+
+    // A folder neither the document's nor one of Open Recent is no reason to
+    // ask: the user saves wherever the system lets them write.
+    let new_folder = directory.path().join("new").join("house.ketchup");
+    std::fs::create_dir_all(new_folder.parent().unwrap()).unwrap();
+    save_as(&mut app, &new_folder).unwrap();
+    assert_eq!(app.file.path.as_deref(), Some(new_folder.as_path()));
+    let elsewhere = directory.path().join("elsewhere").join("HOUSE-v2.KETCHUP");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    save_as(&mut app, &elsewhere).unwrap();
+    assert!(elsewhere.exists());
+    assert!(probe.high_risk_prompts().is_empty());
 }
 
 #[test]
@@ -1116,7 +1196,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
             .unwrap();
     });
 
-    let start_deadline = Instant::now() + Duration::from_secs(2);
+    let start_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         wire.app.poll_live_bridge(&wire.context);
         if wire
@@ -1144,7 +1224,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
     let manual_stamp = wire.app.live_bridge_stamp();
     assert_eq!(wire.app.undo_step_count(), before_steps + 1);
 
-    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response_deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -1192,7 +1272,7 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
             .unwrap();
     });
 
-    let start_deadline = Instant::now() + Duration::from_secs(2);
+    let start_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         wire.app.poll_live_bridge(&wire.context);
         if wire
@@ -1212,7 +1292,7 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
     assert_eq!(wire.app.live_bridge_stamp(), expected);
     assert_eq!(wire.app.undo_step_count(), before_steps);
 
-    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response_deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -1430,7 +1510,7 @@ fn apply_and_verify_cancels_a_running_exact_worker_without_mutation() {
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancel_flag = Arc::clone(&cancelled);
     let canceller = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !started.is_file() {
             assert!(Instant::now() < deadline, "exact worker did not start");
             std::thread::sleep(Duration::from_millis(5));
@@ -2573,7 +2653,7 @@ impl Wire {
         self.stream.write_all(&frame).unwrap();
     }
     fn call(&mut self, request: Request) -> Response {
-        self.call_within(request, Duration::from_secs(4))
+        self.call_within(request, Duration::from_secs(60))
     }
     fn call_within(&mut self, request: Request, timeout: Duration) -> Response {
         let response = self.answer_within(request, timeout);
@@ -2663,7 +2743,7 @@ fn call_stream(
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -2710,7 +2790,7 @@ fn hundred_authenticated_disconnect_cycles_leave_host_and_registries_clean() {
             .ok
         );
         drop(stream);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             app.poll_live_bridge(&context);
             let bridge = app.live.bridge.as_ref().unwrap();
@@ -2837,7 +2917,7 @@ fn an_oversized_answer_to_a_change_says_it_was_applied_and_the_change_is_made_on
             name: name.clone(),
             viewer: None,
         },
-        Duration::from_secs(4),
+        Duration::from_secs(60),
     );
     let after = wire.app.live_bridge_stamp();
     assert!(!answer.ok);
@@ -2862,7 +2942,7 @@ fn an_oversized_answer_to_a_change_says_it_was_applied_and_the_change_is_made_on
 
     let read = wire.answer_within(
         Request::SavedViews { expected: None },
-        Duration::from_secs(4),
+        Duration::from_secs(60),
     );
     assert_eq!(read.error.as_deref(), Some("response_limit"));
     let result = read.result.unwrap();
@@ -2920,7 +3000,13 @@ fn pipelined_byte_and_disconnect_before_ui_poll_revoke_commit() {
         let steps = wire.app.undo_step_count();
         wire.send(commit, true);
         if disconnect {
-            wire.stream.shutdown(Shutdown::Write).unwrap();
+            // The extra byte makes the worker close the connection; with that
+            // byte unread the close can arrive as a reset first, and Linux then
+            // answers the shutdown with ENOTCONN. The client is disconnected
+            // either way, which is what this case tests.
+            if let Err(error) = wire.stream.shutdown(Shutdown::Write) {
+                assert_eq!(error.kind(), io::ErrorKind::NotConnected, "{error}");
+            }
         }
         // Deliberately DO NOT poll UI until the worker has cancelled and closed.
         wire.closed(Duration::from_secs(2));

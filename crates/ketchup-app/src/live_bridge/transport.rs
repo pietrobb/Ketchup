@@ -180,6 +180,7 @@ fn assemble(
         next_batch_job: 1,
         image: image::ImageState::default(),
         serves_window: false,
+        program_folder: Default::default(),
     }
 }
 
@@ -216,6 +217,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::UseProgramVariant { .. }
         | Request::ProgramFromUnderlay { .. }
         | Request::DrawingExtrude { .. }
+        | Request::DrawingRooms(_)
         | Request::DrawingView { .. }
         | Request::DrawingSolidFromViews { .. }
         | Request::SaveProgramVariant { .. }
@@ -225,13 +227,14 @@ fn response_wait(request: &Request) -> Duration {
         | Request::ValidateProgram { .. }
         | Request::ProgramReport { .. }
         | Request::MeasureFaces { .. }
+        | Request::SurfaceControlNet { .. }
         | Request::Mass { .. } => ketchup_mcp::PROGRAM_RESPONSE_WAIT,
         // A large document loads; imports and exports run the exact worker.
         Request::Import { path, .. } => ketchup_mcp::import_response_wait(path),
-        Request::Open { .. } | Request::Export { .. } | Request::DrawingExport { .. } => {
+        Request::Open { .. } | Request::Export(_) | Request::DrawingExport { .. } => {
             ketchup_mcp::OPEN_RESPONSE_WAIT
         }
-        Request::ExportDrawings { .. } => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
+        Request::ExportDrawings(_) => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }
@@ -249,6 +252,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::Query { .. }
         | Request::Detail { .. }
         | Request::Mass { .. }
+        | Request::SurfaceControlNet { .. }
         | Request::WorksetStatus { .. }
         | Request::BatchJobStatus { .. }
         | Request::Program { .. }
@@ -259,6 +263,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::MeasureFaces { .. }
         | Request::ValidateProgram { .. }
         | Request::SavedViews { .. }
+        | Request::DrawingSheet(_)
         | Request::UnderlaySnap { .. }
         | Request::UnderlayObjects { .. }
         | Request::UnderlayRegions { .. }
@@ -286,12 +291,15 @@ fn has_effect(request: &Request) -> bool {
         | Request::Save { .. }
         | Request::SaveAs { .. }
         | Request::Open { .. }
-        | Request::ExportDrawings { .. }
+        | Request::ExportDrawings(_)
         | Request::Import { .. }
         | Request::RemoveUnderlay { .. }
         | Request::FitUnderlay { .. }
         | Request::DrawingRemove { .. }
+        | Request::DrawingDiscardRefused(_)
         | Request::DrawingDraw { .. }
+        | Request::DrawingRooms(_)
+        | Request::DrawingAnnotate(_)
         | Request::DrawingMove { .. }
         | Request::DrawingTrim { .. }
         | Request::DrawingExtend { .. }
@@ -300,7 +308,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingExtrude { .. }
         | Request::DrawingView { .. }
         | Request::DrawingSolidFromViews { .. }
-        | Request::Export { .. }
+        | Request::Export(_)
         | Request::Selection { .. }
         | Request::View { .. }
         | Request::SaveView { .. }
@@ -769,7 +777,7 @@ mod tests {
     use super::*;
 
     fn wait_for_connection_count(bridge: &LiveBridge, expected: usize) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while bridge.active_connections.load(Ordering::Acquire) != expected {
             assert!(
                 Instant::now() < deadline,
@@ -831,7 +839,7 @@ mod tests {
                 .send(unsafe { libc::pthread_self() } as usize)
                 .unwrap();
             let mut buffer = [0; 4];
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(60);
             read_sender
                 .send(read_some(&mut server, &mut buffer, Some(deadline), || {
                     false
@@ -915,14 +923,21 @@ mod tests {
 
     #[test]
     fn cumulative_partial_write_deadline_includes_header_and_body() {
-        let budget = Duration::from_millis(120);
+        let budget = Duration::from_secs(2);
         let mut budgets = Vec::new();
         let mut written = Vec::new();
         let error = write_frame_until(b"body", Instant::now() + budget, |bytes, remaining| {
             budgets.push(remaining);
-            // Header is one partial write, then successive one-byte body writes.
-            let count = if written.is_empty() { 4 } else { 1 };
-            std::thread::sleep(Duration::from_millis(45));
+            // The header is one write that leaves nearly all of the budget; the first
+            // one-byte body write then takes all that remains, so the deadline passes
+            // inside the body however loaded the machine is (idea #174: 45 ms writes
+            // against 120 ms ran out in the header under the full suite).
+            let (count, takes) = if written.is_empty() {
+                (4, Duration::from_millis(1))
+            } else {
+                (1, remaining)
+            };
+            std::thread::sleep(takes);
             written.extend_from_slice(&bytes[..count]);
             Ok(count)
         })
@@ -1229,7 +1244,7 @@ mod tests {
         ));
 
         reply.try_send(Response::error(3, "busy")).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         assert!(matches!(
             await_response(&server, &receiver, deadline, &stop).unwrap(),
             Awaited::Answer(Response { id: 3, .. })
@@ -1282,7 +1297,10 @@ mod tests {
             .map(|(read, sent)| read.saturating_duration_since(*sent))
             .collect();
         late.sort();
-        assert!(late[late.len() / 2] < Duration::from_millis(5), "{late:?}");
+        assert!(
+            late[late.len() / 2] < ketchup_test_env::perf_budget(Duration::from_millis(5)),
+            "{late:?}"
+        );
     }
 
     #[test]

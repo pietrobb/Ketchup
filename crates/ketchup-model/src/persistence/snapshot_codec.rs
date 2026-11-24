@@ -15,7 +15,23 @@
 //! ([`crate::underlay::view`]) as Kečup 0.3.0 saves them, its drawn text and view
 //! included (they came on `main` after 106 did, before 0.3.0 shipped it; review
 //! 2026-10-29 CD-73), 107 the stretched lines of a drawing (trimmed, extended,
-//! offset; review 2026-10-29 CD-61), 108 logical groups (Měchenice MECH-8); an older
+//! offset; review 2026-10-29 CD-61), 108 logical groups (Měchenice MECH-8), 109 the solid
+//! fills drawn into a drawing (`DrawnShape::Hatch`, the areas of rooms; review 2026-11-08
+//! §5.3), 110 the code page the user chose to read an underlay's drawing in (review
+//! 2026-11-09 UL-303), 111 a mesh sheet, an open mesh such as a SketchUp face (U4c,
+//! [`crate::document::MESH_SHEET_SCHEMA_V1`]), 112 a mesh that shows a picture, an imported
+//! SketchUp texture (U4e, [`crate::document::MeshLook`]); 113 adds source-bound
+//! hole callout notes; 114 a sketch every released Kečup takes for damaged
+//! ([`ketchup_geometry::sketch::SketchSpec::released_readers_refuse`]), such as the
+//! profile of a standard part; 115 a surface spanning a loop of boundary curves
+//! ([`crate::document::SurfaceBodySpec::Boundary`]); 116 a Loft stretched to a rail
+//! (`FeatureKind::Loft::rail`); 117 a boundary surface through a network of inner
+//! curves (`SurfaceBodySpec::Boundary::inner`); 118 a blend between two surfaces
+//! (`SurfaceBodySpec::Blend`); 119 a moved control point of a surface
+//! (`SurfaceBodySpec::ControlPoint`); 120 the point angle of a CAM plan's drill
+//! (`CamTool::point_angle_deg`); 121 where its source assembly places an imported part
+//! (`ImportedExactBodySpec::source_placement`). Older files have no generated ownership and need no
+//! conversion; they retain their original encoding and canonical digest. An older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
@@ -28,11 +44,11 @@
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
 use super::{MAGIC, PayloadError, PayloadSection, PersistenceError};
 use crate::document::{FeatureId, ProductModel, Snapshot};
-use crate::underlay::drawn::AddedObject;
+use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 108;
+pub(super) const SNAPSHOT_FORMAT: u16 = 121;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -41,7 +57,22 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 108;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 108 with a logical group, else 107 with a line of an underlay's drawing stretched,
+/// 121 with an imported assembly part's placement in its source, which a Kečup
+/// that writes 120 would drop, else 120 with a drill point angle in a CAM plan,
+/// which a Kečup that writes 119 would drop, else 119 with a moved control point of a surface, which a Kečup that writes 118
+/// does not know, else 118 with a blend between two surfaces, which a Kečup
+/// that writes 117 does not know, else 117 with a boundary surface through inner curves, which a
+/// Kečup that writes 116 does not know, else 116 with a Loft stretched to a rail, which a Kečup
+/// that writes 115 does not know, else 115 with a boundary surface, which no released Kečup
+/// knows, else 114 with a
+/// sketch every released Kečup takes for damaged, else 113 with a hole
+/// callout bound to its source, else
+/// 112 with a mesh that shows a picture, which a Kečup that writes 111 refuses as newer,
+/// else 111 with a mesh sheet, which Kečup 0.3.2 refuses as an invalid mesh
+/// body, else 110
+/// with an underlay read in a code page the user chose, else 109 with a fill drawn
+/// into an underlay's drawing, else 108 with a logical group, else
+/// 107 with a line of an underlay's drawing stretched,
 /// else 106 with an underlay whose drawing was edited or that stands as a view, else 105
 /// with annotations, else 104 with underlays or with what Kečup 0.2.0 refuses to read,
 /// else 103.
@@ -53,8 +84,106 @@ fn format_of(product: &ProductModel) -> u16 {
                 .iter()
                 .any(|added| matches!(added, AddedObject::Stretched { .. }))
     };
-    if product.groups.values().any(|group| group.logical) {
+    let filled = |edits: &crate::underlay::edits::UnderlayEdits| {
+        edits.added.iter().any(|added| {
+            matches!(
+                added,
+                AddedObject::Drawn {
+                    shape: DrawnShape::Hatch { .. },
+                    ..
+                }
+            )
+        })
+    };
+    let meshes = || {
+        product
+            .features
+            .values()
+            .filter_map(|feature| match feature.kind() {
+                crate::document::FeatureKind::MeshBody(mesh) => Some(mesh),
+                _ => None,
+            })
+    };
+    let surface_body = |is: fn(&crate::document::SurfaceBodySpec) -> bool| {
+        product.features.values().any(|feature| {
+            matches!(feature.kind(), crate::document::FeatureKind::SurfaceBody(spec) if is(spec))
+        })
+    };
+    if product.features.values().any(|feature| {
+        matches!(feature.kind(), crate::document::FeatureKind::ImportedExactBody(spec)
+            if spec.source_placement.is_some())
+    }) {
         SNAPSHOT_FORMAT
+    } else if product
+        .cam_plans
+        .values()
+        .any(|plan| plan.tool().point_angle_deg.is_some())
+    {
+        120
+    } else if surface_body(|spec| {
+        matches!(spec, crate::document::SurfaceBodySpec::ControlPoint { .. })
+    }) {
+        119
+    } else if surface_body(|spec| matches!(spec, crate::document::SurfaceBodySpec::Blend { .. })) {
+        118
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
+            crate::document::FeatureKind::SurfaceBody(
+                crate::document::SurfaceBodySpec::Boundary { inner, .. }
+            ) if !inner.is_empty()
+        )
+    }) {
+        117
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
+            crate::document::FeatureKind::Loft { rail: Some(_), .. }
+                | crate::document::FeatureKind::SurfaceBody(
+                    crate::document::SurfaceBodySpec::Loft { rail: Some(_), .. }
+                )
+        )
+    }) {
+        116
+    } else if product.features.values().any(|feature| {
+        matches!(
+            feature.kind(),
+            crate::document::FeatureKind::SurfaceBody(
+                crate::document::SurfaceBodySpec::Boundary { .. }
+            )
+        )
+    }) {
+        115
+    } else if product.features.values().any(|feature| {
+        matches!(feature.kind(), crate::document::FeatureKind::Sketch(sketch)
+            if sketch.released_readers_refuse())
+    }) {
+        114
+    } else if product.drawing_sheets.values().any(|sheet| {
+        sheet
+            .notes()
+            .iter()
+            .any(|note| note.hole_callout_sources().is_some())
+    }) {
+        113
+    } else if meshes().any(|mesh| mesh.look.is_some()) {
+        112
+    } else if meshes().any(crate::document::MeshBodySpec::is_sheet) {
+        111
+    } else if product
+        .underlays
+        .values()
+        .any(|underlay| underlay.code_page.is_some())
+    {
+        110
+    } else if product
+        .underlays
+        .values()
+        .any(|underlay| filled(&underlay.edits))
+    {
+        109
+    } else if product.groups.values().any(|group| group.logical) {
+        108
     } else if product
         .underlays
         .values()
@@ -188,6 +317,19 @@ pub(crate) fn rewrite(bytes: &[u8], edit: impl FnOnce(&mut ciborium::Value)) -> 
     rewritten.extend_from_slice(&crate::graph::sha256_bytes(&payload));
     rewritten.extend_from_slice(&payload);
     rewritten
+}
+
+/// [`rewrite`] of the `document.bin` of the native container `bytes`, in the
+/// format it was written in, with the container's checksums sealed again.
+#[cfg(test)]
+pub(crate) fn rewrite_in_container(
+    bytes: &[u8],
+    edit: impl FnOnce(&mut ciborium::Value),
+) -> Vec<u8> {
+    let mut entries = super::container::container_entries(bytes).expect("an intact container");
+    let (_, document) = entries.get_mut("document.bin").expect("a document entry");
+    *document = rewrite(document, edit);
+    super::container::encode_container(entries).expect("the entries fit a container")
 }
 
 /// A decoded snapshot, and for an older format the digest its writer computed.
@@ -1020,7 +1162,10 @@ mod tests {
             let started = std::time::Instant::now();
             check();
             let elapsed = started.elapsed();
-            assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+            assert!(
+                elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(30)),
+                "{elapsed:?}"
+            );
         }
     }
 

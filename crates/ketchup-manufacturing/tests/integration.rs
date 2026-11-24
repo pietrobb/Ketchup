@@ -5,6 +5,7 @@ mod blender_glb_export;
 mod collada_export;
 mod dxf_export;
 mod fabrication_validation;
+mod presentation;
 mod three_mf_export;
 mod viewer_export;
 

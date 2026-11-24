@@ -9,10 +9,12 @@
 
 use crate::expect::Measure;
 use crate::model::{Part, ProgramModel};
+use crate::near_pairs::near_pairs;
 use crate::validate;
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 /// What the exact solids of two parts share.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -237,32 +239,33 @@ pub fn measured_pairs(model: &ProgramModel) -> BTreeSet<(String, String)> {
 #[must_use]
 pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
     let parts = &model.parts;
-    let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-    let mut order: Vec<usize> = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
-    order.sort_by(|left, right| bounds[*left].0[0].total_cmp(&bounds[*right].0[0]));
     let mut names: BTreeSet<String> = measured_pairs(model)
         .into_iter()
         .flat_map(|(a, b)| [a, b])
         .collect();
-    for (position, &left) in order.iter().enumerate() {
-        for &right in &order[position + 1..] {
-            if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                break;
-            }
-            let (a, b) = (&parts[left], &parts[right]);
-            if box_is_solid(a) && box_is_solid(b) {
-                continue;
-            }
-            if a.obb().separation(&b.obb()) > CONTACT_FIT_MM {
-                continue;
-            }
-            for part in [a, b] {
-                if !box_is_solid(part) {
-                    names.insert(part.name.clone());
+    // Asked once per part, not once per pair: thousands of overlapping boxes
+    // are millions of pairs (nightly 2026-11-23, 2-5 s past the deadline).
+    let shaped: Vec<bool> = parts.iter().map(|part| !box_is_solid(part)).collect();
+    if !shaped.contains(&true) {
+        return names;
+    }
+    let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
+    let solids = (0..parts.len()).filter(|i| parts[*i].is_solid()).collect();
+    let mut named = vec![false; parts.len()];
+    near_pairs(&bounds, solids, CONTACT_FIT_MM, |left, right| {
+        let open = |i: usize| shaped[i] && !named[i];
+        if (open(left) || open(right))
+            && parts[left].obb().separation(&parts[right].obb()) <= CONTACT_FIT_MM
+        {
+            for i in [left, right] {
+                if shaped[i] && !named[i] {
+                    named[i] = true;
+                    names.insert(parts[i].name.clone());
                 }
             }
         }
-    }
+        ControlFlow::Continue(())
+    });
     names
 }
 

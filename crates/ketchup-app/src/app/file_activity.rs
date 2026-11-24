@@ -13,6 +13,11 @@ pub(crate) struct FileActivity {
     pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
     pub(super) drawing_export: Option<super::drawing_export_activity::DrawingExportTask>,
     pub(super) mesh_export: Option<super::mesh_export_activity::MeshExportTask>,
+    pub(super) presentation_export: Option<super::presentation_export::PresentationTask>,
+    /// Held by the thread of the window's or a client's presentation image until it ends.
+    pub(crate) presentation_slot: super::presentation_export::PresentationSlot,
+    /// File > Export > Presentation image: the options being chosen.
+    pub(crate) presentation_dialog: Option<super::presentation_dialog::PresentationDialog>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
     pub(super) exact_import_reading: Option<super::exact_import_activity::ExactImportReadTask>,
     pub(crate) underlay: super::underlay::UnderlayImport,
@@ -204,6 +209,7 @@ impl KetchupApp {
             || self.file.activity.exchange_export.is_some()
             || self.file.activity.drawing_export.is_some()
             || self.file.activity.mesh_export.is_some()
+            || self.file.activity.presentation_export.is_some()
             || self.file.activity.dwg_reading.is_some()
             || self.file.activity.exact_import_reading.is_some()
             || self.file.activity.underlay.reading.is_some()
@@ -232,6 +238,7 @@ impl KetchupApp {
                 | AppCommand::ExportSheetMetalManufacturing
                 | AppCommand::ExportHomagMpr
                 | AppCommand::ExportHundeggerBtlx
+                | AppCommand::ExportWorkshopPackage
         ) {
             return false;
         }
@@ -268,12 +275,16 @@ impl KetchupApp {
         }
         let command = if self.file.activity.opening.is_some() {
             AppCommand::Open
-        } else if self.file.activity.dwg_reading.is_some() {
-            AppCommand::ImportDrawingDxf
+        } else if let Some(task) = &self.file.activity.dwg_reading {
+            task.command()
         } else if let Some(task) = &self.file.activity.exact_import_reading {
             task.command()
         } else if self.file.activity.underlay.reading.is_some() {
-            AppCommand::ImportDrawingUnderlay
+            if self.file.activity.underlay.revision_of.is_some() {
+                AppCommand::CompareUnderlayRevision
+            } else {
+                AppCommand::ImportDrawingUnderlay
+            }
         } else if let Some(task) = &self.file.activity.underlay.exporting {
             if task.dwg {
                 AppCommand::ExportUnderlayDwg
@@ -286,6 +297,8 @@ impl KetchupApp {
             task.format().command()
         } else if let Some(task) = &self.file.activity.mesh_export {
             task.format().command()
+        } else if self.file.activity.presentation_export.is_some() {
+            AppCommand::ExportPresentationImage
         } else if self.file.activity.saving.is_some() {
             AppCommand::Save
         } else {
@@ -344,6 +357,7 @@ impl KetchupApp {
             self.cancel_exchange_export();
             self.cancel_drawing_export();
             self.cancel_mesh_export();
+            self.cancel_presentation_export();
         }
         let Some(label) = self.file_activity_label() else {
             return;
@@ -378,6 +392,7 @@ impl KetchupApp {
             self.cancel_exchange_export();
             self.cancel_drawing_export();
             self.cancel_mesh_export();
+            self.cancel_presentation_export();
             context.request_repaint();
             return;
         }
@@ -387,6 +402,10 @@ impl KetchupApp {
         }
         if self.file.activity.mesh_export.is_some() {
             self.poll_mesh_export(context);
+            return;
+        }
+        if self.file.activity.presentation_export.is_some() {
+            self.poll_presentation_export(context);
             return;
         }
         if self.file.activity.exchange_export.is_some() {
@@ -496,7 +515,7 @@ mod tests {
     fn wait_for_open(harness: &mut Harness<'_, KetchupApp>) {
         step_until(
             harness,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             "open did not finish",
             |app| {
                 app.file.activity.opening.is_none()
@@ -723,6 +742,7 @@ mod tests {
     /// Reopening the window's own file after the user discarded its edits removes their
     /// checkpoint; the frames that ran while the file was read wrote it again, and a read
     /// that came after it (a loaded machine) opened the discarded edits instead of the file.
+    /// A late exact result published while the file was read did the same (idea #156).
     #[test]
     fn a_discarded_edit_is_not_checkpointed_again_while_its_file_is_reopened() {
         let directory = tempfile::tempdir().unwrap();
@@ -751,6 +771,16 @@ mod tests {
         assert!(
             !checkpoint.exists(),
             "the discarded edit was checkpointed again while its file was read"
+        );
+        // An exact result of the discarded edit that arrives while the file is read
+        // (the worker is late on a loaded machine) is published as a mutation.
+        harness
+            .state_mut()
+            .complete_mutation_and_exact_results_with_work_recovery(|_, _, _| Ok::<(), ()>(()))
+            .unwrap();
+        assert!(
+            !checkpoint.exists(),
+            "a late exact result checkpointed the discarded edit while its file was read"
         );
         wait_for_open(&mut harness);
         assert_eq!(

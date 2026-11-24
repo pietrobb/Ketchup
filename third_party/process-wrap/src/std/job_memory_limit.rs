@@ -114,6 +114,243 @@ pub fn apply_inherited_memory_limit() -> Result<()> {
 	Ok(())
 }
 
+/// Reads how much memory one child uses now, and kills it, from any thread while its
+/// [`ChildWrapper`](super::ChildWrapper) is held elsewhere: several children may each keep a
+/// [`JobMemoryLimit`] and still share one budget that their parent enforces.
+#[derive(Debug)]
+pub struct ProcessMeter {
+	#[cfg(windows)]
+	process: windows_meter::ProcessHandle,
+	#[cfg(unix)]
+	pid: nix::libc::pid_t,
+	/// Tells the child from a process that reuses its pid once it was reaped.
+	#[cfg(unix)]
+	started: u64,
+}
+
+impl ProcessMeter {
+	/// A meter of `child`, which runs and is not reaped yet.
+	///
+	/// # Errors
+	/// The system does not let this process read the child's memory.
+	pub fn of(child: &dyn super::ChildWrapper) -> Result<Self> {
+		#[cfg(windows)]
+		{
+			Ok(Self {
+				process: windows_meter::ProcessHandle::open(child.id())?,
+			})
+		}
+		#[cfg(unix)]
+		{
+			let pid = nix::libc::pid_t::try_from(child.id())
+				.map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+			let (started, _) = sample(pid)?;
+			Ok(Self { pid, started })
+		}
+	}
+
+	/// Bytes the child uses now, `None` once it has ended: on Windows the private memory it
+	/// commits, which its job's limit counts; on Linux its private resident memory; on macOS
+	/// its physical footprint, which the footprint watch counts.
+	pub fn bytes(&self) -> Option<u64> {
+		#[cfg(windows)]
+		{
+			self.process.bytes()
+		}
+		#[cfg(unix)]
+		{
+			match sample(self.pid) {
+				Ok((started, bytes)) if started == self.started => Some(bytes),
+				_ => None,
+			}
+		}
+	}
+
+	/// Kills the child, on Unix with its process group, unless it has ended.
+	pub fn kill(&self) {
+		#[cfg(windows)]
+		self.process.terminate();
+		#[cfg(unix)]
+		if self.bytes().is_some() {
+			kill_group(self.pid);
+		}
+	}
+}
+
+#[cfg(windows)]
+mod windows_meter {
+	use std::io::Result;
+
+	use windows::Win32::{
+		Foundation::{CloseHandle, HANDLE},
+		System::{
+			ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX},
+			Threading::{
+				GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+				TerminateProcess,
+			},
+		},
+	};
+
+	/// What `GetExitCodeProcess` says of a process that still runs.
+	const STILL_ACTIVE: u32 = 259;
+
+	#[derive(Debug)]
+	pub(super) struct ProcessHandle(HANDLE);
+
+	// SAFETY: a process handle may be used, and closed, from any thread.
+	unsafe impl Send for ProcessHandle {}
+	// SAFETY: as above; the calls made through it only read or end the process.
+	unsafe impl Sync for ProcessHandle {}
+
+	impl ProcessHandle {
+		/// Opened while the caller holds the child's own handle, so `pid` still names the child.
+		pub(super) fn open(pid: u32) -> Result<Self> {
+			// SAFETY: OpenProcess returns a new handle or an error.
+			let handle = unsafe {
+				OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, false, pid)
+			}?;
+			Ok(Self(handle))
+		}
+
+		pub(super) fn bytes(&self) -> Option<u64> {
+			let mut code = 0_u32;
+			// SAFETY: `self.0` is an open process handle and `code` is writable.
+			unsafe { GetExitCodeProcess(self.0, &mut code) }.ok()?;
+			if code != STILL_ACTIVE {
+				return None;
+			}
+			let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+			let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>()).ok()?;
+			// SAFETY: `counters` is a writable PROCESS_MEMORY_COUNTERS_EX of `size` bytes,
+			// which starts with the fields of PROCESS_MEMORY_COUNTERS.
+			unsafe {
+				GetProcessMemoryInfo(
+					self.0,
+					std::ptr::from_mut(&mut counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+					size,
+				)
+			}
+			.ok()?;
+			u64::try_from(counters.PrivateUsage).ok()
+		}
+
+		pub(super) fn terminate(&self) {
+			// SAFETY: `self.0` is an open process handle with PROCESS_TERMINATE. A process
+			// that has ended already refuses, which leaves nothing to do.
+			let _ = unsafe { TerminateProcess(self.0, 1) };
+		}
+	}
+
+	impl Drop for ProcessHandle {
+		fn drop(&mut self) {
+			// SAFETY: the handle is open and closed only here.
+			let _ = unsafe { CloseHandle(self.0) };
+		}
+	}
+}
+
+/// Start time and private resident bytes of process `pid`.
+#[cfg(target_os = "linux")]
+fn sample(pid: nix::libc::pid_t) -> Result<(u64, u64)> {
+	use std::io::{Error, ErrorKind};
+
+	let unreadable = || Error::new(ErrorKind::InvalidData, format!("process {pid} is unreadable"));
+	let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+	// The name, in parentheses, may hold spaces; the fields after it do not. The start time,
+	// field 22 of proc(5), is the 20th of them.
+	let started = stat
+		.rsplit_once(')')
+		.and_then(|(_, fields)| fields.split_whitespace().nth(19))
+		.and_then(|field| field.parse().ok())
+		.ok_or_else(unreadable)?;
+	let statm = std::fs::read_to_string(format!("/proc/{pid}/statm"))?;
+	let pages: Vec<u64> = statm
+		.split_whitespace()
+		.map(|field| field.parse().map_err(|_| unreadable()))
+		.collect::<Result<_>>()?;
+	let (Some(resident), Some(shared)) = (pages.get(1), pages.get(2)) else {
+		return Err(unreadable());
+	};
+	// SAFETY: sysconf only reads a system value.
+	let page_bytes = u64::try_from(unsafe { nix::libc::sysconf(nix::libc::_SC_PAGESIZE) })
+		.map_err(|_| unreadable())?;
+	Ok((started, resident.saturating_sub(*shared) * page_bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn sample(pid: nix::libc::pid_t) -> Result<(u64, u64)> {
+	macos::footprint(pid)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn sample(_pid: nix::libc::pid_t) -> Result<(u64, u64)> {
+	Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// Kills the process group `pid` leads, or the process `pid` alone when it leads none.
+#[cfg(unix)]
+fn kill_group(pid: nix::libc::pid_t) {
+	use nix::{
+		sys::signal::{Signal, kill, killpg},
+		unistd::{Pid, getpgid},
+	};
+
+	let pid = Pid::from_raw(pid);
+	let _ = if getpgid(Some(pid)) == Ok(pid) {
+		killpg(pid, Signal::SIGKILL)
+	} else {
+		kill(pid, Signal::SIGKILL)
+	};
+}
+
+#[cfg(test)]
+mod meter_tests {
+	use super::*;
+	use std::{
+		io::{BufRead, BufReader},
+		process::Stdio,
+		time::Duration,
+	};
+
+	#[test]
+	#[ignore = "child process of the test below"]
+	fn process_writing_memory() {
+		// Noise, which macOS's memory compressor cannot shrink.
+		let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+		let block: Vec<u64> = (0..(256_usize << 20) / 8)
+			.map(|_| {
+				state ^= state << 13;
+				state ^= state >> 7;
+				state ^= state << 17;
+				state
+			})
+			.collect();
+		std::hint::black_box(&block);
+		println!("WRITTEN");
+		std::thread::sleep(Duration::from_secs(120));
+	}
+
+	#[test]
+	fn a_meter_reads_what_a_child_writes_and_kills_it() {
+		let mut command = Command::new(std::env::current_exe().unwrap());
+		command
+			.args(["--exact", "std::job_memory_limit::meter_tests::process_writing_memory"])
+			.args(["--ignored", "--nocapture"])
+			.stdout(Stdio::piped())
+			.stderr(Stdio::null());
+		let mut child = CommandWrap::from(command).spawn().unwrap();
+		let meter = ProcessMeter::of(&*child).unwrap();
+		let stdout = BufReader::new(child.stdout().take().unwrap());
+		assert!(stdout.lines().any(|line| line.unwrap().contains("WRITTEN")));
+		let bytes = meter.bytes().unwrap();
+		assert!(bytes >= 200 << 20, "{bytes}");
+		meter.kill();
+		assert!(!child.wait().unwrap().success());
+		assert_eq!(meter.bytes(), None);
+	}
+}
+
 /// What the footprint watch does after one sample of its child.
 #[cfg(unix)]
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
@@ -174,14 +411,10 @@ mod macos {
 
 	use nix::{
 		libc,
-		sys::{
-			resource::{Resource, getrlimit, setrlimit},
-			signal::{Signal, kill, killpg},
-		},
-		unistd::{Pid, getpgid},
+		sys::resource::{Resource, getrlimit, setrlimit},
 	};
 
-	use super::super::ChildWrapper;
+	use super::{super::ChildWrapper, kill_group};
 
 	/// The variable through which the parent hands the limit to its child.
 	pub(super) const INHERITED_LIMIT: &str = "PROCESS_WRAP_MEMORY_LIMIT";
@@ -208,9 +441,33 @@ mod macos {
 
 	impl FootprintWatchedChild {
 		pub(super) fn start(inner: Box<dyn ChildWrapper>, limit: usize) -> Result<Self> {
-			let pid = libc::pid_t::try_from(inner.id())
-				.map_err(|error| Error::new(ErrorKind::InvalidInput, error))?;
-			let (started, _) = footprint(pid)?;
+			Self::start_sampling(inner, limit, footprint)
+		}
+
+		/// A child that `footprint` cannot be read of from the start would run without its
+		/// limit, so it is killed with its group and reaped, and the start fails (Ketchup
+		/// review 2026-11-03 PL-141: it was left running).
+		pub(super) fn start_sampling(
+			mut inner: Box<dyn ChildWrapper>,
+			limit: usize,
+			footprint: fn(libc::pid_t) -> Result<(u64, u64)>,
+		) -> Result<Self> {
+			let pid = match libc::pid_t::try_from(inner.id()) {
+				Ok(pid) => pid,
+				Err(error) => {
+					let _ = inner.start_kill();
+					let _ = inner.wait();
+					return Err(Error::new(ErrorKind::InvalidInput, error));
+				}
+			};
+			let started = match footprint(pid) {
+				Ok((started, _)) => started,
+				Err(error) => {
+					kill_group(pid);
+					let _ = inner.wait();
+					return Err(error);
+				}
+			};
 			let limit = u64::try_from(limit).unwrap_or(u64::MAX);
 			let exceeded = Arc::new(AtomicBool::new(false));
 			let stop = Arc::new(AtomicBool::new(false));
@@ -267,7 +524,7 @@ mod macos {
 
 	/// The child's start time and physical footprint (Activity Monitor's "Memory": written,
 	/// compressed and swapped memory, not address space only reserved).
-	fn footprint(pid: libc::pid_t) -> Result<(u64, u64)> {
+	pub(super) fn footprint(pid: libc::pid_t) -> Result<(u64, u64)> {
 		// SAFETY: `rusage_info_v4` is plain data that `proc_pid_rusage` fills in.
 		let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
 		// SAFETY: `info` is a writable `rusage_info_v4`, the struct of the V4 flavour.
@@ -282,16 +539,6 @@ mod macos {
 			return Err(Error::last_os_error());
 		}
 		Ok((info.ri_proc_start_abstime, info.ri_phys_footprint))
-	}
-
-	/// Kills the child's process group when it leads one, else the child alone.
-	fn kill_group(pid: libc::pid_t) {
-		let pid = Pid::from_raw(pid);
-		let _ = if getpgid(Some(pid)) == Ok(pid) {
-			killpg(pid, Signal::SIGKILL)
-		} else {
-			kill(pid, Signal::SIGKILL)
-		};
 	}
 
 	pub(super) fn exceeded(child: &dyn ChildWrapper) -> bool {
@@ -406,6 +653,25 @@ mod tests {
 		};
 		assert_eq!(status.and_then(|status| status.signal()), Some(9));
 		assert!(memory_limit_exceeded(&*child));
+	}
+
+	/// Ketchup review 2026-11-03 PL-141: a child whose footprint could not be read at once
+	/// was left running without its limit.
+	#[test]
+	fn a_child_whose_footprint_cannot_be_read_at_start_is_killed() {
+		let mut command = Command::new("/bin/sleep");
+		command.arg("60");
+		let mut command = CommandWrap::from(command);
+		command.wrap(super::super::ProcessGroup::leader());
+		let child = command.spawn().unwrap();
+		let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+		let refused = |_pid| Err(std::io::Error::from_raw_os_error(nix::libc::EPERM));
+		let started = macos::FootprintWatchedChild::start_sampling(child, 256 << 20, refused);
+		assert!(started.is_err());
+		assert_eq!(
+			nix::sys::signal::kill(pid, None),
+			Err(nix::errno::Errno::ESRCH)
+		);
 	}
 
 	#[test]

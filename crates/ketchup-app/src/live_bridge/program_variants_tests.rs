@@ -35,6 +35,7 @@ fn act(bridge: &mut LiveBridge, app: &mut KetchupApp, action: &str, name: &str) 
 
 fn apply(source: &str) -> Request {
     Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.to_owned(),
         overrides: None,

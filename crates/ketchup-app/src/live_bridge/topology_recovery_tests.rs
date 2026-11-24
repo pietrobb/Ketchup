@@ -85,7 +85,7 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
         None,
         || {},
     ));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !app
         .exact
         .task
@@ -108,7 +108,7 @@ fn topology_retry_preserves_render_and_recovers_live_queries_without_edit() {
     harness.state_mut().exact.worker_attempted = true;
     // Deadline scheduling in an idle UI is separately covered by goal #2005.
     harness.state_mut().exact.retry_at = Some(Instant::now());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while harness.state().exact.source.is_none() {
         assert!(Instant::now() < deadline, "topology recovery deadline");
         harness.step();

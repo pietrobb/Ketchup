@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import subprocess
 from pathlib import Path
 
@@ -87,4 +88,9 @@ def test_both_large_house_steps_also_run_when_the_change_reaches_the_house():
         condition = step.split("\n        if:", 1)[1].split("\n", 1)[0]
         assert "steps.house.outputs.run == 'true'" in condition, condition
     assert workflow.count("scripts/changes_reach_the_house.py") == 2
-    assert workflow.count("fetch-depth: 2") == 2
+    # Each job that asks git for the changed files needs the parent commit in its checkout.
+    jobs = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\njobs:\n", 1)[1])
+    house_jobs = [job for job in jobs if "scripts/changes_reach_the_house.py" in job]
+    assert len(house_jobs) == 2
+    for job in house_jobs:
+        assert "fetch-depth: 2" in job

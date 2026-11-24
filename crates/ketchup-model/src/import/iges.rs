@@ -261,6 +261,7 @@ pub fn plan_iges_import(
                 bounds_mm: evidence.bounds_mm,
                 backend: evidence.backend.clone(),
                 tolerance: evidence.tolerance.clone(),
+                source_placement: None,
             }),
         },
         CanonicalCommand::CreateOccurrence {
@@ -413,6 +414,7 @@ pub fn plan_iges_xde_import(
                 bounds_mm: part.exact.bounds_mm,
                 backend: part.exact.backend.clone(),
                 tolerance: part.exact.tolerance.clone(),
+                source_placement: None,
             }),
         });
         outputs.push(ImportOutputRef::Definition(definition_id));

@@ -1,25 +1,35 @@
 //! `ketchup-program check FILE.star [--set name=value]... [--model]
-//!  [--prelude PRELUDE.star] [--summary] [--diff SAVED.json]`
+//!  [--prelude PRELUDE.star] [--summary] [--diff SAVED.json] [--calculation sk|cz]`
 //!
 //! Evaluates a rule program and prints one JSON report on stdout: issues,
 //! parameters, cut list, hardware and machining. Exit code 0 when the program
 //! evaluates without error-level issues and its statics, if any, are verified;
 //! 1 when it has error-level issues or a member or joint fails; 3 when nothing
 //! fails but some member or joint is not verified or some load reaches no
-//! member; 2 when it cannot be evaluated.
+//! member; 2 when it cannot be evaluated, its checks take longer than the
+//! window's deadline (`time_limit`, 60 s), or not as asked: a `--set` name the
+//! program has no parameter of, said on stderr with the parameter it is likely
+//! meant for.
 //!
 //! `--prelude` evaluates with that prelude file instead of the built-in one,
 //! so an edited prelude is checked without a build. `--summary` prints only
 //! counts: parts per layer, the statics check and issues grouped by kind.
 //! `--diff` compares that summary with one saved earlier (`--summary >
-//! SAVED.json`) and lists what changed.
+//! SAVED.json`) and lists what changed. `--calculation sk` (or `cz`) prints
+//! the printable structural calculation in Slovak (Czech) as HTML instead of
+//! the JSON report, with the same exit code.
 
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: ketchup-program check FILE.star [--set name=value]... [--model] \
-                     [--prelude PRELUDE.star] [--summary] [--diff SAVED.json]";
+                     [--prelude PRELUDE.star] [--summary] [--diff SAVED.json] \
+                     [--calculation sk|cz]";
+
+/// The stack of the thread the checks run on, a main thread's: deep programs
+/// need it.
+const CHECK_STACK_BYTES: usize = 8 << 20;
 
 /// Parts named per issue group in the summary.
 const NAMED_PARTS: usize = 5;
@@ -41,6 +51,7 @@ struct Options {
     prelude: Option<String>,
     summary: bool,
     diff: Option<String>,
+    calculation: Option<ketchup_program::calculation::Language>,
 }
 
 /// Why the command line or an input file could not be used; each carries the
@@ -49,6 +60,7 @@ struct Options {
 enum CliError {
     Usage,
     MissingValue(String),
+    Language(String),
     SetWithoutEquals(String),
     SetNotNumber {
         name: String,
@@ -74,6 +86,9 @@ impl std::fmt::Display for CliError {
         match self {
             Self::Usage => f.write_str(USAGE),
             Self::MissingValue(arg) => write!(f, "{arg} needs a value"),
+            Self::Language(code) => {
+                write!(f, "--calculation {code}: expected sk or cz")
+            }
             Self::SetWithoutEquals(pair) => write!(f, "--set {pair}: expected name=value"),
             Self::SetNotNumber {
                 name,
@@ -103,6 +118,7 @@ fn parse(args: &[String]) -> Result<Options, CliError> {
         prelude: None,
         summary: false,
         diff: None,
+        calculation: None,
     };
     let mut rest = rest.iter();
     while let Some(arg) = rest.next() {
@@ -115,6 +131,13 @@ fn parse(args: &[String]) -> Result<Options, CliError> {
             "--model" => options.with_model = true,
             "--summary" => options.summary = true,
             "--prelude" => options.prelude = Some(value()?),
+            "--calculation" => {
+                let code = value()?;
+                options.calculation = Some(
+                    ketchup_program::calculation::Language::from_code(&code)
+                        .ok_or(CliError::Language(code))?,
+                );
+            }
             "--diff" => {
                 options.diff = Some(value()?);
                 options.summary = true;
@@ -184,13 +207,63 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (value, code) = match ketchup_program::run(&options.path, &source, &options.overrides) {
+    // The checks run on a thread of their own, so the command answers by the
+    // window's deadline however long they take (review 2026-11-22
+    // R1122ac-PG-1102: 5 000 overlapping parts ran past 300 s).
+    let checks = match std::thread::Builder::new()
+        .stack_size(CHECK_STACK_BYTES)
+        .spawn(move || check(&options, &source, saved))
+    {
+        Ok(checks) => checks,
+        Err(error) => {
+            eprintln!("the checks could not start: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let deadline = std::time::Instant::now() + ketchup_program::CHECK_TIME;
+    while !checks.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if checks.is_finished() {
+        let (output, code) = checks
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        print!("{output}");
+        ExitCode::from(code)
+    } else {
+        let error = ketchup_program::ProgramError {
+            code: "time_limit",
+            message: format!(
+                "checking the program took longer than {} s",
+                ketchup_program::CHECK_TIME.as_secs()
+            ),
+            location: None,
+        };
+        println!("{:#}", json!({"ok": false, "error": error}));
+        ExitCode::from(2)
+    }
+}
+
+/// The report, or the calculation, `options` ask for of `source`, compared
+/// with `saved` when given, and the exit code.
+fn check(options: &Options, source: &str, saved: Option<Value>) -> (String, u8) {
+    let (value, code) = match ketchup_program::run(&options.path, source, &options.overrides) {
         Ok((evaluated, report)) => {
-            let code = match (report.ok, report.statics()) {
-                (false, _) | (_, ketchup_program::Statics::Failed) => ExitCode::from(1),
-                (true, ketchup_program::Statics::NotVerified) => ExitCode::from(3),
-                _ => ExitCode::SUCCESS,
-            };
+            let names: Vec<&str> = report
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect();
+            for line in unused_set_lines(&report.unused_overrides, &names) {
+                eprintln!("{line}");
+            }
+            let code = report.exit_code();
+            if let Some(language) = options.calculation {
+                return (
+                    ketchup_program::calculation::document(&options.path, &report, language),
+                    code,
+                );
+            }
             let mut value = if options.summary {
                 summary(&evaluated.model, &report)
             } else {
@@ -201,17 +274,19 @@ fn main() -> ExitCode {
             }
             (value, code)
         }
-        Err(error) => (json!({"ok": false, "error": error}), ExitCode::from(2)),
+        Err(error) => (json!({"ok": false, "error": error}), 2),
     };
     let value = match saved {
         Some(saved) => json!({"summary": value, "changes": changes(&saved, &value)}),
         None => value,
     };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&value).expect("report serializes")
-    );
-    code
+    (
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&value).expect("report serializes")
+        ),
+        code,
+    )
 }
 
 /// Counts that show at a glance what a program makes and what is wrong.
@@ -252,14 +327,87 @@ fn summary(model: &ketchup_program::ProgramModel, report: &ketchup_program::Repo
         "layers": layers,
         "issues": issues,
     });
-    if !report.design.is_empty() {
+    if !report.design.is_empty() || !report.joints.is_empty() {
         value["statics"] =
             serde_json::to_value(report.design.summary()).expect("summary serializes");
+        // The joints count in statics_verdict as the members do: a summary showed every
+        // member passing beside a verdict left not verified by its joints
+        // (review 2026-11-20 ac P3).
+        let joints = |status: &str| report.joints.iter().filter(|j| j.status == status).count();
+        value["statics"]["joints"] = json!({
+            "checked": report.joints.len(),
+            "pass": joints("pass"),
+            "fail": joints("fail"),
+            "not_verified": joints("not_verified"),
+        });
+    }
+    // The thermal checks count in the exit code as statics does, so the summary
+    // shows them too (review 2026-11-21 ac P3).
+    let buildups = &report.thermal.buildups;
+    if !buildups.is_empty() {
+        let count = |status: &str| buildups.iter().filter(|b| b.status == status).count();
+        let verdict = if count("fail") > 0 {
+            "fail"
+        } else if count("not_verified") > 0 {
+            "not_verified"
+        } else {
+            "pass"
+        };
+        value["thermal"] = json!({
+            "verdict": verdict,
+            "checked": buildups.len(),
+            "pass": count("pass"),
+            "fail": count("fail"),
+            "not_verified": buildups
+                .iter()
+                .filter(|b| b.status == "not_verified")
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+        });
     }
     if !report.unused_overrides.is_empty() {
         value["unused_overrides"] = json!(report.unused_overrides);
     }
     value
+}
+
+/// Parameters named when a `--set` name is like none of them.
+const LISTED_PARAMS: usize = 12;
+
+/// One line per `--set` name the program has no parameter of, naming the
+/// parameter it shares its longest start with (three letters or more), or else
+/// the program's parameters (review 2026-11-08 PG-245).
+fn unused_set_lines(unused_overrides: &[String], names: &[&str]) -> Vec<String> {
+    unused_overrides
+        .iter()
+        .map(|unused| {
+            // In any case: `Snow_SK` means snow_sk (review 2026-11-09 PG-245).
+            let shared = |name: &&str| {
+                unused
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .zip(name.chars().flat_map(char::to_lowercase))
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            };
+            let nearest = names
+                .iter()
+                .filter(|name| shared(name) >= 3)
+                .max_by_key(|name| shared(name));
+            let said = match (nearest, names.is_empty()) {
+                (Some(name), _) => format!("did you mean {name}?"),
+                (None, true) => "it has none".to_owned(),
+                (None, false) => {
+                    let mut listed = names[..names.len().min(LISTED_PARAMS)].join(", ");
+                    if names.len() > LISTED_PARAMS {
+                        listed.push_str(", …");
+                    }
+                    format!("it has {listed}")
+                }
+            };
+            format!("--set {unused}: the program has no parameter {unused}; {said}")
+        })
+        .collect()
 }
 
 /// `message` cut to its first [`EXAMPLE_CHARS`] characters.
@@ -359,6 +507,26 @@ mod tests {
         }
         let said = complaint(&parse(&["run".to_owned()]).err().expect("no command"));
         assert!(said.starts_with("usage:"), "{said}");
+    }
+
+    /// Review 2026-11-08 PG-245: `--set snowsk=1.5` ended with exit code 3 and
+    /// said nothing; the name stood only in the JSON's `unused_overrides`.
+    #[test]
+    fn a_set_of_no_parameter_is_said_with_the_nearest_name() {
+        let unused = ["q".to_owned(), "snowsk".to_owned()];
+        assert_eq!(
+            unused_set_lines(&unused, &["snow_kn", "wind_kn"]),
+            vec![
+                "--set q: the program has no parameter q; it has snow_kn, wind_kn".to_owned(),
+                "--set snowsk: the program has no parameter snowsk; did you mean snow_kn?"
+                    .to_owned(),
+            ]
+        );
+        // Review 2026-11-09 PG-245: `Snow_SK` had no suggestion.
+        assert_eq!(
+            unused_set_lines(&["Snow_SK".to_owned()], &["snow_kn", "snow_sk"]),
+            vec!["--set Snow_SK: the program has no parameter Snow_SK; did you mean snow_sk?"]
+        );
     }
 
     #[test]

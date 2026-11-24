@@ -36,6 +36,8 @@ static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 pub enum MeshConversionError {
     SourceNotFound,
     SourceIsNotSoleMeshBody,
+    /// An open mesh: an exact solid is not made of a surface.
+    SourceIsSheet,
     NoMatch(String),
     Ambiguous(String),
     IdentifierOverflow,
@@ -58,6 +60,9 @@ impl fmt::Display for MeshConversionError {
             Self::SourceNotFound => formatter.write_str("source mesh feature was not found"),
             Self::SourceIsNotSoleMeshBody => {
                 formatter.write_str("source definition is not a sole mesh body")
+            }
+            Self::SourceIsSheet => {
+                formatter.write_str("source mesh is an open sheet that closes no solid")
             }
             Self::NoMatch(reason) => write!(formatter, "mesh was not recognized: {reason}"),
             Self::Ambiguous(reason) => write!(formatter, "mesh recognition is ambiguous: {reason}"),
@@ -384,6 +389,9 @@ fn prepare_mesh_conversion_from_snapshot(
     };
     if definition.feature_ids() != [source_feature_id] {
         return Err(MeshConversionError::SourceIsNotSoleMeshBody);
+    }
+    if source_mesh.is_sheet() {
+        return Err(MeshConversionError::SourceIsSheet);
     }
     let recognition = recognize_mesh_body_cancellable(source_mesh, tolerance_mm, || {
         cancelled.load(Ordering::Acquire)

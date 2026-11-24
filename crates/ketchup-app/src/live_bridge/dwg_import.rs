@@ -7,7 +7,7 @@
 //! while the job holds a DWG's conversion. A STEP or IGES file is read the same way,
 //! by the exact worker's XDE inspection (review 2026-11-01 MCP-100).
 
-use super::interchange::ReadAlready;
+use super::interchange::{ImportTarget, ReadAlready};
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
@@ -15,13 +15,46 @@ use crate::ImportFormat;
 use crate::app::dwg_import::{DwgRead, is_dwg_path, read_dwg_file};
 use crate::app::exact_import_activity::{ExactImportRead, read_exact_import};
 use crate::app::import_file::import_format;
+use crate::app::skp_import::{SkpRead, is_skp_path, read_skp_file};
+use crate::app::underlay::revision::RevisionOverlayError;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
 use crate::delivery::Deliver;
+use ketchup_model::import::RevisionComparison;
+use ketchup_model::underlay::UnderlayId;
 use ketchup_program::CancelToken;
+
+/// How many entities of each list a revision comparison answers with (review 2026-11-10
+/// og:R1110-UL-403: a renumbered plan's whole comparison made an answer of megabytes).
+/// Every entity of the lists is an object of the overlay on the layer of its list, so the
+/// rest is paged through `inspect underlay_objects` of the overlay by that layer.
+pub(super) const REVISION_ROWS: usize = 100;
+
+/// The counts of `comparison` and the first [`REVISION_ROWS`] entities of each list.
+fn revision_answer(comparison: &RevisionComparison) -> Value {
+    let first = |list: &[ketchup_model::import::RevisedEntity]| {
+        json!(&list[..list.len().min(REVISION_ROWS)])
+    };
+    let lists = [&comparison.changed, &comparison.added, &comparison.removed];
+    json!({
+        "counts": {
+            "changed": comparison.changed.len(),
+            "added": comparison.added.len(),
+            "removed": comparison.removed.len(),
+            "unchanged": comparison.unchanged,
+            "renumbered": comparison.renumbered,
+            "without_handle": comparison.without_handle,
+        },
+        "changed": first(&comparison.changed),
+        "added": first(&comparison.added),
+        "removed": first(&comparison.removed),
+        "listed_all": lists.iter().all(|list| list.len() <= REVISION_ROWS),
+    })
+}
 
 /// What the job's thread read.
 enum JobRead {
     Dwg(DwgRead),
+    Skp(SkpRead),
     Underlay(Box<UnderlayReadResult>),
     Exact(ExactImportRead),
 }
@@ -54,15 +87,18 @@ pub(super) fn import_job_names(
     match format {
         ImportFormat::Step => ("ketchup-step-import", "A STEP file is being imported."),
         ImportFormat::Iges => ("ketchup-iges-import", "An IGES file is being imported."),
+        ImportFormat::Glb => ("ketchup-skp-import", "A SketchUp file is being imported."),
         _ => ("ketchup-dwg-import", "A DWG file is being imported."),
     }
 }
 
-/// Whether `request` imports a DWG, STEP or IGES file or an underlay, which run as a job.
+/// Whether `request` imports a DWG, SketchUp, STEP or IGES file or an underlay, which run
+/// as a job.
 pub(super) fn imports_as_job(request: &Request) -> bool {
     matches!(request, Request::Import { path, as_underlay, .. }
     if *as_underlay
         || is_dwg_path(Path::new(path))
+        || is_skp_path(Path::new(path))
         || matches!(
             import_format(Path::new(path)),
             Some(ImportFormat::Step | ImportFormat::Iges)
@@ -93,13 +129,20 @@ impl LiveBridge {
             Self::reply(app, id, &reply, Err(busy));
             return;
         }
-        let (path, format, unit) = match Self::import_target(app, &request, ui_busy) {
-            Ok((path, format, unit)) => (PathBuf::from(path), format, unit),
+        let ImportTarget {
+            path,
+            format,
+            unit,
+            code_page,
+            code_page_inherited,
+        } = match Self::import_target(app, &request, ui_busy) {
+            Ok(target) => target,
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
                 return;
             }
         };
+        let path = PathBuf::from(path);
         let as_underlay = matches!(
             request,
             Request::Import {
@@ -108,6 +151,15 @@ impl LiveBridge {
             }
         );
         let origin = ketchup_model::underlay::placement::geo_origin(&app.document.current());
+        // A later revision of an underlay is compared with it on the job's thread too.
+        let earlier = match &request {
+            Request::Import {
+                as_underlay: true,
+                revision_of: Some(of),
+                ..
+            } => app.earlier_revision(UnderlayId(*of)).ok(),
+            _ => None,
+        };
         let exact = (!as_underlay && matches!(format, ImportFormat::Step | ImportFormat::Iges))
             .then(|| app.exact_worker_executable());
         let (thread, reason) = import_job_names(format, as_underlay);
@@ -126,12 +178,19 @@ impl LiveBridge {
                         worker_cancel.flag(),
                     ))
                 } else if as_underlay {
-                    JobRead::Underlay(Box::new(read_underlay_file(
-                        &path,
-                        unit,
-                        origin,
-                        &worker_cancel,
-                    )))
+                    JobRead::Underlay(Box::new(
+                        read_underlay_file(
+                            &path,
+                            unit,
+                            origin,
+                            code_page,
+                            code_page_inherited,
+                            &worker_cancel,
+                        )
+                        .map(|read| read.compared_with(earlier.as_ref())),
+                    ))
+                } else if is_skp_path(&path) {
+                    JobRead::Skp(read_skp_file(&path, &worker_cancel))
                 } else {
                     JobRead::Dwg(read_dwg_file(&path, &worker_cancel))
                 };
@@ -200,7 +259,16 @@ impl LiveBridge {
                 &job.cancelled,
                 ReadAlready::Drawing(source),
             ),
-            JobRead::Dwg(Err(error)) => Err(interchange::import_failed(path, error)),
+            JobRead::Skp(Ok((source, _held))) => Self::import_file(
+                app,
+                &job.request,
+                ui_busy(context),
+                &job.cancelled,
+                ReadAlready::Model(source),
+            ),
+            JobRead::Dwg(Err(error)) | JobRead::Skp(Err(error)) => {
+                Err(interchange::import_failed(path, error))
+            }
             JobRead::Exact(Ok((source, evidence))) => Self::import_file(
                 app,
                 &job.request,
@@ -221,19 +289,26 @@ impl LiveBridge {
     }
 
     /// `remove_underlay`: removes the underlay and the tags only it held, as one Undo step.
-    pub(super) fn remove_underlay(
+    /// `fit_underlay`: places the underlay so two points of its lines land on two model
+    /// points, as one Undo step; two picks at one point are refused with the reason.
+    pub(super) fn underlay_request(
         &mut self,
         app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<Value, &'static str> {
-        let Request::RemoveUnderlay {
-            expected,
-            underlay_id,
-        } = request
-        else {
-            return Err("invalid_request");
+        let (expected, underlay_id) = match request {
+            Request::RemoveUnderlay {
+                expected,
+                underlay_id,
+            }
+            | Request::FitUnderlay {
+                expected,
+                underlay_id,
+                ..
+            } => (expected, underlay_id),
+            _ => return Err("invalid_request"),
         };
         Self::guard(app, expected)?;
         Self::available(app, ui_busy)?;
@@ -242,38 +317,20 @@ impl LiveBridge {
             return Err("entity_not_found");
         }
         Self::require_request_authority(cancelled)?;
-        app.remove_underlay(id)
-            .map_err(|error| failed_because("commit_rejected", error))?;
-        self.query.invalidate();
-        Ok(json!({"removed": true, "underlay_id": underlay_id, "dirty": app.is_dirty()}))
-    }
-
-    /// `fit_underlay`: places the underlay so two points of its lines land on two model
-    /// points, as one Undo step; two picks at one point are refused with the reason.
-    pub(super) fn fit_underlay(
-        &mut self,
-        app: &mut KetchupApp,
-        request: &Request,
-        ui_busy: bool,
-        cancelled: &AtomicBool,
-    ) -> Result<Value, &'static str> {
         let Request::FitUnderlay {
-            expected,
-            underlay_id,
             from_mm,
             to_mm,
             scale,
+            ..
         } = request
         else {
-            return Err("invalid_request");
+            app.remove_underlay(id)
+                .map_err(|error| failed_because("commit_rejected", error))?;
+            self.query.invalidate();
+            return Ok(
+                json!({"removed": true, "underlay_id": underlay_id, "dirty": app.is_dirty()}),
+            );
         };
-        Self::guard(app, expected)?;
-        Self::available(app, ui_busy)?;
-        let id = ketchup_model::underlay::UnderlayId(*underlay_id);
-        if app.document.current().underlay(id).is_none() {
-            return Err("entity_not_found");
-        }
-        Self::require_request_authority(cancelled)?;
         let fit = app
             .fit_underlay(id, *from_mm, *to_mm, *scale)
             .map_err(|error| match error {
@@ -303,8 +360,36 @@ impl LiveBridge {
         cancelled: &AtomicBool,
         read: crate::app::underlay::ReadUnderlay,
     ) -> Result<Value, &'static str> {
-        let (path, ..) = Self::import_target(app, request, ui_busy)?;
+        let ImportTarget { path, .. } = Self::import_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
+        if let Request::Import {
+            revision_of: Some(of),
+            ..
+        } = request
+        {
+            // `import as_underlay revision_of`: the drawing read compared with the underlay
+            // as its later revision, and the overlay of what changed added on it.
+            let (overlay, comparison) = app
+                .add_revision_overlay(Path::new(&path), read, UnderlayId(*of))
+                .map_err(|error| {
+                    let code = match &error {
+                        RevisionOverlayError::NotFound(..) => "entity_not_found",
+                        RevisionOverlayError::NoHandles
+                        | RevisionOverlayError::LinesUnreadable(..) => "invalid_params",
+                        _ => "commit_rejected",
+                    };
+                    failed_because(code, error)
+                })?;
+            let overlay_layers = json!({
+                "changed": app.catalog.text("underlay-revision-changed"),
+                "added": app.catalog.text("underlay-revision-added"),
+                "removed": app.catalog.text("underlay-revision-removed"),
+            });
+            return Ok(json!({"compared": true, "path": path, "revision_of": of,
+                "overlay_underlay_id": overlay.map(|id| id.0),
+                "comparison": revision_answer(&comparison), "overlay_layers": overlay_layers,
+                "dirty": app.is_dirty()}));
+        }
         let mut summary = read.summary();
         let not_beside = ketchup_model::underlay::placement::geo_not_beside(
             &app.document.current(),

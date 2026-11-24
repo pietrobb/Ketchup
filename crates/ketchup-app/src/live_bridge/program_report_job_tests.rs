@@ -39,7 +39,7 @@ struct Answer {
 
 impl Answer {
     fn wait(&self, app: &mut KetchupApp) -> Response {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Ok(response) = self.receiver.recv_timeout(Duration::from_millis(10)) {
                 return response;

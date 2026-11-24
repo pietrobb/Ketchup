@@ -80,7 +80,7 @@ pub(super) fn validate_geometry(
     };
     match geometry {
         ExactBRepPlanarGeometry::Boundary { closed, segments } => {
-            if segments.len() > limits::PATH_SEGMENTS {
+            if segments.len() > limits::PLANAR_PROFILE_SEGMENTS {
                 return Err(ExactBRepGraphError::ResourceLimit);
             }
             if segments.is_empty() || *closed && segments.len() < 2 {
@@ -408,12 +408,17 @@ pub(super) fn operation_requires_v15(operation: &ExactBRepOperation) -> bool {
     )
 }
 
-/// No build before draft (or a modelled thread) wrote such a node, so they
-/// share the newest schema instead of adding one.
+/// No build before draft (or a modelled thread, or a boundary surface) wrote
+/// such a node, so they share the newest schema instead of adding one.
 pub(super) fn operation_requires_v23(operation: &ExactBRepOperation) -> bool {
     matches!(
         operation,
         ExactBRepOperation::SurfaceThicken { .. }
+            | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceControlPoint { .. }
+            | ExactBRepOperation::Loft { rail: Some(_), .. }
+            | ExactBRepOperation::LoftSurface { rail: Some(_), .. }
             | ExactBRepOperation::Draft(_)
             | ExactBRepOperation::Scale { .. }
             | ExactBRepOperation::ThreadGroove(_)
@@ -666,6 +671,59 @@ pub(super) fn valid_operation_profiles(
     }
 }
 
+/// The operation's result is an open surface body, an operand of surface trims, blends and knits.
+fn produces_surface(operation: &ExactBRepOperation) -> bool {
+    matches!(
+        operation,
+        ExactBRepOperation::PlanarSurface { .. }
+            | ExactBRepOperation::LoftSurface { .. }
+            | ExactBRepOperation::BoundarySurface { .. }
+            | ExactBRepOperation::SurfaceTrim { .. }
+            | ExactBRepOperation::SurfaceBlend { .. }
+            | ExactBRepOperation::SurfaceControlPoint { .. }
+            | ExactBRepOperation::SurfaceExtend { .. }
+            | ExactBRepOperation::SurfaceKnit {
+                make_solid: false,
+                ..
+            }
+    )
+}
+
+/// A finite starting point and offset within the model, a positive weight
+/// that change something, and distinct kept surfaces other than the target.
+fn valid_control_point(
+    operation: &ExactBRepOperation,
+    is_surface_node: impl Fn(ExactBRepNodeId) -> bool,
+) -> bool {
+    let ExactBRepOperation::SurfaceControlPoint {
+        target,
+        from_bits,
+        offset_bits,
+        weight_bits,
+        keep,
+        ..
+    } = operation
+    else {
+        return false;
+    };
+    let target = *target;
+    let offset = offset_bits.map(f64::from_bits);
+    let weight = weight_bits.map(f64::from_bits);
+    let mut kept = std::collections::BTreeSet::new();
+    from_bits
+        .map(f64::from_bits)
+        .iter()
+        .chain(&offset)
+        .all(|value| value.is_finite() && value.abs() <= MAX_COORDINATE_MM)
+        && weight.is_none_or(|weight| weight.is_finite() && weight > 0.0)
+        && (weight.is_some() || offset.iter().any(|value| *value != 0.0))
+        && keep.len() <= limits::FEATURE_REFERENCES
+        && is_surface_node(target)
+        && keep.iter().all(|seam| {
+            seam.surface != target && is_surface_node(seam.surface) && kept.insert(seam.surface)
+        })
+}
+
 pub(super) fn valid_operation(
     operation: &ExactBRepOperation,
     document_id: u64,
@@ -682,19 +740,9 @@ pub(super) fn valid_operation(
         value.is_finite() && value.abs() > tolerance_mm && value.abs() <= MAX_COORDINATE_MM
     };
     let is_surface_node = |id: ExactBRepNodeId| {
-        prior_nodes.get(id.0 as usize).is_some_and(|node| {
-            matches!(
-                node.operation,
-                ExactBRepOperation::PlanarSurface { .. }
-                    | ExactBRepOperation::LoftSurface { .. }
-                    | ExactBRepOperation::SurfaceTrim { .. }
-                    | ExactBRepOperation::SurfaceExtend { .. }
-                    | ExactBRepOperation::SurfaceKnit {
-                        make_solid: false,
-                        ..
-                    }
-            )
-        })
+        prior_nodes
+            .get(id.0 as usize)
+            .is_some_and(|node| produces_surface(&node.operation))
     };
     match operation {
         ExactBRepOperation::Extrude {
@@ -720,8 +768,14 @@ pub(super) fn valid_operation(
                     .is_none_or(|digest| !digest.is_empty() && digest.len() <= 256)
         }
         ExactBRepOperation::Boolean { target, tool, .. } => target != tool,
-        ExactBRepOperation::SurfaceTrim { target, cutter } => {
-            target != cutter && is_surface_node(*target) && is_surface_node(*cutter)
+        ExactBRepOperation::SurfaceTrim { target, cutter }
+        | ExactBRepOperation::SurfaceBlend {
+            first: target,
+            second: cutter,
+            ..
+        } => target != cutter && is_surface_node(*target) && is_surface_node(*cutter),
+        ExactBRepOperation::SurfaceControlPoint { .. } => {
+            valid_control_point(operation, is_surface_node)
         }
         ExactBRepOperation::SurfaceExtend {
             target,
@@ -1018,22 +1072,29 @@ pub(super) fn valid_operation(
             planar_offset_distance(f64::from_bits(*distance_bits)).is_ok()
         }
         ExactBRepOperation::PlanarSurface { .. } => true,
+        ExactBRepOperation::BoundarySurface { boundary, inner } => {
+            valid_boundary_surface(boundary, inner.as_ref(), tolerance_mm)
+        }
         ExactBRepOperation::Sweep { profile, path } => profile != path,
         ExactBRepOperation::SpatialSweep { path, .. } => valid_spatial_path(path, tolerance_mm),
         ExactBRepOperation::Loft {
             sections,
             guide,
             continuity,
+            rail,
         }
         | ExactBRepOperation::LoftSurface {
             sections,
             guide,
             continuity,
+            rail,
         } => {
             guide
-                .as_ref()
-                .is_none_or(|path| valid_spatial_path(path, tolerance_mm))
+                .iter()
+                .chain(rail)
+                .all(|path| valid_spatial_path(path, tolerance_mm))
                 && !(guide.is_some() && *continuity == ExactBRepLoftContinuity::Curvature)
+                && (rail.is_none() || (guide.is_some() && rail != guide))
                 && (2..=limits::LOFT_SECTIONS).contains(&sections.len())
                 && sections.windows(2).all(|pair| {
                     let lower = f64::from_bits(pair[0].elevation_bits);

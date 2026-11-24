@@ -58,6 +58,43 @@ pub const DRAFT_VERTICAL_TOLERANCE_DEGREES: f64 = 1.0e-6;
 /// against 6H), so a modelled bolt and its tapped hole stay clear of each other.
 pub const THREAD_APPROXIMATION_MM: f64 = 1.0e-4;
 
+/// Deviation allowed between a Loft stretched to a rail and the rail, in mm. The Loft is
+/// fitted through stretched stations across the guide and gets more stations until the
+/// rail lies this close to it; a tenth of a micrometre sits far below any machined or printed
+/// surface, as for threads. Ten nanometres needed more than 64 stations along a bent guide
+/// such as a U (R1120ac-EXA-903).
+pub const RAIL_LOFT_APPROXIMATION_MM: f64 = 1.0e-4;
+
+/// Deviation allowed between a surface filled through a network of curves and each curve
+/// of the network, in mm. The kernel fits a smooth plate to points on every curve and
+/// measures every curve against the result; one micrometre is below the form tolerance of
+/// precision machining and far below printing.
+pub const NETWORK_SURFACE_APPROXIMATION_MM: f64 = 1.0e-3;
+
+/// Growth of the box the collision check puts around a revolved or swept solid, in mm,
+/// before it lets two boxes apart skip the exact check. The kernel may fit such faces with
+/// surfaces a little off the exact ones; a tenth of a millimetre is far more than any
+/// approximation above is allowed to miss, and far less than parts set apart in a model.
+pub const SWEPT_ENVELOPE_MARGIN_MM: f64 = 0.1;
+
+/// Growth of the box the collision check puts around a bought part's recorded bounds, in
+/// mm. Those bounds are the kernel's tightest box of the part's geometry, without the
+/// tolerances of its faces and edges, which a supplier's file sets; a tenth of a millimetre
+/// is the same growth swept solids get and far less than parts set apart in a model.
+pub const IMPORTED_BOUNDS_MARGIN_MM: f64 = 0.1;
+
+/// Angle allowed between the normals of a blend surface and the surface it meets with
+/// tangent (G1) or curvature (G2) continuity, in radians, at every sampled point of the
+/// seam. A thousandth of a radian (0.06 degree) shows no crease in reflections and is
+/// several times finer than the 0.5 degree tangency check of class-A surfacing reviews.
+pub const SURFACE_BLEND_ANGLE_RAD: f64 = 1.0e-3;
+
+/// Difference allowed between the curvatures of a blend surface and the surface it meets
+/// with curvature (G2) continuity, across the seam, as a share of the larger of the
+/// meeting surface's curvature and one over the seam length. Five per cent keeps
+/// reflection lines visibly unbroken across the seam.
+pub const SURFACE_BLEND_CURVATURE_SHARE: f64 = 0.05;
+
 /// Contact and fit tolerance of rule programs, in mm: two parts at most this far apart
 /// touch, and a part may stick out of the face or the part it fits by this much. Not the
 /// document's [`TolerancePolicy`], which decides coincidence for the exact kernel: program
@@ -71,14 +108,32 @@ pub const CONTACT_FIT_MM: f64 = 0.01;
 /// exact surface, so only rounding separates them.
 pub const PICK_MATCH_MM: f64 = 0.001;
 
+/// Distance within which a control point lies at the `from_mm` a move expects, in mm: a
+/// position copied with fewer digits than it has still names its point (R1120ac-EXA-900).
+/// Never more than [`CONTROL_POINT_MATCH_SHARE`] of the shortest distance between
+/// neighbouring poles, so the match stays with one point of a dense net.
+pub const CONTROL_POINT_MATCH_MM: f64 = 0.001;
+
+/// The share of the shortest distance between neighbouring poles of a control net within
+/// which a `from_mm` still names its point.
+pub const CONTROL_POINT_MATCH_SHARE: f64 = 0.25;
+
 /// Distance within which a point load stands on a support of a continuous span, in mm:
 /// it then goes straight into that support instead of loading the span.
 pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
+
+/// Share of a sideways force running along a part on a path to the ground (the cosine
+/// between them) at or below which the part carries none of it along its axis and
+/// nothing buckles it (R1113r95-PG-702..704).
+pub const ALONG_AXIS_NEGLIGIBLE: f64 = 1.0e-3;
 
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// The largest distance between a curve in a part's CNC drawing and the lines drawn for it, in mm.
 pub const CNC_CURVE_CHORD_MM: f64 = 0.01;
+/// How far an arc written on a CAM dialect's grid may stray from the planned arc, in grid steps
+/// of that dialect (review 2026-11-20 R1120ac-CAM-900).
+pub const CAM_ARC_GRID_STEPS: f64 = 4.0;
 /// The largest distance between an underlay's arc and the chords drawn for it, in mm.
 pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
 /// Relative slack over the step an import cut an underlay's arc into: a chord up to this
@@ -142,6 +197,17 @@ pub const NEGLIGIBLE: f64 = 1.0e-12;
 /// differences at this step leave truncation (step²) and cancellation (rounding / step)
 /// errors far below [`APPROXIMATION`].
 pub const FINITE_DIFFERENCE_STEP: f64 = 1.0e-6;
+
+/// A vector of the natural-frequency search keeping no more than this share of its mass
+/// norm once the vectors before it are taken out of it lies in their span: what is left is
+/// mostly rounding, and a scattered vector replaces it (og:R1119og-FEA-802).
+pub const MODE_VECTOR_DEPENDENT: f64 = 1.0e-6;
+
+/// How far above the highest natural frequency found the Sturm check of the modes puts
+/// its shift, as shares of that eigenvalue, tried in turn. The pivot of that mode is about
+/// this share of its stiffness, and one too small to tell its sign from rounding moves the
+/// shift further; all lie far above the [`ROUNDING`] an eigenvalue settles to.
+pub const STURM_SHIFT_GAPS: [f64; 3] = [1.0e-3, 1.0e-2, 1.0e-1];
 
 /// Starting Levenberg–Marquardt damping of the sketch solver, relative to unit-scaled
 /// equations; the solver adapts it every iteration.

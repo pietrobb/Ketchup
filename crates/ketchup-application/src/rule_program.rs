@@ -220,8 +220,29 @@ pub fn plan_rule_program_by(
     deadline: crate::program_isolation::CheckDeadline,
     cancel: &ketchup_program::CancelToken,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    plan_rule_program_reading(
+        document,
+        source,
+        &mut crate::program_imports::NoFiles,
+        deadline,
+        cancel,
+    )
+}
+
+/// [`plan_rule_program_by`] whose parts read from STEP files are read by
+/// `files`, the host that has the folder of the program's file.
+///
+/// # Errors
+/// As [`plan_rule_program_by`], or a file could not be read.
+pub fn plan_rule_program_reading(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+    files: &mut dyn crate::program_imports::ImportFiles,
+    deadline: crate::program_isolation::CheckDeadline,
+    cancel: &ketchup_program::CancelToken,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
     let evaluated = evaluate_by(source, deadline, cancel)?;
-    plan_evaluated(document, source, evaluated, None, deadline, cancel)
+    plan_evaluated(document, source, evaluated, None, files, deadline, cancel)
 }
 
 /// [`plan_rule_program`] of `source` the caller already evaluated as
@@ -241,6 +262,7 @@ pub fn plan_rule_program_from(
         source,
         evaluated,
         current,
+        &mut crate::program_imports::NoFiles,
         crate::program_isolation::CheckDeadline::start(),
         // A window edit, waited for on the window's thread.
         &ketchup_program::CancelToken::default(),
@@ -250,22 +272,43 @@ pub fn plan_rule_program_from(
 fn plan_evaluated(
     document: &DocumentStore,
     source: &RuleProgramSource,
-    evaluated: ketchup_program::Evaluated,
+    mut evaluated: ketchup_program::Evaluated,
     current_evaluated: Option<&ketchup_program::Evaluated>,
+    files: &mut dyn crate::program_imports::ImportFiles,
     deadline: crate::program_isolation::CheckDeadline,
     cancel: &ketchup_program::CancelToken,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    read_evaluated(&mut evaluated, &document.current(), files)?;
     let change = match document.current_rule_program() {
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
-            let old = match current_evaluated {
+            let mut old = match current_evaluated {
                 Some(old) => std::borrow::Cow::Borrowed(old),
                 None => std::borrow::Cow::Owned(evaluate_by(current, deadline, cancel)?),
             };
+            // What the program placed is what the document holds.
+            let model = old.reference_model();
+            if model
+                .parts
+                .iter()
+                .chain(model.components.iter().flat_map(|c| c.parts.iter()))
+                .any(|part| part.imported().is_some_and(|import| import.read.is_none()))
+            {
+                read_evaluated(
+                    old.to_mut(),
+                    &document.current(),
+                    &mut crate::program_imports::NoFiles,
+                )?;
+            }
+            let previous = document.current();
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
             let mut commands =
                 crate::rule_motion::commands(&baseline.current(), old.reference_model(), false)?;
+            commands.extend(crate::rule_sheets::remove_owned(
+                &previous,
+                old.reference_model(),
+            )?);
             if !commands.is_empty() {
                 baseline
                     .apply_batch(&CommandBatch::new(commands.clone()))
@@ -287,6 +330,8 @@ fn plan_evaluated(
             };
             let batch = crate::rule_support::append(document, reference, Some(old), batch)?;
             let batch = crate::rule_motion::append_pose(document, reference, batch)?;
+            let batch =
+                crate::rule_sheets::append(document, &previous, reference, Some(old), batch)?;
             commands.extend(prepared.commands);
             commands.extend(batch.commands().iter().cloned());
             let batch = CommandBatch::new(commands);
@@ -299,6 +344,19 @@ fn plan_evaluated(
         None => RuleProgramChange::Replacement,
     };
     Ok(RuleProgramPlan { evaluated, change })
+}
+
+/// [`crate::program_imports::read_imports`] of both models of `evaluated`.
+fn read_evaluated(
+    evaluated: &mut ketchup_program::Evaluated,
+    snapshot: &Snapshot,
+    files: &mut dyn crate::program_imports::ImportFiles,
+) -> Result<(), RuleProgramApplyError> {
+    crate::program_imports::read_imports(&mut evaluated.model, snapshot, files)?;
+    if let Some(reference) = &mut evaluated.reference_model {
+        crate::program_imports::read_imports(reference, snapshot, files)?;
+    }
+    Ok(())
 }
 
 impl DocumentSession {
@@ -329,9 +387,29 @@ impl DocumentSession {
         allow_replacement: bool,
         deadline: crate::program_isolation::CheckDeadline,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
+        self.apply_rule_program_reading(
+            source,
+            allow_replacement,
+            &mut crate::program_imports::NoFiles,
+            deadline,
+        )
+    }
+
+    /// [`Self::apply_rule_program_by`] whose STEP files `files` reads.
+    ///
+    /// # Errors
+    /// As [`Self::apply_rule_program`], or a file could not be read.
+    pub fn apply_rule_program_reading(
+        &mut self,
+        source: RuleProgramSource,
+        allow_replacement: bool,
+        files: &mut dyn crate::program_imports::ImportFiles,
+        deadline: crate::program_isolation::CheckDeadline,
+    ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
         // A session call, waited for on its caller's thread.
         let cancel = ketchup_program::CancelToken::default();
-        let plan = plan_rule_program_by(self.document_store(), &source, deadline, &cancel)?;
+        let plan =
+            plan_rule_program_reading(self.document_store(), &source, files, deadline, &cancel)?;
         let report = plan.report(deadline, &cancel);
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
@@ -550,27 +628,36 @@ fn replacement_batch(
         .collect::<Vec<_>>();
     let additions =
         crate::planner::plan_rule_part_batch(document, &parts).map_err(SessionError::Planning)?;
+    // By the part's name: the planner places some kinds of body after others.
     let definitions = additions
         .commands()
         .iter()
         .filter_map(|command| match command {
-            CanonicalCommand::CreateDefinition { id, .. } => Some(*id),
+            CanonicalCommand::CreateDefinition { id, name } => Some((name.as_str(), *id)),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<std::collections::BTreeMap<_, _>>();
     let temporary_occurrences = additions
         .commands()
         .iter()
         .filter_map(|command| match command {
-            CanonicalCommand::CreateOccurrence { id, transform, .. } => Some((*id, *transform)),
+            CanonicalCommand::CreateOccurrence {
+                id,
+                definition_id,
+                transform,
+                ..
+            } => Some((*definition_id, (*id, *transform))),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut commands = additions.commands().to_vec();
-    for ((old_id, _), (definition_id, (temporary_id, transform))) in replacements
-        .iter()
-        .zip(definitions.into_iter().zip(temporary_occurrences))
-    {
+    for (old_id, part) in replacements {
+        let definition_id = *definitions
+            .get(part.name.as_str())
+            .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
+        let (temporary_id, transform) = *temporary_occurrences
+            .get(&definition_id)
+            .ok_or(RuleProgramApplyError::IncrementalUnsupported)?;
         commands.push(CanonicalCommand::SetOccurrenceTransform {
             id: *old_id,
             transform,
@@ -712,7 +799,8 @@ pub(crate) fn program_feature_references_match(
         (
             ketchup_program::model::ProgramPartBody::Profile { .. }
             | ketchup_program::model::ProgramPartBody::Sweep { .. }
-            | ketchup_program::model::ProgramPartBody::Loft { .. },
+            | ketchup_program::model::ProgramPartBody::Loft { .. }
+            | ketchup_program::model::ProgramPartBody::Imported(_),
             _,
         ) => before.body == after.body,
         _ => false,
@@ -918,6 +1006,90 @@ mod tests {
     use super::*;
     use crate::SessionSettings;
     use std::collections::BTreeMap;
+
+    /// The scratch document of a program check is built once and gives the
+    /// model the published replacement gives; stopped, it stays empty.
+    #[test]
+    fn a_scratch_build_matches_the_replacement_and_stops_when_asked() {
+        let program = RuleProgramSource {
+            variants: Default::default(),
+            file_name: "model.star".to_owned(),
+            source: "box(\"a\", (100, 60, 40))\nbox(\"b\", (10, 10, 10), at=(300, 0, 0))\n"
+                .to_owned(),
+            overrides: Default::default(),
+        };
+        let evaluated = evaluate(&program).unwrap();
+        let mut replaced = DocumentSession::new(SessionSettings::default());
+        let replacement = replaced
+            .replace_with_rule_model(evaluated.reference_model(), program.clone())
+            .unwrap();
+        let mut scratch = DocumentSession::new(SessionSettings::default());
+        let built = scratch
+            .build_rule_model_scratch(evaluated.reference_model(), program.clone(), &|| false)
+            .unwrap()
+            .unwrap();
+        // The digest also covers the document's own id, which differs.
+        assert_eq!(built.scene_query(), replacement.scene_query());
+        assert!(built.definitions().eq(replacement.definitions()));
+        assert!(built.features().eq(replacement.features()));
+        assert_eq!(scratch.rule_program(), Some(&program));
+
+        let mut stopped = DocumentSession::new(SessionSettings::default());
+        let empty = stopped.snapshot().canonical_digest();
+        let asked = std::cell::Cell::new(0);
+        let second_part = || {
+            asked.set(asked.get() + 1);
+            asked.get() > 2
+        };
+        assert!(
+            stopped
+                .build_rule_model_scratch(evaluated.reference_model(), program, &second_part)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(stopped.snapshot().canonical_digest(), empty);
+    }
+
+    /// The scratch build goes around the proposal gate but not its size
+    /// limit: the budget check it runs answers as the gate does.
+    #[test]
+    fn a_scratch_build_keeps_the_size_limit_of_the_proposal_gate() {
+        use ketchup_model::document::{
+            DocumentStore, ProposalBudget, ProposalContext, ProposalPrepareError,
+        };
+        let program = RuleProgramSource {
+            variants: Default::default(),
+            file_name: "model.star".to_owned(),
+            source: "box(\"a\", (100, 60, 40))\nbox(\"b\", (10, 10, 10), at=(300, 0, 0))\n"
+                .to_owned(),
+            overrides: Default::default(),
+        };
+        let evaluated = evaluate(&program).unwrap();
+        let document = DocumentStore::new();
+        let batch =
+            crate::rule_groups::plan_rule_model_batch(&document, evaluated.reference_model())
+                .unwrap();
+        assert!(batch.commands().len() > 1);
+        document
+            .validate_batch_budget(&batch, ProposalBudget::RULE_PROGRAM)
+            .unwrap();
+        let small = ProposalBudget::T18_ATOMIC_MULTI_COMMAND_EDIT;
+        let scratch = document.validate_batch_budget(&batch, small).unwrap_err();
+        assert!(matches!(
+            scratch,
+            ProposalPrepareError::RequestedBudgetExceeded { .. }
+        ));
+        let gate = document
+            .prepare_proposal_with_context(
+                batch,
+                ProposalContext {
+                    requested_budget: small,
+                    ..ProposalContext::rule_program()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(scratch, gate);
+    }
 
     /// Turning a part of a large program in the window cost four evaluations
     /// of the whole program (the edit and its plan each evaluated the program

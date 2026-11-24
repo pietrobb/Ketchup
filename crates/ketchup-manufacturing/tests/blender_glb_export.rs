@@ -1,13 +1,14 @@
 use ketchup_manufacturing::blender_export::{ExactGlbInstance, exact_model_glb_export};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
-    GroupId, MeshAuthority, OccurrenceId, Transform,
+    GroupId, MeshAuthority, OccurrenceId, ProposalBudget, Transform,
 };
 use ketchup_model::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactProductError, exact_model_stl_export,
 };
 use ketchup_model::import::{
-    GlbImportError, ImportFormat, ImportLengthUnit, inspect_glb, plan_glb_import,
+    GlbExcess, GlbImportError, GlbMeasure, ImportFormat, ImportLengthUnit,
+    MAX_IMPORT_RECEIPT_OUTPUTS, inspect_glb, plan_glb_import,
 };
 use ketchup_model::mesh_recognition::{
     MeshRecognition, MeshRecognitionCandidate, RecognizedMeshKind, recognize_mesh_body,
@@ -639,15 +640,29 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
             .push(serde_json::json!(node));
     });
 
+    // The box comes as one solid and the pane as an open sheet (U4c), not left out.
     let inspection = inspect_glb(&source).unwrap();
-    assert_eq!(inspection.mesh_primitive_count(), 1);
+    assert_eq!(inspection.mesh_primitive_count(), 2);
     let codes = inspection
         .diagnostics()
         .iter()
         .map(|diagnostic| diagnostic.code())
         .collect::<Vec<_>>();
     assert!(codes.contains(&"glb_material_pieces_joined"), "{codes:?}");
-    assert!(codes.contains(&"glb_non_solid_pieces_skipped"), "{codes:?}");
+    assert!(codes.contains(&"glb_open_surfaces_imported"), "{codes:?}");
+    assert!(
+        !codes.contains(&"glb_non_solid_pieces_skipped"),
+        "{codes:?}"
+    );
+    // The painted half keeps its colour, as a picture of one pixel (review 2026-11-12 P3:
+    // the box came all in wood).
+    let pictures = inspection.shown_images();
+    assert_eq!(pictures.len(), 1);
+    let paint =
+        ketchup_manufacturing::presentation::PresentationTexture::decode(&pictures[0], "image/png")
+            .unwrap();
+    assert_eq!(paint.size(), [1, 1]);
+    assert_eq!(paint.rgba(), [243, 243, 243, 255]);
     let imported = DocumentStore::new();
     plan_glb_import(&imported.current(), &source, "two-materials.glb").unwrap();
 }
@@ -658,7 +673,8 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
 fn glb_imports_transparent_materials_and_skips_unknown_chunks() {
     let mut source = rewrite_glb_json(&sample_glb(), |document| {
         document["materials"] = serde_json::json!([
-            {"name": "glass", "alphaMode": "BLEND"},
+            {"name": "glass", "alphaMode": "BLEND",
+             "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 0.4]}},
             {"name": "leaves", "alphaMode": "MASK"}
         ]);
     });
@@ -715,19 +731,166 @@ fn glb_malformed_json_reports_the_parser_reason() {
     assert!(error.to_string().ends_with(reason.as_str()), "{error}");
 }
 
-#[test]
-fn glb_rejects_scene_expansion_beyond_the_canonical_output_envelope() {
-    let source = rewrite_glb_json(&sample_glb(), |document| {
-        let template = document["nodes"][0].clone();
-        while document["nodes"].as_array().unwrap().len() < 512 {
-            let index = document["nodes"].as_array().unwrap().len();
-            let mut node = template.clone();
-            node["name"] = serde_json::json!(format!("Instance {index}"));
-            document["nodes"].as_array_mut().unwrap().push(node);
+/// The sample GLB rewritten as a SketchUp model is laid out: a root holding `groups`
+/// groups, each placing the sample mesh, whose one primitive is repeated `primitives`
+/// times.
+fn grouped_scene(groups: usize, primitives: usize) -> Vec<u8> {
+    rewrite_glb_json(&sample_glb(), |document| {
+        let placement = document["nodes"][0].clone();
+        let primitive = document["meshes"][0]["primitives"][0].clone();
+        document["meshes"][0]["primitives"] = Value::Array(vec![primitive; primitives]);
+        let mut nodes = vec![serde_json::json!({
+            "name": "Building",
+            "children": (0..groups).map(|group| 1 + 2 * group).collect::<Vec<_>>(),
+        })];
+        for group in 0..groups {
+            nodes.push(serde_json::json!({
+                "name": format!("Group {group}"),
+                "translation": [group as f64 * 0.01, 0.0, 0.0],
+                "children": [2 + 2 * group],
+            }));
+            let mut node = placement.clone();
+            node["name"] = serde_json::json!(format!("Part {group}"));
+            nodes.push(node);
         }
-        document["scenes"][0]["nodes"] = serde_json::json!((0..512).collect::<Vec<usize>>());
+        document["nodes"] = Value::Array(nodes);
+        document["scenes"][0]["nodes"] = serde_json::json!([0]);
+    })
+}
+
+/// A chain of `depth` nodes, each the only child of the one above, the last placing
+/// the sample mesh.
+fn nested_scene(depth: usize) -> Vec<u8> {
+    rewrite_glb_json(&sample_glb(), |document| {
+        let mut placement = document["nodes"][0].clone();
+        placement["name"] = serde_json::json!("Part");
+        let mut nodes = (1..depth)
+            .map(|level| serde_json::json!({ "name": format!("Level {level}"), "children": [level] }))
+            .collect::<Vec<_>>();
+        nodes.push(placement);
+        document["nodes"] = Value::Array(nodes);
+        document["scenes"][0]["nodes"] = serde_json::json!([0]);
+    })
+}
+
+#[test]
+fn glb_of_more_groups_than_one_edit_imports_in_one_undo_step() {
+    // A SketchUp terrace: 1,075 nodes and 82,000 triangles. The count of groups is no
+    // load; the geometry and the commands are.
+    let groups = 1_100;
+    let source = grouped_scene(groups, 1);
+    let inspection = inspect_glb(&source).unwrap();
+    assert_eq!(inspection.node_count(), 2 * groups + 1);
+    assert_eq!(inspection.instance_count(), groups);
+
+    let mut document = DocumentStore::new();
+    let batch = plan_glb_import(&document.current(), &source, "terrace.glb").unwrap();
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(document.visible_undo_steps(), 1);
+    assert_eq!(committed.definitions().count(), 1);
+    assert_eq!(committed.groups().count(), 2 * groups + 1);
+    assert_eq!(committed.occurrences().count(), groups);
+}
+
+#[test]
+fn glb_placing_more_triangles_than_an_export_writes_is_refused() {
+    let primitives = 64;
+    let placed_per_group = primitives * inspect_glb(&sample_glb()).unwrap().triangle_count();
+    let groups = limits::EXPORT_TRIANGLES / placed_per_group + 1;
+    let error = inspect_glb(&grouped_scene(groups, primitives)).unwrap_err();
+    assert_eq!(
+        error,
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::PlacedTriangles,
+            at_least: groups * placed_per_group,
+            limit: limits::EXPORT_TRIANGLES,
+        })
+    );
+    // R1110-SKP-401: the refusal names what is too many, how many and the most, and
+    // what to do (§2).
+    assert_names_count_limit_and_advice(
+        &error,
+        "placed triangles",
+        groups * placed_per_group,
+        limits::EXPORT_TRIANGLES,
+    );
+}
+
+#[test]
+fn glb_expanding_beyond_the_commands_of_one_import_is_refused() {
+    let primitives = 64;
+    let groups = ProposalBudget::DRAWING_IMPORT.max_commands / primitives + 1;
+    let error = inspect_glb(&grouped_scene(groups, primitives)).unwrap_err();
+    // Each mesh part makes a mesh and a body, each node a group, each placed part an
+    // occurrence.
+    let outputs = 2 * primitives + (2 * groups + 1) + groups * primitives;
+    assert_eq!(
+        error,
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::Outputs,
+            at_least: outputs,
+            limit: MAX_IMPORT_RECEIPT_OUTPUTS,
+        })
+    );
+    assert_names_count_limit_and_advice(
+        &error,
+        "objects to create",
+        outputs,
+        MAX_IMPORT_RECEIPT_OUTPUTS,
+    );
+}
+
+#[test]
+fn glb_nested_deeper_than_an_instance_path_is_refused() {
+    assert!(inspect_glb(&nested_scene(limits::INSTANCE_PATH_STEPS)).is_ok());
+    let error = inspect_glb(&nested_scene(limits::INSTANCE_PATH_STEPS + 1)).unwrap_err();
+    assert_eq!(
+        error,
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::Nesting,
+            at_least: limits::INSTANCE_PATH_STEPS + 1,
+            limit: limits::INSTANCE_PATH_STEPS,
+        })
+    );
+    assert_names_count_limit_and_advice(
+        &error,
+        "levels of nested groups",
+        limits::INSTANCE_PATH_STEPS + 1,
+        limits::INSTANCE_PATH_STEPS,
+    );
+}
+
+#[test]
+fn three_hundred_coloured_components_import() {
+    // R1110-SKP-401: 300 painted cubes, each a node placing a coloured mesh, were
+    // refused as beyond the output envelope.
+    let source = rewrite_glb_json(&grouped_scene(300, 1), |document| {
+        document["materials"] = serde_json::json!([{
+            "pbrMetallicRoughness": { "baseColorFactor": [0.8, 0.2, 0.1, 1.0] }
+        }]);
+        document["meshes"][0]["primitives"][0]["material"] = serde_json::json!(0);
     });
-    assert_eq!(inspect_glb(&source), Err(GlbImportError::TooManyOutputs));
+    let mut document = DocumentStore::new();
+    let batch = plan_glb_import(&document.current(), &source, "cubes.glb").unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.current().occurrences().count(), 300);
+}
+
+fn assert_names_count_limit_and_advice(
+    error: &GlbImportError,
+    measure: &str,
+    found: usize,
+    limit: usize,
+) {
+    let message = error.to_string();
+    for part in [measure, &found.to_string(), &limit.to_string()] {
+        assert!(message.contains(part), "{message:?} does not name {part:?}");
+    }
+    assert!(
+        message.contains(" then import "),
+        "{message:?} gives no advice"
+    );
 }
 
 #[test]

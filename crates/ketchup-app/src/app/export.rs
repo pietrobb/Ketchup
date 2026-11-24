@@ -3,6 +3,9 @@
 use super::mesh_export_activity::MeshFormat;
 use crate::*;
 use ketchup_manufacturing::dxf_annotations::DEFAULT_PLAN_SCALE;
+use ketchup_manufacturing::fabrication::{
+    GeneralFabricationError, ShopElement, ShopFormat, ShopLoss,
+};
 
 impl KetchupApp {
     pub(crate) fn homag_mpr_program_name(stem: &str) -> String {
@@ -74,10 +77,12 @@ impl KetchupApp {
             "btlx" => ("file-filter-btlx", "btlx"),
             "svg" => ("file-filter-svg", "svg"),
             "pdf" => ("file-filter-pdf", "pdf"),
+            "png" => ("file-filter-png", "png"),
             "dwg" => ("file-filter-dwg", "dwg"),
             "zip" => ("file-filter-cnc-dxf-zip", "zip"),
+            "workshop-zip" => ("file-filter-workshop-package", "zip"),
             _ => unreachable!(
-                "the File menu and the takeoff and drawings windows export only DXF, STEP, IGES, STL, 3MF, GLB, DAE, KETCHUP-VIEW, CSV, XLSX, NC, MPR (alone or as a ZIP), BTLx, SVG, PDF, DWG and ZIP"
+                "the File menu and the takeoff and drawings windows export only DXF, STEP, IGES, STL, 3MF, GLB, DAE, KETCHUP-VIEW, CSV, XLSX, NC, MPR (alone or as a ZIP), BTLx, SVG, PDF, PNG, DWG, ZIP and the workshop package ZIP"
             ),
         };
         let filter_label = self.catalog.text(filter_key);
@@ -478,6 +483,10 @@ impl KetchupApp {
             };
             let projection = self.current_general_fabrication_projection()?;
             let mpr = render(&projection, &snapshot)?;
+            let woodwop = ShopFormat::Woodwop {
+                vertical_pocket_tool: false,
+            };
+            let lost = lost(projection.admit(&snapshot, woodwop))?;
             let expected_sha256 = export_target_sha256(path)?;
             let title = self.catalog.text("dialog-export-homag-mpr-title");
             let risk = self.catalog.text("dialog-export-homag-mpr-risk");
@@ -511,9 +520,29 @@ impl KetchupApp {
                 return Err(ExportError::ChangedDuringConsent);
             }
             write_export_artifact_if_unchanged(path, &mpr, expected_sha256.as_deref())?;
-            Ok(Written::alone(path))
+            Ok(Written {
+                lost,
+                ..Written::alone(path)
+            })
         })();
-        self.report_export_outcome("homag-mpr", path, result)
+        let result = self.report_export_outcome("homag-mpr", path, result);
+        self.show_lost(path, &result);
+        result
+    }
+
+    /// Tells the user what a machine file leaves unmade (review 2026-11-09 MF-305).
+    fn show_lost(&mut self, path: &Path, result: &Result<Written, ExportError>) {
+        if let Ok(written) = result
+            && !written.lost.is_empty()
+        {
+            self.digest = self.catalog.format(
+                "digest-exported-lost",
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    ("lost", written.lost.join("; ")),
+                ]),
+            );
+        }
     }
 
     /// Tools > Assign production codes: every made piece without a code a HOMAG
@@ -568,34 +597,15 @@ impl KetchupApp {
         let snapshot = self.document.current();
         self.rebind_exact_results(&snapshot);
         let options = self.btlx_export_options();
-        let (selected_profile_request, intermediate_saw_cuts, selected_profile_contours) =
-            match options.profile_processing_request {
-                BtlxProfileProcessingRequest::PortableFreeContour => (
-                    "portable FreeContour",
-                    "not applicable".to_owned(),
-                    "closed simple line/arc contours",
-                ),
-                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
-                    intermediate_saw_cuts,
-                } => (
-                    "edge SawContour cuts, then MillContour",
-                    intermediate_saw_cuts.to_string(),
-                    "rectangular only",
-                ),
-            };
         let result = (|| -> Result<Written, ExportError> {
             let projection = self.current_general_fabrication_projection()?;
             let btlx = projection
                 .btlx_2_3_1_export_with_options(&snapshot, options)
                 .map_err(ExportError::failed)?;
-            let thread_loss = projection
-                .btlx_thread_loss_report(&snapshot)
+            let support_report = projection
+                .btlx_support_report(&snapshot, options)
                 .map_err(ExportError::failed)?;
-            let support_report = format!(
-                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_removals=pocket, through-cut, extruded boolean-cut\nportable_profile_contours=closed simple line/arc contours\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=arc or non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n{}",
-                snapshot.canonical_digest(),
-                thread_loss
-            );
+            let lost = lost(projection.admit(&snapshot, ShopFormat::Btlx))?;
             let report_path = path.with_extension("btlx.support.txt");
             let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
             let mut evidence = btlx.clone();
@@ -624,9 +634,14 @@ impl KetchupApp {
                 support_report.as_bytes(),
                 &precondition,
             )?;
-            Ok(Written::with_support_report(path, &report_path))
+            Ok(Written {
+                lost,
+                ..Written::with_support_report(path, &report_path)
+            })
         })();
-        self.report_export_outcome("btlx", path, result)
+        let result = self.report_export_outcome("btlx", path, result);
+        self.show_lost(path, &result);
+        result
     }
 
     pub(crate) fn export_current_model_step_to(
@@ -641,122 +656,6 @@ impl KetchupApp {
         path: &Path,
     ) -> Result<Written, ExportError> {
         self.export_exchange_to(super::exchange_export::ExchangeFormat::Iges, path)
-    }
-
-    pub(crate) fn show_cam_export_window(&mut self, context: &egui::Context) {
-        let Some(mut pending) = self.reviews.cam_export_dialog.take() else {
-            return;
-        };
-        let mut open = true;
-        let mut preview = false;
-        let mut confirm = false;
-        let mut cancel = false;
-        egui::Window::new(self.catalog.text("cam-review-title"))
-            .id(egui::Id::new("cam-review-export"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .show(context, |ui| {
-                ui.label(format!(
-                    "{} {}",
-                    self.catalog.text("cam-review-plan"),
-                    pending.plan_id.0
-                ));
-                if let Some(review) = &pending.review {
-                    ui.label(format!("{}: {}", review.units, review.work_offset));
-                    ui.label(format!(
-                        "T{} · S{} · F{} mm/min",
-                        review.tool_number, review.spindle_rpm, review.cutting_feed_mm_per_min
-                    ));
-                    ui.label(format!(
-                        "{}: {:.6} mm³ · {}: {:.6} mm³",
-                        self.catalog.text("cam-review-removed"),
-                        review.removed_stock_mm3,
-                        self.catalog.text("cam-review-gouge"),
-                        review.gouge_mm3
-                    ));
-                    ui.monospace(format!("SHA-256 {}", review.content_digest));
-                } else {
-                    ui.label(self.catalog.text("cam-review-not-previewed"));
-                }
-                ui.horizontal(|ui| {
-                    if ui.button(self.catalog.text("cam-review-preview")).clicked() {
-                        preview = true;
-                    }
-                    if ui
-                        .add_enabled(
-                            pending.review.is_some(),
-                            egui::Button::new(self.catalog.text("cam-review-confirm-export")),
-                        )
-                        .clicked()
-                    {
-                        confirm = true;
-                    }
-                    if ui.button(self.catalog.text("dialog-cancel")).clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        if preview {
-            let result = (|| {
-                let snapshot = self.document.current();
-                let mutation_epoch = self.document.mutation_epoch();
-                let plan = snapshot
-                    .cam_plan(pending.plan_id)
-                    .ok_or_else(|| self.catalog.refusal("cam-review-no-plan"))?;
-                let operation = plan
-                    .default_facing_operation(&snapshot, 1)
-                    .map_err(|error| failed("cam.operation", error))?;
-                let worker_path = self.exact_worker_executable()?;
-                self.reviews.cam_reviews.set_worker_path(worker_path);
-                self.reviews
-                    .cam_reviews
-                    .preview(
-                        &snapshot,
-                        mutation_epoch,
-                        CamReviewRequest {
-                            plan_id: pending.plan_id,
-                            operations: vec![operation],
-                            fixtures: Vec::new(),
-                            dialect: CamPostprocessorDialect::IsoMetricGCode,
-                        },
-                        &AtomicBool::new(false),
-                    )
-                    .map_err(|error| failed("cam.review", error))
-            })();
-            match result {
-                Ok(review) => {
-                    pending.review = Some(review);
-                    self.digest = self.catalog.text("cam-review-ready");
-                }
-                Err(error) => self.digest = error.reason_text().to_owned(),
-            }
-        }
-        if confirm
-            && let Some(review) = &pending.review
-            && let Some(path) = self.choose_export_path("nc")
-        {
-            let snapshot = self.document.current();
-            let mutation_epoch = self.document.mutation_epoch();
-            let result = self.reviews.cam_reviews.export(
-                &snapshot,
-                mutation_epoch,
-                &review.token,
-                &path,
-                true,
-                &AtomicBool::new(false),
-            );
-            match result {
-                Ok(_) => {
-                    self.digest = self.catalog.text("cam-review-exported");
-                    cancel = true;
-                }
-                Err(error) => self.digest = error.to_string(),
-            }
-        }
-        if open && !cancel {
-            self.reviews.cam_export_dialog = Some(pending);
-        }
     }
 }
 
@@ -776,4 +675,17 @@ pub(super) fn export_bundle_evidence(
         evidence.extend_from_slice(artifact);
     }
     evidence
+}
+
+/// The pin holes a machine file leaves unmade in bought parts, as
+/// `<part>: <element>` (review 2026-11-09 MF-305).
+fn lost(
+    losses: Result<Vec<ShopLoss>, GeneralFabricationError>,
+) -> Result<Vec<String>, ExportError> {
+    Ok(losses
+        .map_err(ExportError::failed)?
+        .into_iter()
+        .filter(|loss| matches!(loss.element, ShopElement::UnmadePinHole(_)))
+        .map(|loss| format!("{}: {}", loss.part, loss.element))
+        .collect())
 }

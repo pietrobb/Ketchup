@@ -281,3 +281,69 @@ fn removing_an_underlay_is_one_undo_step_that_takes_its_tags_along() {
     assert_eq!(app.document.current().underlays().count(), 0);
     assert_eq!(app.document.current().tags().count(), tags);
 }
+
+/// Review 2026-11-09 UL-303: a drawing whose header names ANSI_1252 over texts written in
+/// Windows-1250 is not added as read; the window shows how its texts read and the user
+/// reads it again in ANSI_1250, which the underlay keeps, or keeps it as read.
+#[test]
+fn a_drawing_of_a_doubtful_code_page_waits_for_the_user_to_choose_it() {
+    use egui_kittest::kittest::Queryable as _;
+    use ketchup_model::import::DxfCodePage;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    let mut source = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nTEXT\n8\nnotes\n10\n0\n20\n0\n40\n2\n1\n".to_vec();
+    source.extend_from_slice(b"D\xE5\x9Eka steny, H\xE5bka z\xE1kladu");
+    source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+    std::fs::write(&path, source).unwrap();
+
+    for (button, text, code_page) in [
+        (
+            "dialog-underlay-code-page-read-again",
+            "Dĺžka steny, Hĺbka základu",
+            DxfCodePage::parse("ANSI_1250"),
+        ),
+        (
+            "dialog-underlay-code-page-keep",
+            "Dåžka steny, Håbka základu",
+            None,
+        ),
+    ] {
+        let dialogs = dialogs::ScriptedFileDialogs::new().queue_import(ImportFormat::Dxf, &path);
+        let app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(Vec2::new(1600.0, 1200.0))
+            .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        harness.step();
+        let undo = harness.state().undo_step_count();
+        // Without a frame context the drawing is read here, in the program worker.
+        harness
+            .state_mut()
+            .dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+        assert_eq!(harness.state().document.current().underlays().count(), 0);
+        // A few frames: the window's first one only sizes it. A spinner elsewhere may
+        // keep repainting, so not `run`.
+        harness.run_steps(3);
+        harness.get_by_label("Dåžka steny, Håbka základu");
+        let label = harness.state().catalog.text(button);
+        harness.get_by_label(&label).click();
+        harness.run_steps(3);
+        crate::tests::shell::step_until(
+            &mut harness,
+            Duration::from_secs(60),
+            "the drawing was not read again",
+            |app| app.file.activity.underlay.reading.is_none(),
+        );
+
+        let app = harness.state();
+        let snapshot = app.document.current();
+        let underlay = snapshot
+            .underlays()
+            .next()
+            .unwrap_or_else(|| panic!("{button}: no underlay: {}", app.action_digest()));
+        assert_eq!(underlay.code_page, code_page, "{button}");
+        let lines = app.underlay_lines_or_reason(underlay).unwrap();
+        assert_eq!(lines.layers()[0].texts()[0].text, text, "{button}");
+        assert_eq!(app.undo_step_count(), undo + 1, "{button}");
+        assert!(app.file.activity.underlay.code_page_choice.is_none());
+    }
+}

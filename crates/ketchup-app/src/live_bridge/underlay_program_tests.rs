@@ -91,6 +91,7 @@ fn underlay_binding_updates_the_profile_and_exact_slab_from_changed_source() {
         json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"]}),
     );
     let apply = Request::ApplyProgram {
+        source_folder: None,
         expected: Some(app.live_bridge_stamp()),
         source: format!("{}{FLOOR}", source(&app)),
         overrides: None,
@@ -494,6 +495,7 @@ fn underlay_binding_without_handle_never_retargets_a_replaced_drawing() {
         json!({"name":"ROOM", "object_id":id}),
     );
     let apply = Request::ApplyProgram {
+        source_folder: None,
         expected: Some(app.live_bridge_stamp()),
         source: format!("{}{FLOOR}", source(&app)),
         overrides: None,
@@ -742,6 +744,7 @@ fn a_floor_follows_the_room_its_walls_enclose_and_the_data_is_rewritten_in_place
 
     // The program builds on the data like on any value of its own.
     let apply = Request::ApplyProgram {
+        source_folder: None,
         expected: Some(app.live_bridge_stamp()),
         source: format!("{data}{FLOOR}"),
         overrides: None,
@@ -1008,6 +1011,7 @@ fn an_explicit_gap_closure_makes_a_profile_without_changing_the_drawing() {
         .execute(
             &mut app,
             Request::ApplyProgram {
+                source_folder: None,
                 expected: Some(expected),
                 source: format!("{data}{FLOOR}"),
                 overrides: None,
@@ -1055,6 +1059,7 @@ fn array_block_conversion_keeps_affine_geometry_and_updates_the_shared_definitio
         .execute(
             &mut app,
             Request::ApplyProgram {
+                source_folder: None,
                 expected: Some(expected_stamp),
                 source: "kept = 7\n".to_owned(),
                 overrides: None,
@@ -1563,6 +1568,7 @@ ys = [y for x, y in ROOM_POINTS]
 pad = extrude(\"pad\", profile = [(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], distance = 100)
 ";
     let apply = Request::ApplyProgram {
+        source_folder: None,
         expected: Some(app.live_bridge_stamp()),
         source: format!("{}{pad}", source(&app)),
         overrides: None,

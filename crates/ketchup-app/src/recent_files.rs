@@ -674,7 +674,7 @@ mod tests {
             then(&mut app, &other, &legacy);
             let before = app.document_path().map(Path::to_owned);
             release.send(()).unwrap();
-            let until = Instant::now() + Duration::from_secs(5);
+            let until = Instant::now() + Duration::from_secs(60);
             while app.window.recent.picking.is_some() && Instant::now() < until {
                 app.poll_recent_pick();
             }

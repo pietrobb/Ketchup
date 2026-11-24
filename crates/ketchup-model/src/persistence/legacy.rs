@@ -38,12 +38,12 @@ use crate::document::{
     FeatureBodyOwnership, FeatureId, FeatureKind, FeatureParameterBinding,
     FeatureParameterProvenance, FeatureParameterTarget, FilletRadiusStation, Group, GroupId,
     ImportedExactBodySpec, InstancePath, InstancePathStep, LocalGroup, LocalGroupId, LocalGroupKey,
-    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, LoftContinuity, LoftSection,
-    MeshAuthority, MeshBodySpec, NodeId, Occurrence, OccurrenceId, ParameterPath,
-    ParameterValueType, PersistentDimension, PersistentDimensionId, PersistentDimensionTarget,
-    ProductModel, ProfileEdgeReference, ProfileFaceReference, ProfileSegment, ShellDirection,
-    SpatialPathSegment, SurfaceBodySpec, Tag, TagId, Transform, UnitSystem, WeldmentJointPolicy,
-    WeldmentJointPrimary, WeldmentJointSpec, WeldmentMemberSpec,
+    LocalOccurrence, LocalOccurrenceId, LocalOccurrenceKey, MeshAuthority, MeshBodySpec, NodeId,
+    Occurrence, OccurrenceId, ParameterPath, ParameterValueType, PersistentDimension,
+    PersistentDimensionId, PersistentDimensionTarget, ProductModel, ProfileEdgeReference,
+    ProfileFaceReference, ProfileSegment, ShellDirection, SpatialPathSegment, SurfaceBodySpec, Tag,
+    TagId, Transform, UnitSystem, WeldmentJointPolicy, WeldmentJointPrimary, WeldmentJointSpec,
+    WeldmentMemberSpec,
 };
 use crate::drawing::{
     DrawingAngularDimension, DrawingAnnotations, DrawingBomBalloon, DrawingBomBalloonId,
@@ -93,6 +93,8 @@ use ketchup_geometry::sketch::{
 };
 
 use super::{MAGIC, MigrationLoss, PersistenceError};
+
+mod loft;
 
 const MESH_BODY_SCHEMA: u16 = 16;
 const SPACE_CLEARANCE_SCHEMA: u16 = 17;
@@ -2567,16 +2569,17 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
         minimum_mm: point(reader)?,
         maximum_mm: point(reader)?,
     };
+    let invalid = || {
+        PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
+            crate::cam::CamError::InvalidPlan,
+        ))
+    };
     let number = reader.u32()?;
     let kind = match reader.u8()? {
         1 => CamToolKind::FlatEndMill,
         2 => CamToolKind::BallEndMill,
         3 => CamToolKind::Drill,
-        _ => {
-            return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
-                crate::cam::CamError::InvalidPlan,
-            )));
-        }
+        _ => return Err(invalid()),
     };
     let tool = CamTool {
         number,
@@ -2589,6 +2592,7 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
         spindle_rpm: reader.u32()?,
         feed_mm_per_min: f64::from_bits(reader.u64()?),
         plunge_mm_per_min: f64::from_bits(reader.u64()?),
+        point_angle_deg: None,
     };
     let work_offset = match reader.u8()? {
         54 => CamWorkOffset::G54,
@@ -2597,11 +2601,7 @@ fn read_cam_plan(reader: &mut Reader<'_>) -> Result<CamPlan, PersistenceError> {
         57 => CamWorkOffset::G57,
         58 => CamWorkOffset::G58,
         59 => CamWorkOffset::G59,
-        _ => {
-            return Err(PersistenceError::InvalidCanonicalData(CanonicalError::Cam(
-                crate::cam::CamError::InvalidPlan,
-            )));
-        }
+        _ => return Err(invalid()),
     };
     let setup = CamSetup {
         work_offset,
@@ -3460,32 +3460,12 @@ fn read_product(
                     profile: FeatureId(reader.u64()?),
                 },
                 2 => {
-                    let mut sections = Vec::new();
-                    for _ in 0..reader.count_with_limit(16)? {
-                        sections.push(LoftSection {
-                            profile: FeatureId(reader.u64()?),
-                            elevation_mm: f64::from_bits(reader.u64()?),
-                        });
-                    }
-                    let guide = match reader.u8()? {
-                        0 => None,
-                        1 => Some(FeatureId(reader.u64()?)),
-                        value => return Err(PersistenceError::InvalidBoolean(value)),
-                    };
-                    let continuity = match reader.u8()? {
-                        1 => LoftContinuity::Position,
-                        2 => LoftContinuity::Tangent,
-                        3 => LoftContinuity::Curvature,
-                        value => {
-                            return Err(PersistenceError::Legacy(LegacyError::InvalidFeatureKind(
-                                value,
-                            )));
-                        }
-                    };
+                    let (sections, guide, continuity) = loft::read(reader, true)?;
                     SurfaceBodySpec::Loft {
                         sections,
                         guide,
                         continuity,
+                        rail: None,
                     }
                 }
                 value => {
@@ -3532,37 +3512,13 @@ fn read_product(
                 },
             },
             15 if capabilities.loft_spline => {
-                let mut sections = Vec::new();
-                for _ in 0..reader.count_with_limit(16)? {
-                    sections.push(LoftSection {
-                        profile: FeatureId(reader.u64()?),
-                        elevation_mm: f64::from_bits(reader.u64()?),
-                    });
-                }
-                let (guide, continuity) = if capabilities.loft_guide_continuity {
-                    let guide = match reader.u8()? {
-                        0 => None,
-                        1 => Some(FeatureId(reader.u64()?)),
-                        value => return Err(PersistenceError::InvalidBoolean(value)),
-                    };
-                    let continuity = match reader.u8()? {
-                        1 => LoftContinuity::Position,
-                        2 => LoftContinuity::Tangent,
-                        3 => LoftContinuity::Curvature,
-                        value => {
-                            return Err(PersistenceError::Legacy(LegacyError::InvalidFeatureKind(
-                                value,
-                            )));
-                        }
-                    };
-                    (guide, continuity)
-                } else {
-                    (None, LoftContinuity::Position)
-                };
+                let (sections, guide, continuity) =
+                    loft::read(reader, capabilities.loft_guide_continuity)?;
                 FeatureKind::Loft {
                     sections,
                     guide,
                     continuity,
+                    rail: None,
                 }
             }
             24 if capabilities.rigid_transform_feature => {
@@ -3632,10 +3588,7 @@ fn read_product(
                     (BodyKind::Solid, 0.0)
                 };
                 let volume_mm3 = f64::from_bits(reader.u64()?);
-                let mut bounds_mm = [[0.0; 3]; 2];
-                for coordinate in bounds_mm.iter_mut().flatten() {
-                    *coordinate = f64::from_bits(reader.u64()?);
-                }
+                let bounds_mm = [read_vector3(reader)?, read_vector3(reader)?];
                 FeatureKind::ImportedExactBody(ImportedExactBodySpec {
                     schema,
                     import_id,
@@ -3651,6 +3604,7 @@ fn read_product(
                     bounds_mm,
                     backend: reader.string()?,
                     tolerance: reader.string()?,
+                    source_placement: None,
                 })
             }
             9 if capabilities.mesh_body => {
@@ -3728,12 +3682,7 @@ fn read_product(
                         )));
                     }
                 };
-                FeatureKind::MeshBody(MeshBodySpec {
-                    schema,
-                    vertices_mm,
-                    triangles,
-                    authority,
-                })
+                FeatureKind::MeshBody(MeshBodySpec::new(schema, vertices_mm, triangles, authority))
             }
             kind => {
                 return Err(PersistenceError::Legacy(LegacyError::InvalidFeatureKind(

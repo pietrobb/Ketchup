@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,18 @@ def manifest(root, name, dependencies=(), dev=()):
 def test_reads_only_normal_workspace_dependencies(tmp_path):
     manifest(tmp_path, "low")
     manifest(tmp_path, "high", ["low"], dev=["top"])
+    assert checker.workspace_dependencies(tmp_path) == {"high": ["low"], "low": []}
+
+
+def test_a_vendored_path_dependency_is_not_a_workspace_crate(tmp_path):
+    manifest(tmp_path, "low")
+    path = tmp_path / "crates" / "high" / "Cargo.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '[package]\nname = "high"\n\n[dependencies]\nlow = { path = "../low" }\n'
+        'vendored = { path = "../../third_party/vendored" }\n',
+        encoding="utf-8",
+    )
     assert checker.workspace_dependencies(tmp_path) == {"high": ["low"], "low": []}
 
 
@@ -63,6 +76,110 @@ def test_module_over_the_limit_fails_and_oversized_ones_only_shrink():
     assert checker.oversized_modules({"big.rs": 10}, 10, oversized) == [
         "big.rs: fits 10 lines now; remove it from OVERSIZED"
     ]
+
+
+def test_a_production_module_past_the_freeze_size_fails_until_frozen():
+    # Review 2026-11-08 TST-253: modules were frozen only after a review found them past
+    # 3 000 lines; crossing it fails now, the module named. Test files are not frozen.
+    sizes = {
+        "crates/a/src/big.rs": 31,
+        "crates/a/src/listed.rs": 40,
+        "crates/a/src/small.rs": 30,
+        "crates/a/src/big_tests.rs": 50,
+        "crates/a/tests/flow.rs": 50,
+    }
+    assert checker.unfrozen_large_modules(sizes, 30, {"crates/a/src/listed.rs": 40}) == [
+        "crates/a/src/big.rs: 31 lines, over 30; split it or add it to FROZEN_MODULES"
+    ]
+
+
+def test_the_frozen_list_may_only_go_down_from_the_commit_before(tmp_path):
+    # Review 2026-11-09 R1109-TST-305: each change wrote its own module's new size into
+    # FROZEN_MODULES (`live_bridge.rs` 3550 to 3635 in the change that grew it).
+    base = {"crates/a/src/frozen.rs": 3550, "crates/a/src/kept.rs": 3200}
+    base_sizes = {"crates/a/src/crossed.rs": 2900, "crates/a/src/grown.rs": 2990}
+    frozen = {
+        "crates/a/src/frozen.rs": 3635,
+        "crates/a/src/kept.rs": 3100,
+        "crates/a/src/crossed.rs": 3000,
+        "crates/a/src/grown.rs": 3200,
+    }
+    assert checker.raised_frozen_entries(frozen, base, base_sizes, 3000) == [
+        "crates/a/src/frozen.rs: frozen at 3550 before this change, 3635 now; "
+        "FROZEN_MODULES may only go down, put new code in a new module",
+        "crates/a/src/grown.rs: added to FROZEN_MODULES at 3200, past 3000; "
+        "split it so it stays under 3000 lines",
+    ]
+    text = 'FREEZE = 1\nFROZEN_MODULES = {\n    # A comment.\n    "a.rs": 3,\n}\n'
+    assert checker.frozen_modules_of(text) == {"a.rs": 3}
+
+
+def git(root, *arguments):
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+         *arguments],
+        cwd=root, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def commit_frozen(root, frozen, message):
+    script = root / "scripts" / "check_crate_layers.py"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(f"FROZEN_MODULES = {frozen!r}\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", message)
+    return git(root, "rev-parse", "HEAD")
+
+
+def test_an_entry_raised_in_an_earlier_commit_of_the_branch_still_fails(tmp_path):
+    # Review 2026-11-10 R1110-TST-400: compared with HEAD^1 only, commit A raising
+    # `viewport.rs` from 4857 to 4950 failed, and passed once commit B followed it or
+    # main was merged into the branch.
+    git(tmp_path, "init", "-q")
+    main = commit_frozen(tmp_path, {"viewport.rs": 4857}, "main")
+    git(tmp_path, "update-ref", "refs/remotes/origin/main", main)
+    commit_frozen(tmp_path, {"viewport.rs": 4950}, "A")
+    (tmp_path / "other.txt").write_text("B\n", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "B")
+    raised = ["viewport.rs: frozen at 4857 before this change, 4950 now; "
+              "FROZEN_MODULES may only go down, put new code in a new module"]
+    frozen = {"viewport.rs": 4950}
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ={}) == raised
+    # A push to main is compared with main before it, which CI names.
+    git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ={}) == []
+    pushed = {"KETCHUP_FREEZE_BASE": main}
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ=pushed) == raised
+
+
+def test_without_origin_main_only_a_merge_commit_is_compared_with_its_first_parent(tmp_path):
+    # Review 2026-11-12 P3: without origin/main the check fell back to HEAD^1 silently,
+    # so commit A raising an entry passed once commit B followed it.
+    git(tmp_path, "init", "-q", "-b", "main")
+    commit_frozen(tmp_path, {"viewport.rs": 4857}, "main")
+    git(tmp_path, "checkout", "-q", "-b", "branch")
+    commit_frozen(tmp_path, {"viewport.rs": 4950}, "A")
+    (tmp_path / "other.txt").write_text("B\n", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "B")
+    frozen = {"viewport.rs": 4950}
+    problems = checker.frozen_list_problems(tmp_path, frozen=frozen, environ={})
+    assert len(problems) == 1 and "KETCHUP_FREEZE_BASE" in problems[0], problems
+    # A pull request's merge commit has the target branch as its first parent.
+    git(tmp_path, "checkout", "-q", "main")
+    git(tmp_path, "-c", "core.editor=true", "merge", "-q", "--no-ff", "branch")
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ={}) == [
+        "viewport.rs: frozen at 4857 before this change, 4950 now; "
+        "FROZEN_MODULES may only go down, put new code in a new module"]
+
+
+def test_workspace_frozen_list_did_not_grow_since_the_commit_before():
+    assert checker.frozen_list_problems(ROOT) == []
+
+
+def test_workspace_modules_past_the_freeze_size_are_frozen():
+    assert checker.unfrozen_large_modules(checker.module_sizes(ROOT)) == []
 
 
 def test_workspace_modules_fit_the_limit():
@@ -228,6 +345,69 @@ def test_numeric_casts_and_lint_allows_are_counted_per_crate_and_only_fall(tmp_p
     assert checker.grown_casts_and_allows(counts, {"a casts": 3, "a allows": 1}) == []
     assert "limit 2" in checker.grown_casts_and_allows(counts, {"a casts": 2, "a allows": 1})[0]
     assert "lower CASTS_AND_ALLOWS" in checker.grown_casts_and_allows(counts, {"a casts": 4, "a allows": 1})[0]
+
+
+def test_an_expect_switches_a_lint_off_and_counts_as_an_allow(tmp_path):
+    # Review 2026-11-20 ac P3: `#[expect(` went uncounted.
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#![expect(clippy::module_name_repetitions)]\n"
+        '#[expect(\n    clippy::too_many_arguments,\n    reason = "seven"\n)]\nfn f() {}\n'
+        "// an expect( in a comment\n",
+        encoding="utf-8",
+    )
+    assert checker.cast_and_allow_counts(tmp_path) == {"a allows": 2}
+
+
+def test_an_allow_under_cfg_attr_counts_on_one_line_or_several(tmp_path):
+    # Review 2026-11-21 ac P3: `#[cfg_attr(…, allow(` went uncounted.
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#[cfg_attr(windows, allow(dead_code))]\nfn f() {}\n"
+        "#[cfg_attr(all(unix, not(target_os = \"macos\")), expect(unused))]\nfn g() {}\n"
+        "#[cfg_attr(\n    test,\n    derive(Debug),\n    allow(clippy::large_enum_variant)\n)]\nenum E {}\n"
+        "#[cfg_attr(test, derive(Debug))]\nstruct S;\n",
+        encoding="utf-8",
+    )
+    assert checker.cast_and_allow_counts(tmp_path) == {"a allows": 3}
+
+
+def test_unsafe_under_an_allow_already_counted_is_counted_itself(tmp_path):
+    # Review 2026-11-13 P3: four unsafe blocks under one module-wide allow left the
+    # counts as they were.
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#![allow(unsafe_code)]\n"
+        "fn f() { unsafe { g() }; let x = unsafe { h() }; } // unsafe { i() }\n"
+        "unsafe fn g() {}\nstruct S; unsafe impl Send for S {}\n"
+        'fn m() -> &\'static str { "a path is unsafe \\" unsafe" }\n'
+        "#[cfg(test)]\nmod tests {\n    fn t() { unsafe { j() } }\n}\n",
+        encoding="utf-8",
+    )
+    counts = checker.cast_and_allow_counts(tmp_path)
+    assert counts == {"a allows": 1, "a unsafe": 4}
+    assert "limit 3" in checker.grown_casts_and_allows(counts, {"a allows": 1, "a unsafe": 3})[0]
+
+
+def test_unsafe_in_a_vendored_crate_is_counted_and_said_as_unsafe(tmp_path):
+    # Review 2026-11-13 r95 P3: the patched starlark and process-wrap went uncounted, and a
+    # grown count of unsafe code was answered with advice about casts.
+    vendored = tmp_path / "third_party" / "w" / "src"
+    vendored.mkdir(parents=True)
+    (vendored / "lib.rs").write_text(
+        "unsafe fn f() {}\nfn g() { unsafe { f() } }\n"
+        "#[cfg(test)]\nmod tests {\n    fn t() { unsafe { super::f() } }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "third_party" / "w" / "tests").mkdir()
+    (tmp_path / "third_party" / "w" / "tests" / "t.rs").write_text("unsafe fn h() {}\n", encoding="utf-8")
+    counts = checker.cast_and_allow_counts(tmp_path)
+    assert counts == {"third_party/w unsafe": 2}
+    [grown] = checker.grown_casts_and_allows(counts, {"third_party/w unsafe": 1})
+    assert "limit 1" in grown and "safe Rust" in grown and "TryFrom" not in grown
 
 
 def test_workspace_casts_and_allows_only_fall():

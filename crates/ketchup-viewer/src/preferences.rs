@@ -9,6 +9,7 @@
 
 use crate::text::Language;
 use ketchup_rejection::{Rejection, RejectionPhase};
+use ketchup_user_files::{UserFolder, new_side_file, side_file};
 use ketchup_view_format::FittedProjection;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -92,27 +93,15 @@ impl Preferences {
     /// written over. Another Viewer saving meanwhile waits on `<path>.lock`
     /// (review 2026-11-04 r19 UI-162), two seconds at most; a file system
     /// without locks saves without it.
+    ///
+    /// No file beside the settings is opened through a link in its place
+    /// (review 2026-11-13 R1113-SEC-600: under `sudo` root followed them).
     pub fn save(&self, path: &Path) -> Result<(), Rejection> {
-        let failed = |error: std::io::Error| {
-            Rejection::new("viewer.settings.save", RejectionPhase::Io)
-                .target(path.display().to_string())
-                .reason(
-                    "The Viewer settings could not be saved; they apply until the Viewer closes.",
-                )
-                .fix_hint(
-                    "Make the folder of the settings file writable, then choose the setting again.",
-                )
-                .caused_by(error)
-        };
+        let failed = |error| save_failed(path, error);
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder).map_err(failed)?;
         }
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(path.with_extension("txt.lock"))
-            .map_err(failed)?;
+        let lock = side_file(&path.with_extension("txt.lock"), false).map_err(failed)?;
         take_turn(|| lock.try_lock(), || saved_at(path), TURN_WAIT).map_err(failed)?;
         let (lines, damaged) = read_lines(path).map_err(|error| {
             Rejection::new("viewer.settings.read", RejectionPhase::Io)
@@ -125,21 +114,57 @@ impl Preferences {
                 .caused_by(error)
         })?;
         if damaged {
-            std::fs::copy(path, path.with_extension("txt.bad")).map_err(failed)?;
+            std::fs::read(path)
+                .and_then(|whole| {
+                    std::io::Write::write_all(
+                        &mut side_file(&path.with_extension("txt.bad"), true)?,
+                        &whole,
+                    )
+                })
+                .map_err(failed)?;
         }
         let mut text = self.to_text();
         for line in lines.iter().filter(|line| !written_by_to_text(line)) {
             text.push_str(line);
             text.push('\n');
         }
+        // A settings file that is a link (dotfiles kept in a repository) is
+        // written where it points, so the link stays (review 2026-11-08 VW-250).
+        let target = link_target(path).map_err(failed)?;
+        // Root, writing as itself, follows only a link to where no other user
+        // could change the way (review 2026-11-13 r95 R1113r95-SEC-700: a raced
+        // link had root rename the user's lines over a file of root's).
+        #[cfg(unix)]
+        if target != path
+            && ketchup_user_files::effective_user() == 0
+            && ketchup_user_files::holder_of_way(&target)
+                .map_err(failed)?
+                .0
+                != 0
+        {
+            return Err(failed(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "the settings are a link to where another user could change the way",
+            )));
+        }
         // This Viewer's own part file: another one saving without a lock does not
         // rename it away (review 2026-11-06 P3: one fixed `.part`).
-        let part = path.with_extension(format!(
+        let part = target.with_extension(format!(
             "{}-{}.part",
             std::process::id(),
             PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let written = std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, path));
+        // On disk before the rename, and the rename once it is done, so a power
+        // loss keeps the old settings or the new, not an empty file (VW-250).
+        let written = new_side_file(&part)
+            .and_then(|mut file| {
+                std::io::Write::write_all(&mut file, text.as_bytes())?;
+                file.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&part, &target))
+            .and_then(|()| {
+                crate::app::session::sync_directory(target.parent().unwrap_or(Path::new(".")))
+            });
         if written.is_err() {
             ketchup_rejection::dropped(
                 std::fs::remove_file(&part),
@@ -148,6 +173,45 @@ impl Preferences {
         }
         written.map_err(failed)
     }
+
+    /// [`Self::save`] of the desktop settings in `folder`: under `sudo` as the
+    /// user the folder is (review 2026-11-13 R1113-SEC-600: root made, locked and
+    /// renamed the files there as root, through the user's links).
+    pub fn save_in(&self, folder: &UserFolder) -> Result<(), Rejection> {
+        let path = folder.path().join(DESKTOP_FILE);
+        folder
+            .as_owner(|| Ok::<_, std::io::Error>(self.save(&path)))
+            .unwrap_or_else(|error| Err(save_failed(&path, error)))
+    }
+}
+
+/// That the settings could not be saved in `path`, for `error`.
+fn save_failed(path: &Path, error: std::io::Error) -> Rejection {
+    Rejection::new("viewer.settings.save", RejectionPhase::Io)
+        .target(path.display().to_string())
+        .reason("The Viewer settings could not be saved; they apply until the Viewer closes.")
+        .fix_hint("Make the folder of the settings file writable, then choose the setting again.")
+        .caused_by(error)
+}
+
+/// The file `path` names after its links, a link that points nowhere yet
+/// included; `path` itself when it is no link.
+fn link_target(path: &Path) -> std::io::Result<PathBuf> {
+    let mut target = path.to_owned();
+    // As many links as Linux follows before ELOOP.
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let link = std::fs::read_link(&target)?;
+                target = target.parent().unwrap_or(Path::new(".")).join(link);
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => return Ok(target),
+        }
+    }
+    Err(std::io::Error::other(
+        "the settings file is a loop of links",
+    ))
 }
 
 /// The part files this Viewer has written, each named by its number.
@@ -248,21 +312,15 @@ fn read_lines(path: &Path) -> std::io::Result<(Vec<String>, bool)> {
     Ok((lines, damaged))
 }
 
-/// Where the desktop Viewer keeps its settings: `%APPDATA%\Ketchup\viewer-settings.txt`
-/// on Windows, `~/Library/Application Support/Ketchup/` on macOS, else
-/// `$XDG_CONFIG_HOME/Ketchup/` or `~/.config/Ketchup/`.
+/// The desktop Viewer's settings file in [`desktop_settings_folder`].
+pub const DESKTOP_FILE: &str = "viewer-settings.txt";
+
+/// Where the desktop Viewer keeps its settings: `%APPDATA%\Ketchup` on Windows,
+/// `~/Library/Application Support/Ketchup` on macOS, else `$XDG_CONFIG_HOME/Ketchup`
+/// or `~/.config/Ketchup`.
 #[must_use]
-pub fn desktop_settings_path() -> Option<PathBuf> {
-    let var = |name| std::env::var_os(name).map(PathBuf::from);
-    let base = if cfg!(windows) {
-        var("APPDATA")
-    } else if cfg!(target_os = "macos") {
-        var("HOME").map(|home| home.join("Library").join("Application Support"))
-    } else {
-        var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|home| home.join(".config")))
-    };
-    base.filter(|base| base.is_absolute())
-        .map(|base| base.join("Ketchup").join("viewer-settings.txt"))
+pub fn desktop_settings_folder() -> Option<UserFolder> {
+    UserFolder::settings("APPDATA", "Ketchup")
 }
 
 #[cfg(test)]
@@ -355,6 +413,194 @@ mod tests {
         assert!(preferences.save(&path).is_err());
         assert!(path.is_dir());
         assert!(parts_in(folder.path()).is_empty());
+    }
+
+    /// Review 2026-11-08 VW-250: a save renamed its part file over a settings
+    /// file kept as a link, so the link became a plain file and the settings
+    /// it pointed to went stale.
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_file_kept_as_a_link_is_written_where_it_points() {
+        let folder = tempfile::tempdir().unwrap();
+        let dotfiles = folder.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let kept = dotfiles.join("viewer-settings.txt");
+        std::fs::write(&kept, "language = cs\nfuture-setting = 3\n").unwrap();
+        let path = folder.path().join("viewer-settings.txt");
+        std::os::unix::fs::symlink("dotfiles/viewer-settings.txt", &path).unwrap();
+        let slovak = Preferences {
+            language: Language::from_tag("sk"),
+            projection: None,
+        };
+        slovak.save(&path).unwrap();
+        assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
+        let saved = std::fs::read_to_string(&kept).unwrap();
+        assert_eq!(Preferences::parse(&saved), slovak);
+        assert!(saved.contains("future-setting = 3"), "{saved}");
+        assert!(parts_in(folder.path()).is_empty() && parts_in(&dotfiles).is_empty());
+
+        // A link to a file not written yet stays a link too.
+        let fresh = folder.path().join("fresh.txt");
+        std::os::unix::fs::symlink(dotfiles.join("fresh.txt"), &fresh).unwrap();
+        slovak.save(&fresh).unwrap();
+        assert!(fresh.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(Preferences::load(&dotfiles.join("fresh.txt")), slovak);
+
+        let looped = folder.path().join("looped.txt");
+        std::os::unix::fs::symlink("looped.txt", &looped).unwrap();
+        assert!(link_target(&looped).is_err());
+    }
+
+    /// Review 2026-11-13 R1113-SEC-600: the damaged copy was copied and the lock
+    /// opened through a link in their place, so a link to a file of root's had it
+    /// written over or made; under `sudo` all of it was root's, through every link
+    /// of the user's in their settings folder.
+    #[cfg(unix)]
+    #[test]
+    fn no_file_beside_the_settings_is_written_through_a_link() {
+        let folder = tempfile::tempdir().unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let secret = roots.path().join("authorized_keys");
+        std::fs::write(&secret, "root's\n").unwrap();
+        let path = folder.path().join("viewer-settings.txt");
+        std::fs::write(&path, b"language = sk\nnote = M\xe9\n").unwrap();
+        let czech = Preferences {
+            language: Language::from_tag("cs"),
+            projection: None,
+        };
+        let bad = path.with_extension("txt.bad");
+        std::os::unix::fs::symlink(&secret, &bad).unwrap();
+        assert!(czech.save(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "root's\n");
+        std::fs::remove_file(&bad).unwrap();
+        let lock = path.with_extension("txt.lock");
+        std::fs::remove_file(&lock).unwrap();
+        let made = roots.path().join("made");
+        std::os::unix::fs::symlink(&made, &lock).unwrap();
+        assert!(czech.save(&path).is_err());
+        assert!(!made.exists());
+    }
+
+    /// The home of the user [`under_sudo_the_settings_are_the_users_and_a_link_leads_them_nowhere`]
+    /// runs in, set by the run of it that started this one.
+    #[cfg(unix)]
+    const USERS_HOME: &str = "KETCHUP_TEST_USERS_HOME";
+
+    /// Review 2026-11-13 r95 P3: under `sudo` `HOME` is `/root`, so the settings
+    /// folder in the user's home was refused as another user's than `HOME`'s before
+    /// anything was written as the user, and the test of the user's link passed for
+    /// that. Root runs this test again with `HOME` the user's, as `sudo -E` keeps
+    /// it: their own folder gets their settings, and their link in place of it to
+    /// a folder of root's leads them nowhere.
+    #[cfg(unix)]
+    #[test]
+    fn under_sudo_the_settings_are_the_users_and_a_link_leads_them_nowhere() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if ketchup_user_files::effective_user() != 0 {
+            return;
+        }
+        let user = (65534, 65534);
+        let Some(home) = std::env::var_os(USERS_HOME).map(std::path::PathBuf::from) else {
+            let home = tempfile::tempdir().unwrap();
+            std::os::unix::fs::chown(home.path(), Some(user.0), Some(user.1)).unwrap();
+            let name = "preferences::tests::under_sudo_the_settings_are_the_users_and_a_link_leads_them_nowhere";
+            let run = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--test-threads", "1"])
+                .env("HOME", home.path())
+                .env(USERS_HOME, home.path())
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&run.stdout);
+            assert!(
+                run.status.success(),
+                "{said}{}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert!(said.contains("test result: ok. 1 passed"), "{said}");
+            return;
+        };
+        let czech = Preferences {
+            language: Language::from_tag("cs"),
+            projection: None,
+        };
+        let roots = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(roots.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let linked = home.join("Linked");
+        std::os::unix::fs::symlink(roots.path(), &linked).unwrap();
+        std::os::unix::fs::lchown(&linked, Some(user.0), Some(user.1)).unwrap();
+        // Refused by the system, as the user, not before as another user's home.
+        let refused = czech
+            .save_in(&UserFolder::at(home.clone(), linked))
+            .unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("ermission denied"),
+            "{refused:?}"
+        );
+        assert!(!roots.path().join(DESKTOP_FILE).exists());
+        assert!(parts_in(roots.path()).is_empty());
+        let own = home.join("Ketchup");
+        std::fs::create_dir(&own).unwrap();
+        std::os::unix::fs::chown(&own, Some(user.0), Some(user.1)).unwrap();
+        czech
+            .save_in(&UserFolder::at(home.clone(), own.clone()))
+            .unwrap();
+        let found = std::fs::metadata(own.join(DESKTOP_FILE)).unwrap();
+        assert_eq!((found.uid(), found.gid()), user);
+    }
+
+    /// Review 2026-11-13 r95 R1113r95-SEC-700: root, saving its own settings that
+    /// are a link, renamed them over wherever the link led, a raced one too. It
+    /// follows a link only where no other user could change the way.
+    #[cfg(unix)]
+    #[test]
+    fn root_follows_a_settings_link_only_where_no_other_user_could_change_the_way() {
+        use std::os::unix::fs::PermissionsExt;
+        if ketchup_user_files::effective_user() != 0 {
+            return;
+        }
+        let user = (65534, 65534);
+        let roots = tempfile::tempdir_in("/tmp").unwrap();
+        std::fs::set_permissions(roots.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let theirs = tempfile::tempdir_in("/tmp").unwrap();
+        std::os::unix::fs::chown(theirs.path(), Some(user.0), Some(user.1)).unwrap();
+        let profile = theirs.path().join("profile.sh");
+        std::fs::write(&profile, "theirs\n").unwrap();
+        let path = roots.path().join("viewer-settings.txt");
+        std::os::unix::fs::symlink(&profile, &path).unwrap();
+        let czech = Preferences {
+            language: Language::from_tag("cs"),
+            projection: None,
+        };
+        let refused = czech.save(&path).unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("another user"),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&profile).unwrap(), "theirs\n");
+        assert!(parts_in(theirs.path()).is_empty());
+        // A link of root's to a file of root's is written where it points.
+        let kept = roots.path().join("dotfiles");
+        std::fs::create_dir(&kept).unwrap();
+        let own = kept.join("viewer-settings.txt");
+        std::fs::write(&own, "language = sk\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&own, &path).unwrap();
+        let ortho = Preferences {
+            projection: Some(FittedProjection::Orthographic),
+            ..czech
+        };
+        ortho.save(&path).unwrap();
+        assert!(
+            std::fs::read_to_string(&own)
+                .unwrap()
+                .contains("orthographic")
+        );
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     /// The part files left in `folder`.

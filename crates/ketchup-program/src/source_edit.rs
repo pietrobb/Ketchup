@@ -127,6 +127,9 @@ pub fn top_level_names(file_name: &str, source: &str) -> Option<BTreeSet<String>
 }
 
 fn parsed(file_name: &str, source: &str) -> Option<AstModule> {
+    if crate::nesting::too_deep(file_name, source).is_some() {
+        return None;
+    }
     AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()
 }
 

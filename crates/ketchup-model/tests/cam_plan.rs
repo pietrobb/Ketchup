@@ -1,9 +1,10 @@
 use ketchup_model::cam::{
-    CAM_POSTPROCESSOR_SCHEMA_V1, CAM_SIMULATION_SCHEMA_V1, CamCutParameters, CamError,
+    CAM_POSTPROCESSOR_SCHEMA_V1, CAM_SIMULATION_SCHEMA_V1, CamCutParameters, CamError, CamMotion,
     CamMotionKind, CamMotionPath, CamOperation, CamOperationKind, CamPath2d, CamPathSegment2d,
     CamPlan, CamPlanHealth, CamPlanId, CamPlannerError, CamPostprocessedMotionKind,
     CamPostprocessorDialect, CamPostprocessorError, CamPostprocessorOutput, CamSetup,
     CamSimulationEvidence, CamStock, CamTool, CamToolKind, CamToolpath, CamWorkOffset,
+    DRILL_APPROACH_MM,
 };
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, CommandBatch, DefinitionId, Dimension, DocumentStore,
@@ -11,10 +12,14 @@ use ketchup_model::document::{
 };
 use ketchup_model::persistence;
 
+mod dialects;
+
 const DEFINITION: DefinitionId = DefinitionId(1);
 const PROFILE: FeatureId = FeatureId(10);
 const SOLID: FeatureId = FeatureId(11);
 const PLAN: CamPlanId = CamPlanId(1);
+/// The stock's top in the setup of [`plan`], whose origin is at world Z 12.
+const STOCK_TOP_SETUP_Z: f64 = 0.0;
 
 fn sha256_hex(content: &[u8]) -> String {
     use sha2::Digest;
@@ -73,6 +78,7 @@ fn plan(snapshot: &ketchup_model::document::Snapshot) -> Result<CamPlan, CamErro
             spindle_rpm: 12_000,
             feed_mm_per_min: 900.0,
             plunge_mm_per_min: 250.0,
+            point_angle_deg: None,
         },
         CamSetup {
             work_offset: CamWorkOffset::G54,
@@ -299,6 +305,7 @@ fn practical_operations() -> Vec<CamOperation> {
             points_mm: vec![[10.0, 10.0], [40.0, 20.0]],
             top_z_mm: -2.0,
             bottom_z_mm: -9.0,
+            through: false,
         },
     ]
 }
@@ -357,7 +364,14 @@ fn machine_neutral_2_5d_planner_is_deterministic_safe_and_complete() {
         | CamMotionPath::Arc {
             start_mm, end_mm, ..
         } => match motion.kind {
-            CamMotionKind::Rapid => start_mm[2] == 8.0 && end_mm[2] == 8.0,
+            // Across at the safe Z; a drill also comes straight down to just above the
+            // stock or the bottom it drilled.
+            CamMotionKind::Rapid => {
+                start_mm[2] == 8.0
+                    && (end_mm[2] == 8.0
+                        || end_mm[2] <= STOCK_TOP_SETUP_Z + DRILL_APPROACH_MM
+                            && end_mm[..2] == start_mm[..2])
+            }
             CamMotionKind::Retract => end_mm[2] == 8.0,
             CamMotionKind::Plunge | CamMotionKind::Cut => end_mm[2] < 0.0,
         },
@@ -382,12 +396,14 @@ fn planner_refuses_stale_or_malformed_geometry_without_document_mutation() {
             points_mm: vec![[10.0, 10.0]],
             top_z_mm: -2.0,
             bottom_z_mm: -4.0,
+            through: false,
         },
         CamOperation::Drill {
             id: 7,
             points_mm: vec![[20.0, 10.0]],
             top_z_mm: -2.0,
             bottom_z_mm: -4.0,
+            through: false,
         },
     ];
     assert_eq!(
@@ -522,6 +538,200 @@ fn planner_refuses_unsafe_clearance_stock_sweep_flute_and_tool_kind() {
     );
 }
 
+fn drill_plan(
+    snapshot: &ketchup_model::document::Snapshot,
+    point_angle_deg: Option<f64>,
+) -> Result<CamPlan, CamError> {
+    let canonical = plan(snapshot).unwrap();
+    let mut tool = canonical.tool().clone();
+    tool.kind = CamToolKind::Drill;
+    tool.point_angle_deg = point_angle_deg;
+    CamPlan::new(
+        snapshot,
+        CamPlanId(5),
+        "Drilling",
+        canonical.stock().clone(),
+        tool,
+        canonical.setup().clone(),
+        canonical.cut_parameters().clone(),
+        DEFINITION,
+        SOLID,
+    )
+}
+
+/// The setup Z the drill's point reaches in `toolpath`.
+fn deepest_point(toolpath: &CamToolpath) -> f64 {
+    toolpath
+        .motions
+        .iter()
+        .map(|motion| match &motion.path {
+            CamMotionPath::Line { end_mm, .. } | CamMotionPath::Arc { end_mm, .. } => end_mm[2],
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// R1119og-MF-800: a drill stopped with its point on the exit of a through hole,
+/// short of it by the axial allowance, leaves a cone and a burr ring; a hole is
+/// drilled to size in one go, and through until the full diameter is out.
+#[test]
+fn a_drill_breaks_through_a_through_hole_and_stops_on_a_blind_floor() {
+    let document = solid_document();
+    let snapshot = document.current();
+    // The target runs from setup Z -2 down to -12; the plan leaves an axial
+    // allowance of 0.1 mm, which drilling must not take.
+    let standard = drill_plan(&snapshot, None).unwrap();
+    let drill = |bottom_z_mm: f64, through: bool| {
+        [CamOperation::Drill {
+            id: 1,
+            points_mm: vec![[10.0, 10.0]],
+            top_z_mm: -2.0,
+            bottom_z_mm,
+            through,
+        }]
+    };
+    let blind = CamToolpath::plan(&snapshot, &standard, &drill(-9.0, false)).unwrap();
+    assert!((deepest_point(&blind) - -9.0).abs() <= 1.0e-9);
+
+    // A 118° point on a 6 mm drill is 3 / tan 59° = 1.80 mm long; its full
+    // diameter passes the exit by 1 mm.
+    let point_mm = 3.0 / 59.0_f64.to_radians().tan();
+    assert!((standard.tool().tip_length_mm() - point_mm).abs() <= 1.0e-12);
+    let through = CamToolpath::plan(&snapshot, &standard, &drill(-12.0, true)).unwrap();
+    assert!((deepest_point(&through) - (-12.0 - point_mm - 1.0)).abs() <= 1.0e-9);
+
+    // A flat-bottom drill has no point to clear.
+    let flat = drill_plan(&snapshot, Some(180.0)).unwrap();
+    assert_eq!(flat.tool().tip_length_mm(), 0.0);
+    let flat_through = CamToolpath::plan(&snapshot, &flat, &drill(-12.0, true)).unwrap();
+    assert!((deepest_point(&flat_through) - -13.0).abs() <= 1.0e-9);
+
+    // The flutes must reach the deepest point.
+    let mut short = standard.tool().clone();
+    short.flute_length_mm = 11.0;
+    let short_plan = CamPlan::new(
+        &snapshot,
+        CamPlanId(6),
+        "Short drill",
+        standard.stock().clone(),
+        short,
+        standard.setup().clone(),
+        standard.cut_parameters().clone(),
+        DEFINITION,
+        SOLID,
+    )
+    .unwrap();
+    assert!(CamToolpath::plan(&snapshot, &short_plan, &drill(-12.0, false)).is_ok());
+    assert_eq!(
+        CamToolpath::plan(&snapshot, &short_plan, &drill(-12.0, true)),
+        Err(CamPlannerError::CuttingDepthExceedsFlute)
+    );
+
+    // Only a drill has a point angle, and only a real one.
+    for angle in [50.0, 181.0, f64::NAN] {
+        assert_eq!(
+            drill_plan(&snapshot, Some(angle)),
+            Err(CamError::InvalidPlan)
+        );
+    }
+    let mut mill = plan(&snapshot).unwrap().tool().clone();
+    mill.point_angle_deg = Some(118.0);
+    assert_eq!(
+        CamPlan::new(
+            &snapshot,
+            CamPlanId(7),
+            "Pointed end mill",
+            standard.stock().clone(),
+            mill,
+            standard.setup().clone(),
+            standard.cut_parameters().clone(),
+            DEFINITION,
+            SOLID,
+        ),
+        Err(CamError::InvalidPlan)
+    );
+    assert_eq!(plan(&snapshot).unwrap().tool().tip_length_mm(), 0.0);
+}
+
+/// Review 2026-11-20 ac P3: every step of a deep hole came down from the safe Z at
+/// the plunge feed. The first step now comes down at rapid to just above the stock,
+/// each later one to just above the bottom the step before drilled, and is fed only
+/// from there, so the feed through the drilled bore does not grow with the depth.
+#[test]
+fn each_drilling_step_is_fed_only_from_just_above_what_is_drilled() {
+    let document = solid_document();
+    let snapshot = document.current();
+    let plan = drill_plan(&snapshot, None).unwrap();
+    let operations = [CamOperation::Drill {
+        id: 1,
+        points_mm: vec![[10.0, 10.0]],
+        top_z_mm: -2.0,
+        bottom_z_mm: -12.0,
+        through: false,
+    }];
+    let toolpath = CamToolpath::plan(&snapshot, &plan, &operations).unwrap();
+    let approach_z = STOCK_TOP_SETUP_Z + DRILL_APPROACH_MM;
+    let line = |motion: &CamMotion| match &motion.path {
+        CamMotionPath::Line { start_mm, end_mm } => (*start_mm, *end_mm),
+        CamMotionPath::Arc { .. } => panic!("a drill moves in lines"),
+    };
+    let plunges: Vec<_> = toolpath
+        .motions
+        .iter()
+        .filter(|motion| motion.kind == CamMotionKind::Plunge)
+        .map(line)
+        .collect();
+    // From -2 to -12 in steps of at most 2 mm: five times the stepdown.
+    assert_eq!(plunges.len(), 5);
+    let mut drilled_z = f64::INFINITY;
+    let mut fed_through_bore = 0.0;
+    for (start, end) in &plunges {
+        let expected = approach_z.min(drilled_z + DRILL_APPROACH_MM);
+        assert!((start[2] - expected).abs() <= 1.0e-9, "{plunges:?}");
+        fed_through_bore += (start[2].min(drilled_z) - end[2].max(drilled_z)).max(0.0);
+        drilled_z = end[2];
+    }
+    // Only the approach above each earlier bottom is fed again.
+    let steps = plunges.len() as f64;
+    assert!(
+        fed_through_bore <= (steps - 1.0) * DRILL_APPROACH_MM + 1.0e-9,
+        "{fed_through_bore} {plunges:?}"
+    );
+    let descents = toolpath
+        .motions
+        .iter()
+        .filter(|motion| motion.kind == CamMotionKind::Rapid)
+        .map(line)
+        .filter(|(start, end)| start[2] == 8.0 && end[2] <= approach_z)
+        .count();
+    assert_eq!(descents, plunges.len());
+}
+
+/// A drill's point angle is saved in format 120, which a Kečup that writes 119 would drop.
+#[test]
+fn a_drill_point_angle_is_saved_as_format_120() {
+    let mut document = solid_document();
+    let pointed = drill_plan(&document.current(), Some(135.0)).unwrap();
+    assert_ne!(
+        pointed.stable_digest(),
+        drill_plan(&document.current(), None)
+            .unwrap()
+            .stable_digest()
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertCamPlan(
+            pointed.clone(),
+        )]))
+        .unwrap();
+    let bytes = persistence::save(&document.current());
+    assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 120);
+    let reopened = persistence::load(&bytes).unwrap().snapshot();
+    assert_eq!(reopened.cam_plan(CamPlanId(5)), Some(&pointed));
+    assert_eq!(
+        reopened.canonical_digest(),
+        document.current().canonical_digest()
+    );
+}
+
 fn successful_simulation(plan: &CamPlan, toolpath: &CamToolpath) -> CamSimulationEvidence {
     let mut evidence = CamSimulationEvidence {
         schema: CAM_SIMULATION_SCHEMA_V1.to_owned(),
@@ -575,7 +785,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
         &canonical,
         &toolpath,
         &simulation,
-        CamPostprocessorDialect::IsoMetricGCode,
+        CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
     )
     .unwrap();
     let iso_again = CamPostprocessorOutput::generate(
@@ -583,7 +793,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
         &canonical,
         &toolpath,
         &simulation,
-        CamPostprocessorDialect::IsoMetricGCode,
+        CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
     )
     .unwrap();
     let neutral = CamPostprocessorOutput::generate(
@@ -600,7 +810,9 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     assert_eq!(iso.schema, CAM_POSTPROCESSOR_SCHEMA_V1);
     assert_eq!(iso.content_digest.len(), 64);
     assert_eq!(iso.parse().unwrap(), iso.program);
-    assert_eq!(neutral.parse().unwrap(), iso.program);
+    // Each dialect writes on its own grid, 1e-6 mm for ISO and 1e-9 mm for JSON.
+    assert_eq!(neutral.parse().unwrap(), neutral.program);
+    assert_eq!(neutral.program.motions.len(), iso.program.motions.len());
     iso.verify(&snapshot, &canonical, &toolpath, &simulation)
         .unwrap();
     neutral
@@ -617,8 +829,9 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
         "G1 ",
         "G2 ",
         "G3 ",
-        ";PLUNGE",
-        ";RETRACT",
+        "G0 G43 H1 Z",
+        "(PLUNGE)",
+        "(RETRACT)",
         "M5",
         "M30",
     ] {
@@ -631,7 +844,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     assert_eq!(
         malformed.parse(),
         Err(CamPostprocessorError::Parse(
-            "tool line \"T1 M7\" is not T<n> M6".to_owned()
+            "line \"T1 M7\" is not the dialect's \"T{tool} M6\"".to_owned()
         ))
     );
     let mut unreadable = iso.clone();
@@ -639,7 +852,7 @@ fn two_offline_postprocessors_are_deterministic_and_semantically_roundtrip() {
     unreadable.content_digest = sha256_hex(&unreadable.content);
     let error = unreadable.parse().unwrap_err().to_string();
     assert!(
-        error.contains("\"12x00\" is not an unsigned integer: invalid digit"),
+        error.contains("\"12x00\" is not an unsigned integer"),
         "{error}"
     );
     for expected in [
@@ -683,7 +896,7 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             &canonical,
             &toolpath,
             &gouged,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );
@@ -696,7 +909,7 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             &canonical,
             &toolpath,
             &forged_metrics,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );
@@ -709,7 +922,7 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             &canonical,
             &toolpath,
             &incomplete,
-            CamPostprocessorDialect::IsoMetricGCode,
+            CamPostprocessorDialect::library("iso_metric_gcode").unwrap(),
         ),
         Err(CamPostprocessorError::UnsafeSimulation)
     );
@@ -742,4 +955,79 @@ fn postprocessing_refuses_unsafe_stale_and_tampered_inputs() {
             CamError::StaleTarget
         )))
     );
+}
+
+/// R1120ac-CAM-902: a rectangular pocket is cut to its radial allowance along the
+/// whole of every wall, not only where the zigzag turns. Each wall point is measured
+/// to the nearest cutter-centre move of the last depth pass; the round corners a
+/// round cutter cannot reach are left out.
+#[test]
+fn a_rectangular_pocket_leaves_only_its_allowance_along_every_wall() {
+    let document = solid_document();
+    let snapshot = document.current();
+    let canonical = plan(&snapshot).unwrap();
+    let [minimum, maximum] = [[8.0, 7.0], [32.0, 23.0]];
+    let pocket = CamOperation::Pocket {
+        id: 1,
+        minimum_mm: minimum,
+        maximum_mm: maximum,
+        top_z_mm: -2.0,
+        bottom_z_mm: -6.0,
+    };
+    let toolpath = CamToolpath::plan(&snapshot, &canonical, &[pocket]).unwrap();
+    let floor = -6.0 + canonical.cut_parameters().axial_allowance_mm;
+    let moves: Vec<([f64; 2], [f64; 2])> = toolpath
+        .motions
+        .iter()
+        .filter(|motion| motion.kind == CamMotionKind::Cut)
+        .map(|motion| match motion.path {
+            CamMotionPath::Line { start_mm, end_mm } => {
+                assert!((start_mm[2] - end_mm[2]).abs() < 1.0e-12);
+                (start_mm, end_mm)
+            }
+            CamMotionPath::Arc { .. } => panic!("a rectangular pocket cuts only lines"),
+        })
+        .filter(|(start, _)| (start[2] - floor).abs() < 1.0e-9)
+        .map(|(start, end)| ([start[0], start[1]], [end[0], end[1]]))
+        .collect();
+    assert!(!moves.is_empty());
+    let radius = canonical.tool().diameter_mm * 0.5;
+    let left_on = |point: [f64; 2]| {
+        moves
+            .iter()
+            .map(|&(a, b)| ketchup_geometry::linalg::point_segment_distance2(point, a, b))
+            .fold(f64::INFINITY, f64::min)
+            - radius
+    };
+    let allowance = canonical.cut_parameters().radial_allowance_mm;
+    let reach = radius + allowance;
+    let samples = 400;
+    let mut walls = Vec::new();
+    for index in 0..=samples {
+        let share = f64::from(index) / f64::from(samples);
+        let y = minimum[1] + reach + share * (maximum[1] - minimum[1] - 2.0 * reach);
+        let x = minimum[0] + reach + share * (maximum[0] - minimum[0] - 2.0 * reach);
+        walls.extend([
+            [minimum[0], y],
+            [maximum[0], y],
+            [x, minimum[1]],
+            [x, maximum[1]],
+        ]);
+    }
+    let left: Vec<(f64, [f64; 2])> = walls
+        .iter()
+        .map(|point| (left_on(*point), *point))
+        .collect();
+    let thickest = left
+        .iter()
+        .copied()
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap();
+    let thinnest = left
+        .iter()
+        .copied()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .unwrap();
+    assert!(thickest.0 <= allowance + 1.0e-9, "{thickest:?}");
+    assert!(thinnest.0 >= allowance - 1.0e-9, "{thinnest:?}");
 }

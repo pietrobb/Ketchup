@@ -240,6 +240,97 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
     assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
 }
 
+/// Review 2026-11-08 §5.2: a part the machine cannot make (a through hole)
+/// refused the whole partial package and every program of the workshop ZIP;
+/// the other part is programmed and only this one is named, with why. The
+/// strict package still refuses on it.
+#[test]
+fn a_part_the_machine_cannot_make_leaves_the_other_programs_in_the_partial_package() {
+    use ketchup_manufacturing::fabrication::{GeneralFabricationError, ShopElement};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let snapshot = apply(
+        "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+         hole(rail, 'y+', at = (30, 500), diameter = 8, depth = 20)\n\
+         shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 18, through = True)\n",
+    );
+    let path = |name: &str| {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| definition.name() == name)
+            })
+            .unwrap()
+            .instance_path
+    };
+    let snapshot = {
+        use ketchup_model::document::{CanonicalCommand, CommandBatch};
+        snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("rail"),
+                    code: Some("000000000001".into()),
+                },
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("shelf"),
+                    code: Some("000000000002".into()),
+                },
+            ]))
+            .unwrap()
+    };
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let through = |error: &GeneralFabricationError| {
+        matches!(
+            error,
+            GeneralFabricationError::CannotCarry { part, element: ShopElement::ThroughHole, .. }
+                if part == "shelf"
+        )
+    };
+    let strict = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_err();
+    assert!(through(&strict), "{strict:?}");
+    let partial = projection
+        .woodwop_mpr_4_0_partial_production_package(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        partial
+            .programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000001"]
+    );
+    let [refused] = partial.not_programmed.as_slice() else {
+        panic!("{:?}", partial.not_programmed);
+    };
+    assert_eq!(refused.part, "shelf");
+    assert!(through(&refused.reason), "{:?}", refused.reason);
+    let workshop = projection.workshop_package(&snapshot, Default::default());
+    assert!(
+        workshop
+            .files
+            .iter()
+            .any(|(name, _)| name == "woodwop/000000000001.mpr"),
+        "{:?}",
+        workshop.not_made
+    );
+    let accepted =
+        ketchup_manufacturing::workshop_package::check_workshop_package(&workshop.zip().unwrap())
+            .unwrap();
+    assert!(
+        accepted
+            .not_made
+            .contains(&format!("- woodWOP shelf: {}", refused.reason)),
+        "{}",
+        accepted.not_made
+    );
+}
+
 /// Review 2026-11-02 MF-120: a HOMAG package of pieces without a usable
 /// production code was a bare "export blocked"; it names the part and the code
 /// it needs. The codes are assigned for every made piece, the program keeps
@@ -313,6 +404,59 @@ fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
             code: Some("TOP-A".into())
         })
     );
+    // Review 2026-11-08 §5.2: the partial package programs the rail and names
+    // the shelf with why, in the ZIP and in the workshop package.
+    let partial = projection
+        .woodwop_mpr_4_0_partial_production_package(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        partial
+            .programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000007"]
+    );
+    let shelf_refusal = GeneralFabricationError::HomagProgramCodeUnusable {
+        part: "shelf".into(),
+        code: Some("TOP-A".into()),
+    };
+    assert_eq!(
+        partial.not_programmed,
+        [ketchup_manufacturing::fabrication::NotProgrammed {
+            part: "shelf".into(),
+            reason: shelf_refusal.clone(),
+        }]
+    );
+    let zip = partial.zip().unwrap_or_else(|error| panic!("{error}"));
+    let contains = |needle: &str| {
+        zip.windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    };
+    assert!(contains("000000000007.mpr"));
+    assert!(contains(
+        ketchup_manufacturing::fabrication::HOMAG_PACKAGE_REPORT
+    ));
+    assert!(contains(&format!("- shelf: {shelf_refusal}")));
+    let workshop = projection.workshop_package(&snapshot, Default::default());
+    assert!(
+        workshop
+            .files
+            .iter()
+            .any(|(name, _)| name == "woodwop/000000000007.mpr"),
+        "{:?}",
+        workshop.not_made
+    );
+    let accepted =
+        ketchup_manufacturing::workshop_package::check_workshop_package(&workshop.zip().unwrap())
+            .unwrap();
+    assert!(
+        accepted
+            .not_made
+            .contains(&format!("- woodWOP shelf: {shelf_refusal}")),
+        "{}",
+        accepted.not_made
+    );
     // The rail keeps its code; the shelf's unusable one is replaced, counting on.
     let assignments = projection.production_code_assignments(&snapshot);
     assert_eq!(
@@ -322,6 +466,20 @@ fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
             .collect::<Vec<_>>(),
         ["000000000008"]
     );
+    // Review 2026-11-03 MF-142: past the highest 12-digit code the count went
+    // on to 13 digits, no program can be named by; it takes the lowest free one.
+    set_code(&mut session, "rail", Some("999999999999"));
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        projection
+            .production_code_assignments(&snapshot)
+            .iter()
+            .map(|(_, code)| code.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000001"]
+    );
+    set_code(&mut session, "rail", Some("000000000007"));
     set_code(&mut session, "shelf", Some(&assignments[0].1));
     session.apply_rule_program(program(10), false).unwrap();
     assert!(session.rule_program().is_some());
@@ -385,14 +543,13 @@ fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
         serde_json::json!([800.0, 500.0, 18.0]),
         "{job}"
     );
-    // woodWOP lays a rectangular blank: the rounded top is refused by name.
-    assert!(matches!(
-        projection.production_job(&snapshot, &adapters),
-        Err(GeneralFabricationError::CannotCarry {
-            element: ShopElement::ShapedBlank,
-            ..
-        })
-    ));
+    // Without machining the top gets no woodWOP program (review 2026-11-03
+    // MF-141), so there is none to write; a drilled one is refused by name in
+    // a_piece_with_nothing_to_machine_does_not_block_the_homag_package.
+    assert_eq!(
+        projection.production_job(&snapshot, &adapters).unwrap_err(),
+        GeneralFabricationError::NoPieceToProgram
+    );
 
     let snapshot = coded(apply(
         "top = extrude('top', profile = ellipse(400, 250, center = (400, 250)), distance = 18, \
@@ -436,34 +593,19 @@ fn woodwop_and_btlx_name_a_shaped_blank_and_a_part_without_machining() {
         }
         other => panic!("{other}"),
     };
-    const TOP: &str = "extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 40), \
-         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n";
-    let snapshot = apply(&format!(
-        "{TOP}shelf = board('shelf', (600, 300, 18), at = (0, 600, 0))\n\
-         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n"
-    ));
-    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
-    let woodwop = ShopFormat::Woodwop {
-        vertical_pocket_tool: false,
-    };
-    let shaped = (woodwop, "top".to_owned(), ShopElement::ShapedBlank);
-    assert_eq!(
-        refused(
-            projection
-                .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
-                .unwrap_err()
-        ),
-        shaped
+    // A rounded top with nothing to machine has no program to refuse (review
+    // 2026-11-03 MF-141); a drilled one is refused by name in
+    // a_piece_with_nothing_to_machine_does_not_block_the_homag_package.
+    let snapshot = apply(
+        "extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 40), \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
     );
-    let snapshot = apply(TOP);
     let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(
-        refused(
-            projection
-                .woodwop_mpr_4_0_drill_export(&snapshot)
-                .unwrap_err()
-        ),
-        shaped
+        projection
+            .woodwop_mpr_4_0_drill_export(&snapshot)
+            .unwrap_err(),
+        GeneralFabricationError::NothingToMachine { part: "top".into() }
     );
     let snapshot = apply("board('shelf', (600, 300, 18))\n");
     let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
@@ -648,6 +790,134 @@ fn a_round_table_top_is_described_as_two_arcs() {
     );
     let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
     assert_eq!(drawing.matches("A 400 400 0").count(), 2, "{drawing}");
+}
+
+/// Review 2026-11-03 MF-141: the HOMAG package checked every made piece before
+/// it left out those with nothing to machine, so a round table top without
+/// holes refused the whole package ("blank not a rectangle") beside a rail it
+/// drills. The top gets no program and the rail's is written; drilled, the
+/// top is still refused by name.
+#[test]
+fn a_piece_with_nothing_to_machine_does_not_block_the_homag_package() {
+    use ketchup_assistant::sidecar::*;
+    use ketchup_manufacturing::fabrication::{
+        FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, MANUFACTURED_ITEM_ROLE_V1,
+        ShopElement,
+    };
+    use ketchup_model::document::{
+        CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
+    };
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let part =
+        |name: &str, entities, holes, translation_mm| AssistantCadEditOperation::CreatePart {
+            holes,
+            pockets: Vec::new(),
+            name: name.into(),
+            workplane: AssistantWorkplaneSpec::Principal {
+                plane: AssistantPrincipalPlane::Xy,
+            },
+            entities,
+            constraints: vec![],
+            feature: AssistantCadPartFeature::Extrusion { distance_mm: 18.0 },
+            translation_mm,
+            rotation: None,
+        };
+    let pin = |x: f64, y: f64| AssistantPartHole {
+        id: "pin".into(),
+        entry_local_mm: [x, y, 18.0],
+        inward_unit_local: [0.0, 0.0, -1.0],
+        diameter_mm: 8.0,
+        depth_mm: 10.0,
+        through: false,
+        thread: None,
+    };
+    // The package of the round top with `top_holes` beside the drilled rail.
+    let mut package = |top_holes: Vec<AssistantPartHole>| {
+        let mut session = DocumentSession::default();
+        session
+            .apply_cad_program(
+                &AssistantCadEditProgram {
+                    operations: vec![
+                        part(
+                            "top",
+                            vec![AssistantSketchEntity::Circle {
+                                id: 1,
+                                center_mm: [400.0, 400.0],
+                                radius_mm: 400.0,
+                            }],
+                            top_holes,
+                            [0.0, 0.0, 0.0],
+                        ),
+                        part(
+                            "rail",
+                            worktop_rectangle(1, [0.0, 0.0], [600.0, 80.0]).collect(),
+                            vec![pin(300.0, 40.0)],
+                            [1000.0, 0.0, 0.0],
+                        ),
+                    ],
+                },
+                &std::collections::BTreeSet::new(),
+            )
+            .unwrap();
+        let snapshot = session.snapshot();
+        let (dimension, category) = (
+            ClassificationDimensionId(900),
+            ClassificationCategoryId(901),
+        );
+        let mut commands = vec![CanonicalCommand::UpsertClassificationDimension {
+            id: dimension,
+            name: FABRICATION_ROLE_DIMENSION_V1.into(),
+            categories: vec![(category, MANUFACTURED_ITEM_ROLE_V1.into())],
+        }];
+        for occurrence in snapshot.scene_query() {
+            let name = snapshot
+                .definition(occurrence.definition_id)
+                .unwrap()
+                .name()
+                .to_owned();
+            commands.push(CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: occurrence.instance_path.root_occurrence(),
+                dimension_id: dimension,
+                category_id: Some(category),
+            });
+            commands.push(CanonicalCommand::SetProductionCode {
+                instance_path: occurrence.instance_path,
+                code: Some(
+                    if name == "top" {
+                        "000000000001"
+                    } else {
+                        "000000000002"
+                    }
+                    .into(),
+                ),
+            });
+        }
+        let snapshot = snapshot
+            .preview_batch(&CommandBatch::new(commands))
+            .unwrap();
+        fabrication(&mut worker, &snapshot)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+    };
+    let programs = package(Vec::new()).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000002"]
+    );
+    let mpr = String::from_utf8(programs[0].mpr.clone()).unwrap();
+    assert!(mpr.contains("<102 \\BohrVert\\"), "{mpr}");
+    // Drilled, the top is programmed, and woodWOP lays a rectangular blank:
+    // its round one is refused by name (review 2026-11-02 MF-123).
+    let Err(GeneralFabricationError::CannotCarry { part, element, .. }) =
+        package(vec![pin(400.0, 400.0)])
+    else {
+        panic!("a drilled round top must be refused");
+    };
+    assert_eq!((part.as_str(), element), ("top", ShopElement::ShapedBlank));
 }
 
 /// A worktop of 1200 x 600 x 38 mm drawn on XY with `openings`, made as a

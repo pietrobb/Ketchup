@@ -201,11 +201,17 @@ používateľa. Pri statike, FEA a CAM naopak vždy povedať, čo kontrola **nep
     - príznak UTF-8 (bit 11).
 20. **R1119og-SKP-800 — SketchUp, komponent zmenený nástrojom Scale** (`import/glb.rs:1726-1810`):
     mierku zapiecť do vlastnej definície, umiestnenie nechať tuhé, a dať poznámku.
+    - **Stav:** opravené vo vetve `fix/og-skp` (`import/glb/stretch.rs`, testy
+      `import/glb/stretch_tests.rs`, poznámka `glb_scaled_parts_baked_into_own_definitions`).
 21. **R1119og-IMG-800 — prezentačný obrázok** (`presentation.rs:313-323`): priveľkú textúru
     nahradiť farbou s poznámkou, nezhodiť celý obrázok.
 22. **R1119og-EXA-800 — riadiaci bod voľnej plochy** (`document/entities.rs:925-940`,
     `native_control_points.cc:183-195`): ukladať polohu v mm alebo (u, v), nie index pólu; pri
     zmene siete odmietnuť s oboma polohami.
+    - **Stav:** opravené vo vetve `fix/og-control-point` — `SurfaceBodySpec::ControlPoint` nesie aj
+      `from_mm` (poloha bodu v mm) popri indexe; `control_points.rs` porovná pól siete s `from_mm`
+      a pri inej polohe alebo bode mimo siete odmietne s oboma polohami a rozmermi siete. Testy
+      `ketchup-exact/tests/surface_control_points.rs`, `ketchup-scheduler/tests/surface_control_point.rs`.
 
 ## 7. Revízie DXF od architekta
 

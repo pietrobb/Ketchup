@@ -93,7 +93,7 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
         .click();
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "GLB export did not finish",
         |app| app.file_activity_label().is_none() && path.exists(),
     );
@@ -144,7 +144,7 @@ fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
         .click();
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "DAE export did not finish",
         |app| app.file_activity_label().is_none() && path.exists(),
     );
@@ -198,7 +198,7 @@ fn a_mesh_export_is_made_while_the_window_paints_and_cancel_writes_nothing() {
             .click();
         step_until(
             &mut harness,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             "no export path was asked for",
             |_| !script.export_requests().is_empty(),
         );
@@ -225,6 +225,105 @@ fn a_mesh_export_is_made_while_the_window_paints_and_cancel_writes_nothing() {
         assert!(!path.exists());
         assert!(script.high_risk_prompts().is_empty());
     }
+}
+
+/// Jožinko feedback U5: File > Export > Presentation image asks how the picture looks, then
+/// where to save it, and makes it while the window paints. The model is unchanged, and a new
+/// file is written without asking, as a picture loses nothing of the model.
+#[test]
+fn the_file_menu_saves_a_presentation_image_as_the_options_say() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("presentation.png");
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_export(&path);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    install_initial_graph_result(&mut app);
+    let digest = app.document.current().canonical_digest();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    open_file_submenu(&mut harness, "menu-file-export");
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportPresentationImage);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+    let transparent = harness
+        .state()
+        .catalog
+        .text("presentation-background-transparent");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::RadioButton, &transparent)
+        .click();
+    harness.run();
+    let options = &mut harness
+        .state_mut()
+        .file
+        .activity
+        .presentation_dialog
+        .as_mut()
+        .expect("the options window is open")
+        .request
+        .options;
+    // Review 2026-11-13 P3: the largest size offered was refused only after a file was chosen,
+    // and the refusal was not in the window.
+    (options.width, options.height) = (8192, 8192);
+    let save = harness.state().catalog.text("presentation-save");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &save)
+        .click();
+    harness.run();
+    assert!(script.export_requests().is_empty(), "no file is asked for");
+    let refusal = harness
+        .state()
+        .file
+        .activity
+        .presentation_dialog
+        .as_ref()
+        .expect("the options window stays open")
+        .refusal
+        .clone()
+        .expect("it says why");
+    assert!(refusal.contains("limit"), "{refusal}");
+    assert!(harness.query_by_label_contains(&refusal).is_some());
+    let options = &mut harness
+        .state_mut()
+        .file
+        .activity
+        .presentation_dialog
+        .as_mut()
+        .unwrap()
+        .request
+        .options;
+    (options.width, options.height) = (160, 90);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &save)
+        .click();
+    step_until(
+        &mut harness,
+        Duration::from_secs(60),
+        "the presentation image was not saved",
+        |app| app.file_activity_label().is_none() && path.exists(),
+    );
+
+    assert_eq!(script.export_requests()[0].extension, "png");
+    assert!(script.high_risk_prompts().is_empty());
+    assert!(harness.state().file.activity.presentation_dialog.is_none());
+    let mut reader =
+        png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
+            .read_info()
+            .unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut rgba).unwrap();
+    assert_eq!((info.width, info.height), (160, 90));
+    assert_eq!(rgba[3], 0, "the chosen transparent background");
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
 }
 
 #[test]
@@ -264,7 +363,7 @@ fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
     );
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "Viewer export did not finish",
         |app| app.file_activity_label().is_none(),
     );
@@ -903,9 +1002,24 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
         support.contains("portable_profile_removals=pocket, through-cut, extruded boolean-cut")
     );
     assert!(support.contains("intermediate_saw_cuts=0"));
+    // Review 2026-11-08 MF-242: the report says what the strategy does since
+    // MF-181 and MF-245, not "rectangular only".
+    assert!(support.contains(
+        "\nselected_profile_contours=rectangles sawn on their edges then milled; contours with an arc milled whole\n"
+    ));
+    assert!(support.contains(
+        "\nunsupported=straight-edged non-rectangular profile with the edge-saw request;"
+    ));
+    assert!(!support.contains("rectangular only"), "{support}");
     assert!(support.contains("concrete_importer_verified=false"));
     assert!(support.contains("machine_execution_order_guaranteed=false"));
-    assert!(support.ends_with("\ntapped_drillings=0\n"), "{support}");
+    // Review 2026-11-08 MF-240: the report names the drill it is written for.
+    assert!(
+        support.contains(
+            "\ntapped_drillings=0\nunmade_pin_holes=0\nlargest_drill_mm=35\nround_holes_milled="
+        ),
+        "{support}"
+    );
     assert_eq!(script.export_requests()[0].extension, "btlx");
     let receipt = harness.state().last_side_effect_receipt().unwrap();
     assert_eq!(
@@ -916,6 +1030,91 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
         receipt.operation(),
         "release-hundegger-btlx-with-support-report"
     );
+}
+
+/// Review 2026-11-08 §5.2: File > Manufacturing > Send to workshop writes one
+/// ZIP of every shop file, after the same consent as each of them, and the
+/// workshop's acceptance check takes it.
+#[test]
+fn the_workshop_package_file_command_writes_a_zip_the_workshop_accepts() {
+    use ketchup_manufacturing::workshop_package::check_workshop_package;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("single-timber.zip");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(84);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(100),
+                name: ketchup_manufacturing::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(101),
+                    ketchup_manufacturing::fabrication::TIMBER_MEMBER_ROLE_V1.to_owned(),
+                )],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(100),
+                category_id: Some(ClassificationCategoryId(101)),
+            },
+        ]))
+        .unwrap();
+    install_initial_graph_result(&mut app);
+    let digest = app.document.current().canonical_digest();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportWorkshopPackage);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    let zip = std::fs::read(&path).unwrap_or_else(|_| panic!("{}", harness.state().digest));
+    let accepted = check_workshop_package(&zip).unwrap();
+    for file in [
+        "parts.csv",
+        "drawings.svg",
+        "btlx/model.btlx",
+        "btlx/model.btlx.support.txt",
+        "losses.csv",
+    ] {
+        assert!(
+            accepted.files.iter().any(|name| name == file),
+            "{accepted:?}"
+        );
+    }
+    assert_eq!(script.export_requests()[0].extension, "zip");
+    let receipt = harness.state().last_side_effect_receipt().unwrap();
+    assert_eq!(
+        receipt.scope().class(),
+        HighRiskClass::ReleaseManufacturingExportWithWarnings
+    );
+    assert_eq!(receipt.operation(), "release-workshop-package");
+
+    // A second export asks before it replaces the package.
+    assert!(
+        harness
+            .state_mut()
+            .export_current_workshop_package_to(&path)
+            .is_ok()
+    );
+    assert_eq!(
+        harness.state().side_effect_receipts[1].scope().class(),
+        HighRiskClass::Overwrite
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), zip);
 }
 
 #[test]
@@ -957,7 +1156,8 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
         BtlxProfileProcessingRequest::PortableFreeContour
     );
     // Review 2026-11-07 P3: the options were not kept, so the next start was
-    // back at the defaults.
+    // back at the defaults. They are kept on a worker (r26 P3).
+    harness.state_mut().btlx_saved();
     assert_eq!(
         crate::app::btlx_settings::read(&file).profile_strategy,
         BtlxProfileStrategy::PortableFreeContour

@@ -1210,6 +1210,7 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 },
             },
             CanonicalCommand::CreateOccurrence {
@@ -1301,11 +1302,29 @@ fn bounded_spline_profile_loft_is_validated_undoable_visible_and_persistent() {
                 ],
                 guide: None,
                 continuity: LoftContinuity::Position,
+                rail: None,
             },
         }]))
         .err()
         .expect("unordered Loft sections must reject atomically");
-    assert_eq!(error, CanonicalError::InvalidLoft);
+    assert!(
+        matches!(
+            error,
+            CanonicalError::InvalidFeatureInput(ketchup_model::document::FeatureInputError {
+                feature: Some(FeatureId(726)),
+                field: ketchup_model::document::FeatureInputField::SectionElevation(1),
+                ..
+            })
+        ),
+        "{error:?}"
+    );
+    // The refusal names the feature of the batch it refuses (R1121ac P3 of EXA-901).
+    assert!(
+        error
+            .to_string()
+            .starts_with("feature 726 input sections[1].elevation_mm is invalid"),
+        "{error}"
+    );
     assert_eq!(document.current().canonical_digest(), before);
     assert_eq!(document.visible_undo_steps(), undo_steps);
 

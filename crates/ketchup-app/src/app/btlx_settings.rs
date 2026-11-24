@@ -21,57 +21,172 @@ pub(crate) fn of_user() -> Option<SettingsFile> {
 }
 
 /// The options kept in `file`, each one not kept or not read at its default.
+#[cfg(test)]
 pub(crate) fn read(file: &SettingsFile) -> BtlxSettings {
-    let mut settings = BtlxSettings::default();
-    let last = |key| file.values(key).pop();
-    match last(PROFILE).as_deref() {
-        Some(PORTABLE) => settings.profile_strategy = BtlxProfileStrategy::PortableFreeContour,
-        Some(SAW_THEN_MILL) => {
-            settings.profile_strategy = BtlxProfileStrategy::EdgeSawCutsThenMillContour;
-        }
-        _ => {}
-    }
-    if let Some(cuts) = last(INTERMEDIATE_SAW_CUTS)
-        .and_then(|text| text.trim().parse::<u8>().ok())
-        .filter(|cuts| *cuts <= 32)
-    {
-        settings.intermediate_saw_cuts = cuts;
-    }
-    if let Some(drill) = last(LARGEST_DRILL_MM)
-        .and_then(|text| text.trim().parse::<f64>().ok())
-        .filter(|drill| (0.0..=80.0).contains(drill))
-    {
-        settings.largest_drill_mm = drill;
-    }
-    settings
+    read_telling(file).0
 }
 
-/// Keep `settings` in `file`.
-pub(crate) fn save(file: &SettingsFile, settings: &BtlxSettings) -> std::io::Result<()> {
+/// The options kept in `file`, each one not kept or not read at its default,
+/// and each line `key=value` kept that could not be read (review 2026-11-08:
+/// such a value became its default without a word).
+fn read_telling(file: &SettingsFile) -> (BtlxSettings, Vec<String>) {
+    let mut settings = BtlxSettings::default();
+    let mut unread = Vec::new();
+    let mut last = |key: &'static str, take: &mut dyn FnMut(&str) -> bool| {
+        if let Some(text) = file.values(key).pop()
+            && !take(text.trim())
+        {
+            unread.push(format!("{key}={text}"));
+        }
+    };
+    last(PROFILE, &mut |text| {
+        settings.profile_strategy = match text {
+            PORTABLE => BtlxProfileStrategy::PortableFreeContour,
+            SAW_THEN_MILL => BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+            _ => return false,
+        };
+        true
+    });
+    last(INTERMEDIATE_SAW_CUTS, &mut |text| {
+        match text.parse::<u8>().ok().filter(|cuts| *cuts <= 32) {
+            Some(cuts) => settings.intermediate_saw_cuts = cuts,
+            None => return false,
+        }
+        true
+    });
+    // Written by hand with a decimal comma, it fell back to 35 mm (review
+    // 2026-11-07 r26 P3).
+    last(LARGEST_DRILL_MM, &mut |text| {
+        match text
+            .replace(',', ".")
+            .parse::<f64>()
+            .ok()
+            .filter(|drill| (0.0..=80.0).contains(drill))
+        {
+            Some(drill) => settings.largest_drill_mm = drill,
+            None => return false,
+        }
+        true
+    });
+    (settings, unread)
+}
+
+/// Each key of `settings` and its value as kept.
+fn keyed(settings: &BtlxSettings) -> [(&'static str, String); 3] {
     let profile = match settings.profile_strategy {
         BtlxProfileStrategy::PortableFreeContour => PORTABLE,
         BtlxProfileStrategy::EdgeSawCutsThenMillContour => SAW_THEN_MILL,
     };
-    file.replace(PROFILE, &[profile.to_owned()])?;
-    file.replace(
-        INTERMEDIATE_SAW_CUTS,
-        &[settings.intermediate_saw_cuts.to_string()],
-    )?;
-    file.replace(LARGEST_DRILL_MM, &[settings.largest_drill_mm.to_string()])
+    [
+        (PROFILE, profile.to_owned()),
+        (
+            INTERMEDIATE_SAW_CUTS,
+            settings.intermediate_saw_cuts.to_string(),
+        ),
+        (LARGEST_DRILL_MM, settings.largest_drill_mm.to_string()),
+    ]
+}
+
+/// Keep `settings` in `file`, all at one turn of its lock.
+#[cfg(test)]
+fn save(file: &SettingsFile, settings: &BtlxSettings) -> std::io::Result<()> {
+    file.replace_each(&keyed(settings))
 }
 
 impl KetchupApp {
-    /// Keep the BTLx options for the next start, telling the digest when they
-    /// cannot be.
+    /// Takes the BTLx options kept in `file` and keeps them there from now
+    /// on, telling the digest of a value that could not be read.
+    pub(crate) fn keep_btlx_settings_in(&mut self, file: SettingsFile) {
+        let (settings, unread) = read_telling(&file);
+        self.window.btlx_saving.kept = keyed(&settings).to_vec();
+        self.window.btlx = settings;
+        if !unread.is_empty() {
+            self.digest = self.catalog.format(
+                "digest-btlx-options-not-read",
+                &BTreeMap::from([
+                    ("file", file.path().display().to_string()),
+                    ("values", unread.join(", ")),
+                ]),
+            );
+        }
+        self.window.btlx_settings = Some(file);
+    }
+
+    /// Keep the BTLx options for the next start on a worker, as the lock of
+    /// the settings may be waited for (review 2026-11-07 r26 P3: three times
+    /// on the window). Changed again while a worker keeps them, they are kept
+    /// once it is done, so an older value is not kept last.
     pub(super) fn remember_btlx_settings(&mut self) {
-        let Some(file) = &self.window.btlx_settings else {
+        let saving = &mut self.window.btlx_saving;
+        if saving.worker.is_some() {
+            saving.again = true;
+            return;
+        }
+        let Some(file) = self.window.btlx_settings.clone() else {
             return;
         };
-        if let Err(error) = save(file, &self.window.btlx) {
+        // Only the options this window changed, so another window's change of
+        // another option is not put back (review 2026-11-08).
+        let keyed = keyed(&self.window.btlx);
+        let changed = keyed
+            .iter()
+            .filter(|pair| !saving.kept.contains(pair))
+            .cloned()
+            .collect::<Vec<_>>();
+        if changed.is_empty() {
+            return;
+        }
+        saving.kept = keyed.to_vec();
+        let context = self.file.activity.context.clone();
+        saving.worker = Some(std::thread::spawn(move || {
+            let saved = file.replace_each(&changed);
+            if let Some(context) = context {
+                context.request_repaint();
+            }
+            saved
+        }));
+    }
+
+    /// Once the worker keeping the BTLx options is done, tells the digest
+    /// when they could not be kept, and keeps them again if they changed.
+    pub(super) fn poll_btlx_saving(&mut self) {
+        let saving = &mut self.window.btlx_saving;
+        if saving
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+            && let Some(worker) = saving.worker.take()
+        {
+            self.btlx_kept(worker);
+        }
+    }
+
+    /// Joins `worker`, which kept the BTLx options, telling the digest when it
+    /// could not, and keeps them again if they changed meanwhile.
+    fn btlx_kept(&mut self, worker: std::thread::JoinHandle<std::io::Result<()>>) {
+        let saved = worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        let again = std::mem::take(&mut self.window.btlx_saving.again);
+        if let Err(error) = saved {
+            // Not kept, so the next change keeps every option again.
+            self.window.btlx_saving.kept.clear();
             self.digest = self.catalog.format(
                 "digest-btlx-options-not-remembered",
                 &BTreeMap::from([("error", error.to_string())]),
             );
+        }
+        if again {
+            self.remember_btlx_settings();
+        }
+    }
+
+    /// Waits for the worker keeping the BTLx options, and for the one keeping
+    /// them again after it.
+    #[cfg(test)]
+    pub(crate) fn btlx_saved(&mut self) {
+        while let Some(worker) = self.window.btlx_saving.worker.take() {
+            self.btlx_kept(worker);
         }
     }
 }
@@ -111,5 +226,98 @@ mod tests {
         assert_eq!(unread.largest_drill_mm, defaults.largest_drill_mm);
         save(&file, &chosen).unwrap();
         assert_eq!(file.values("future"), ["1"]);
+    }
+
+    /// Review 2026-11-07 r26 P3: each option waited for the lock of the
+    /// settings on its own, and a drill written with a decimal comma was
+    /// back at 35 mm.
+    #[test]
+    fn the_options_are_kept_at_one_turn_and_a_decimal_comma_is_read() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = SettingsFile::at(folder.path().join(FILE_NAME));
+        let turn = || std::fs::read_to_string(folder.path().join("btlx.txt.turn")).unwrap();
+        save(&file, &BtlxSettings::default()).unwrap();
+        let before: u64 = turn().parse().unwrap();
+        save(&file, &BtlxSettings::default()).unwrap();
+        assert_eq!(turn().parse::<u64>().unwrap(), before + 1);
+
+        std::fs::write(folder.path().join(FILE_NAME), "largest-drill-mm=20,5\n").unwrap();
+        assert_eq!(read(&file).largest_drill_mm, 20.5);
+    }
+
+    /// Review 2026-11-07 r26 P3: the options were kept on the window, which
+    /// waited for the lock. A change while a worker keeps them is kept after
+    /// it, and one not kept is told.
+    #[test]
+    fn the_options_are_kept_on_a_worker_and_again_when_changed_meanwhile() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = SettingsFile::at(folder.path().join(FILE_NAME));
+        let mut app = KetchupApp::new();
+        app.window.btlx_settings = Some(file.clone());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        app.window.btlx_saving.worker = Some(std::thread::spawn(move || {
+            held.recv().ok();
+            Ok(())
+        }));
+        app.window.btlx.largest_drill_mm = 20.5;
+        app.remember_btlx_settings();
+        assert!(app.window.btlx_saving.again);
+        assert!(file.values(LARGEST_DRILL_MM).is_empty());
+        release.send(()).unwrap();
+        app.btlx_saved();
+        assert_eq!(read(&file).largest_drill_mm, 20.5);
+
+        app.window.btlx_saving.worker = Some(std::thread::spawn(|| {
+            Err(std::io::Error::other("the disk is full"))
+        }));
+        app.btlx_saved();
+        assert!(app.digest.contains("the disk is full"), "{}", app.digest);
+    }
+
+    /// Review 2026-11-08: two windows each kept all three options, so the
+    /// second put back the drill the first had just changed.
+    #[test]
+    fn a_window_keeps_only_the_options_it_changed() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = SettingsFile::at(folder.path().join(FILE_NAME));
+        let (mut first, mut second) = (KetchupApp::new(), KetchupApp::new());
+        first.keep_btlx_settings_in(file.clone());
+        second.keep_btlx_settings_in(file.clone());
+        first.window.btlx.largest_drill_mm = 20.0;
+        first.remember_btlx_settings();
+        first.btlx_saved();
+        second.window.btlx.profile_strategy = BtlxProfileStrategy::PortableFreeContour;
+        second.remember_btlx_settings();
+        second.btlx_saved();
+        let kept = read(&file);
+        assert_eq!(kept.largest_drill_mm, 20.0);
+        assert_eq!(
+            kept.profile_strategy,
+            BtlxProfileStrategy::PortableFreeContour
+        );
+    }
+
+    /// Review 2026-11-08: a value that could not be read became its default
+    /// without a word.
+    #[test]
+    fn a_value_not_read_is_told() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join(FILE_NAME),
+            "largest-drill-mm=20 mm\nintermediate-saw-cuts=2\n",
+        )
+        .unwrap();
+        let mut app = KetchupApp::new();
+        app.keep_btlx_settings_in(SettingsFile::at(folder.path().join(FILE_NAME)));
+        assert_eq!(app.window.btlx.intermediate_saw_cuts, 2);
+        assert_eq!(
+            app.window.btlx.largest_drill_mm,
+            BtlxSettings::default().largest_drill_mm
+        );
+        assert!(
+            app.digest.contains("largest-drill-mm=20 mm"),
+            "{}",
+            app.digest
+        );
     }
 }

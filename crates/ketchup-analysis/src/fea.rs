@@ -1,15 +1,37 @@
+use crate::fea_coupling::{
+    Joints, add_springs, joint_definition, spring_energy, spring_entry_count, turning_leaders,
+    validate_couplings, validate_turns,
+};
+use crate::fea_frame::{
+    ElementAxes, FRAME_DOFS, FrameError, consistent_load, local_stiffness, multiply,
+    peak_displacement, peak_von_mises, valid_section,
+};
+pub use crate::fea_modal::{
+    FEA_MODAL_SOLVER_VERSION_V2, FEA_MODES_SCHEMA_V1, FeaMode, FeaModes, MAX_FEA_MODES,
+};
+use crate::sparse::{
+    ENTRY_BYTES, FactorError, MemoryBudget, SymmetricMatrix, distinct_positions, sort_entries,
+};
 use ketchup_geometry::linalg::{Mat3, add, cross, dot, length, scale, sub};
 use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
 
 pub const FEA_MODEL_SCHEMA_V1: &str = "ketchup.fea-model.v1";
 pub const FEA_SOLUTION_SCHEMA_V1: &str = "ketchup.fea-solution.v1";
 pub const FEA_SOLVER_VERSION_V1: &str = "ketchup.linear-static-fem.v1";
 pub const MAX_FEA_MATERIALS: usize = 4_096;
-pub const MAX_FEA_ELEMENTS: usize = 4_096;
-pub const MAX_FEA_CONSTRAINTS: usize = 768;
-pub const MAX_FEA_LOADS: usize = 16_384;
+pub const MAX_FEA_NODES: usize = 200_000;
+pub const MAX_FEA_ELEMENTS: usize = 1_000_000;
+pub const MAX_FEA_CONSTRAINTS: usize = MAX_FEA_NODES;
+pub const MAX_FEA_LOADS: usize = 1_000_000;
+pub const MAX_FEA_COUPLINGS: usize = MAX_FEA_NODES;
+/// The memory checking a model's elements holds per element at most: its id,
+/// its sorted nodes and the faces of a tetrahedron, in ordered sets.
+pub(crate) const VALIDATION_BYTES_PER_ELEMENT: usize = 256;
+/// The default memory for the factored stiffness matrix: 512 MiB.
+pub const DEFAULT_FEA_FACTOR_BYTES: usize = 512 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeaNode {
@@ -22,6 +44,8 @@ pub struct FeaMaterial {
     pub youngs_modulus_mpa: f64,
     pub poisson_ratio: f64,
     pub yield_strength_mpa: Option<f64>,
+    /// Needed for natural frequencies; a static solve does without it.
+    pub density_kg_per_m3: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -41,12 +65,110 @@ pub enum FeaElementKind {
         nodes: [usize; 4],
         material_id: u64,
     },
+    /// A straight 3D Euler–Bernoulli frame element between two nodes; its nodes also
+    /// turn. `orientation` is any vector off the element's line: the section's
+    /// `y` axis lies in the plane of the line and that vector.
+    Frame2 {
+        nodes: [usize; 2],
+        material_id: u64,
+        section: FeaFrameSection,
+        orientation: [f64; 3],
+    },
+}
+
+/// A frame element's cross-section, in the element's own axes (`x` along it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeaFrameSection {
+    pub area_mm2: f64,
+    /// Second moment of area about the section's `y` axis (bending in `x-z`).
+    pub second_moment_y_mm4: f64,
+    /// Second moment of area about the section's `z` axis (bending in `x-y`).
+    pub second_moment_z_mm4: f64,
+    /// Saint-Venant torsion constant: twist rate = torque / (G·J).
+    pub torsion_constant_mm4: f64,
+    /// Distance from the centroid to the farthest fibre along `y`, and along `z`.
+    pub extreme_fibre_y_mm: f64,
+    pub extreme_fibre_z_mm: f64,
+    /// Torsional section modulus: the largest shear stress is torque / modulus.
+    pub torsion_modulus_mm3: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeaConstraint {
     pub node: usize,
     pub displacement_mm: [Option<f64>; 3],
+    /// Turns about the model's axes; only a node a frame element ends at turns.
+    pub rotation_rad: [Option<f64>; 3],
+}
+
+impl FeaConstraint {
+    /// The node held in place and left free to turn.
+    #[must_use]
+    pub fn held(node: usize) -> Self {
+        Self {
+            node,
+            displacement_mm: [Some(0.0); 3],
+            rotation_rad: [None; 3],
+        }
+    }
+}
+
+/// A joint between two nodes, usually of different parts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeaCoupling {
+    pub nodes: [usize; 2],
+    pub kind: FeaCouplingKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FeaCouplingKind {
+    /// The second node follows the first as if a rigid link joined them: it
+    /// moves by the first's move plus the first's turn about the offset
+    /// between them, and turns with it. A first node another sits away from,
+    /// or one whose follower turns, turns even when no frame element ends at it.
+    Rigid,
+    /// Springs along the model's axes between two nodes at one place; a turn
+    /// stiffness needs both nodes to turn. A zero stiffness leaves that axis free.
+    Spring {
+        translation_n_per_mm: [f64; 3],
+        rotation_n_mm_per_rad: [f64; 3],
+    },
+    /// The second node moves with the point of the triangle of the first node
+    /// and `others` that `weights` interpolate (the first node's weight first):
+    /// its move is the weighted sum of theirs. It ties a node of one face to the
+    /// face it lies on, so two meshes that do not share nodes deform together
+    /// where they touch and nowhere else. The weights are the point's
+    /// barycentric coordinates, each in 0..=1 and adding up to one; the three
+    /// nodes neither follow nor are tied themselves.
+    Tie {
+        others: [usize; 2],
+        weights: [f64; 3],
+    },
+}
+
+/// Why a coupling cannot be built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FeaCouplingProblem {
+    /// A node is outside the mesh, or both nodes are the same.
+    InvalidNode,
+    /// A stiffness is not finite or negative, or every stiffness is zero.
+    InvalidStiffness,
+    /// A spring joins nodes at different places.
+    SpringNodesApart,
+    /// A turn stiffness joins a node that does not turn.
+    TurnSpringNeedsTurningNodes,
+    /// The second node already follows another rigid coupling.
+    FollowsTwice,
+    /// Rigid couplings follow each other round in a circle.
+    Cycle,
+    /// A constraint holds the node that follows; hold the node it follows.
+    ConstrainedFollower,
+    /// A tie's weights are not barycentric coordinates of a point of its
+    /// triangle, or its triangle repeats a node.
+    InvalidTie,
+    /// A node a tie follows follows another coupling itself, or a tied node
+    /// leads one.
+    TieChain,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +181,17 @@ pub enum FeaLoad {
         nodes: [usize; 3],
         traction_n_per_mm2: [f64; 3],
     },
+    /// A moment (N·mm, model axes) at a node a frame element ends at.
+    NodalMoment {
+        node: usize,
+        moment_n_mm: [f64; 3],
+    },
+    /// A uniform load per length (N/mm, model axes) along the whole element
+    /// element with this id.
+    FrameDistributed {
+        element: u64,
+        load_n_per_mm: [f64; 3],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +203,7 @@ pub struct FeaModel {
     pub elements: Vec<FeaElement>,
     pub constraints: Vec<FeaConstraint>,
     pub loads: Vec<FeaLoad>,
+    pub couplings: Vec<FeaCoupling>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,15 +212,21 @@ pub struct FeaSolveSettings {
     pub relative_pivot_tolerance: f64,
     pub maximum_small_deformation_ratio: f64,
     pub convergence_relative_tolerance: f64,
+    /// The memory a solve or a modes study may hold at once in its entries,
+    /// matrices and factor; a larger model is refused with what it would
+    /// need, before the allocation that would pass the budget
+    /// (R1120ac-FEA-902). Vectors of one value per unknown come on top.
+    pub maximum_factor_bytes: usize,
 }
 
 impl Default for FeaSolveSettings {
     fn default() -> Self {
         Self {
-            maximum_nodes: 256,
+            maximum_nodes: MAX_FEA_NODES,
             relative_pivot_tolerance: NEGLIGIBLE,
             maximum_small_deformation_ratio: 0.05,
             convergence_relative_tolerance: 0.02,
+            maximum_factor_bytes: DEFAULT_FEA_FACTOR_BYTES,
         }
     }
 }
@@ -122,15 +262,72 @@ pub enum FeaError {
     InvalidArea {
         element: u64,
     },
+    /// A frame section value is missing, zero or negative.
+    InvalidFrameSection {
+        element: u64,
+    },
+    /// A frame element's orientation vector is not finite or runs along the element.
+    InvalidFrameOrientation {
+        element: u64,
+    },
     MissingConstraint,
     InvalidConstraint,
     ConflictingConstraint,
+    /// The coupling at index `coupling` of the model's couplings.
+    InvalidCoupling {
+        coupling: usize,
+        problem: FeaCouplingProblem,
+    },
     MissingLoad,
     InvalidLoad,
     NonBoundaryTraction,
     InvalidSettings,
     SingularSystem,
+    /// The entries, matrices and factor held at once would need at least
+    /// `needed_bytes`, more than the `budget_bytes` the settings allow: what was
+    /// held with the first piece past the budget, as later ones are not built.
+    FactorTooLarge {
+        needed_bytes: usize,
+        budget_bytes: usize,
+    },
     NonFiniteSolution,
+    /// Natural frequencies need the density of the material with this id.
+    MissingDensity {
+        material: u64,
+    },
+    /// No modes asked for, more than `MAX_FEA_MODES`, or more than the model
+    /// has free unknowns with mass.
+    InvalidModeCount,
+    /// The subspace iteration did not settle on the lowest modes.
+    ModesNotConverged,
+    /// The caller's cancellation flag was set while solving.
+    Cancelled,
+}
+
+impl FeaError {
+    /// What a failed factorization under `settings` means for the model, with
+    /// `held_bytes` of matrices kept beside the factor.
+    pub(crate) const fn from_factor(
+        error: FactorError,
+        settings: FeaSolveSettings,
+        held_bytes: usize,
+    ) -> Self {
+        match error {
+            FactorError::Singular => Self::SingularSystem,
+            FactorError::Cancelled => Self::Cancelled,
+            FactorError::TooLarge { needed_bytes } => {
+                Self::too_large(needed_bytes.saturating_add(held_bytes), settings)
+            }
+        }
+    }
+
+    /// The model would need `needed_bytes` held at once, more than `settings` allow.
+    pub(crate) const fn too_large(needed_bytes: usize, settings: FeaSolveSettings) -> Self {
+        Self::FactorTooLarge {
+            needed_bytes,
+            budget_bytes: settings.maximum_factor_bytes,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,7 +347,7 @@ pub struct FeaValidityEvidence {
     pub all_yield_strengths_supplied: bool,
     pub maximum_yield_utilization: Option<f64>,
     pub within_linear_elastic_stress_limit: Option<bool>,
-    pub excluded_physics: [&'static str; 4],
+    pub excluded_physics: [&'static str; 5],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +358,9 @@ pub struct FeaSolution {
     pub model_digest: String,
     pub displacements_mm: Vec<[f64; 3]>,
     pub reaction_forces_n: Vec<[f64; 3]>,
+    /// Turns about the model's axes; `None` at a node no frame element ends at.
+    pub rotations_rad: Vec<Option<[f64; 3]>>,
+    pub reaction_moments_n_mm: Vec<Option<[f64; 3]>>,
     pub element_results: Vec<FeaElementResult>,
     pub maximum_displacement_mm: f64,
     pub maximum_von_mises_stress_mpa: f64,
@@ -189,14 +389,69 @@ pub struct FeaConvergenceLevel {
     pub total_strain_energy_n_mm: f64,
 }
 
+/// The least ratio of element counts between the last two levels of a convergence study
+/// for it to count as converged: from one level to one hardly finer the results change
+/// little whatever their error (og:R1119og-FEA-803: 20 to 21 elements changed the
+/// deflection by 1.9 % while it was 69 % of the true one).
+pub const MIN_FEA_REFINEMENT_RATIO: f64 = 2.0;
+
+/// How the finest level of a convergence study compares with the level before it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeaConvergenceJudgement {
+    pub final_displacement_relative_change: f64,
+    pub final_energy_relative_change: f64,
+    /// Of the largest von Mises stress: a stress that keeps rising as the mesh is refined,
+    /// as at a sharp inner corner, has not converged however still the deflection is.
+    pub final_stress_relative_change: f64,
+    /// The finest level's elements over those of the level before.
+    pub final_refinement_ratio: f64,
+    /// Every change within the tolerance and the finest level at least
+    /// [`MIN_FEA_REFINEMENT_RATIO`] times finer.
+    pub converged: bool,
+}
+
+impl FeaConvergenceJudgement {
+    /// Compares the solution `last` on `last_elements` elements with `previous` on
+    /// `previous_elements`, against the relative `tolerance`.
+    #[must_use]
+    pub fn between(
+        (previous, previous_elements): (&FeaSolution, usize),
+        (last, last_elements): (&FeaSolution, usize),
+        tolerance: f64,
+    ) -> Self {
+        let displacement = relative_change(
+            previous.maximum_displacement_mm,
+            last.maximum_displacement_mm,
+        );
+        let energy = relative_change(
+            previous.total_strain_energy_n_mm,
+            last.total_strain_energy_n_mm,
+        );
+        let stress = relative_change(
+            previous.maximum_von_mises_stress_mpa,
+            last.maximum_von_mises_stress_mpa,
+        );
+        let elements = |count: usize| f64::from(u32::try_from(count).unwrap_or(u32::MAX));
+        let ratio = elements(last_elements) / elements(previous_elements).max(1.0);
+        Self {
+            final_displacement_relative_change: displacement,
+            final_energy_relative_change: energy,
+            final_stress_relative_change: stress,
+            final_refinement_ratio: ratio,
+            converged: displacement <= tolerance
+                && energy <= tolerance
+                && stress <= tolerance
+                && ratio >= MIN_FEA_REFINEMENT_RATIO,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeaConvergenceEvidence {
     pub case_id: String,
     pub levels: Vec<FeaConvergenceLevel>,
-    pub final_displacement_relative_change: f64,
-    pub final_energy_relative_change: f64,
+    pub judgement: FeaConvergenceJudgement,
     pub required_relative_tolerance: f64,
-    pub converged: bool,
     pub solutions: Vec<FeaSolution>,
 }
 
@@ -222,7 +477,10 @@ struct GeometricMoments {
 #[derive(Default)]
 struct LoadDefinition {
     nodal: Vec<([u64; 3], [u64; 3])>,
+    moments: Vec<([u64; 3], [u64; 3])>,
     surface: BTreeMap<[u64; 3], GeometricMoments>,
+    /// Uniform frame loads by their value, over the lines they act along.
+    lines: BTreeMap<[u64; 3], GeometricMoments>,
 }
 
 #[derive(Default)]
@@ -234,59 +492,144 @@ struct ConstraintSupport {
 
 type ConstraintDefinition = BTreeMap<(usize, u64), ConstraintSupport>;
 
+pub(crate) struct DofLayout {
+    /// Three moves per node come first.
+    pub(crate) translations: usize,
+    /// The turning nodes, in slot order.
+    owners: Vec<usize>,
+    /// Each turning node's place among the turning nodes.
+    pub(crate) slots: Vec<Option<usize>>,
+}
+
+impl DofLayout {
+    pub(crate) fn count(&self) -> usize {
+        self.translations + self.owners.len() * 3
+    }
+
+    /// The unknown of `axis` (0–2 moves, 3–5 turns) at `node`.
+    pub(crate) fn dof(&self, node: usize, axis: usize) -> Option<usize> {
+        if axis < 3 {
+            Some(node * 3 + axis)
+        } else {
+            self.slots[node].map(|slot| self.translations + slot * 3 + axis - 3)
+        }
+    }
+
+    /// The unknowns of a frame element; both its nodes turn by construction.
+    pub(crate) fn frame_dofs(
+        &self,
+        element: u64,
+        nodes: [usize; 2],
+    ) -> Result<[usize; FRAME_DOFS], FeaError> {
+        let mut dofs = [0; FRAME_DOFS];
+        for (local, dof) in dofs.iter_mut().enumerate() {
+            *dof = self
+                .dof(nodes[local / 6], local % 6)
+                .ok_or(FeaError::InvalidElementNode { element })?;
+        }
+        Ok(dofs)
+    }
+
+    fn turn_of(&self, dof: usize) -> (usize, usize) {
+        let offset = dof - self.translations;
+        (self.owners[offset / 3], offset % 3)
+    }
+
+    fn per_turning_node(&self, value: [f64; 3]) -> Vec<Option<[f64; 3]>> {
+        self.slots.iter().map(|slot| slot.map(|_| value)).collect()
+    }
+}
+
 impl FeaModel {
     pub fn solve(&self, settings: FeaSolveSettings) -> Result<FeaSolution, FeaError> {
+        self.solve_with_cancellation(settings, &AtomicBool::new(false))
+    }
+
+    /// [`Self::solve`], stopping with [`FeaError::Cancelled`] soon after
+    /// `cancelled` is set (og:R1119og-FEA-806).
+    pub fn solve_with_cancellation(
+        &self,
+        settings: FeaSolveSettings,
+        cancelled: &AtomicBool,
+    ) -> Result<FeaSolution, FeaError> {
         self.validate(settings)?;
-        let dof_count = self.nodes.len() * 3;
-        let mut stiffness = vec![vec![0.0; dof_count]; dof_count];
+        let layout = self.dof_layout();
+        let dof_count = layout.count();
+        let too_large = |needed| FeaError::too_large(needed, settings);
+        let mut budget = MemoryBudget::new(settings.maximum_factor_bytes);
+        let entries = self.stiffness_entries_within(&layout, &mut budget, settings)?;
         let mut forces = vec![0.0; dof_count];
+        self.assemble_loads(&layout, &mut forces)?;
+        // A rigid coupling's follower is no unknown of its own: its rows and
+        // forces go to the unknowns it follows, and it is set from them after.
+        let joints = Joints::new(self, &layout)?;
+        let entries =
+            reduce_within(&joints, entries, &mut forces, &mut budget).map_err(too_large)?;
 
-        for element in &self.elements {
-            match element.kind {
-                FeaElementKind::LinearTruss2 {
-                    nodes,
-                    material_id,
-                    area_mm2,
-                } => self.assemble_truss(nodes, material_id, area_mm2, &mut stiffness),
-                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
-                    self.assemble_tetrahedron(nodes, material_id, &mut stiffness)
-                }
-            }
-        }
-        self.assemble_loads(&mut forces);
-
-        let original_stiffness = stiffness.clone();
+        let original_stiffness = matrix_within(dof_count, entries, &mut budget, settings)?;
+        budget.take(original_stiffness.bytes()).map_err(too_large)?;
+        let mut stiffness = original_stiffness.clone();
         let original_forces = forces.clone();
-        let constrained = self.apply_constraints(&mut stiffness, &mut forces)?;
-        let displacement = solve_dense(stiffness, forces, settings.relative_pivot_tolerance)?;
+        let follower_scale = stiffness.largest_magnitude().max(1.0);
+        for dof in joints.follower_dofs() {
+            stiffness.prescribe(dof, 0.0, follower_scale, &mut forces);
+        }
+        let constrained = self.apply_constraints(&layout, &mut stiffness, &mut forces)?;
+        let threshold = stiffness.largest_magnitude().max(1.0) * settings.relative_pivot_tolerance;
+        let mut displacement = stiffness
+            .factor(threshold, budget.left(), cancelled)
+            .map_err(|error| FeaError::from_factor(error, settings, budget.held()))?
+            .solve(&forces);
         if displacement.iter().any(|value| !value.is_finite()) {
             return Err(FeaError::NonFiniteSolution);
         }
 
-        let residual = matrix_vector(&original_stiffness, &displacement)
+        let residual = original_stiffness
+            .multiply(&displacement)
             .into_iter()
             .zip(&original_forces)
             .map(|(internal, applied)| internal - applied)
             .collect::<Vec<_>>();
+        joints.recover(&mut displacement);
         let mut maximum_free_dof_residual_n: f64 = 0.0;
         let mut reactions = vec![[0.0; 3]; self.nodes.len()];
+        let mut reaction_moments = layout.per_turning_node([0.0; 3]);
         for (dof, value) in residual.iter().copied().enumerate() {
-            if constrained.contains(&dof) {
+            if !constrained.contains(&dof) {
+                maximum_free_dof_residual_n = maximum_free_dof_residual_n.max(value.abs());
+            } else if dof < layout.translations {
                 reactions[dof / 3][dof % 3] = value;
             } else {
-                maximum_free_dof_residual_n = maximum_free_dof_residual_n.max(value.abs());
+                let (node, axis) = layout.turn_of(dof);
+                if let Some(moment) = &mut reaction_moments[node] {
+                    moment[axis] = value;
+                }
             }
         }
 
-        let displacements_mm = displacement
+        let displacements_mm = displacement[..layout.translations]
             .chunks_exact(3)
             .map(|values| [values[0], values[1], values[2]])
             .collect::<Vec<_>>();
+        let rotations_rad = layout
+            .slots
+            .iter()
+            .map(|slot| {
+                slot.map(|slot| {
+                    let start = layout.translations + slot * 3;
+                    [
+                        displacement[start],
+                        displacement[start + 1],
+                        displacement[start + 2],
+                    ]
+                })
+            })
+            .collect::<Vec<_>>();
+        let (element_results, frame_peak_mm) = self.element_results(&layout, &displacement)?;
         let maximum_displacement_mm = displacements_mm
             .iter()
             .map(|value| length(*value))
-            .fold(0.0, f64::max);
-        let element_results = self.element_results(&displacement);
+            .fold(frame_peak_mm, f64::max);
         let maximum_von_mises_stress_mpa = element_results
             .iter()
             .map(|result| result.von_mises_stress_mpa)
@@ -294,7 +637,21 @@ impl FeaModel {
         let total_strain_energy_n_mm = element_results
             .iter()
             .map(|result| result.strain_energy_n_mm)
-            .sum();
+            .sum::<f64>()
+            + spring_energy(self, &layout, &displacement);
+        // A load near the end of the number range (1e300 N) solves to finite
+        // displacements whose stresses and energy overflow, written as null
+        // (review 2026-11-20 ac P3).
+        if !(maximum_displacement_mm.is_finite()
+            && total_strain_energy_n_mm.is_finite()
+            && maximum_free_dof_residual_n.is_finite()
+            && element_results
+                .iter()
+                .all(|result| result.von_mises_stress_mpa.is_finite())
+            && reactions.iter().flatten().all(|value| value.is_finite()))
+        {
+            return Err(FeaError::NonFiniteSolution);
+        }
         let characteristic_length_mm = self.characteristic_length();
         let maximum_displacement_ratio = maximum_displacement_mm / characteristic_length_mm;
         let all_yield_strengths_supplied = self
@@ -308,7 +665,7 @@ impl FeaModel {
                 .fold(0.0, f64::max)
         });
 
-        let total_applied = vector_sum(&original_forces);
+        let total_applied = vector_sum(&original_forces[..layout.translations]);
         let total_reaction = reactions.iter().copied().fold([0.0; 3], add);
         Ok(FeaSolution {
             schema: FEA_SOLUTION_SCHEMA_V1,
@@ -317,6 +674,8 @@ impl FeaModel {
             model_digest: self.digest(),
             displacements_mm,
             reaction_forces_n: reactions,
+            rotations_rad,
+            reaction_moments_n_mm: reaction_moments,
             element_results,
             maximum_displacement_mm,
             maximum_von_mises_stress_mpa,
@@ -333,17 +692,111 @@ impl FeaModel {
                 maximum_yield_utilization,
                 within_linear_elastic_stress_limit: maximum_yield_utilization
                     .map(|utilization| utilization <= 1.0),
+                // Review 2026-11-08 PG-246: one isotropic material with von
+                // Mises against a yield strength, which says nothing of a
+                // material whose strength depends on the direction.
                 excluded_physics: [
                     "geometric nonlinearity",
                     "plasticity",
                     "contact",
-                    "buckling and dynamics",
+                    // Review 2026-11-19 og FEA-809: the answer may carry natural
+                    // frequencies, and the parts' own weight was silently left out.
+                    "buckling, forced and transient dynamics (natural frequencies come only from a modes study), and self-weight: only the given loads act",
+                    "anisotropic materials (timber, wood panels; checked by timber_design): the material is isotropic and its von Mises stress is compared with one yield strength",
                 ],
             },
         })
     }
 
+    /// How many entries [`Self::stiffness_entries`] makes: a diagonal for
+    /// every unknown, a square for every element and four for every spring.
+    pub(crate) fn stiffness_entry_count(&self, layout: &DofLayout) -> Result<usize, FeaError> {
+        let springs = spring_entry_count(self, layout)?;
+        Ok(self
+            .elements
+            .iter()
+            .map(|element| match element.kind {
+                FeaElementKind::LinearTruss2 { .. } => 6 * 6,
+                FeaElementKind::LinearTetrahedron4 { .. } => 12 * 12,
+                FeaElementKind::Frame2 { .. } => FRAME_DOFS * FRAME_DOFS,
+            })
+            .fold(
+                layout.count().saturating_add(springs),
+                usize::saturating_add,
+            ))
+    }
+
+    /// [`Self::stiffness_entries`], taken from `budget` before any is
+    /// assembled (R1120ac-FEA-902: a million tetrahedra took ~5.8 GB in the
+    /// window before the factor's 512 MiB check).
+    pub(crate) fn stiffness_entries_within(
+        &self,
+        layout: &DofLayout,
+        budget: &mut MemoryBudget,
+        settings: FeaSolveSettings,
+    ) -> Result<Vec<(usize, usize, f64)>, FeaError> {
+        let count = self.stiffness_entry_count(layout)?;
+        budget
+            .take(count.saturating_mul(ENTRY_BYTES))
+            .map_err(|needed| FeaError::too_large(needed, settings))?;
+        self.stiffness_entries(layout)
+    }
+
+    /// The stiffness of every element and spring as `(row, column, value)`
+    /// entries, with a diagonal entry for every unknown so a constraint can set it.
+    pub(crate) fn stiffness_entries(
+        &self,
+        layout: &DofLayout,
+    ) -> Result<Vec<(usize, usize, f64)>, FeaError> {
+        // Exactly as many as counted, so the budget taken for them holds.
+        let mut entries = Vec::with_capacity(self.stiffness_entry_count(layout)?);
+        entries.extend((0..layout.count()).map(|dof| (dof, dof, 0.0)));
+        for element in &self.elements {
+            match element.kind {
+                FeaElementKind::LinearTruss2 {
+                    nodes,
+                    material_id,
+                    area_mm2,
+                } => self.assemble_truss(nodes, material_id, area_mm2, &mut entries),
+                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
+                    self.assemble_tetrahedron(nodes, material_id, &mut entries)
+                }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    orientation,
+                } => {
+                    let frame = self.element_axes(element.id, nodes, orientation)?;
+                    let stiffness = frame.global_stiffness(&self.frame_local_stiffness(
+                        material_id,
+                        &section,
+                        frame.length_mm,
+                    ));
+                    let dofs = layout.frame_dofs(element.id, nodes)?;
+                    for (row, values) in stiffness.iter().enumerate() {
+                        for (column, value) in values.iter().enumerate() {
+                            entries.push((dofs[row], dofs[column], *value));
+                        }
+                    }
+                }
+            }
+        }
+        add_springs(self, layout, &mut entries)?;
+        debug_assert_eq!(entries.len(), entries.capacity());
+        Ok(entries)
+    }
+
     fn validate(&self, settings: FeaSolveSettings) -> Result<(), FeaError> {
+        self.validate_model(settings, true)
+    }
+
+    /// Everything [`Self::solve`] checks; natural frequencies need no load.
+    pub(crate) fn validate_model(
+        &self,
+        settings: FeaSolveSettings,
+        loads_required: bool,
+    ) -> Result<(), FeaError> {
         if self.schema != FEA_MODEL_SCHEMA_V1 {
             return Err(FeaError::UnsupportedSchema);
         }
@@ -355,11 +808,12 @@ impl FeaModel {
         }
         if settings.maximum_nodes == 0
             || self.nodes.len() > settings.maximum_nodes
-            || self.nodes.len() > 256
+            || self.nodes.len() > MAX_FEA_NODES
             || self.materials.len() > MAX_FEA_MATERIALS
             || self.elements.len() > MAX_FEA_ELEMENTS
             || self.constraints.len() > MAX_FEA_CONSTRAINTS
             || self.loads.len() > MAX_FEA_LOADS
+            || self.couplings.len() > MAX_FEA_COUPLINGS
         {
             return Err(FeaError::ModelTooLarge);
         }
@@ -369,8 +823,19 @@ impl FeaModel {
             || settings.maximum_small_deformation_ratio >= 1.0
             || !finite_positive(settings.convergence_relative_tolerance)
             || settings.convergence_relative_tolerance >= 1.0
+            || settings.maximum_factor_bytes == 0
         {
             return Err(FeaError::InvalidSettings);
+        }
+        // The sets the checks below hold are taken from the same budget: they
+        // are freed before assembly, so they need not fit beside it
+        // (R1121ac P3: about 190 MiB for a million tetrahedra, unbudgeted).
+        let checking = self
+            .elements
+            .len()
+            .saturating_mul(VALIDATION_BYTES_PER_ELEMENT);
+        if checking > settings.maximum_factor_bytes {
+            return Err(FeaError::too_large(checking, settings));
         }
         if self
             .nodes
@@ -391,7 +856,9 @@ impl FeaModel {
                 || !(-1.0..0.5).contains(&material.poisson_ratio)
                 || material
                     .yield_strength_mpa
-                    .is_some_and(|value| !finite_positive(value))
+                    .into_iter()
+                    .chain(material.density_kg_per_m3)
+                    .any(|value| !finite_positive(value))
             {
                 return Err(FeaError::InvalidMaterial);
             }
@@ -400,6 +867,8 @@ impl FeaModel {
         let mut element_ids = BTreeSet::new();
         let mut truss_connectivities = BTreeSet::new();
         let mut tetrahedron_connectivities = BTreeSet::new();
+        let mut frame_connectivities = BTreeSet::new();
+        let mut frames = BTreeSet::new();
         let mut tetrahedron_faces = BTreeMap::<[usize; 3], usize>::new();
         for element in &self.elements {
             let element_id = element.id;
@@ -415,6 +884,9 @@ impl FeaModel {
                 FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
                     (nodes.to_vec(), material_id)
                 }
+                FeaElementKind::Frame2 {
+                    nodes, material_id, ..
+                } => (nodes.to_vec(), material_id),
             };
             // A node outside the mesh is named as such, not as a degenerate shape.
             if nodes.iter().any(|node| *node >= self.nodes.len()) {
@@ -466,6 +938,27 @@ impl FeaModel {
                         *tetrahedron_faces.entry(face).or_default() += 1;
                     }
                 }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    section,
+                    orientation,
+                    ..
+                } => {
+                    if !valid_section(&section) {
+                        return Err(FeaError::InvalidFrameSection {
+                            element: element_id,
+                        });
+                    }
+                    let mut canonical_nodes = nodes;
+                    canonical_nodes.sort_unstable();
+                    if !frame_connectivities.insert(canonical_nodes) {
+                        return Err(FeaError::DuplicateElement {
+                            element: element_id,
+                        });
+                    }
+                    self.element_axes(element_id, nodes, orientation)?;
+                    frames.insert(element_id);
+                }
             }
             if !material_ids.contains(&material_id) {
                 return Err(FeaError::MissingMaterial {
@@ -474,23 +967,39 @@ impl FeaModel {
             }
         }
 
+        validate_couplings(self)?;
+        let layout = self.dof_layout();
+        validate_turns(self, &layout)?;
         if self.constraints.is_empty() {
             return Err(FeaError::MissingConstraint);
         }
-        let mut prescribed = BTreeMap::<usize, f64>::new();
+        let turning = layout.slots;
+        let mut prescribed = BTreeMap::<(usize, usize), f64>::new();
         for constraint in &self.constraints {
             if constraint.node >= self.nodes.len()
-                || constraint.displacement_mm.iter().all(Option::is_none)
+                || constraint
+                    .displacement_mm
+                    .iter()
+                    .chain(&constraint.rotation_rad)
+                    .all(Option::is_none)
+                || (turning[constraint.node].is_none()
+                    && constraint.rotation_rad.iter().any(Option::is_some))
             {
                 return Err(FeaError::InvalidConstraint);
             }
-            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+            for (axis, value) in constraint
+                .displacement_mm
+                .iter()
+                .chain(&constraint.rotation_rad)
+                .copied()
+                .enumerate()
+            {
                 if let Some(value) = value {
                     if !value.is_finite() {
                         return Err(FeaError::InvalidConstraint);
                     }
                     if prescribed
-                        .insert(constraint.node * 3 + axis, value)
+                        .insert((constraint.node, axis), value)
                         .is_some_and(|previous| previous.to_bits() != value.to_bits())
                     {
                         return Err(FeaError::ConflictingConstraint);
@@ -499,7 +1008,7 @@ impl FeaModel {
             }
         }
 
-        if self.loads.is_empty() {
+        if loads_required && self.loads.is_empty() {
             return Err(FeaError::MissingLoad);
         }
         for load in &self.loads {
@@ -531,12 +1040,106 @@ impl FeaModel {
                         return Err(FeaError::InvalidLoad);
                     }
                 }
+                FeaLoad::NodalMoment { node, moment_n_mm } => {
+                    if node >= self.nodes.len() || turning[node].is_none() || !finite3(moment_n_mm)
+                    {
+                        return Err(FeaError::InvalidLoad);
+                    }
+                }
+                FeaLoad::FrameDistributed {
+                    element,
+                    load_n_per_mm,
+                } => {
+                    if !frames.contains(&element) || !finite3(load_n_per_mm) {
+                        return Err(FeaError::InvalidLoad);
+                    }
+                }
             }
         }
         Ok(())
     }
 
-    fn material(&self, id: u64) -> &FeaMaterial {
+    /// Unknowns: three moves per node, then three turns per node a frame element
+    /// ends at, then per node only rigid couplings make turn.
+    pub(crate) fn dof_layout(&self) -> DofLayout {
+        let mut slots = vec![None; self.nodes.len()];
+        let mut owners = Vec::new();
+        for element in &self.elements {
+            if let FeaElementKind::Frame2 { nodes, .. } = element.kind {
+                for node in nodes {
+                    if let Some(slot) = slots.get_mut(node)
+                        && slot.is_none()
+                    {
+                        *slot = Some(owners.len());
+                        owners.push(node);
+                    }
+                }
+            }
+        }
+        let mut turning = slots.iter().map(Option::is_some).collect::<Vec<_>>();
+        turning_leaders(self, &mut turning);
+        for (node, turns) in turning.into_iter().enumerate() {
+            if turns && slots[node].is_none() {
+                slots[node] = Some(owners.len());
+                owners.push(node);
+            }
+        }
+        DofLayout {
+            translations: self.nodes.len() * 3,
+            owners,
+            slots,
+        }
+    }
+
+    pub(crate) fn element_axes(
+        &self,
+        element: u64,
+        nodes: [usize; 2],
+        orientation: [f64; 3],
+    ) -> Result<ElementAxes, FeaError> {
+        ElementAxes::new(
+            self.nodes[nodes[0]].position_mm,
+            self.nodes[nodes[1]].position_mm,
+            orientation,
+        )
+        .map_err(|error| match error {
+            FrameError::Degenerate => FeaError::DegenerateElement { element },
+            FrameError::Orientation => FeaError::InvalidFrameOrientation { element },
+        })
+    }
+
+    fn frame_local_stiffness(
+        &self,
+        material_id: u64,
+        section: &FeaFrameSection,
+        length_mm: f64,
+    ) -> [[f64; FRAME_DOFS]; FRAME_DOFS] {
+        let material = self.material(material_id);
+        local_stiffness(
+            material.youngs_modulus_mpa,
+            material.youngs_modulus_mpa / (2.0 * (1.0 + material.poisson_ratio)),
+            section,
+            length_mm,
+        )
+    }
+
+    /// The uniform load on each frame element, summed, in model axes.
+    fn frame_loads(&self) -> BTreeMap<u64, [f64; 3]> {
+        let mut loads = BTreeMap::<u64, [f64; 3]>::new();
+        for load in &self.loads {
+            if let FeaLoad::FrameDistributed {
+                element,
+                load_n_per_mm,
+            } = *load
+            {
+                let total = loads.entry(element).or_default();
+                *total = add(*total, load_n_per_mm);
+            }
+        }
+        loads
+    }
+
+    pub(crate) fn material(&self, id: u64) -> &FeaMaterial {
         self.materials
             .iter()
             .find(|material| material.id == id)
@@ -563,12 +1166,25 @@ impl FeaModel {
                     .entry(material_id)
                     .or_default()
                     .add_tetrahedron(nodes.map(|node| self.nodes[node].position_mm)),
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    ..
+                } => distribution
+                    .entry(material_id)
+                    .or_default()
+                    .add_weighted_segment(
+                        self.nodes[nodes[0]].position_mm,
+                        self.nodes[nodes[1]].position_mm,
+                        section.area_mm2,
+                    ),
             }
         }
         distribution
     }
 
-    fn truss_geometry(&self, nodes: [usize; 2]) -> Option<(f64, [f64; 3])> {
+    pub(crate) fn truss_geometry(&self, nodes: [usize; 2]) -> Option<(f64, [f64; 3])> {
         if nodes.iter().any(|node| *node >= self.nodes.len()) {
             return None;
         }
@@ -580,7 +1196,7 @@ impl FeaModel {
         (length > ROUNDING).then(|| (length, scale(delta, 1.0 / length)))
     }
 
-    fn tetrahedron_geometry(&self, nodes: [usize; 4]) -> Option<(f64, [[f64; 3]; 4])> {
+    pub(crate) fn tetrahedron_geometry(&self, nodes: [usize; 4]) -> Option<(f64, [[f64; 3]; 4])> {
         if nodes.iter().any(|node| *node >= self.nodes.len()) {
             return None;
         }
@@ -610,7 +1226,7 @@ impl FeaModel {
         nodes: [usize; 2],
         material_id: u64,
         area_mm2: f64,
-        stiffness: &mut [Vec<f64>],
+        stiffness: &mut Vec<(usize, usize, f64)>,
     ) {
         let (length, direction) = self.truss_geometry(nodes).expect("validated truss");
         let factor = self.material(material_id).youngs_modulus_mpa * area_mm2 / length;
@@ -620,8 +1236,11 @@ impl FeaModel {
                 let sign_j = if local_j < 3 { -1.0 } else { 1.0 };
                 let global_i = nodes[local_i / 3] * 3 + local_i % 3;
                 let global_j = nodes[local_j / 3] * 3 + local_j % 3;
-                stiffness[global_i][global_j] +=
-                    factor * sign_i * sign_j * direction[local_i % 3] * direction[local_j % 3];
+                stiffness.push((
+                    global_i,
+                    global_j,
+                    factor * sign_i * sign_j * direction[local_i % 3] * direction[local_j % 3],
+                ));
             }
         }
     }
@@ -630,7 +1249,7 @@ impl FeaModel {
         &self,
         nodes: [usize; 4],
         material_id: u64,
-        stiffness: &mut [Vec<f64>],
+        stiffness: &mut Vec<(usize, usize, f64)>,
     ) {
         let (volume, gradients) = self
             .tetrahedron_geometry(nodes)
@@ -649,12 +1268,26 @@ impl FeaModel {
                     * volume;
                 let global_i = nodes[local_i / 3] * 3 + local_i % 3;
                 let global_j = nodes[local_j / 3] * 3 + local_j % 3;
-                stiffness[global_i][global_j] += value;
+                stiffness.push((global_i, global_j, value));
             }
         }
     }
 
-    fn assemble_loads(&self, forces: &mut [f64]) {
+    fn assemble_loads(&self, layout: &DofLayout, forces: &mut [f64]) -> Result<(), FeaError> {
+        let frame_loads = self.frame_loads();
+        for element in &self.elements {
+            if let FeaElementKind::Frame2 {
+                nodes, orientation, ..
+            } = element.kind
+                && let Some(load) = frame_loads.get(&element.id)
+            {
+                let frame = self.element_axes(element.id, nodes, orientation)?;
+                let nodal = frame.global12(consistent_load(frame.local(*load), frame.length_mm));
+                for (dof, value) in layout.frame_dofs(element.id, nodes)?.into_iter().zip(nodal) {
+                    forces[dof] += value;
+                }
+            }
+        }
         for load in &self.loads {
             match *load {
                 FeaLoad::NodalForce { node, force_n } => {
@@ -677,39 +1310,44 @@ impl FeaModel {
                         }
                     }
                 }
+                FeaLoad::NodalMoment { node, moment_n_mm } => {
+                    for (axis, moment) in moment_n_mm.into_iter().enumerate() {
+                        let dof = layout.dof(node, axis + 3).ok_or(FeaError::InvalidLoad)?;
+                        forces[dof] += moment;
+                    }
+                }
+                FeaLoad::FrameDistributed { .. } => {}
             }
         }
+        Ok(())
     }
 
     fn apply_constraints(
         &self,
-        stiffness: &mut [Vec<f64>],
+        layout: &DofLayout,
+        stiffness: &mut SymmetricMatrix,
         forces: &mut [f64],
     ) -> Result<BTreeSet<usize>, FeaError> {
         let mut prescribed = BTreeMap::<usize, f64>::new();
         for constraint in &self.constraints {
-            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+            for (axis, value) in constraint
+                .displacement_mm
+                .iter()
+                .chain(&constraint.rotation_rad)
+                .copied()
+                .enumerate()
+            {
                 if let Some(value) = value {
-                    prescribed.insert(constraint.node * 3 + axis, value);
+                    let dof = layout
+                        .dof(constraint.node, axis)
+                        .ok_or(FeaError::InvalidConstraint)?;
+                    prescribed.insert(dof, value);
                 }
             }
         }
-        let constraint_scale = stiffness
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(|value| value.abs())
-            .fold(0.0, f64::max)
-            .max(1.0);
+        let constraint_scale = stiffness.largest_magnitude().max(1.0);
         for (&dof, &value) in &prescribed {
-            for row in 0..stiffness.len() {
-                if row != dof {
-                    forces[row] -= stiffness[row][dof] * value;
-                    stiffness[row][dof] = 0.0;
-                    stiffness[dof][row] = 0.0;
-                }
-            }
-            stiffness[dof][dof] = constraint_scale;
-            forces[dof] = constraint_scale * value;
+            stiffness.prescribe(dof, value, constraint_scale, forces);
         }
         if prescribed.is_empty() {
             return Err(FeaError::MissingConstraint);
@@ -717,58 +1355,117 @@ impl FeaModel {
         Ok(prescribed.into_keys().collect())
     }
 
-    fn element_results(&self, displacement: &[f64]) -> Vec<FeaElementResult> {
-        self.elements
+    /// Each element's result, and the largest move inside any frame element.
+    fn element_results(
+        &self,
+        layout: &DofLayout,
+        displacement: &[f64],
+    ) -> Result<(Vec<FeaElementResult>, f64), FeaError> {
+        let frame_loads = self.frame_loads();
+        let mut frame_peak_mm: f64 = 0.0;
+        let results = self
+            .elements
             .iter()
-            .map(|element| match element.kind {
-                FeaElementKind::LinearTruss2 {
-                    nodes,
-                    material_id,
-                    area_mm2,
-                } => {
-                    let material = self.material(material_id);
-                    let (length, direction) = self.truss_geometry(nodes).expect("validated truss");
-                    let relative_displacement = [
-                        displacement[nodes[1] * 3] - displacement[nodes[0] * 3],
-                        displacement[nodes[1] * 3 + 1] - displacement[nodes[0] * 3 + 1],
-                        displacement[nodes[1] * 3 + 2] - displacement[nodes[0] * 3 + 2],
-                    ];
-                    let strain = dot(relative_displacement, direction) / length;
-                    let stress = material.youngs_modulus_mpa * strain;
-                    FeaElementResult {
-                        element_id: element.id,
-                        strain_energy_n_mm: 0.5 * stress * strain * area_mm2 * length,
-                        von_mises_stress_mpa: stress.abs(),
-                        yield_utilization: material
-                            .yield_strength_mpa
-                            .map(|limit| stress.abs() / limit),
+            .map(|element| {
+                Ok(match element.kind {
+                    FeaElementKind::LinearTruss2 {
+                        nodes,
+                        material_id,
+                        area_mm2,
+                    } => {
+                        let material = self.material(material_id);
+                        let (length, direction) =
+                            self.truss_geometry(nodes).expect("validated truss");
+                        let relative_displacement = [
+                            displacement[nodes[1] * 3] - displacement[nodes[0] * 3],
+                            displacement[nodes[1] * 3 + 1] - displacement[nodes[0] * 3 + 1],
+                            displacement[nodes[1] * 3 + 2] - displacement[nodes[0] * 3 + 2],
+                        ];
+                        let strain = dot(relative_displacement, direction) / length;
+                        let stress = material.youngs_modulus_mpa * strain;
+                        FeaElementResult {
+                            element_id: element.id,
+                            strain_energy_n_mm: 0.5 * stress * strain * area_mm2 * length,
+                            von_mises_stress_mpa: stress.abs(),
+                            yield_utilization: material
+                                .yield_strength_mpa
+                                .map(|limit| stress.abs() / limit),
+                        }
                     }
-                }
-                FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
-                    let material = self.material(material_id);
-                    let (volume, gradients) = self
-                        .tetrahedron_geometry(nodes)
-                        .expect("validated tetrahedron");
-                    let b = strain_displacement(gradients);
-                    let d = elasticity(material);
-                    let mut local_displacement = [0.0; 12];
-                    for local in 0..12 {
-                        local_displacement[local] = displacement[nodes[local / 3] * 3 + local % 3];
+                    FeaElementKind::LinearTetrahedron4 { nodes, material_id } => {
+                        let material = self.material(material_id);
+                        let (volume, gradients) = self
+                            .tetrahedron_geometry(nodes)
+                            .expect("validated tetrahedron");
+                        let b = strain_displacement(gradients);
+                        let d = elasticity(material);
+                        let mut local_displacement = [0.0; 12];
+                        for local in 0..12 {
+                            local_displacement[local] =
+                                displacement[nodes[local / 3] * 3 + local % 3];
+                        }
+                        let strain = matrix_vector6x12(b, local_displacement);
+                        let stress = matrix_vector6(d, strain);
+                        let von_mises = von_mises(stress);
+                        FeaElementResult {
+                            element_id: element.id,
+                            strain_energy_n_mm: 0.5 * volume * dot6(strain, stress),
+                            von_mises_stress_mpa: von_mises,
+                            yield_utilization: material
+                                .yield_strength_mpa
+                                .map(|limit| von_mises / limit),
+                        }
                     }
-                    let strain = matrix_vector6x12(b, local_displacement);
-                    let stress = matrix_vector6(d, strain);
-                    let von_mises = von_mises(stress);
-                    FeaElementResult {
-                        element_id: element.id,
-                        strain_energy_n_mm: 0.5 * volume * dot6(strain, stress),
-                        von_mises_stress_mpa: von_mises,
-                        yield_utilization: material
-                            .yield_strength_mpa
-                            .map(|limit| von_mises / limit),
+                    FeaElementKind::Frame2 {
+                        nodes,
+                        material_id,
+                        section,
+                        orientation,
+                    } => {
+                        let material = self.material(material_id);
+                        let frame = self.element_axes(element.id, nodes, orientation)?;
+                        let stiffness =
+                            self.frame_local_stiffness(material_id, &section, frame.length_mm);
+                        let dofs = layout.frame_dofs(element.id, nodes)?;
+                        let local_displacement = frame.local12(dofs.map(|dof| displacement[dof]));
+                        let internal = multiply(&stiffness, local_displacement);
+                        // A frame element without a load of its own carries none along it.
+                        let load = frame_loads
+                            .get(&element.id)
+                            .map_or([0.0; 3], |load| frame.local(*load));
+                        // What the nodes put on the element: its stiffness response
+                        // less the share of the load it carries to them.
+                        let equivalent = consistent_load(load, frame.length_mm);
+                        let mut end_forces = internal;
+                        for (value, share) in end_forces.iter_mut().zip(equivalent) {
+                            *value -= share;
+                        }
+                        let von_mises = peak_von_mises(&section, end_forces, load, frame.length_mm);
+                        frame_peak_mm = frame_peak_mm.max(peak_displacement(
+                            material.youngs_modulus_mpa,
+                            &section,
+                            local_displacement,
+                            load,
+                            frame.length_mm,
+                        ));
+                        FeaElementResult {
+                            element_id: element.id,
+                            strain_energy_n_mm: 0.5
+                                * local_displacement
+                                    .iter()
+                                    .zip(internal)
+                                    .map(|(moved, force)| moved * force)
+                                    .sum::<f64>(),
+                            von_mises_stress_mpa: von_mises,
+                            yield_utilization: material
+                                .yield_strength_mpa
+                                .map(|limit| von_mises / limit),
+                        }
                     }
-                }
+                })
             })
-            .collect()
+            .collect::<Result<Vec<_>, FeaError>>()?;
+        Ok((results, frame_peak_mm))
     }
 
     fn characteristic_length(&self) -> f64 {
@@ -817,17 +1514,49 @@ impl FeaModel {
                             self.nodes[nodes[2]].position_mm,
                         );
                 }
+                FeaLoad::NodalMoment { node, moment_n_mm } => definition.moments.push((
+                    self.nodes[node].position_mm.map(f64::to_bits),
+                    moment_n_mm.map(f64::to_bits),
+                )),
+                FeaLoad::FrameDistributed {
+                    element,
+                    load_n_per_mm,
+                } => {
+                    if let Some(FeaElementKind::Frame2 { nodes, .. }) = self
+                        .elements
+                        .iter()
+                        .find(|candidate| candidate.id == element)
+                        .map(|candidate| &candidate.kind)
+                    {
+                        definition
+                            .lines
+                            .entry(load_n_per_mm.map(f64::to_bits))
+                            .or_default()
+                            .add_segment(
+                                self.nodes[nodes[0]].position_mm,
+                                self.nodes[nodes[1]].position_mm,
+                            );
+                    }
+                }
             }
         }
         definition.nodal.sort_unstable();
+        definition.moments.sort_unstable();
         definition
     }
 
     fn constraint_definition(&self) -> ConstraintDefinition {
-        let mut prescribed = vec![[None; 3]; self.nodes.len()];
+        // Axes 0–2 are moves, 3–5 turns; a held turn is kept as a point.
+        let mut prescribed = vec![[None; 6]; self.nodes.len()];
         let mut definition = ConstraintDefinition::new();
         for constraint in &self.constraints {
-            for (axis, value) in constraint.displacement_mm.iter().copied().enumerate() {
+            for (axis, value) in constraint
+                .displacement_mm
+                .iter()
+                .chain(&constraint.rotation_rad)
+                .copied()
+                .enumerate()
+            {
                 if let Some(value) = value {
                     prescribed[constraint.node][axis] = Some(value);
                     definition.entry((axis, value.to_bits())).or_default();
@@ -837,8 +1566,10 @@ impl FeaModel {
 
         let mut covered = BTreeSet::new();
         for element in &self.elements {
-            if let FeaElementKind::LinearTruss2 { nodes, .. } = element.kind {
-                for (axis, left) in prescribed[nodes[0]].iter().copied().enumerate() {
+            if let FeaElementKind::LinearTruss2 { nodes, .. }
+            | FeaElementKind::Frame2 { nodes, .. } = element.kind
+            {
+                for (axis, left) in prescribed[nodes[0]].iter().copied().enumerate().take(3) {
                     if let (Some(left), Some(right)) = (left, prescribed[nodes[1]][axis])
                         && left.to_bits() == right.to_bits()
                     {
@@ -869,7 +1600,7 @@ impl FeaModel {
             if count != 1 {
                 continue;
             }
-            for (axis, first) in prescribed[nodes[0]].iter().copied().enumerate() {
+            for (axis, first) in prescribed[nodes[0]].iter().copied().enumerate().take(3) {
                 if let (Some(first), Some(second), Some(third)) = (
                     first,
                     prescribed[nodes[1]][axis],
@@ -956,6 +1687,31 @@ impl FeaModel {
                     }
                     hasher.update(material_id.to_le_bytes());
                 }
+                FeaElementKind::Frame2 {
+                    nodes,
+                    material_id,
+                    section,
+                    orientation,
+                } => {
+                    hasher.update([3]);
+                    for node in nodes {
+                        hash_index(&mut hasher, node);
+                    }
+                    hasher.update(material_id.to_le_bytes());
+                    hash_f64s(
+                        &mut hasher,
+                        &[
+                            section.area_mm2,
+                            section.second_moment_y_mm4,
+                            section.second_moment_z_mm4,
+                            section.torsion_constant_mm4,
+                            section.extreme_fibre_y_mm,
+                            section.extreme_fibre_z_mm,
+                            section.torsion_modulus_mm3,
+                        ],
+                    );
+                    hash_f64s(&mut hasher, &orientation);
+                }
             }
         }
         for constraint in &self.constraints {
@@ -986,6 +1742,86 @@ impl FeaModel {
                         hasher.update((node as u64).to_le_bytes());
                     }
                     hash_f64s(&mut hasher, &traction_n_per_mm2);
+                }
+                FeaLoad::NodalMoment { node, moment_n_mm } => {
+                    hasher.update([3]);
+                    hash_index(&mut hasher, node);
+                    hash_f64s(&mut hasher, &moment_n_mm);
+                }
+                FeaLoad::FrameDistributed {
+                    element,
+                    load_n_per_mm,
+                } => {
+                    hasher.update([4]);
+                    hasher.update(element.to_le_bytes());
+                    hash_f64s(&mut hasher, &load_n_per_mm);
+                }
+            }
+        }
+        // Held turns come last, and only when there are any, so a model
+        // without frame elements keeps the digest it had before they existed.
+        let turns = self
+            .constraints
+            .iter()
+            .enumerate()
+            .filter(|(_, constraint)| constraint.rotation_rad.iter().any(Option::is_some))
+            .collect::<Vec<_>>();
+        if !turns.is_empty() {
+            hasher.update(b"rotations");
+            for (index, constraint) in turns {
+                hash_index(&mut hasher, index);
+                for value in constraint.rotation_rad {
+                    match value {
+                        Some(value) => {
+                            hasher.update([1]);
+                            hasher.update(value.to_bits().to_le_bytes());
+                        }
+                        None => hasher.update([0]),
+                    }
+                }
+            }
+        }
+        // Densities likewise come last and only when there are any.
+        if self
+            .materials
+            .iter()
+            .any(|material| material.density_kg_per_m3.is_some())
+        {
+            hasher.update(b"densities");
+            for material in &self.materials {
+                match material.density_kg_per_m3 {
+                    Some(value) => {
+                        hasher.update([1]);
+                        hasher.update(value.to_bits().to_le_bytes());
+                    }
+                    None => hasher.update([0]),
+                }
+            }
+        }
+        // Couplings likewise come last and only when there are any.
+        if !self.couplings.is_empty() {
+            hasher.update(b"couplings");
+            for coupling in &self.couplings {
+                for node in coupling.nodes {
+                    hash_index(&mut hasher, node);
+                }
+                match coupling.kind {
+                    FeaCouplingKind::Rigid => hasher.update([1]),
+                    FeaCouplingKind::Spring {
+                        translation_n_per_mm,
+                        rotation_n_mm_per_rad,
+                    } => {
+                        hasher.update([2]);
+                        hash_f64s(&mut hasher, &translation_n_per_mm);
+                        hash_f64s(&mut hasher, &rotation_n_mm_per_rad);
+                    }
+                    FeaCouplingKind::Tie { others, weights } => {
+                        hasher.update([3]);
+                        for node in others {
+                            hash_index(&mut hasher, node);
+                        }
+                        hash_f64s(&mut hasher, &weights);
+                    }
                 }
             }
         }
@@ -1056,19 +1892,23 @@ pub fn solve_convergence_study(
     }) {
         return Err(FeaConvergenceError::ConstraintMismatch);
     }
+    let joints = joint_definition(&levels[0]);
+    if levels
+        .iter()
+        .skip(1)
+        .any(|level| joint_definition(level) != joints)
+    {
+        return Err(FeaConvergenceError::ConstraintMismatch);
+    }
     let solutions = levels
         .iter()
         .map(|level| level.solve(settings).map_err(FeaConvergenceError::Solve))
         .collect::<Result<Vec<_>, _>>()?;
-    let previous = &solutions[solutions.len() - 2];
-    let final_solution = solutions.last().expect("at least two solutions");
-    let final_displacement_relative_change = relative_change(
-        previous.maximum_displacement_mm,
-        final_solution.maximum_displacement_mm,
-    );
-    let final_energy_relative_change = relative_change(
-        previous.total_strain_energy_n_mm,
-        final_solution.total_strain_energy_n_mm,
+    let last = levels.len() - 1;
+    let judgement = FeaConvergenceJudgement::between(
+        (&solutions[last - 1], levels[last - 1].elements.len()),
+        (&solutions[last], levels[last].elements.len()),
+        settings.convergence_relative_tolerance,
     );
     Ok(FeaConvergenceEvidence {
         case_id,
@@ -1082,63 +1922,47 @@ pub fn solve_convergence_study(
                 total_strain_energy_n_mm: solution.total_strain_energy_n_mm,
             })
             .collect(),
-        final_displacement_relative_change,
-        final_energy_relative_change,
+        judgement,
         required_relative_tolerance: settings.convergence_relative_tolerance,
-        converged: final_displacement_relative_change <= settings.convergence_relative_tolerance
-            && final_energy_relative_change <= settings.convergence_relative_tolerance,
         solutions,
     })
 }
 
-fn solve_dense(
-    mut matrix: Vec<Vec<f64>>,
-    mut right_hand_side: Vec<f64>,
-    relative_tolerance: f64,
-) -> Result<Vec<f64>, FeaError> {
-    let size = matrix.len();
-    let scale = matrix
-        .iter()
-        .flat_map(|row| row.iter())
-        .map(|value| value.abs())
-        .fold(0.0, f64::max)
-        .max(1.0);
-    let threshold = scale * relative_tolerance;
-    for column in 0..size {
-        let pivot = (column..size)
-            .max_by(|left, right| {
-                matrix[*left][column]
-                    .abs()
-                    .total_cmp(&matrix[*right][column].abs())
-            })
-            .expect("non-empty pivot range");
-        if matrix[pivot][column].abs() <= threshold {
-            return Err(FeaError::SingularSystem);
-        }
-        matrix.swap(column, pivot);
-        right_hand_side.swap(column, pivot);
-        let pivot_row = matrix[column].clone();
-        let pivot_value = pivot_row[column];
-        let pivot_right_hand_side = right_hand_side[column];
-        for (row, row_right_hand_side) in
-            matrix.iter_mut().zip(&mut right_hand_side).skip(column + 1)
-        {
-            let factor = row[column] / pivot_value;
-            row[column] = 0.0;
-            for (value, pivot_value) in row.iter_mut().zip(&pivot_row).skip(column + 1) {
-                *value -= factor * pivot_value;
-            }
-            *row_right_hand_side -= factor * pivot_right_hand_side;
-        }
-    }
-    let mut solution = vec![0.0; size];
-    for row in (0..size).rev() {
-        let known = ((row + 1)..size)
-            .map(|column| matrix[row][column] * solution[column])
-            .sum::<f64>();
-        solution[row] = (right_hand_side[row] - known) / matrix[row][row];
-    }
-    Ok(solution)
+/// [`Joints::reduce`] with the reduced entries taken from `budget` while the
+/// entries they come from are still held; those are given back after. `Err`
+/// says how much all would need.
+pub(crate) fn reduce_within(
+    joints: &Joints,
+    entries: Vec<(usize, usize, f64)>,
+    forces: &mut [f64],
+    budget: &mut MemoryBudget,
+) -> Result<Vec<(usize, usize, f64)>, usize> {
+    let Some(count) = joints.reduced_len(&entries) else {
+        return Ok(entries);
+    };
+    budget.take(count.saturating_mul(ENTRY_BYTES))?;
+    budget.give(entries.capacity() * ENTRY_BYTES);
+    Ok(joints.reduce(entries, forces))
+}
+
+/// The matrix of `entries`, taken from `budget` while they are still held;
+/// they are given back once it is built.
+pub(crate) fn matrix_within(
+    size: usize,
+    mut entries: Vec<(usize, usize, f64)>,
+    budget: &mut MemoryBudget,
+    settings: FeaSolveSettings,
+) -> Result<SymmetricMatrix, FeaError> {
+    sort_entries(&mut entries);
+    let most = SymmetricMatrix::bytes_for(size, distinct_positions(entries.iter().copied()));
+    budget
+        .take(most)
+        .map_err(|needed| FeaError::too_large(needed, settings))?;
+    let entry_bytes = entries.capacity() * ENTRY_BYTES;
+    let matrix = SymmetricMatrix::from_sorted(size, entries.iter().copied());
+    drop(entries);
+    budget.give((entry_bytes + most).saturating_sub(matrix.bytes()));
+    Ok(matrix)
 }
 
 fn elasticity(material: &FeaMaterial) -> [[f64; 6]; 6] {
@@ -1210,18 +2034,6 @@ fn matrix_vector6x12(matrix: [[f64; 12]; 6], vector: [f64; 12]) -> [f64; 6] {
             .sum();
     }
     result
-}
-
-fn matrix_vector(matrix: &[Vec<f64>], vector: &[f64]) -> Vec<f64> {
-    matrix
-        .iter()
-        .map(|row| {
-            row.iter()
-                .zip(vector)
-                .map(|(left, right)| left * right)
-                .sum()
-        })
-        .collect()
 }
 
 fn vector_sum(vector: &[f64]) -> [f64; 3] {
@@ -1307,14 +2119,19 @@ impl GeometricMoments {
 }
 
 fn same_load_definition(left: &LoadDefinition, right: &LoadDefinition) -> bool {
+    let same_spread = |left: &BTreeMap<[u64; 3], GeometricMoments>,
+                       right: &BTreeMap<[u64; 3], GeometricMoments>| {
+        left.len() == right.len()
+            && left.iter().all(|(load, moments)| {
+                right
+                    .get(load)
+                    .is_some_and(|other| same_geometric_moments(moments, other))
+            })
+    };
     left.nodal == right.nodal
-        && left.surface.len() == right.surface.len()
-        && left.surface.iter().all(|(traction, moments)| {
-            right
-                .surface
-                .get(traction)
-                .is_some_and(|other| same_geometric_moments(moments, other))
-        })
+        && left.moments == right.moments
+        && same_spread(&left.surface, &right.surface)
+        && same_spread(&left.lines, &right.lines)
 }
 
 fn same_constraint_definition(left: &ConstraintDefinition, right: &ConstraintDefinition) -> bool {
@@ -1371,6 +2188,11 @@ fn finite3(value: [f64; 3]) -> bool {
 fn hash_text(hasher: &mut Sha256, value: &str) {
     hasher.update((value.len() as u64).to_le_bytes());
     hasher.update(value.as_bytes());
+}
+
+fn hash_index(hasher: &mut Sha256, index: usize) {
+    // An index past 64 bits cannot occur on a platform the crate builds for.
+    hasher.update(u64::try_from(index).unwrap_or(u64::MAX).to_le_bytes());
 }
 
 fn hash_f64s(hasher: &mut Sha256, values: &[f64]) {

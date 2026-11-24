@@ -300,6 +300,32 @@ fn a_piece_inside_the_trim_leaves_the_factory_edge_to_the_pieces_spanning_the_sh
     }
 }
 
+/// Review 2026-11-03 PG-143 / 2026-11-08 PG-244: a piece the size of a stock sheet
+/// opened the larger size it fits trimmed, and the sheet could not shrink back as the
+/// piece lay inside the trim: two 2 500 x 1 250 panels took two 2 800 x 1 250 sheets
+/// (7.0 m² for 6.25 m², +12 % in the quote). A piece that is a whole sheet takes one.
+#[test]
+fn a_piece_the_size_of_a_stock_sheet_takes_that_sheet_not_a_larger_one() {
+    for sizes in [
+        "[(2500, 1250), (2800, 1250)]",
+        "[(2800, 1250), (2500, 1250)]",
+    ] {
+        let source = format!(
+            "sheet_stock(\"OSB\", {sizes}, kerf = 4, trim = 10)\n\
+             board(\"a\", (2500, 1250, 18), material = \"OSB\")\n\
+             board(\"b\", (2500, 1250, 18), at = (0, 0, 30), material = \"OSB\")\n"
+        );
+        let plans = plans(&source);
+        let plan = &plans[0];
+        assert!(plan.unplaced.is_empty(), "{sizes}: {plan:#?}");
+        assert_eq!(plan.layouts.len(), 2, "{sizes}: {plan:#?}");
+        for layout in &plan.layouts {
+            assert_eq!(layout.stock_mm, [2500.0, 1250.0], "{sizes}: {plan:#?}");
+            assert_cuttable_keeping_factory_edges(layout, 4.0, 10.0);
+        }
+    }
+}
+
 #[test]
 fn many_sheet_pieces_stay_cuttable_and_never_overlap() {
     let mut source = "sheet_stock(\"MDF\", [(2800, 2070)], kerf = 3.2, trim = 8)\n".to_owned();

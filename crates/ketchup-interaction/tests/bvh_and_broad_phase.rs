@@ -92,6 +92,7 @@ fn exact_package(snapshot: &ketchup_model::document::Snapshot) -> ExactBodyPacka
 
 fn mesh_document() -> DocumentStore {
     let mesh = MeshBodySpec {
+        look: None,
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm: vec![
             [0.0, 0.0, 0.0],

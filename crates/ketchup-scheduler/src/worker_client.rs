@@ -4,11 +4,17 @@ use super::*;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
-    RefineInput, RefineOutcome, ReportOutcome, SourceFile, UnderlayInput, UnderlayOutcome,
-    UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply,
-    WorkerRequest, encode_frame, protocol_identity, read_frame,
+    RefineInput, RefineOutcome, ReportOutcome, SkpInput, SkpOutcome, SourceFile,
+    SurfaceControlNetWire, UnderlayInput, UnderlayOutcome, UnderlayWriteInput,
+    UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest,
+    encode_frame, protocol_identity, read_frame,
 };
 use ketchup_rejection::{Reason, dropped};
+use std::sync::{Arc, Mutex, PoisonError};
+
+// The handshake is a new worker's first request: its budget also covers starting the
+// process and loading the OCCT libraries, which on a loaded machine takes seconds.
+pub(crate) const WORKER_START_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct WorkerWriteRequest {
     pub(crate) frame: Vec<u8>,
@@ -37,15 +43,37 @@ impl ExactWorkerClient {
         Self::spawn_guarded(executable)
     }
 
+    /// Like [`Self::spawn`], in `budget` instead of the window's memory budget.
+    pub fn spawn_within(
+        executable: impl AsRef<Path>,
+        budget: &std::sync::Arc<memory_budget::MemoryBudget>,
+    ) -> Result<Self, WorkerError> {
+        let executable = guarded_exact_worker_identity(executable.as_ref())?;
+        Self::spawn_guarded_within(executable, exact_worker_memory_bytes(), budget)
+    }
+
     pub(crate) fn spawn_guarded(executable: GuardedExactWorker) -> Result<Self, WorkerError> {
         Self::spawn_guarded_with(executable, exact_worker_memory_bytes())
     }
 
     /// The worker may commit `memory_limit` bytes; past them it is stopped and the
-    /// request fails with [`WorkerError::MemoryLimit`].
+    /// request fails with [`WorkerError::MemoryLimit`]. What it uses counts in the
+    /// window's memory budget, which may stop it too ([`WorkerError::MemoryBudget`]).
     pub(crate) fn spawn_guarded_with(
         executable: GuardedExactWorker,
         memory_limit: usize,
+    ) -> Result<Self, WorkerError> {
+        Self::spawn_guarded_within(
+            executable,
+            memory_limit,
+            memory_budget::window_memory_budget(),
+        )
+    }
+
+    fn spawn_guarded_within(
+        executable: GuardedExactWorker,
+        memory_limit: usize,
+        budget: &std::sync::Arc<memory_budget::MemoryBudget>,
     ) -> Result<Self, WorkerError> {
         let working_directory = executable
             .executable
@@ -73,6 +101,7 @@ impl ExactWorkerClient {
         command.env("MALLOC_ARENA_MAX", "2");
         let mut child = spawn_limited_worker_command(command, Some(memory_limit))
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+        let budget = memory_budget::track(budget, &*child);
         let stderr_tail = Some(stderr_tail(child.stderr().take()));
         let stdin = child
             .stdin()
@@ -93,6 +122,7 @@ impl ExactWorkerClient {
             response_receiver,
             memory_limit,
             stderr_tail,
+            budget,
             _temp_directory: temp_directory,
         };
         Ok(client)
@@ -102,7 +132,8 @@ impl ExactWorkerClient {
         !self.terminated && matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Handshake: the worker must speak the protocol of this exact build.
+    /// Handshake: the worker must speak the protocol of this exact build. It is the
+    /// first request to a new worker, so its budget includes the worker's start-up.
     pub fn ping(&mut self) -> Result<(), WorkerError> {
         self.ping_with_cancellation(&NEVER_CANCELLED)
     }
@@ -111,11 +142,17 @@ impl ExactWorkerClient {
         &mut self,
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError> {
-        match self.call(
-            &WorkerRequest::Hello,
-            cancelled,
-            DEFAULT_WORKER_REQUEST_TIMEOUT,
-        )? {
+        self.ping_within(cancelled, WORKER_START_UP_TIMEOUT)
+    }
+
+    /// The handshake within `time`: a caller with a deadline of its own gives it only
+    /// what is left of it.
+    pub(crate) fn ping_within(
+        &mut self,
+        cancelled: &AtomicBool,
+        time: Duration,
+    ) -> Result<(), WorkerError> {
+        match self.call(&WorkerRequest::Hello, cancelled, time)? {
             WorkerReply::Hello { protocol } if protocol == protocol_identity() => Ok(()),
             WorkerReply::Hello { protocol } => self.fail_protocol(format!(
                 "worker protocol {protocol} differs from scheduler protocol {}",
@@ -262,6 +299,34 @@ impl ExactWorkerClient {
                 result_fingerprint: exported,
                 sha256: None,
             }) if exported == result_fingerprint => Ok(()),
+            reply => self.unexpected(reply),
+        }
+    }
+
+    pub(crate) fn surface_control_net_with_cancellation(
+        &mut self,
+        graph: &ExactBRepGraph,
+        imported_sources: &[(&str, &Path)],
+        cancelled: &AtomicBool,
+    ) -> Result<SurfaceControlNetWire, WorkerError> {
+        let input = graph_input(graph, imported_sources)?;
+        let budget = input.budget();
+        match self.call(&WorkerRequest::SurfaceControlNet(input), cancelled, budget)? {
+            WorkerReply::ControlNet(net) => {
+                let count = usize::try_from(u64::from(net.u_count) * u64::from(net.v_count));
+                if count.ok() != Some(net.points_mm.len())
+                    || net.weights.len() != net.points_mm.len()
+                    || !(net.match_tolerance_mm.is_finite() && net.match_tolerance_mm > 0.0)
+                {
+                    return self.fail_protocol(format!(
+                        "invalid control net of {} x {} with {} points",
+                        net.u_count,
+                        net.v_count,
+                        net.points_mm.len()
+                    ));
+                }
+                Ok(net)
+            }
             reply => self.unexpected(reply),
         }
     }
@@ -727,6 +792,18 @@ impl ExactWorkerClient {
         }
     }
 
+    pub(crate) fn convert_skp(
+        &mut self,
+        input: SkpInput,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<SkpOutcome, WorkerError> {
+        match self.call(&WorkerRequest::ConvertSkp(input), cancelled, timeout)? {
+            WorkerReply::Skp(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
+    }
+
     pub(crate) fn read_underlay(
         &mut self,
         input: UnderlayInput,
@@ -769,11 +846,34 @@ impl ExactWorkerClient {
 
     /// Has the worker hold one block of `bytes`.
     pub fn allocate_probe(&mut self, bytes: u64) -> Result<(), WorkerError> {
-        self.call_done(
-            &WorkerRequest::Allocate { bytes },
-            &NEVER_CANCELLED,
-            DEFAULT_WORKER_REQUEST_TIMEOUT,
+        self.allocate_probe_holding(bytes, Duration::ZERO, &NEVER_CANCELLED)
+    }
+
+    /// Has the worker hold one block of `bytes` and answer only after `hold`, so it
+    /// holds the block in the middle of a request.
+    pub fn allocate_probe_holding(
+        &mut self,
+        bytes: u64,
+        hold: Duration,
+        cancelled: &AtomicBool,
+    ) -> Result<(), WorkerError> {
+        self.allocate_probe_within(
+            bytes,
+            hold,
+            cancelled,
+            DEFAULT_WORKER_REQUEST_TIMEOUT.saturating_add(hold),
         )
+    }
+
+    /// [`Self::allocate_probe_holding`] that waits for the answer only `time`.
+    pub fn allocate_probe_within(
+        &mut self,
+        bytes: u64,
+        hold: Duration,
+        cancelled: &AtomicBool,
+        time: Duration,
+    ) -> Result<(), WorkerError> {
+        self.call_done(&WorkerRequest::Allocate { bytes, hold }, cancelled, time)
     }
 
     pub fn begin_killable_job(&mut self, duration: Duration) -> Result<(), WorkerError> {
@@ -861,6 +961,7 @@ impl ExactWorkerClient {
     ) -> Result<WorkerReply, WorkerError> {
         // Writing and receiving share one budget; cancellation still polls at 10 ms.
         let deadline = Instant::now() + timeout;
+        let _guard = self.budget.as_ref().map(memory_budget::Registration::busy);
         self.write_request_until_with_cancellation(request, deadline, cancelled, timeout)?;
         match self.next_response_until_with_cancellation(deadline, cancelled, timeout)? {
             WorkerResponse::Reply(reply) => Ok(*reply),
@@ -904,10 +1005,11 @@ impl ExactWorkerClient {
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         self.ensure_not_cancelled(cancelled)?;
-        // A DWG file, a program or a model of any size goes to the program worker, which
-        // reads any frame: the job's memory limit bounds what it holds.
+        // A DWG or SketchUp file, a program or a model of any size goes to the program
+        // worker, which reads any frame: the job's memory limit bounds what it holds.
         let max_bytes = match request {
             WorkerRequest::ConvertDwg(_)
+            | WorkerRequest::ConvertSkp(_)
             | WorkerRequest::EvaluateProgram(_)
             | WorkerRequest::ReportProgram(_)
             | WorkerRequest::ReportBeforeExact(_)
@@ -1017,24 +1119,33 @@ impl ExactWorkerClient {
     }
 
     /// Stops the worker; one that died of a failed allocation, or that the memory
-    /// watch killed (macOS), fails with [`WorkerError::MemoryLimit`] instead of `error`.
+    /// watch killed (macOS), fails with [`WorkerError::MemoryLimit`] instead of `error`,
+    /// and one the window's memory budget stopped with [`WorkerError::MemoryBudget`].
+    /// A timed-out worker is asked too: a failed allocation calls abort(), which on
+    /// Windows holds the process for seconds while it files an error report, so the
+    /// request's time can run out before the worker exits (R1122ac, review §4 P3).
     fn fail<T>(&mut self, error: WorkerError) -> Result<T, WorkerError> {
         self.terminate_worker();
-        if matches!(
-            error,
-            WorkerError::Cancelled | WorkerError::RequestTimedOut(_)
-        ) {
+        if matches!(error, WorkerError::Cancelled) {
             return Err(error);
+        }
+        if let Some(stop) = self
+            .budget
+            .as_ref()
+            .and_then(memory_budget::Registration::stopped)
+        {
+            return Err(WorkerError::MemoryBudget(stop));
         }
         if process_wrap::std::memory_limit_exceeded(&*self.child) {
             return Err(WorkerError::MemoryLimit {
                 bytes: self.memory_limit,
             });
         }
+        let wait = stderr_wait(&error);
         let tail = self
             .stderr_tail
             .take()
-            .and_then(|tail| tail.recv_timeout(STDERR_WAIT).ok())
+            .map(|tail| tail.within(wait))
             .unwrap_or_default();
         if String::from_utf8_lossy(&tail).contains("memory allocation of") {
             return Err(WorkerError::MemoryLimit {
@@ -1057,29 +1168,68 @@ impl ExactWorkerClient {
 /// How long a dead worker's standard error may take to arrive.
 const STDERR_WAIT: Duration = Duration::from_secs(3);
 
+/// How long a worker that failed with `error` is waited for to end its standard
+/// error. A timed-out worker is not: Windows ends a killed process seconds after
+/// TerminateJobObject, and a check past its deadline waited here each time
+/// (nightly 2026-11-23). A failed allocation names itself before abort() holds
+/// the worker, so its line has been read already.
+pub(crate) fn stderr_wait(error: &WorkerError) -> Duration {
+    if matches!(error, WorkerError::RequestTimedOut(_)) {
+        Duration::ZERO
+    } else {
+        STDERR_WAIT
+    }
+}
+
 /// Bytes of standard error kept: enough for the allocation failure message.
 const STDERR_TAIL_BYTES: usize = 4096;
 
-/// Collects the last bytes of the worker's standard error; they arrive when it exits.
-fn stderr_tail(stderr: Option<std::process::ChildStderr>) -> Receiver<Vec<u8>> {
-    let (sender, receiver) = mpsc::sync_channel(1);
+/// The last bytes of a worker's standard error: those read so far, and the end of
+/// the stream, which comes when the worker has exited.
+pub(crate) struct StderrTail {
+    read: Arc<Mutex<Vec<u8>>>,
+    ended: Receiver<Vec<u8>>,
+}
+
+impl StderrTail {
+    /// The bytes once the stream ends, or those read by then after `wait`.
+    fn within(self, wait: Duration) -> Vec<u8> {
+        match self.ended.recv_timeout(wait) {
+            Ok(tail) => tail,
+            // Not ended yet, or its reader is gone: what it read is the tail.
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                read_so_far(&self.read)
+            }
+        }
+    }
+}
+
+fn read_so_far(read: &Mutex<Vec<u8>>) -> Vec<u8> {
+    read.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Collects the last bytes of the worker's standard error as they arrive.
+pub(crate) fn stderr_tail(stderr: Option<impl std::io::Read + Send + 'static>) -> StderrTail {
+    let (sender, ended) = mpsc::sync_channel(1);
+    let read = Arc::new(Mutex::new(Vec::new()));
     if let Some(mut stderr) = stderr {
+        let tail = Arc::clone(&read);
         std::thread::spawn(move || {
-            let mut tail = Vec::new();
             let mut buffer = [0_u8; 1024];
-            while let Ok(read) = std::io::Read::read(&mut stderr, &mut buffer) {
+            while let Ok(read) = stderr.read(&mut buffer) {
                 if read == 0 {
                     break;
                 }
+                let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
                 tail.extend_from_slice(&buffer[..read]);
                 let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
                 tail.drain(..excess);
             }
             // The client is gone and no longer reports the worker's end.
-            dropped(sender.send(tail), Reason::NobodyWaiting);
+            dropped(sender.send(read_so_far(&tail)), Reason::NobodyWaiting);
         });
     }
-    receiver
+    StderrTail { read, ended }
 }
 
 pub(crate) fn unexpected_reply(reply: &WorkerReply) -> WorkerError {

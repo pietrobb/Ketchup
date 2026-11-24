@@ -6,9 +6,10 @@
 //! its cause to the log: standard error, or the file a window gives
 //! [`log_to_file`].
 
+use ketchup_user_files::{UserFolder, append_private, create_private_folder};
 use std::any::Any;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,7 +87,7 @@ pub fn log(line: fmt::Arguments<'_>) {
             // 2026-11-06 r23 P3: it went on into `.old`).
             let len = log.file.metadata().map_or(0, |metadata| metadata.len());
             if len > log.full_at {
-                match LogFile::open(&log.path) {
+                match LogFile::open(&log.path, log.folder.as_ref()) {
                     Ok(begun) => *log = begun,
                     // Said in the full log, which is tried again a megabyte later.
                     Err(error) => {
@@ -133,114 +134,100 @@ pub fn lost_lines() -> u64 {
 /// The folder or the file cannot be made or opened; the log stays where it
 /// was.
 pub fn log_to_file(file: &Path) -> io::Result<()> {
-    if let Some(folder) = file.parent() {
-        create_private_folder(folder)?;
-    }
-    let opened = LogFile::open(file)?;
+    log_to(file, None)
+}
+
+/// [`log_to_file`] of `file` in the user's `folder`: under `sudo` the folder is
+/// made and the file opened and moved aside as that user (review 2026-11-13
+/// R1113-SEC-601: root did, through the user's links, appending to and closing
+/// a file of root's).
+///
+/// # Errors
+///
+/// As [`log_to_file`], or the folder's user cannot be the one writing.
+pub fn log_to_user_file(folder: &UserFolder, file: &str) -> io::Result<()> {
+    log_to(&folder.path().join(file), Some(folder))
+}
+
+fn log_to(file: &Path, folder: Option<&UserFolder>) -> io::Result<()> {
+    let opened = as_owner_of(folder, || {
+        // The log names the documents a window opened: only its user reads it
+        // (review 2026-11-06 P3: it was made readable to everyone).
+        if let Some(folder) = file.parent() {
+            create_private_folder(folder)?;
+        }
+        Ok(())
+    })
+    .and_then(|()| LogFile::open(file, folder))?;
     *FILE.lock().unwrap_or_else(PoisonError::into_inner) = Some(opened);
     Ok(())
 }
 
-/// The log names the documents a window opened: only its user reads it (review
-/// 2026-11-06 P3: it was made readable to everyone).
-#[cfg(unix)]
-fn create_private_folder(folder: &Path) -> io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(folder)?;
-    // A folder an earlier version made readable to everyone is closed too.
-    std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))
+/// `work` as the user of `folder`, or as this process is without one.
+fn as_owner_of<T>(
+    folder: Option<&UserFolder>,
+    work: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    match folder {
+        Some(folder) => folder.as_owner(work),
+        None => work(),
+    }
 }
 
-#[cfg(not(unix))]
-fn create_private_folder(folder: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(folder)
-}
-
-/// The open log file, where it is and the length past which it is moved aside.
+/// The open log file, where it is, the length past which it is moved aside and
+/// the user's folder it is in.
 struct LogFile {
     file: File,
     path: PathBuf,
     full_at: u64,
+    folder: Option<UserFolder>,
 }
 
 impl LogFile {
     /// Opens `path` to append to, moving it to `<path>.old` first when it is larger
-    /// than a megabyte; only its user may read it.
-    fn open(path: &Path) -> io::Result<Self> {
-        if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > LOG_LIMIT) {
-            let mut old = path.as_os_str().to_owned();
-            old.push(".old");
-            match std::fs::rename(path, old) {
-                // Another window moved it aside first (review 2026-11-06 r23 P3:
-                // this window was left without a log).
-                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-                _ => {}
+    /// than a megabyte; only its user may read it, and no link in its place is
+    /// followed.
+    fn open(path: &Path, folder: Option<&UserFolder>) -> io::Result<Self> {
+        let file = as_owner_of(folder, || {
+            if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.len() > LOG_LIMIT) {
+                let mut old = path.as_os_str().to_owned();
+                old.push(".old");
+                match std::fs::rename(path, old) {
+                    // Another window moved it aside first (review 2026-11-06 r23 P3:
+                    // this window was left without a log).
+                    Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                    _ => {}
+                }
             }
-        }
+            append_private(path)
+        })?;
         Ok(Self {
-            file: open_private(path)?,
+            file,
             path: path.to_owned(),
             full_at: LOG_LIMIT,
+            folder: folder.cloned(),
         })
     }
-}
-
-#[cfg(unix)]
-fn open_private(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)?;
-    // A log an earlier version made readable to everyone is closed too.
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    Ok(file)
-}
-
-#[cfg(not(unix))]
-fn open_private(path: &Path) -> io::Result<File> {
-    OpenOptions::new().create(true).append(true).open(path)
-}
-
-/// Where a window keeps its log: `%LOCALAPPDATA%\<folder>\<file>` on
-/// Windows, `~/Library/Logs/<folder>/<file>` on macOS and
-/// `$XDG_STATE_HOME/<folder>/<file>` or `~/.local/state/<folder>/<file>`
-/// elsewhere; none when the platform names no such folder.
-pub fn user_log_file(folder: &str, file: &str) -> Option<PathBuf> {
-    let var = |name| std::env::var_os(name).map(PathBuf::from);
-    let base = if cfg!(windows) {
-        var("LOCALAPPDATA")
-    } else if cfg!(target_os = "macos") {
-        var("HOME").map(|home| home.join("Library").join("Logs"))
-    } else {
-        var("XDG_STATE_HOME")
-            .filter(|base| base.is_absolute())
-            .or_else(|| var("HOME").map(|home| home.join(".local").join("state")))
-    };
-    base.filter(|base| base.is_absolute())
-        .map(|base| base.join(folder).join(file))
 }
 
 const LOG_LIMIT: u64 = 1 << 20;
 static FILE: Mutex<Option<LogFile>> = Mutex::new(None);
 static LOST: AtomicU64 = AtomicU64::new(0);
 
-/// A window built for release has no console to read: its log goes to
-/// [`user_log_file`] of `folder`, or stays on standard error, which says why.
+/// A window built for release has no console to read: its log goes to `file` in
+/// the user's log folder `folder` (`%LOCALAPPDATA%\<folder>` on Windows,
+/// `~/Library/Logs/<folder>` on macOS and `$XDG_STATE_HOME/<folder>` or
+/// `~/.local/state/<folder>` elsewhere), or stays on standard error, which says why.
 pub fn log_window_to(folder: &str, file: &str) {
     if cfg!(debug_assertions) {
         return;
     }
-    if let Some(path) = user_log_file(folder, file)
-        && let Err(error) = log_to_file(&path)
+    if let Some(folder) = UserFolder::logs(folder)
+        && let Err(error) = log_to_user_file(&folder, file)
     {
         log(format_args!(
             "the log {} could not be opened: {error}",
-            path.display()
+            folder.path().join(file).display()
         ));
     }
 }

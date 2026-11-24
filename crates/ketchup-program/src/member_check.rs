@@ -7,14 +7,14 @@
 //! as `not_verified`, never as passing.
 
 use crate::continuous_span;
-use crate::loads::{LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
+use crate::loads::{Brace, LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{
     Part, ProgramMirror, ProgramModel, ProgramOperation, ProgramPartBody, ProgramProfileSegment,
 };
 use ketchup_geometry::linalg::{cross, cross2, dot, length, normalize, scale, sub};
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TimberClass {
@@ -177,6 +177,9 @@ pub struct MemberCheck {
     pub role: crate::wire_names::Name,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strength_class: Option<String>,
+    /// The class is glulam, whose k_h follows EN 1995-1-1 3.3.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub glulam: bool,
     /// Width and depth (bending) or the two sides (column).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section_mm: Option<[f64; 2]>,
@@ -190,22 +193,59 @@ pub struct MemberCheck {
     #[serde(deserialize_with = "crate::wire_names::name")]
     pub status: crate::wire_names::Name,
     pub missing: Vec<String>,
+    /// What the parts bracing each of its edges must take, top first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bracing: Vec<BracingDemand>,
+    /// The braces the check counted as holding an edge: of the parts that
+    /// brace it, those of a timber strength class whose path to the ground
+    /// holds as stiffly and up to the force [`Self::bracing`] asks (review
+    /// 2026-11-19 og PG-802: the calculation listed braces the check dropped).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_by: Vec<crate::loads::Brace>,
+}
+
+/// What each brace of a beam's compressed edge must give (EN 1995-1-1
+/// 9.2.5.2, review 2026-11-08 PG-242). The stiffness and buckling of each
+/// brace's path to the ground are held against it ([`weak_braces`]); the
+/// braces' strength and their fasteners' are not.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct BracingDemand {
+    /// `top` or `bottom`.
+    pub edge: String,
+    /// The parts bracing that edge.
+    pub by: Vec<String>,
+    /// N_d = (1 - kcrit) M_d / h (9.2.5.2(4)), kcrit of the beam without its braces, N.
+    pub axial_n: f64,
+    /// F_d = N_d / k_f,1 (60, solid timber) or k_f,2 (80, glulam) at each brace (9.35, 9.36), N.
+    pub force_n: f64,
+    /// C = k_s N_d / a with k_s = 4 at most and a the longest free stretch
+    /// (9.34), N/mm; none when the edge is held all along.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stiffness_n_mm: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct DesignReport {
     #[serde(deserialize_with = "basis")]
-    pub basis: Vec<&'static str>,
+    pub basis: Vec<String>,
     pub members: Vec<MemberCheck>,
+    /// The site of the basis, for the calculation to write in its own
+    /// language (review 2026-11-10 og PG-406).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<crate::site::Site>,
 }
 
-/// The basis comes back from the program worker as [`BASIS`] or empty.
-fn basis<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Vec<&'static str>, D::Error> {
+/// The basis comes back from the program worker as [`BASIS`], with at most
+/// the line of the site after it, or empty.
+fn basis<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Vec<String>, D::Error> {
     let basis = Vec::<String>::deserialize(reader)?;
-    if basis.is_empty() {
-        Ok(Vec::new())
-    } else if basis.iter().map(String::as_str).eq(BASIS) {
-        Ok(BASIS.to_vec())
+    let (fixed, rest) = basis.split_at(basis.len().min(BASIS.len()));
+    if basis.is_empty()
+        || (fixed.iter().map(String::as_str).eq(BASIS)
+            && rest.len() <= 1
+            && rest.iter().all(|line| line.starts_with("site: ")))
+    {
+        Ok(basis)
     } else {
         Err(serde::de::Error::custom(
             "the design basis is not this build's",
@@ -291,9 +331,9 @@ pub const NOT_CHECKED: [&str; 3] = [
 pub const BASIS: [&str; 9] = [
     "scope: vertical (gravity) loads only, permanent, imposed, roof and snow; wind, horizontal stability (bracing, racking) and bending combined with axial force (EN 1995-1-1 6.2.3, 6.2.4, 6.3.2 (6.23, 6.24)) are not checked",
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
-    "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
+    "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow 0.5/0, on a site() above 1000 m 0.7/0.2",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
-    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified",
+    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified; a brace holds only when its material has a timber strength class, and bracing gives what the braces of the compressed edge must take (9.2.5.2: N_d = (1 - kcrit) M_d / h with kcrit of the member unbraced, F_d = N_d / k_f,1 = 60 or k_f,2 = 80 for glulam, C = k_s N_d / a with k_s = 4); a brace holds only where its path to the ground holds the member at least that stiffly and buckles under no less than F_d (9.2.5.3): each part of the path a beam bending, twisting and stretching between where the path enters and leaves it (E_0,mean, of softwood C24 without a strength class), buckling at k_c f_c,0,k A (6.3.2, beta_c 0.2 also for glulam) at the relative slenderness of Euler's load at E_0,05 over the length the path has run under the force along each part's axis (a part only bent sideways does not buckle), each joint slipping and turning on its fasteners (K_ser of a 6 mm fastener, 2 245 N/mm; one fastener a hinge; two where a joint names none and its contact is three times as long as the thinner part is thick), turning against their slip only about the normal of its contact, by their distances across it, and turning freely under a moment about an axis lying in the contact, which would pull them out of it (table 7.1 gives no slip for that), two grounded parts touching rigid where one pushes the other and holding no pull unless a joint() fastens them, the grounded part on the floor fixed there; each anchor taken under the force its brace puts on it: a brace fixed at both ends passes on the force across the member at the member, its length a lever turning the anchor, one turning about a joint only the force along its axis; a strut turning about its joints carries its force along a line through their fasteners (the one most across the force where they leave it open), and the path's line is taken through each part without the moment of its distance from the part's centre; of several paths to the ground only the stiffest is taken; a diaphragm() is a rigid sheet held by the springs of its fasteners at its anchors; the strength of the braces and their fasteners is not checked, nor a bracing of several members: braces of one member whose paths share an anchorage are each given the whole stiffness and buckling force of that path",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
@@ -306,7 +346,7 @@ const KCR: f64 = 0.67;
 /// A bearing longer than this supports the member along it instead of at a point.
 const BED_MM: f64 = 400.0;
 /// A member closer to vertical than this (cosine of its slope) is a column.
-const COLUMN_COS: f64 = 0.44;
+pub(crate) const COLUMN_COS: f64 = 0.44;
 const STEPS: usize = 64;
 
 /// Duration class, psi0 and psi2 of each load kind.
@@ -345,6 +385,7 @@ fn label(parts: &[(f64, &str)]) -> String {
 fn combinations(
     present: &[&'static str],
     kdef: f64,
+    snow_psi: (f64, f64),
 ) -> (Vec<Combination>, Vec<(Combination, Loads)>) {
     let mut uls = vec![Combination {
         label: label(&[(GAMMA_G, "permanent")]),
@@ -373,7 +414,10 @@ fn combinations(
             let mut char_parts = vec![(1.0, "permanent")];
             let mut fin = Loads::from([("permanent".to_owned(), 1.0 + kdef)]);
             for kind in &set {
-                let (_, psi0, psi2) = action(kind);
+                let (psi0, psi2) = match action(kind) {
+                    _ if *kind == "snow" => snow_psi,
+                    (_, psi0, psi2) => (psi0, psi2),
+                };
                 if kind == lead {
                     parts.push((GAMMA_Q, kind));
                     char_parts.push((1.0, kind));
@@ -413,13 +457,13 @@ pub(crate) const GAMMA_M_CONNECTION: f64 = 1.3;
 
 /// `loads` in every ultimate combination (6.10): design value, load-duration
 /// class and label.
-pub(crate) fn ultimate(loads: &Loads) -> Vec<(f64, usize, String)> {
+pub(crate) fn ultimate(loads: &Loads, snow_psi: (f64, f64)) -> Vec<(f64, usize, String)> {
     let present: Vec<&'static str> = LOAD_KINDS[1..]
         .iter()
         .copied()
         .filter(|kind| loads.get(*kind).is_some_and(|v| *v != 0.0))
         .collect();
-    combinations(&present, 0.0)
+    combinations(&present, 0.0, snow_psi)
         .0
         .into_iter()
         .map(|c| (factor(&c.factors, loads), c.duration, c.label))
@@ -1086,9 +1130,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     let segments = &reflected_profile(segments, &mirrors(&part.operations));
     let size = extents(part);
     let world = axes(part);
-    let long = (0..3)
-        .max_by(|a, b| size[*a].total_cmp(&size[*b]))
-        .unwrap_or(0);
+    let long = part.load_axis();
     if long == 2 {
         // The profile is the cross-section; b and h along its more vertical local axis.
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
@@ -1138,11 +1180,20 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             underside_at: None,
         });
     }
-    // The profile is a side or plan view: the grain runs along its longest edge.
+    // The profile is a side or plan view: the grain runs along its longest
+    // edge, or, when its length_axis names one, along the edge reaching
+    // farthest along that axis (PG-243: a stud's piece 29 mm high under a
+    // pocket had its longest edge across its grain). The named axis chooses
+    // only which edge: the grain taken along the axis itself made a rafter
+    // 80 x 400 at 30 degrees 80 x 461.9, its plumb cut its depth (PG-304).
+    let reach = |a: &[f64; 2]| match part.named_length_axis() {
+        Some(_) => a[long].abs(),
+        None => a[0].hypot(a[1]),
+    };
     let edge = segments
         .iter()
         .map(|s| [s.end_mm[0] - s.start_mm[0], s.end_mm[1] - s.start_mm[1]])
-        .max_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
+        .max_by(|a, b| reach(a).total_cmp(&reach(b)))
         .unwrap_or([1.0, 0.0]);
     let norm = edge[0].hypot(edge[1]);
     let d = [edge[0] / norm, edge[1] / norm];
@@ -1635,7 +1686,7 @@ fn beam_checks(
     design: &Design,
     uls: &[Combination],
     sls: &[(Combination, Loads)],
-) -> (Vec<Check>, bool, Vec<String>) {
+) -> (Vec<Check>, bool, Vec<String>, Vec<BracingDemand>) {
     let class = design.class;
     let lever = horizontal(load.axis);
     let cos_t = horizontal(shape.grain);
@@ -1814,7 +1865,8 @@ fn beam_checks(
         lateral_buckling(load, shape, design, uls, &zones, &segments, &kinds);
     checks.extend(buckling);
     unchecked.extend(not_verified);
-    (checks, spans_checked, unchecked)
+    let bracing = bracing_demand(load, shape, design, uls, &zones, &segments, &kinds);
+    (checks, spans_checked, unchecked, bracing)
 }
 
 /// kh of the member's depth (EC5 3.2(3)), not of a notched section's.
@@ -1839,13 +1891,18 @@ fn kcrit(lambda_rel: f64) -> f64 {
 
 /// Where nothing holds a member's top edge (or its bottom) sideways: between
 /// its bearings and the parts bracing that edge (review 2026-11-02 PG-120).
-fn free_stretches(load: &MemberLoad, zones: &[Zone], top: bool) -> Vec<(f64, f64)> {
+fn free_stretches(
+    load: &MemberLoad,
+    braces: &[Brace],
+    zones: &[Zone],
+    top: bool,
+) -> Vec<(f64, f64)> {
     let edge = if top { "top" } else { "bottom" };
     let mut held: Vec<(f64, f64)> = zones
         .iter()
         .map(|zone| (zone.lo, zone.hi))
         .chain(
-            load.braced_by
+            braces
                 .iter()
                 .filter(|brace| brace.edge == edge)
                 .map(|brace| (brace.from_mm, brace.to_mm)),
@@ -1902,7 +1959,7 @@ fn lateral_buckling(
     let kh = size_factor(class, h);
     let mut worst: Option<Buckling> = None;
     for top in [true, false] {
-        for (lo, hi) in free_stretches(load, zones, top) {
+        for (lo, hi) in free_stretches(load, &load.braced_by, zones, top) {
             let length = (hi - lo) * shape.arc;
             if length <= 1.0 {
                 continue;
@@ -1994,6 +2051,134 @@ fn lateral_buckling(
         worst.utilization
     );
     (None, Some(reason))
+}
+
+/// What the braces of the compressed edge must give (EN 1995-1-1 9.2.5.2,
+/// review 2026-11-08 PG-242): over each stretch between the bearings, the
+/// compression N_d = (1 - kcrit) M_d / h of the edge as if nothing braced it
+/// (9.2.5.2(4)), the force N_d / k_f at a brace and the stiffness k_s N_d / a
+/// it needs, k_s = 2 (1 + cos(pi / m)) taken at its bound 4, for each edge
+/// something braces where it is compressed.
+fn bracing_demand(
+    load: &MemberLoad,
+    shape: &Shape,
+    design: &Design,
+    uls: &[Combination],
+    zones: &[Zone],
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    kinds: &[usize],
+) -> Vec<BracingDemand> {
+    const K_S: f64 = 4.0;
+    let class = design.class;
+    let h = shape.h;
+    let b = shape.b.min(shape.area / h);
+    let mut demands = Vec::new();
+    for top in [true, false] {
+        let edge = if top { "top" } else { "bottom" };
+        let mut by: Vec<String> = load
+            .braced_by
+            .iter()
+            .filter(|brace| brace.edge == edge)
+            .map(|brace| brace.part.clone())
+            .collect();
+        by.sort();
+        by.dedup();
+        if by.is_empty() {
+            continue;
+        }
+        let mut axial = 0.0_f64;
+        for (lo, hi) in free_stretches(load, &[], zones, top) {
+            let length = (hi - lo) * shape.arc;
+            let lef = if top { length + 2.0 * h } else { length };
+            if lef <= 1.0 {
+                continue;
+            }
+            let sigma_crit = 0.78 * b * b * class.e0_05 / (h * lef);
+            let k = kcrit((class.fm_k / sigma_crit).sqrt());
+            let mut moment = 0.0_f64;
+            for (seg, sections) in segments {
+                for (j, x) in seg.xs.iter().enumerate() {
+                    if sections[j].is_none() || *x < lo || *x > hi {
+                        continue;
+                    }
+                    let components: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
+                    for combination in uls {
+                        let (sagging, hogging) = extremes(
+                            &combination.factors,
+                            kinds,
+                            &components,
+                            Some(GAMMA_G_FAVOURABLE),
+                        );
+                        moment = moment.max(if top { sagging } else { -hogging });
+                    }
+                }
+            }
+            axial = axial.max((1.0 - k) * moment / h);
+        }
+        if axial <= 0.0 {
+            continue;
+        }
+        let longest = free_stretches(load, &load.braced_by, zones, top)
+            .into_iter()
+            .map(|(lo, hi)| (hi - lo) * shape.arc)
+            .fold(0.0, f64::max);
+        let k_f = if class.glulam { 80.0 } else { 60.0 };
+        demands.push(BracingDemand {
+            edge: edge.to_owned(),
+            by,
+            axial_n: round3(axial),
+            force_n: round3(axial / k_f),
+            stiffness_n_mm: (longest > 1.0).then(|| round3(K_S * axial / longest)),
+        });
+    }
+    demands
+}
+
+/// The braces of `braces` whose path to the ground holds less stiffly, or
+/// buckles under less force, than `demands` ask of a brace of their edge
+/// (EN 1995-1-1 9.2.5.3: C = k_s N_d / a, F_d = N_d / k_f), with why.
+fn weak_braces<'b>(
+    braces: &'b [crate::loads::Brace],
+    demands: &[BracingDemand],
+) -> Vec<(&'b crate::loads::Brace, String)> {
+    braces
+        .iter()
+        .filter_map(|brace| {
+            let held = brace.anchorage.as_ref()?;
+            let demand = demands.iter().find(|demand| demand.edge == brace.edge)?;
+            let flexible = demand
+                .stiffness_n_mm
+                .filter(|needed| held.stiffness_n_mm < *needed);
+            let buckles = held.capacity_n.filter(|capacity| *capacity < demand.force_n);
+            if flexible.is_none() && buckles.is_none() {
+                return None;
+            }
+            let mut short = Vec::new();
+            if let Some(needed) = flexible {
+                short.push(format!(
+                    "C = {} N/mm against k_s N_d / a = {needed} N/mm",
+                    held.stiffness_n_mm
+                ));
+            }
+            if let Some(capacity) = buckles {
+                short.push(format!(
+                    "{} buckles at {capacity} N against F_d = {} N",
+                    held.buckling_in.as_deref().unwrap_or(&held.through),
+                    demand.force_n
+                ));
+            }
+            Some((
+                brace,
+                format!(
+                    "{} holds its {} edge through {}, too flexible or too slender to hold it sideways ({}; EN 1995-1-1 9.2.5.3), so it holds nothing",
+                    brace.part,
+                    brace.edge,
+                    held.through,
+                    short.join(", ")
+                ),
+            ))
+        })
+        .collect()
 }
 
 /// Shear at notched bearings (6.5.2) and compression perpendicular to the
@@ -2394,6 +2579,101 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
     best.0.expect("at least the permanent combination")
 }
 
+/// How many times shorter than the part's longest side its named length may
+/// be before the name is doubted: a stud's 29 mm piece under a 140 mm pocket is
+/// named rightly (PG-243), a 5.9 m beam named along its 400 mm height is not.
+const NAMED_LENGTH_SHORTER: f64 = 10.0;
+
+/// Why the `length_axis` of `part` is not trusted, if it is not: the axis it
+/// names is far shorter than the part's longest side (review 2026-11-09
+/// PG-305: a 5.9 m beam named along its height became a 400 mm column and
+/// passed, along its width an 80 mm cantilever).
+fn short_length_axis(part: &Part) -> Option<String> {
+    let named = part.named_length_axis()?;
+    let size = extents(part);
+    let longest = size.into_iter().fold(0.0, f64::max);
+    (size[named] * NAMED_LENGTH_SHORTER < longest).then(|| {
+        format!(
+            "its {} names an axis {} mm long, far shorter than its longest side of {} mm",
+            crate::model::LENGTH_AXIS,
+            size[named].round(),
+            longest.round()
+        )
+    })
+}
+
+/// Why the `length_axis` of `part` is not trusted though it is not far shorter
+/// than its longest side: the places it bears on lie farther apart across the
+/// axis it names than the part is long along it, so it spans another way
+/// (review 2026-11-10 R1110-PG-402: a 3 900 x 80 x 400 beam named along its
+/// height, 9.75 times shorter, became a 400 mm column on two posts 3.8 m apart
+/// and passed at 0.011, where it fails in bending at 1.444). Across its
+/// `grain` where the section found one along the named axis: a sloping top
+/// plate named along its run bears along its slope, not across it.
+fn bearings_across_length_axis(
+    part: &Part,
+    grain: Option<[f64; 3]>,
+    load: &MemberLoad,
+    parts: &BTreeMap<&str, &Part>,
+) -> Option<String> {
+    let named = part.named_length_axis()?;
+    let axis = normalize(grain.unwrap_or(axes(part)[named]))?;
+    let (low, high) = part.world_bounds();
+    // Where each bearing meets the part: the middle of each face they share,
+    // as one support touching it at both ends (R1112-PG-502: a U-shaped one
+    // bore at the middle of its box); its bounds clipped to the part's where
+    // they share none.
+    let mut faces = crate::contact::ContactFaces::default();
+    let places: Vec<[f64; 3]> = load
+        .reactions
+        .iter()
+        .filter_map(|reaction| parts.get(reaction.part.as_str()))
+        .flat_map(|support| {
+            let touching: Vec<[f64; 3]> = faces
+                .contacts(part, support)
+                .iter()
+                .filter_map(|contact| crate::loads::middle(&contact.points_mm))
+                .collect();
+            if !touching.is_empty() {
+                return touching;
+            }
+            let (a, b) = support.world_bounds();
+            vec![std::array::from_fn(|i| {
+                (a[i].max(low[i]) + b[i].min(high[i])) / 2.0
+            })]
+        })
+        .collect();
+    let across = |p: [f64; 3]| -> [f64; 3] { sub(p, scale(axis, dot(p, axis))) };
+    let apart = places
+        .iter()
+        .flat_map(|a| {
+            places
+                .iter()
+                .map(move |b| length(sub(across(*a), across(*b))))
+        })
+        .fold(0.0, f64::max);
+    let long = extents(part)[named];
+    (apart > long).then(|| {
+        format!(
+            "its {} names an axis {} mm long, but it bears on places {} mm apart across it, so it spans another way",
+            crate::model::LENGTH_AXIS,
+            long.round(),
+            apart.round()
+        )
+    })
+}
+
+/// `items` each once, in the order they first come (review 2026-11-09 PG-310:
+/// `dedup` on an unsorted list kept repeats apart, and a member's not-verified
+/// reasons were listed again as often as they were found).
+fn distinct(items: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()))
+        .collect()
+}
+
 /// Every load-path member checked as a timber beam or column.
 #[must_use]
 pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
@@ -2407,12 +2687,17 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
     let mut beams: BTreeMap<String, (TimberClass, f64)> = BTreeMap::new();
     let mut pending_bearings: Vec<(String, f64, Loads, String)> = Vec::new();
     let parts = model.parts_by_name();
+    let snow_psi = crate::site::Site::snow_psi(model.site.as_ref());
     for load in &loads.members {
         let part = parts.get(load.part.as_str()).copied();
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
         let class = model.strength_classes.get(&material);
-        let mut missing = load.missing.clone();
         let shape = part.map_or_else(|| Err("the part is not found"), |p| shape(p, load.axis));
+        let grain = shape.as_ref().ok().map(|s| s.grain);
+        let mut missing = load.missing.clone();
+        missing.extend(part.and_then(|p| {
+            short_length_axis(p).or_else(|| bearings_across_length_axis(p, grain, load, &parts))
+        }));
         let role = match &shape {
             Ok(s) if horizontal(s.grain) < COLUMN_COS => "column",
             _ => "beam",
@@ -2421,12 +2706,15 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             part: load.part.clone(),
             role,
             strength_class: class.map(|c| c.strength_class.clone()),
+            glulam: class.is_some_and(|c| c.glulam),
             section_mm: shape.as_ref().ok().map(|s| [round3(s.b), round3(s.h)]),
             utilization: None,
             governing: None,
             checks: Vec::new(),
             status: "not_verified",
             missing: Vec::new(),
+            bracing: Vec::new(),
+            held_by: Vec::new(),
         };
         let (Some(class), Ok(shape)) = (class, shape.as_ref()) else {
             if class.is_none() {
@@ -2437,7 +2725,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             if let Err(reason) = &shape {
                 missing.push((*reason).to_owned());
             }
-            check.missing = missing;
+            check.missing = distinct(missing);
             members.push(check);
             continue;
         };
@@ -2447,7 +2735,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             missing.push(format!(
                 "timber_strength({material:?}) names no product (product=\"solid\", \"osb3\", ...), so its kmod, kdef and gamma_M are unknown"
             ));
-            check.missing = missing;
+            check.missing = distinct(missing);
             members.push(check);
             continue;
         }
@@ -2461,7 +2749,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             .copied()
             .filter(|kind| load.loads_n.get(*kind).is_some_and(|v| *v > 0.0))
             .collect();
-        let (uls, sls) = combinations(&present, design.kdef);
+        let (uls, sls) = combinations(&present, design.kdef, snow_psi);
         if load.reactions.is_empty() {
             missing.push("the member has no supports to check against".to_owned());
         } else if role == "column" {
@@ -2476,9 +2764,69 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 // or that the load twists.
                 missing.push(reason.to_owned());
             } else {
-                let (checks, spans_checked, unchecked) =
+                // Review 2026-11-08 PG-242: mineral wool glued to the beam and
+                // a wall braced it. A brace holds it only when it is of a
+                // material with a timber strength class.
+                let (classed, unclassed): (Vec<_>, Vec<_>) =
+                    load.braced_by.iter().cloned().partition(|brace| {
+                        parts
+                            .get(brace.part.as_str())
+                            .and_then(|p| p.material.as_ref())
+                            .is_some_and(|m| model.strength_classes.contains_key(m))
+                    });
+                let held;
+                let load = if unclassed.is_empty() {
+                    load
+                } else {
+                    held = MemberLoad {
+                        braced_by: classed,
+                        ..load.clone()
+                    };
+                    &held
+                };
+                let (mut checks, mut spans_checked, mut unchecked, mut bracing) =
                     beam_checks(load, shape, &design, &uls, &sls);
+                // Review 2026-11-13 r95 structural point 1: a brace whose path
+                // to the ground is less stiff or buckles sooner than EN 1995-1-1
+                // 9.2.5.3 asks of it holds nothing, and the beam is checked
+                // without it.
+                let weak = weak_braces(&load.braced_by, &bracing);
+                check.held_by.clone_from(&load.braced_by);
+                if !weak.is_empty() {
+                    let firm = MemberLoad {
+                        braced_by: load
+                            .braced_by
+                            .iter()
+                            .filter(|brace| !weak.iter().any(|(weak, _)| *weak == *brace))
+                            .cloned()
+                            .collect(),
+                        ..load.clone()
+                    };
+                    (checks, spans_checked, unchecked, bracing) =
+                        beam_checks(&firm, shape, &design, &uls, &sls);
+                    check.held_by = firm.braced_by;
+                    if let Some(reason) = unchecked
+                        .iter_mut()
+                        .find(|reason| reason.starts_with("lateral torsional buckling"))
+                    {
+                        for why in distinct(weak.into_iter().map(|(_, why)| why).collect()) {
+                            reason.push_str(&format!("; {why}"));
+                        }
+                    }
+                }
+                let unclassed = distinct(unclassed.into_iter().map(|brace| brace.part).collect());
+                if !unclassed.is_empty()
+                    && let Some(reason) = unchecked
+                        .iter_mut()
+                        .find(|reason| reason.starts_with("lateral torsional buckling"))
+                {
+                    reason.push_str(&format!(
+                        "; {} would brace it, but their material has no timber strength class (timber_strength), so they hold nothing",
+                        unclassed.join(", ")
+                    ));
+                }
                 check.checks = checks;
+                check.bracing = bracing;
                 missing.extend(unchecked);
                 // Separate bearings always leave a span; without one, bending,
                 // shear and deflection were never checked.
@@ -2500,7 +2848,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 load.part.clone(),
             ));
         }
-        check.missing = missing;
+        check.missing = distinct(missing);
         members.push(check);
     }
     // Compression perpendicular to the grain in the beams others bear on.
@@ -2518,7 +2866,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             .copied()
             .filter(|kind| reaction.get(*kind).is_some_and(|v| *v > 0.0))
             .collect();
-        let (uls, _) = combinations(&present, 0.0);
+        let (uls, _) = combinations(&present, 0.0, snow_psi);
         let mut best = Best(None);
         for combination in &uls {
             let sigma = factor(&combination.factors, &reaction) / area;
@@ -2537,9 +2885,12 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         }
         settle(member);
     }
+    let mut basis: Vec<String> = BASIS.iter().map(|line| (*line).to_owned()).collect();
+    basis.extend(model.site.as_ref().map(crate::site::Site::basis));
     DesignReport {
-        basis: BASIS.to_vec(),
+        basis,
         members,
+        site: model.site.clone(),
     }
 }
 
@@ -2579,6 +2930,7 @@ mod tests {
             part: "beam".to_owned(),
             role: "beam",
             strength_class: None,
+            glulam: false,
             section_mm: None,
             utilization: None,
             governing: None,
@@ -2594,6 +2946,8 @@ mod tests {
                 .collect(),
             status: "not_verified",
             missing: Vec::new(),
+            bracing: Vec::new(),
+            held_by: Vec::new(),
         };
         settle(&mut member);
         member
@@ -2615,5 +2969,13 @@ mod tests {
         assert_eq!(over.status, "fail");
         assert_eq!(over.governing.as_deref(), Some("bending"));
         assert_eq!(settled(&[1.0, 0.5]).status, "pass");
+    }
+
+    /// Review 2026-11-09 PG-310.
+    #[test]
+    fn repeats_are_listed_once_in_the_order_they_first_come() {
+        let listed = |items: &[&str]| distinct(items.iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(listed(&["wool", "foam", "wool"]), ["wool", "foam"]);
+        assert_eq!(listed(&["b", "a", "b", "a", "c"]), ["b", "a", "c"]);
     }
 }

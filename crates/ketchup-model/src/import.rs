@@ -386,7 +386,7 @@ pub const STEP_PARSER_ID: &str = "ketchup-occt-step";
 pub const STEP_PARSER_VERSION: &str = "2";
 pub const STEP_XDE_PARSER_VERSION: &str = "3";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StepImportEvidence {
     pub source_sha256: [u8; 32],
     pub source_byte_len: u64,
@@ -1032,6 +1032,7 @@ pub fn plan_step_import(
                 bounds_mm: evidence.bounds_mm,
                 backend: evidence.backend.clone(),
                 tolerance: evidence.tolerance.clone(),
+                source_placement: None,
             }),
         },
         CanonicalCommand::CreateOccurrence {
@@ -1281,6 +1282,7 @@ pub fn plan_step_xde_import(
                 bounds_mm: part.exact.bounds_mm,
                 backend: part.exact.backend.clone(),
                 tolerance: part.exact.tolerance.clone(),
+                source_placement: None,
             }),
         });
         outputs.push(ImportOutputRef::Definition(definition_id));
@@ -1687,6 +1689,7 @@ pub fn plan_stl_import(
             definition_id,
             name: "STL mesh".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: None,
                 schema: MESH_BODY_SCHEMA_V1.to_owned(),
                 vertices_mm: mesh.vertices_mm,
                 triangles: mesh.triangles,

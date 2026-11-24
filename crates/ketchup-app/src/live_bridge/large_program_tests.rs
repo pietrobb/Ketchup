@@ -19,6 +19,7 @@ fn many_part_program_applied_into_a_new_window_gets_its_answer() {
     wire.call(Request::Status {});
     let response = wire.answer_within(
         Request::ApplyProgram {
+            source_folder: None,
             expected: None,
             source,
             overrides: None,
@@ -52,6 +53,7 @@ fn a_bad_part_in_a_program_is_named_and_nothing_is_applied() {
     wire.call(Request::Status {});
     let response = wire.answer_within(
         Request::ApplyProgram {
+            source_folder: None,
             expected: None,
             source,
             overrides: None,

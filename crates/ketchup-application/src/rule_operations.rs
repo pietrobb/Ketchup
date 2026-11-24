@@ -25,6 +25,11 @@ pub(crate) fn append_profiles(
     parts: &[&Part],
     commands: &mut Vec<CanonicalCommand>,
 ) -> Result<(), AssistantRejection> {
+    // A body read from a file is placed as it is (`crate::program_imports`).
+    let (imported, parts): (Vec<&Part>, Vec<&Part>) =
+        parts.iter().partition(|part| part.imported().is_some());
+    crate::program_imports::append_imported(document, &imported, commands)?;
+    let parts = parts.as_slice();
     let snapshot = document.current();
     let mut definition = snapshot
         .definitions()
@@ -177,6 +182,7 @@ pub(crate) fn loft(sections: &[ProgramLoftSection], profiles: &[FeatureId]) -> F
             .collect(),
         guide: None,
         continuity: LoftContinuity::Position,
+        rail: None,
     }
 }
 
@@ -573,6 +579,16 @@ impl<'a> OperationPlanner<'a> {
                     "Extrude the profile before using a solid operation.",
                 ));
             }
+            // The program refuses it (`ketchup_program::imported::operation_name`).
+            ProgramPartBody::Imported(_) => {
+                return Err(assistant_planning_rejection(
+                    "planning.imported_tool",
+                    "rule_part",
+                    &tool.name,
+                    "A body read from a STEP file cannot be used as a solid tool.",
+                    "Cut with a tool body of the room it needs.",
+                ));
+            }
             ProgramPartBody::Extrusion { segments, .. }
             | ProgramPartBody::Revolve { segments, .. }
             | ProgramPartBody::Sweep { segments, .. } => {
@@ -608,7 +624,9 @@ impl<'a> OperationPlanner<'a> {
                 path: self.feature(format!("{prefix} tool path"), spatial_path(path))?,
                 up: *up,
             },
-            ProgramPartBody::Profile { .. } | ProgramPartBody::Loft { .. } => {
+            ProgramPartBody::Profile { .. }
+            | ProgramPartBody::Loft { .. }
+            | ProgramPartBody::Imported(_) => {
                 unreachable!("handled above")
             }
             ProgramPartBody::Extrusion { distance_mm, .. } => {

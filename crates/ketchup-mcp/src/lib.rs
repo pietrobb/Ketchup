@@ -27,6 +27,13 @@ pub use bridge::MAX_UNAUTHENTICATED_REQUEST_BYTES;
 pub use discovery::{chosen_window, mark_chosen, short_name};
 pub use server::serve_stdio;
 
+/// The release every Kečup program reports: the installer's
+/// `KETCHUP_BUILD_VERSION`, else the workspace version of `Cargo.toml`.
+pub const VERSION: &str = match option_env!("KETCHUP_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Host response budget includes program planning, publication and the bounded exact check.
 /// The MCP client adds a delivery margin rather than timing out before the host.
 pub const PROGRAM_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(45);

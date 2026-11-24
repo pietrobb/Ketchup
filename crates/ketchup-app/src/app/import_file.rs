@@ -14,7 +14,8 @@ pub(crate) fn import_format(path: &Path) -> Option<ImportFormat> {
         "iges" | "igs" => ImportFormat::Iges,
         "stl" => ImportFormat::Stl,
         "dxf" | "dwg" => ImportFormat::Dxf,
-        "glb" => ImportFormat::Glb,
+        // A SketchUp file imports as the GLB it converts to (see `skp_import`).
+        "glb" | "skp" => ImportFormat::Glb,
         "kscene" => ImportFormat::SketchupScene,
         _ => return None,
     })

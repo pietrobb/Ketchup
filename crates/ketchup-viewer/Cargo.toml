@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["default_fonts", "wgpu"] }
 ketchup-rejection = { path = "../ketchup-rejection" }
+ketchup-user-files = { path = "../ketchup-user-files" }
 ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-tolerance = { path = "../ketchup-tolerance" }
 ketchup-geometry = { path = "../ketchup-geometry" }

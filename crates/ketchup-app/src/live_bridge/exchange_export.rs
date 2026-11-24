@@ -2,12 +2,17 @@
 //! exact worker writes and reads back the file on a thread for up to its budget,
 //! while the window keeps drawing and names the export as the job it is busy
 //! with. A cancelled request stops the worker; the window then publishes the
-//! file as a client's export.
+//! file as a client's export. A presentation image runs as such a job too (review 2026-11-12
+//! R1112-IMG-502): it is made on a thread, as from the window, and a cancelled request stops
+//! it within a row of samples.
 
+use super::interchange::{ExportTarget, InvalidImage, presentation_request};
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
 use crate::app::exchange_export::{ClientExchangeExport, ExchangeFormat};
+use crate::app::presentation_export::MadePresentation;
+use ketchup_manufacturing::presentation::presentation_supersample;
 
 pub(super) struct ExchangeExportJob {
     id: u64,
@@ -15,18 +20,24 @@ pub(super) struct ExchangeExportJob {
     pub(super) cancelled: Arc<AtomicBool>,
     path: String,
     export_format: String,
+    overwrite: bool,
     receiver: mpsc::Receiver<ClientExchangeExport>,
+}
+
+/// Whether `request` is an export that runs as a job.
+pub(super) fn runs_as_job(request: &Request) -> bool {
+    exchange_format(request).is_some() || presents(request)
 }
 
 /// The exact format `request` exports to, which runs as a job.
 pub(super) fn exchange_format(request: &Request) -> Option<ExchangeFormat> {
     match request {
-        Request::Export { export_format, .. } if export_format == "step" => {
-            Some(ExchangeFormat::Step)
-        }
-        Request::Export { export_format, .. } if export_format == "iges" => {
-            Some(ExchangeFormat::Iges)
-        }
+        Request::Export(crate::live_bridge::interchange::ExportRequest {
+            export_format, ..
+        }) if export_format == "step" => Some(ExchangeFormat::Step),
+        Request::Export(crate::live_bridge::interchange::ExportRequest {
+            export_format, ..
+        }) if export_format == "iges" => Some(ExchangeFormat::Iges),
         _ => None,
     }
 }
@@ -45,6 +56,15 @@ impl LiveBridge {
             reply,
             cancelled,
         } = queued;
+        if presents(&request) {
+            let queued = QueuedReply {
+                id,
+                reply,
+                cancelled,
+            };
+            self.start_presentation(app, context, queued, request, ui_busy);
+            return;
+        }
         take_error_details();
         if self.program_check_job.is_some() {
             let busy = failure(
@@ -59,27 +79,27 @@ impl LiveBridge {
             Self::reply(app, id, &reply, Err("invalid_request"));
             return;
         };
-        let started =
-            Self::export_target(app, request, ui_busy).and_then(|(path, export_format, _)| {
-                Self::require_request_authority(&cancelled)?;
-                let receiver = app
-                    .start_client_exchange_export(
-                        format,
-                        Path::new(&path),
-                        Arc::clone(&cancelled),
-                        context,
-                    )
-                    .map_err(|error| Self::export_failed(&path, &export_format, error))?;
-                Ok((path, export_format, receiver))
-            });
+        let started = Self::export_target(app, request, ui_busy).and_then(|target| {
+            Self::require_request_authority(&cancelled)?;
+            let receiver = app
+                .start_client_exchange_export(
+                    format,
+                    Path::new(&target.path),
+                    Arc::clone(&cancelled),
+                    context,
+                )
+                .map_err(|error| Self::export_failed(&target.path, &target.export_format, error))?;
+            Ok((target, receiver))
+        });
         match started {
-            Ok((path, export_format, receiver)) => {
+            Ok((target, receiver)) => {
                 self.program_check_job = Some(ProgramCheckJob::ExchangeExport(ExchangeExportJob {
                     id,
                     reply,
                     cancelled,
-                    path,
-                    export_format,
+                    path: target.path,
+                    export_format: target.export_format,
+                    overwrite: target.overwrite,
                     receiver,
                 }));
                 context.request_repaint_after(Duration::from_millis(10));
@@ -116,8 +136,157 @@ impl LiveBridge {
             }
         };
         take_error_details();
-        let written = app.finish_client_exchange_export(export, &job.cancelled);
+        let written = app.finish_client_exchange_export(export, &job.cancelled, job.overwrite);
         let result = Self::exported(&job.path, &job.export_format, written);
+        Self::reply(app, job.id, &job.reply, result);
+        context.request_repaint();
+    }
+}
+
+pub(super) struct PresentationJob {
+    id: u64,
+    reply: mpsc::SyncSender<Response>,
+    pub(super) cancelled: Arc<AtomicBool>,
+    path: String,
+    export_format: String,
+    overwrite: bool,
+    receiver: mpsc::Receiver<MadePresentation>,
+    /// The client was told `request_cancelled`; the job keeps its place until its thread ends.
+    answered: bool,
+    /// Samples per pixel side asked for and made with: an image too large for its smoothing
+    /// is smoothed less, and the answer says so (review 2026-11-13 r95 P3).
+    supersample: (u32, u32),
+}
+
+/// Whether `request` is a presentation image, which runs as a job.
+pub(super) fn presents(request: &Request) -> bool {
+    matches!(request, Request::Export(crate::live_bridge::interchange::ExportRequest { export_format, .. }) if export_format == "presentation_png")
+}
+
+impl LiveBridge {
+    fn start_presentation(
+        &mut self,
+        app: &mut KetchupApp,
+        context: &egui::Context,
+        queued: QueuedReply,
+        request: Request,
+        ui_busy: bool,
+    ) {
+        let QueuedReply {
+            id,
+            reply,
+            cancelled,
+        } = queued;
+        take_error_details();
+        if self.program_check_job.is_some() || app.file.activity.presentation_slot.busy() {
+            let busy = failure(
+                "busy",
+                "A program, geometry check, import, export or presentation image is running.",
+                json!({}),
+            );
+            Self::reply(app, id, &reply, Err(busy));
+            return;
+        }
+        let image = match &request {
+            Request::Export(crate::live_bridge::interchange::ExportRequest { image, .. }) => {
+                image.clone()
+            }
+            _ => None,
+        };
+        let mut supersample = (0, 0);
+        let started = Self::export_target(app, request, ui_busy).and_then(|target| {
+            let request = presentation_request(image).map_err(InvalidImage::refused)?;
+            let options = &request.options;
+            supersample = (
+                options.supersample,
+                presentation_supersample(options.width, options.height, options.supersample)
+                    .unwrap_or(options.supersample),
+            );
+            Self::require_request_authority(&cancelled)?;
+            let receiver = app
+                .start_client_presentation(
+                    Path::new(&target.path),
+                    &request,
+                    Arc::clone(&cancelled),
+                    context,
+                )
+                .map_err(|error| Self::export_failed(&target.path, &target.export_format, error))?;
+            Ok((target, receiver))
+        });
+        match started {
+            Ok((
+                ExportTarget {
+                    path,
+                    export_format,
+                    overwrite,
+                    ..
+                },
+                receiver,
+            )) => {
+                self.program_check_job = Some(ProgramCheckJob::Presentation(PresentationJob {
+                    id,
+                    reply,
+                    cancelled,
+                    path,
+                    export_format,
+                    overwrite,
+                    receiver,
+                    answered: false,
+                    supersample,
+                }));
+                context.request_repaint_after(Duration::from_millis(10));
+            }
+            Err(code) => Self::reply(app, id, &reply, Err(code)),
+        }
+    }
+
+    pub(super) fn poll_presentation(
+        &mut self,
+        app: &mut KetchupApp,
+        context: &egui::Context,
+        mut job: PresentationJob,
+    ) {
+        // The thread sees the same flag and stops; nothing is written. The client is answered
+        // at once, but the job keeps its place until the thread has ended (R1113-IMG-600).
+        if !job.answered && job.cancelled.load(Ordering::Acquire) {
+            Self::reply(app, job.id, &job.reply, Err("request_cancelled"));
+            job.answered = true;
+        }
+        let made = match job.receiver.try_recv() {
+            Ok(made) => made,
+            Err(mpsc::TryRecvError::Empty) => {
+                self.program_check_job = Some(ProgramCheckJob::Presentation(job));
+                context.request_repaint_after(Duration::from_millis(10));
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(crate::export_bundle::ExportError::failed(
+                    "the thread that makes the presentation image stopped",
+                ))
+            }
+        };
+        if job.answered {
+            context.request_repaint();
+            return;
+        }
+        take_error_details();
+        let written = app.finish_client_presentation(
+            Path::new(&job.path),
+            made,
+            &job.cancelled,
+            job.overwrite,
+        );
+        let result = Self::exported(&job.path, &job.export_format, written).map(|mut answer| {
+            let (asked, made) = job.supersample;
+            answer["supersample"] = json!(made);
+            if made < asked {
+                answer["supersample_asked"] = json!(asked);
+                answer["supersample_reason"] = json!(
+                    "the image is too large to smooth more within the renderer's sample limit"
+                );
+            }
+            answer
+        });
         Self::reply(app, job.id, &job.reply, result);
         context.request_repaint();
     }

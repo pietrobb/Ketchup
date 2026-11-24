@@ -8,7 +8,7 @@ use crate::topology::{
 use ketchup_assistant::sidecar::{
     AssistantCadBodyFeature, AssistantCadBooleanOperation, AssistantCadChamferMode,
     AssistantCadFeatureReference, AssistantCadLoftContinuity, AssistantCadShellDirection,
-    AssistantCadSurfaceBodySource,
+    AssistantCadSurfaceBodySource, AssistantSpatialPathSegment,
 };
 use ketchup_geometry::sketch::{
     CutStart, FeatureDirection, FeatureExtent, PadOperation, PadProfile, PadSpec,
@@ -16,7 +16,8 @@ use ketchup_geometry::sketch::{
 use ketchup_model::document::{
     BooleanOperation, CanonicalError, ChamferEdgeSide, ChamferMode, DefinitionId, Dimension,
     FeatureId, FeatureKind, FilletRadiusStation, LoftContinuity, LoftSection, ShellDirection,
-    Snapshot, SurfaceBodySpec, WeldmentJointSpec, WeldmentMemberSpec, is_valid_spatial_sweep_path,
+    Snapshot, SurfaceBodySpec, SurfaceSeam, WeldmentJointSpec, WeldmentMemberSpec,
+    is_valid_spatial_sweep_path,
 };
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{ExactResultRegistry, accepts_planar_offset_solved_region};
@@ -30,6 +31,119 @@ fn resolved(reference: &AssistantCadFeatureReference) -> FeatureId {
             .existing_id()
             .expect("Assistant feature references are resolved before feature planning"),
     )
+}
+
+fn loft_continuity(continuity: AssistantCadLoftContinuity) -> LoftContinuity {
+    match continuity {
+        AssistantCadLoftContinuity::Position => LoftContinuity::Position,
+        AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
+        AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
+    }
+}
+
+fn surface_body_spec(source: &AssistantCadSurfaceBodySource) -> SurfaceBodySpec {
+    match source {
+        AssistantCadSurfaceBodySource::Planar { profile_feature_id } => SurfaceBodySpec::Planar {
+            profile: resolved(profile_feature_id),
+        },
+        AssistantCadSurfaceBodySource::Loft {
+            sections,
+            guide_feature_id,
+            continuity,
+            rail_feature_id,
+        } => SurfaceBodySpec::Loft {
+            sections: sections
+                .iter()
+                .map(|section| LoftSection {
+                    profile: resolved(&section.profile_feature_id),
+                    elevation_mm: section.elevation_mm,
+                })
+                .collect(),
+            guide: guide_feature_id.as_ref().map(resolved),
+            continuity: loft_continuity(*continuity),
+            rail: rail_feature_id.as_ref().map(resolved),
+        },
+        AssistantCadSurfaceBodySource::Boundary { segments, inner } => SurfaceBodySpec::Boundary {
+            segments: segments
+                .iter()
+                .map(AssistantSpatialPathSegment::canonical)
+                .collect(),
+            inner: inner
+                .iter()
+                .map(AssistantSpatialPathSegment::canonical)
+                .collect(),
+        },
+        AssistantCadSurfaceBodySource::Blend {
+            first_feature_id,
+            first_continuity,
+            second_feature_id,
+            second_continuity,
+        } => SurfaceBodySpec::Blend {
+            first: resolved(first_feature_id),
+            first_continuity: loft_continuity(*first_continuity),
+            second: resolved(second_feature_id),
+            second_continuity: loft_continuity(*second_continuity),
+        },
+        AssistantCadSurfaceBodySource::ControlPoint {
+            target_feature_id,
+            u_index,
+            v_index,
+            from_mm,
+            offset_mm,
+            weight,
+            keep,
+        } => SurfaceBodySpec::ControlPoint {
+            target: resolved(target_feature_id),
+            u_index: *u_index,
+            v_index: *v_index,
+            from_mm: *from_mm,
+            offset_mm: *offset_mm,
+            weight: *weight,
+            keep: keep
+                .iter()
+                .map(|seam| SurfaceSeam {
+                    surface: resolved(&seam.surface_feature_id),
+                    continuity: loft_continuity(seam.continuity),
+                })
+                .collect(),
+        },
+    }
+}
+
+/// A Loft guide or rail is one bounded C1 spatial path of the Loft's definition.
+fn check_loft_path(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    operation_name: &str,
+    role: &str,
+    path: FeatureId,
+) -> AssistantPlanningResult<()> {
+    let source = snapshot.feature(path).ok_or_else(|| {
+        assistant_canonical_rejection(
+            CanonicalError::FeatureNotFound(path),
+            operation_name,
+            &format!("feature:{}", path.0),
+        )
+    })?;
+    if source.definition_id() != definition_id
+        || snapshot.feature_is_suppressed(path)
+        || !matches!(
+            source.kind(),
+            FeatureKind::SpatialPath { segments }
+                if is_valid_spatial_sweep_path(segments, snapshot.tolerance().linear_mm())
+        )
+    {
+        return Err(assistant_planning_rejection(
+            "planning.cad_feature_input_unsupported",
+            operation_name,
+            &format!("feature:{}", path.0),
+            format!(
+                "The requested Loft {role} is not one bounded C1 spatial path in the same definition."
+            ),
+            "Use an unsuppressed line/arc/cubic SpatialPath that satisfies the exact path contract.",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn plan_feature_kind(
@@ -314,6 +428,7 @@ pub(crate) fn plan_feature_kind(
             sections,
             guide_feature_id,
             continuity,
+            rail_feature_id,
         } => {
             let mut loft_sections = Vec::with_capacity(sections.len());
             for section in sections {
@@ -362,67 +477,22 @@ pub(crate) fn plan_feature_kind(
                 });
             }
             let guide = guide_feature_id.as_ref().map(resolved);
-            if let Some(guide) = guide {
-                let source = snapshot.feature(guide).ok_or_else(|| {
-                    assistant_canonical_rejection(
-                        CanonicalError::FeatureNotFound(guide),
-                        operation_name,
-                        &format!("feature:{}", guide.0),
-                    )
-                })?;
-                if source.definition_id() != definition_id
-                    || snapshot.feature_is_suppressed(guide)
-                    || !matches!(
-                        source.kind(),
-                        FeatureKind::SpatialPath { segments }
-                            if is_valid_spatial_sweep_path(segments, snapshot.tolerance().linear_mm())
-                    )
-                {
-                    return Err(assistant_planning_rejection(
-                        "planning.cad_feature_input_unsupported",
-                        operation_name,
-                        &format!("feature:{}", guide.0),
-                        "The requested Loft guide is not one bounded C1 spatial path in the same definition.",
-                        "Use an unsuppressed line/arc/cubic SpatialPath that satisfies the exact path contract.",
-                    ));
+            let rail = rail_feature_id.as_ref().map(resolved);
+            for (role, path) in [("guide", guide), ("rail", rail)] {
+                if let Some(path) = path {
+                    check_loft_path(snapshot, definition_id, operation_name, role, path)?;
                 }
             }
             FeatureKind::Loft {
                 sections: loft_sections,
                 guide,
-                continuity: match continuity {
-                    AssistantCadLoftContinuity::Position => LoftContinuity::Position,
-                    AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
-                    AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
-                },
+                continuity: loft_continuity(*continuity),
+                rail,
             }
         }
-        AssistantCadBodyFeature::SurfaceBody { source } => FeatureKind::SurfaceBody(match source {
-            AssistantCadSurfaceBodySource::Planar { profile_feature_id } => {
-                SurfaceBodySpec::Planar {
-                    profile: resolved(profile_feature_id),
-                }
-            }
-            AssistantCadSurfaceBodySource::Loft {
-                sections,
-                guide_feature_id,
-                continuity,
-            } => SurfaceBodySpec::Loft {
-                sections: sections
-                    .iter()
-                    .map(|section| LoftSection {
-                        profile: resolved(&section.profile_feature_id),
-                        elevation_mm: section.elevation_mm,
-                    })
-                    .collect(),
-                guide: guide_feature_id.as_ref().map(resolved),
-                continuity: match continuity {
-                    AssistantCadLoftContinuity::Position => LoftContinuity::Position,
-                    AssistantCadLoftContinuity::Tangent => LoftContinuity::Tangent,
-                    AssistantCadLoftContinuity::Curvature => LoftContinuity::Curvature,
-                },
-            },
-        }),
+        AssistantCadBodyFeature::SurfaceBody { source } => {
+            FeatureKind::SurfaceBody(surface_body_spec(source))
+        }
         AssistantCadBodyFeature::SurfaceTrim {
             target_feature_id,
             cutter_feature_id,

@@ -63,7 +63,7 @@ impl Client {
             tx.send(serde_json::from_slice::<Response>(&body).unwrap())
                 .unwrap();
         });
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let response = loop {
             if let Ok(response) = rx.try_recv() {
                 break response;

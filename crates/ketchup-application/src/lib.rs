@@ -23,6 +23,7 @@ pub mod pdm_workflow;
 mod planner;
 mod plugin;
 mod product_change;
+pub mod program_imports;
 pub mod program_isolation;
 mod program_part_change;
 mod program_part_edit;
@@ -40,11 +41,14 @@ mod rule_metadata;
 mod rule_motion;
 mod rule_operations;
 mod rule_program;
+mod rule_sheets;
 mod rule_support;
 mod rule_tags;
 mod rule_threads;
 mod sketch;
 mod structure_change;
+pub mod surface_control_net;
+pub mod thermal_workflow;
 pub mod threads;
 pub mod topology;
 pub mod transforms;
@@ -66,14 +70,15 @@ pub use program_part_change::{
     PartChange, RewrittenProgram, rewrite_rule_program_parts, rewrite_rule_program_parts_from,
 };
 pub use rule_exact_collisions::{
-    ExactBaseline, ProgramEdit, apply_exact_pairs, verify_rule_program_all,
-    verify_rule_program_exact, verify_rule_program_exact_since,
+    ExactBaseline, ProgramEdit, apply_exact_pairs, exact_check_past_deadline,
+    verify_rule_program_all, verify_rule_program_exact, verify_rule_program_exact_since,
 };
 pub use rule_groups::plan_rule_model_batch;
 pub use rule_instances::{made_parts, rule_program_part_name};
 pub use rule_program::{
     RuleProgramApplyError, RuleProgramApplyResult, RuleProgramChange, RuleProgramPlan,
     plan_rule_program, plan_rule_program_cancellable, plan_rule_program_from,
+    plan_rule_program_reading,
 };
 
 mod session;

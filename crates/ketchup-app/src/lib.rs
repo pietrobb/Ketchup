@@ -1,6 +1,6 @@
-// Unsafe code is denied, not forbidden, for exactly one audited reason: the
-// native file dialogs must borrow the raw main-window handle to be owned by,
-// and modal to, the Ketchup window. See `dialogs::DialogParentWindow`.
+// Unsafe code is denied, not forbidden: each item calling the system allows it itself
+// (`dialogs::DialogParentWindow`, the Windows calls of `live_bridge` and `app`), counted
+// and explained in scripts/check_crate_layers.py (review 2026-11-13 P3: "one reason").
 #![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
@@ -11,16 +11,11 @@ pub(crate) use gesture::{
     ToolSession, ToolSessionPhase, TransformInputEvent, TransformInputInterpreter,
 };
 use gesture::{Gesture, MirrorPlane, PushPullAnchor, ZoomWindowDrag};
-use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
 use ketchup_application::cam_workflow::{CamReviewRequest, CamReviewSummary, CamReviewWorkflow};
 use ketchup_application::diagnostics::{
     AssistantPlanningResult, AssistantRejection, assistant_canonical_rejection, assistant_rejection,
 };
 use ketchup_application::evaluation::{ExactEvaluationTask, ExactSource, exact_worker_candidates};
-use ketchup_application::fea_workflow::{
-    ExactFeaFaceTraction, ExactFeaSetup, ExactVolumeMeshWireOptions, FeaReviewSummary,
-    FeaReviewWorkflow, FeaStudyRequest,
-};
 use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmSourceIdentity,
 };
@@ -73,10 +68,10 @@ use ketchup_model::document::{
     ClassificationCategoryId, ClassificationDimensionId, CloneDefinitionPlan, CommandBatch,
     ConvertGroupPlan, DefinitionId, Dimension, DocumentId, DocumentStore, EdgeFinishKind, EdgeRef,
     EvaluationIdentity, EvaluatorParameterEdit, FaceRef, FeatureId, FeatureKind, GroupId,
-    HighRiskClass, HighRiskScope, InstancePath, LoftContinuity, LoftSection,
-    MAX_HUMAN_CONFIRMATION_LIFETIME_MS, MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId,
-    ProfileSegment, Proposal, ProposalCommitError, ProposalContext, ProposalPrepareError,
-    ProposalPrincipal, SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
+    HighRiskClass, HighRiskScope, InstancePath, LoftSection, MAX_HUMAN_CONFIRMATION_LIFETIME_MS,
+    MeshBodySpec, NodeId, OccurrenceId, PersistentDimensionId, ProfileSegment, Proposal,
+    ProposalCommitError, ProposalContext, ProposalPrepareError, ProposalPrincipal,
+    SPLINE_MIN_POINTS, SceneOccurrence, SceneQueryContext, SectionPlane,
     SideEffectAuthorizationReceipt, Snapshot, SolidToolPlan, SpatialPathSegment, TagId,
     TipReplacementParent, TipReplacementProposal, Transform, TrustedConfirmationSurface,
     ellipse_segments, polygon_segments, regular_polygon_points,
@@ -956,11 +951,9 @@ enum ActiveTool {
     ZoomWindow,
 }
 
-/// Every command the designed shell can dispatch.
-///
-/// The variant is a command's stable identity; its label is a localization key resolved at
-/// paint time. Acceptance tests address widgets by variant and resolve labels through the
-/// same catalog, so no translation change or icon-only presentation can break them.
+/// Every command the designed shell can dispatch. The variant is a command's stable
+/// identity and its label a localization key resolved at paint time: tests address
+/// widgets by variant, so no translation or icon can break them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     New,
@@ -970,6 +963,7 @@ pub enum AppCommand {
     ImportMeshStl,
     ImportDrawingDxf,
     ImportDrawingUnderlay,
+    CompareUnderlayRevision,
     ImportExactStep,
     ImportExactIges,
     ImportSketchupScene,
@@ -982,6 +976,7 @@ pub enum AppCommand {
     ExportPrintThreeMf,
     ExportBlenderGlb,
     ExportSketchupDae,
+    ExportPresentationImage,
     ExportViewer,
     OpenViewerComments,
     ExportGeneralFabrication,
@@ -991,8 +986,10 @@ pub enum AppCommand {
     ExportHomagMpr,
     ReviewCamExport,
     ReviewStaticFea,
+    ReviewSteadyThermal,
     ReviewLocalPdm,
     ExportHundeggerBtlx,
+    ExportWorkshopPackage,
     Select,
     Line,
     Rectangle,
@@ -1170,8 +1167,7 @@ struct InteractionProjectionCache {
 }
 
 /// A value typed while the program or an exact solid was still being
-/// evaluated, with the tool, value, document revision and selection it was
-/// typed for.
+/// evaluated, with the tool, value, document revision and selection it was typed for.
 #[derive(Debug, PartialEq)]
 struct AwaitedValue {
     tool: ActiveTool,
@@ -2016,11 +2012,6 @@ struct MigrationReviewPlan {
 enum BtlxProfileStrategy {
     PortableFreeContour,
     EdgeSawCutsThenMillContour,
-}
-
-struct CamExportDialog {
-    plan_id: CamPlanId,
-    review: Option<CamReviewSummary>,
 }
 
 struct PdmReviewDialog {

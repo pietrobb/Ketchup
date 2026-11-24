@@ -331,7 +331,7 @@ fn ten_thousand_occurrence_product() -> Duration {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut renderer = GpuInstancedRenderer::new(&device, format);
+    let mut renderer = GpuInstancedRenderer::new(&device, &queue, format);
     let gpu_started = Instant::now();
     let world_to_clip = [
         0.001, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, -1.0, -1.0, 0.0, 1.0,
@@ -609,7 +609,7 @@ fn garden_studio_gpu_camera_frames() -> Duration {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut renderer = GpuInstancedRenderer::new(&device, format);
+    let mut renderer = GpuInstancedRenderer::new(&device, &queue, format);
     // One synchronous frame at a time: no enqueue-only or CPU-only substitute.
     let render_frame = |renderer: &mut GpuInstancedRenderer, frame: usize| {
         let started = Instant::now();

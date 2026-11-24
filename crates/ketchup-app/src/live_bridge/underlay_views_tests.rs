@@ -59,6 +59,8 @@ fn plan_and_aligned() -> (KetchupApp, LiveBridge, [f64; 2]) {
         path: path.display().to_string(),
         unit: None,
         as_underlay: true,
+        revision_of: None,
+        code_page: None,
     };
     bridge.execute(&mut app, import, false).unwrap();
     let ids = app
@@ -286,6 +288,7 @@ fn piece_sheet() -> (String, f64) {
     let (mut app, mut bridge) = setup();
     let source = "P = extrude(\"PIECE\", profile = [(0, 0), (100, 0), (100, 20), (20, 20), (20, 80), (0, 80)], distance = 60)\ncut(P, profile = [(50, 5), (70, 5), (70, 15), (50, 15)], through = True, name = \"PIECE/slot\")\n";
     let applied = Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.to_owned(),
         overrides: Some(BTreeMap::new()),
@@ -323,6 +326,8 @@ fn imported_copies(sheet: &str, copies: usize) -> (KetchupApp, LiveBridge, [f64;
             path: path.display().to_string(),
             unit: None,
             as_underlay: true,
+            revision_of: None,
+            code_page: None,
         };
         bridge.execute(&mut app, import, false).unwrap();
     }

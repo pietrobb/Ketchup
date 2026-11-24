@@ -3,25 +3,31 @@
 #[cfg(test)]
 #[path = "program_check_failure_tests.rs"]
 mod failure_tests;
+pub(super) mod step_files;
 #[cfg(test)]
 #[path = "program_plan_tests.rs"]
 mod tests;
 use super::*;
 use crate::delivery::Deliver;
 use crate::program_edit::ProgramEdit;
+use ketchup_application::program_imports::ImportFiles;
 use ketchup_application::program_isolation::{CheckDeadline, complete_pending_checks};
 use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{ProgramModel, Report, exact_candidates};
+use step_files::StepFiles;
 
 /// Plans the program and lists its report, both off the UI thread when queued.
-/// `deadline` is the request's: its exact check gets only what the report left,
-/// applied or only checked alike, so both reach the same verdict. When an exact
+/// `deadline` is the request's and bounds the report. An applied program's
+/// exact check runs after the answer on its own time
+/// ([`PROGRAM_BACKGROUND_CHECK_TIME`]); one only checked gets what the report
+/// left of the request. When an exact
 /// check follows (`exact_follows` and the model has candidates), it re-derives
 /// the issues and relations, so the report lists only the collisions it
 /// settles; [`complete_pending_checks`] lists the rest wherever the report is
 /// published without that check. `cancel` is the request's: a request given up
 /// ends the planner's worker instead of leaving it busy (review 2026-11-02 MCP-101).
+/// `files` reads the STEP files of the program's bought parts.
 fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
@@ -29,8 +35,15 @@ fn plan_with_report(
     deadline: CheckDeadline,
     exact_follows: bool,
     cancel: &ketchup_program::CancelToken,
+    files: &mut dyn ImportFiles,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
-    let plan = ketchup_application::plan_rule_program_cancellable(document, source, cancel)?;
+    let plan = ketchup_application::plan_rule_program_reading(
+        document,
+        source,
+        files,
+        CheckDeadline::start(),
+        cancel,
+    )?;
     refuse_given_overrides(&plan.evaluated.model, given)?;
     let report = if exact_follows && !exact_candidates(&plan.evaluated.model).is_empty() {
         plan.report_before_exact(deadline, cancel)
@@ -42,6 +55,25 @@ fn plan_with_report(
 
 /// The code of a request whose own parameter value the program refuses.
 pub(super) const OVERRIDE_REFUSED: &str = "param_override_refused";
+
+/// An apply request's program, whether it replaces the document, the
+/// parameters it sets and the folder of its STEP files.
+pub(super) type ProgramRequest = (RuleProgramSource, bool, Vec<String>, Option<PathBuf>);
+
+/// What to do about a program refused with `code`.
+pub(super) fn fix_hint(code: &str) -> &'static str {
+    match code {
+        OVERRIDE_REFUSED => {
+            "Give the parameter a value it takes (inside its range, whole for a count), or leave it out of overrides to keep its default."
+        }
+        ketchup_application::program_imports::IMPORT_FAILED => {
+            "Put a STEP file the exact kernel reads at the path purchased() names, relative to the program's file, and apply the program from its file again."
+        }
+        _ => {
+            "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again."
+        }
+    }
+}
 
 /// A value `given` by the request that the program refuses (outside the
 /// parameter's range, or no whole number of a count) fails it, applied or only
@@ -67,7 +99,11 @@ pub(super) fn refuse_given_overrides(
     };
     Err(RuleProgramApplyError::Program {
         code: OVERRIDE_REFUSED.to_owned(),
-        message: format!("param {} = {value} {why}", param.name),
+        message: format!(
+            "param {} = {} {why}",
+            param.name,
+            ketchup_program::eval::number_text(value)
+        ),
         location: None,
     })
 }
@@ -75,8 +111,15 @@ pub(super) fn refuse_given_overrides(
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How much longer than its deadline a program request's check is waited for.
 pub(super) const PROGRAM_EXACT_GRACE: Duration = Duration::from_secs(5);
-/// After this an apply answers incomplete; its check finishes into the report.
-pub(super) const PROGRAM_EXACT_RUNNING_AFTER: Duration = Duration::from_secs(5);
+/// An apply answers once its model is published and its exact check ended, or
+/// this long after the request started, whichever comes first: a check still
+/// running then, and the report's own checks, finish in the background into
+/// the report (`program action=report`), not into the answer.
+pub(super) const PROGRAM_EXACT_RUNNING_AFTER: Duration = Duration::from_secs(2);
+/// How long the checks of an apply may run in the background after it answered.
+/// They no longer hold the request, so the connection's wait does not bound
+/// them; the next request that edits ends them sooner.
+pub(super) const PROGRAM_BACKGROUND_CHECK_TIME: Duration = Duration::from_secs(300);
 
 /// The one deadline of a program request, taken when it starts: its report and
 /// exact check share it, applied or only checked, and it ends early enough to
@@ -127,6 +170,7 @@ pub(super) enum ProgramCheckJob {
     VariantExport(super::program_variant_export::VariantExportJob),
     DwgImport(super::dwg_import::DwgImportJob),
     ExchangeExport(super::exchange_export::ExchangeExportJob),
+    Presentation(super::exchange_export::PresentationJob),
     DrawingExport(super::drawing_export::DrawingExportJob),
     ProjectDrawings(super::project_drawings_job::ProjectDrawingsExportJob),
     Reporting(super::program_access::ProgramReportJob),
@@ -147,6 +191,7 @@ impl ProgramCheckJob {
             Self::VariantExport(job) => &job.cancelled,
             Self::DwgImport(job) => &job.cancelled,
             Self::ExchangeExport(job) => &job.cancelled,
+            Self::Presentation(job) => &job.cancelled,
             Self::DrawingExport(job) => &job.cancelled,
             Self::ProjectDrawings(job) => &job.cancelled,
             Self::Reporting(job) => &job.answer.cancelled,
@@ -179,9 +224,14 @@ pub(super) struct ProgramPlanJob {
     source: RuleProgramSource,
     replace: bool,
     before: Stamp,
-    deadline: CheckDeadline,
-    receiver: mpsc::Receiver<Result<(RuleProgramPlan, Report), RuleProgramApplyError>>,
+    /// When the request started: its answer waits for the exact check only
+    /// until [`PROGRAM_EXACT_RUNNING_AFTER`] after it.
+    started: Instant,
+    receiver: mpsc::Receiver<Result<PlannedProgram, RuleProgramApplyError>>,
 }
+
+/// A program's plan, its report, and the bytes of the STEP files it read.
+type PlannedProgram = (RuleProgramPlan, Report, Vec<Vec<u8>>);
 
 pub(super) struct ExactCheckJob {
     id: u64,
@@ -189,8 +239,10 @@ pub(super) struct ExactCheckJob {
     cancelled: Arc<AtomicBool>,
     worker_cancelled: Arc<AtomicBool>,
     started: Instant,
-    /// What the request's deadline left when the check started.
+    /// How long the check may run ([`PROGRAM_BACKGROUND_CHECK_TIME`] for an apply).
     time: Duration,
+    /// How long after the check started the apply answers without its verdict.
+    answer_after: Duration,
     applied: AppliedProgram,
     receiver: mpsc::Receiver<(Report, Option<Value>, Option<ExactBaseline>)>,
     /// The verdict reached without the check's issues, published once the
@@ -208,9 +260,9 @@ pub(super) struct PendingChecks {
 }
 
 impl ExactCheckJob {
-    /// Starts the checks the report left for the exact check; the deadline
-    /// left of the request bounds them, or [`PENDING_CHECKS_TIME`] when less
-    /// is left.
+    /// Starts the checks the report left for the exact check; what is left of
+    /// the check's time bounds them, or [`PENDING_CHECKS_TIME`] when less is
+    /// left.
     ///
     /// [`PENDING_CHECKS_TIME`]: ketchup_application::program_isolation::PENDING_CHECKS_TIME
     fn complete_report(&mut self, context: &egui::Context) {
@@ -321,7 +373,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<(RuleProgramSource, bool, Vec<String>), &'static str> {
+    ) -> Result<ProgramRequest, &'static str> {
         let request = Self::expand_program_patch(app, request)?;
         let Request::ApplyProgram {
             expected,
@@ -329,10 +381,19 @@ impl LiveBridge {
             overrides,
             file_name,
             replace_document,
+            source_folder,
         } = request
         else {
             return Err("invalid_params");
         };
+        // The folder of the program's STEP files: absolute and a folder.
+        let folder = source_folder.map(PathBuf::from);
+        if folder
+            .as_ref()
+            .is_some_and(|folder| !folder.is_absolute() || !folder.is_dir())
+        {
+            return Err("invalid_params");
+        }
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
         Self::require_request_authority(cancelled)?;
@@ -372,6 +433,7 @@ impl LiveBridge {
             },
             replace_document,
             given,
+            folder,
         ))
     }
 
@@ -384,19 +446,42 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
-        let (source, replace, given) = Self::program_source(app, request, ui_busy, cancelled)?;
+        let (source, replace, given, folder) =
+            Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
+        let mut files = self.step_files(app, folder, &source, Arc::new(AtomicBool::new(false)));
         // This path answers without an exact check.
-        let planned = plan_with_report(
+        let (plan, report) = plan_with_report(
             &app.document,
             &source,
             &given,
             program_request_deadline(),
             false,
             &ketchup_program::CancelToken::default(),
+            &mut files,
         )
         .map_err(program_failure)?;
+        let planned = (plan, report, files.into_sources());
         self.publish_program(app, source, replace, planned, &before, cancelled)
+    }
+
+    /// The reader of `source`'s STEP files: from the folder the request gave,
+    /// kept for later applies of the same file (a Push/Pull, set_params), or
+    /// the one an earlier apply gave for it.
+    fn step_files(
+        &mut self,
+        app: &KetchupApp,
+        given: Option<PathBuf>,
+        source: &RuleProgramSource,
+        cancelled: Arc<AtomicBool>,
+    ) -> StepFiles {
+        self.program_folder.files(
+            given,
+            &source.file_name,
+            Self::worker_path(app),
+            cancelled,
+            &app.document.current(),
+        )
     }
 
     fn publish_program(
@@ -404,12 +489,22 @@ impl LiveBridge {
         app: &mut KetchupApp,
         source: RuleProgramSource,
         replace: bool,
-        (plan, report): (RuleProgramPlan, Report),
+        (plan, report, step_sources): (RuleProgramPlan, Report, Vec<Vec<u8>>),
         before_stamp: &Stamp,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
         Self::guard(app, &Some(before_stamp.clone()))?;
         Self::require_request_authority(cancelled)?;
+        // The document keeps the bytes of the STEP files its bought parts
+        // were read from; the exact evaluation reads them there.
+        for bytes in step_sources {
+            app.file
+                .container_data
+                .insert_import_blob(bytes)
+                .map_err(|error| {
+                    super::rejection_records::failed_because("commit_rejected", error)
+                })?;
+        }
         let before = app.document.current();
         let source_diff = super::program_access::source_diff(
             app.document
@@ -468,14 +563,15 @@ impl LiveBridge {
             );
             return;
         }
-        let (source, replace, given) = match Self::program_source(app, request, ui_busy, &cancelled)
-        {
-            Ok(source) => source,
-            Err(code) => {
-                Self::reply(app, id, &reply, Err(code));
-                return;
-            }
-        };
+        let (source, replace, given, folder) =
+            match Self::program_source(app, request, ui_busy, &cancelled) {
+                Ok(sourced) => sourced,
+                Err(code) => {
+                    Self::reply(app, id, &reply, Err(code));
+                    return;
+                }
+            };
+        let mut files = self.step_files(app, folder, &source, Arc::clone(&cancelled));
         let document = app.document.fork_for_planning();
         let before = app.live_bridge_stamp();
         let worker_source = source.clone();
@@ -485,8 +581,16 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result =
-                    plan_with_report(&document, &worker_source, &given, deadline, true, &cancel);
+                let result = plan_with_report(
+                    &document,
+                    &worker_source,
+                    &given,
+                    deadline,
+                    true,
+                    &cancel,
+                    &mut files,
+                )
+                .map(|(plan, report)| (plan, report, files.into_sources()));
                 sender.deliver(result);
                 repaint.request_repaint();
             });
@@ -510,7 +614,7 @@ impl LiveBridge {
             source,
             replace,
             before,
-            deadline,
+            started: Instant::now(),
             receiver,
         }));
         context.request_repaint_after(Duration::from_millis(10));
@@ -561,7 +665,7 @@ impl LiveBridge {
                 context,
                 (job.id, job.reply, job.cancelled),
                 applied,
-                job.deadline,
+                job.started,
             ),
             Err(code) => Self::reply(app, job.id, &job.reply, Err(code)),
         }
@@ -573,12 +677,15 @@ impl LiveBridge {
         context: &egui::Context,
         (id, reply, cancelled): (u64, mpsc::SyncSender<Response>, Arc<AtomicBool>),
         applied: AppliedProgram,
-        deadline: CheckDeadline,
+        requested: Instant,
     ) {
         if !applied.needs_exact_check() {
             Self::reply(app, id, &reply, Ok(applied.result(None)));
             return;
         }
+        // The answer does not wait for the check, so the request's deadline
+        // does not bound it either.
+        let deadline = CheckDeadline::after(PROGRAM_BACKGROUND_CHECK_TIME);
         let mut report = applied.report.clone();
         let model = applied.model.clone();
         let base = applied.before.clone();
@@ -636,6 +743,7 @@ impl LiveBridge {
             worker_cancelled,
             started: Instant::now(),
             time: deadline.remaining(),
+            answer_after: PROGRAM_EXACT_RUNNING_AFTER.saturating_sub(requested.elapsed()),
             applied,
             receiver,
             verdict: None,
@@ -686,6 +794,10 @@ impl LiveBridge {
                 self.poll_exchange_export(app, context, job);
                 return;
             }
+            ProgramCheckJob::Presentation(job) => {
+                self.poll_presentation(app, context, job);
+                return;
+            }
             ProgramCheckJob::DrawingExport(job) => {
                 self.poll_drawing_export(app, context, job);
                 return;
@@ -721,7 +833,7 @@ impl LiveBridge {
                 }
             };
         }
-        let running = job.reply.is_some() && job.started.elapsed() >= PROGRAM_EXACT_RUNNING_AFTER;
+        let running = job.reply.is_some() && job.started.elapsed() >= job.answer_after;
         // Published without the exact check's issues, the report needs its own.
         if job.applied.report.checks_pending()
             && (job.verdict.is_some() || running)
@@ -747,13 +859,17 @@ impl LiveBridge {
             }
             context.request_repaint();
         } else {
-            if running
-                && !job.applied.report.checks_pending()
+            // The answer waits neither for the report's own checks nor for a
+            // check still running: both finish into the report.
+            if (running || job.verdict.is_some())
                 && let Some(reply) = job.reply.take()
             {
-                let mut running = unfinished("exact_check_running");
-                running["not_evaluated"][0]["next"] = json!(EXACT_CHECK_RUNNING_NEXT);
-                let result = job.applied.result(Some(running));
+                let exact = job.verdict.clone().unwrap_or_else(|| {
+                    let mut running = unfinished("exact_check_running");
+                    running["not_evaluated"][0]["next"] = json!(EXACT_CHECK_RUNNING_NEXT);
+                    running
+                });
+                let result = job.applied.result(Some(exact));
                 Self::reply(app, job.id, &reply, Ok(result));
             }
             self.program_check_job = Some(ProgramCheckJob::Checking(job));

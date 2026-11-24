@@ -2,6 +2,26 @@
 use ketchup_program::{ProgramModel, Report};
 use serde_json::{Value, json};
 
+/// Member check counts and bearing joints by status; null for a program without them.
+pub(super) fn statics_summary(report: &Report) -> Value {
+    if report.design.is_empty() && report.joints.is_empty() {
+        return Value::Null;
+    }
+    let joints_not_verified = report
+        .joints
+        .iter()
+        .filter(|joint| joint.status == "not_verified")
+        .count();
+    json!({
+        "members": (!report.design.is_empty()).then(|| report.design.summary()),
+        "bearing_joints": report.joints.len(),
+        "bearing_joints_not_verified": joints_not_verified,
+        "unassigned_loads": &report.loads.unassigned,
+        "loads_considered": "gravity_only",
+        "not_checked": ketchup_program::member_check::NOT_CHECKED,
+    })
+}
+
 pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Value>) -> Value {
     let has = |kind: &str| report.issues.iter().any(|issue| issue.kind == kind);
     let exact_complete = exact.is_some_and(|value| value["state"] == "verified");
@@ -13,8 +33,9 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
     let distance_incomplete = distances.is_some_and(|value| value == "incomplete");
     let required_exact_distances = !ketchup_program::exact::measured_pairs(model).is_empty();
     // A report that lists only part of itself may have left out a failure,
-    // and one whose checks stopped checked nothing.
-    let partial = report.truncated.is_some()
+    // and one whose checks stopped, or still run, checked nothing.
+    let partial = report.checks_pending()
+        || report.truncated.is_some()
         || has(ketchup_program::REPORT_TRUNCATED)
         || has(ketchup_program::CHECKS_UNVERIFIED);
     let dimensions = if model.expectations.is_empty() {
@@ -106,7 +127,7 @@ pub(super) fn summary(report: &Report, model: &ProgramModel, exact: Option<&Valu
             "not_evaluated": exact.map(|value| &value["not_evaluated"])
         },
         "collisions": {
-            "state": if collision_count > 0 { "failed" } else if exact_complete && !has("collision_unverified") && !has(ketchup_program::CHECKS_UNVERIFIED) && !has(ketchup_program::REPORT_TRUNCATED) { "passed" } else { "incomplete" },
+            "state": if collision_count > 0 { "failed" } else if exact_complete && !report.checks_pending() && !has("collision_unverified") && !has(ketchup_program::CHECKS_UNVERIFIED) && !has(ketchup_program::REPORT_TRUNCATED) { "passed" } else { "incomplete" },
             "count": collision_count,
             "scope": "program_parts_and_requested_exact_pairs"
         },

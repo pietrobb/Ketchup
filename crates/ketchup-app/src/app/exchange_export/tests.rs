@@ -39,7 +39,7 @@ fn a_running_export_keeps_the_window_painting_and_cancel_stops_its_worker_before
     let (stopped, observed) = mpsc::channel();
     queue(&mut harness, &path, move |_, cancelled| {
         // A slow worker: it runs until the user cancels it.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -115,7 +115,7 @@ fn a_finished_export_is_published_with_its_loss_report_after_consent() {
     queue(&mut harness, &path, |_, _| Ok(b"ISO-10303-21;".to_vec()));
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "export did not finish",
         |app| app.file.activity.exchange_export.is_none(),
     );

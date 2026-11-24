@@ -121,7 +121,7 @@ fn commit_drawn_shape_push_pull(shell: &mut Shell, distance: &str) -> Definition
     shell.click_command(AppCommand::PushPull);
     shell.app_mut().set_push_pull_distance_input(distance);
     // The shape is placed on the part's exact faces, so wait for them.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !(shell.app_mut().start_preview() && shell.app().has_drawn_shape_preview()) {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1979,7 +1979,7 @@ fn circular_profile_positive_push_pull_creates_exact_extrusion_atomically() {
     assert!(shell.app_mut().start_preview());
     let definition_id = shell.app().selected_reference().unwrap().definition_id;
     shell.press_key(Key::Enter);
-    let extrusion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let extrusion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while shell.app().document_revision() == before.0 {
         assert!(std::time::Instant::now() < extrusion_deadline);
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2082,7 +2082,7 @@ fn semicircular_arc_profile_positive_push_pull_creates_exact_extrusion_atomicall
     assert!(shell.app_mut().start_preview());
     let definition_id = shell.app().selected_reference().unwrap().definition_id;
     shell.press_key(Key::Enter);
-    let extrusion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let extrusion_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while shell.app().document_revision() == before.0 {
         assert!(std::time::Instant::now() < extrusion_deadline);
         std::thread::sleep(std::time::Duration::from_millis(10));

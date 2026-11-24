@@ -1,0 +1,94 @@
+name: Linux package
+
+# A release tag builds Ketchup-<version>-Linux-x86_64.tar.gz, checks that it starts in
+# a clean Ubuntu container and keeps it with its sums as the run's artifact; the
+# release script takes it from there (README, "Linux package"). A pull request
+# that changes how the package is made builds and checks it too, and so does every
+# merge to main: a code change can break the package (a new system library, a
+# worker that no longer starts) without touching its scripts (review 2026-11-20 ac).
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/linux/**"
+      - "scripts/third_party_notices.py"
+      - ".github/workflows/linux-package.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-package-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    name: the Linux package, started in a clean container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      ABOUT_VERSION: 0.9.2
+      ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: system packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ninja-build clang patchelf
+      # The OCCT the Linux CI job builds and keeps, by the same script and clang.
+      - name: clang version
+        id: clang
+        run: |
+          version=$(clang --version | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: OCCT from the cache
+        id: occt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/occt-install-r0-v1
+          key: occt-8.0.1-b8f597c6-ubuntu24.04-x64-clang${{ steps.clang.outputs.version }}-${{ hashFiles('scripts/linux/build-occt.sh', 'third_party/crmath/**') }}
+      - name: OCCT build
+        if: steps.occt.outputs.cache-hit != 'true'
+        run: |
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch V8_0_1 https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
+          scripts/linux/build-occt.sh
+      - name: cargo-about
+        run: |
+          name="cargo-about-$ABOUT_VERSION-x86_64-unknown-linux-musl"
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/about.tar.gz" \
+            --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/$ABOUT_VERSION/$name.tar.gz"
+          echo "$ABOUT_SHA256  $RUNNER_TEMP/about.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/about.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: package
+        run: scripts/linux/build-package.sh --output "$RUNNER_TEMP/linux-package"
+      # Only the system packages README names for a Linux install; OCCT and the
+      # build's own libraries are out of reach there.
+      - name: the package in a clean Ubuntu 24.04
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/linux-package:/package:ro" ubuntu:24.04 bash -euc '
+            apt-get update -q
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $(cat /repo/scripts/linux/runtime-packages.txt)
+            /repo/scripts/linux/check-package.sh /package/*.tar.gz'
+      - name: sums
+        working-directory: ${{ runner.temp }}/linux-package
+        run: |
+          sha256sum -- *.tar.gz > SHA256SUMS.txt
+          sha256sum --check --strict SHA256SUMS.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-package
+          path: |
+            ${{ runner.temp }}/linux-package/*.tar.gz
+            ${{ runner.temp }}/linux-package/SHA256SUMS.txt
+          if-no-files-found: error

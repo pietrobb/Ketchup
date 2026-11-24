@@ -1,8 +1,9 @@
 use ketchup_model::cam::{
-    CamFixture, CamOperation, CamPlanId, CamPlannerError, CamPostprocessorDialect,
-    CamPostprocessorOutput, CamSimulationEvidence, CamToolpath,
+    CamError, CamFixture, CamOperation, CamPlan, CamPlanId, CamPlannerError,
+    CamPostprocessorDialect, CamPostprocessorOutput, CamSimulationEvidence, CamToolpath,
 };
 use ketchup_model::document::{DocumentId, Snapshot};
+use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::{VecDeque, hash_map::RandomState};
 use std::hash::BuildHasher;
@@ -59,6 +60,7 @@ pub enum CamReviewError {
     ConfirmationRequired,
     InvalidPath,
     FileExists,
+    ReplacedFileChanged,
     Write(String),
 }
 
@@ -89,6 +91,9 @@ impl std::fmt::Display for CamReviewError {
             Self::FileExists => {
                 formatter.write_str("CAM export refuses to replace an existing file")
             }
+            Self::ReplacedFileChanged => formatter.write_str(
+                "the file the user agreed to replace changed or disappeared before the CAM export",
+            ),
             Self::Write(reason) => write!(formatter, "CAM export failed: {reason}"),
         }
     }
@@ -153,15 +158,8 @@ impl CamReviewWorkflow {
         let plan = snapshot
             .cam_plan(request.plan_id)
             .ok_or(CamReviewError::PlanMissing)?;
-        let toolpath = CamToolpath::plan(snapshot, plan, &request.operations)
-            .map_err(CamReviewError::Planning)?;
-        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
-            self.worker_path
-                .as_deref()
-                .ok_or(CamReviewError::WorkerUnavailable)?,
-            cancelled,
-        )
-        .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+        let (mut worker, toolpath) =
+            self.plan_toolpath(snapshot, plan, &request.operations, cancelled)?;
         let simulation = worker
             .simulate_cam(snapshot, plan, &toolpath, &request.fixtures, cancelled)
             .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
@@ -170,7 +168,7 @@ impl CamReviewWorkflow {
             plan,
             &toolpath,
             &simulation,
-            request.dialect,
+            request.dialect.clone(),
         )
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         let id = self.next_id;
@@ -196,7 +194,7 @@ impl CamReviewWorkflow {
             toolpath_digest: toolpath.toolpath_digest.clone(),
             simulation_fingerprint: simulation.result_fingerprint.clone(),
             content_digest: output.content_digest.clone(),
-            dialect: request.dialect,
+            dialect: request.dialect.clone(),
             units: output.program.units.clone(),
             work_offset: output.program.work_offset.clone(),
             tool_number: output.program.tool_number,
@@ -219,6 +217,12 @@ impl CamReviewWorkflow {
         Ok(summary)
     }
 
+    /// Writes the reviewed program to the new file `path`, or with `replacing` over the file
+    /// there the user agreed to replace, while `replacing` still finds it unchanged.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the review, its document state, the target and the consent are all distinct inputs"
+    )]
     pub fn export(
         &mut self,
         snapshot: &Snapshot,
@@ -226,6 +230,7 @@ impl CamReviewWorkflow {
         token: &str,
         path: &Path,
         confirmed: bool,
+        replacing: Option<&dyn Fn(&Path) -> bool>,
         cancelled: &AtomicBool,
     ) -> Result<CamReviewSummary, CamReviewError> {
         if !confirmed {
@@ -247,15 +252,8 @@ impl CamReviewWorkflow {
         let plan = snapshot
             .cam_plan(review.request.plan_id)
             .ok_or(CamReviewError::StaleReview)?;
-        let toolpath = CamToolpath::plan(snapshot, plan, &review.request.operations)
-            .map_err(CamReviewError::Planning)?;
-        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
-            self.worker_path
-                .as_deref()
-                .ok_or(CamReviewError::WorkerUnavailable)?,
-            cancelled,
-        )
-        .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+        let (mut worker, toolpath) =
+            self.plan_toolpath(snapshot, plan, &review.request.operations, cancelled)?;
         let simulation = worker
             .simulate_cam(
                 snapshot,
@@ -270,7 +268,7 @@ impl CamReviewWorkflow {
             plan,
             &toolpath,
             &simulation,
-            review.request.dialect,
+            review.request.dialect.clone(),
         )
         .map_err(|error| CamReviewError::Postprocessing(error.to_string()))?;
         if toolpath != review.toolpath
@@ -284,8 +282,13 @@ impl CamReviewWorkflow {
             .parent()
             .filter(|parent| parent.is_dir())
             .ok_or(CamReviewError::InvalidPath)?;
-        if path.exists() {
-            return Err(CamReviewError::FileExists);
+        let unchanged = |still_same: &dyn Fn(&Path) -> bool| path.is_file() && still_same(path);
+        match replacing {
+            None if path.exists() => return Err(CamReviewError::FileExists),
+            Some(still_same) if !unchanged(still_same) => {
+                return Err(CamReviewError::ReplacedFileChanged);
+            }
+            _ => {}
         }
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .map_err(|error| CamReviewError::Write(error.to_string()))?;
@@ -293,14 +296,71 @@ impl CamReviewWorkflow {
             .write_all(&output.content)
             .and_then(|()| temporary.as_file().sync_all())
             .map_err(|error| CamReviewError::Write(error.to_string()))?;
-        temporary.persist_noclobber(path).map_err(|error| {
-            if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-                CamReviewError::FileExists
-            } else {
-                CamReviewError::Write(error.error.to_string())
+        match replacing {
+            None => temporary.persist_noclobber(path).map_err(|error| {
+                if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+                    CamReviewError::FileExists
+                } else {
+                    CamReviewError::Write(error.error.to_string())
+                }
+            })?,
+            Some(still_same) => {
+                // Checked again just before the rename: the program replaces only the
+                // file the user agreed to replace.
+                if !unchanged(still_same) {
+                    return Err(CamReviewError::ReplacedFileChanged);
+                }
+                temporary
+                    .persist(path)
+                    .map_err(|error| CamReviewError::Write(error.error.to_string()))?
             }
-        })?;
+        };
         self.pending.remove(index);
         Ok(review.summary)
+    }
+
+    /// Starts the exact worker and plans the toolpath, first reading every
+    /// face an operation names from the evaluated target.
+    fn plan_toolpath(
+        &self,
+        snapshot: &Snapshot,
+        plan: &CamPlan,
+        operations: &[CamOperation],
+        cancelled: &AtomicBool,
+    ) -> Result<(ExactWorkerSupervisor, CamToolpath), CamReviewError> {
+        let mut worker = ExactWorkerSupervisor::spawn_with_cancellation(
+            self.worker_path
+                .as_deref()
+                .ok_or(CamReviewError::WorkerUnavailable)?,
+            cancelled,
+        )
+        .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+        let resolved;
+        let operations = if operations.iter().any(CamOperation::names_face) {
+            let target = plan.target();
+            let graph =
+                ExactBRepGraph::from_snapshot(snapshot, target.definition_id, target.feature_id)
+                    .map_err(|error| {
+                        CamReviewError::Planning(CamError::TargetGraph(error).into())
+                    })?;
+            let package = worker
+                .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+                    &graph,
+                    &[],
+                    cancelled,
+                )
+                .map_err(|error| CamReviewError::Simulation(error.to_string()))?;
+            resolved = operations
+                .iter()
+                .map(|operation| operation.resolve_face(&package, plan))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CamReviewError::Planning)?;
+            resolved.as_slice()
+        } else {
+            operations
+        };
+        let toolpath =
+            CamToolpath::plan(snapshot, plan, operations).map_err(CamReviewError::Planning)?;
+        Ok((worker, toolpath))
     }
 }

@@ -1,9 +1,11 @@
 //! Group connectivity is independent of grounding and declared joints.
 use crate::exact::{ExactShapes, box_is_solid};
 use crate::model::{Part, ProgramModel};
+use crate::near_pairs::near_pairs;
 use crate::validate::{Issue, Severity};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::ControlFlow;
 
 /// Unknown is not contact: a non-box pair needs the native solids to settle it.
 fn touching(a: &Part, b: &Part, exact: &ExactShapes) -> Option<bool> {
@@ -18,14 +20,14 @@ fn touching(a: &Part, b: &Part, exact: &ExactShapes) -> Option<bool> {
     }
 }
 
-fn root(parents: &[usize], mut index: usize) -> usize {
+pub(crate) fn root(parents: &[usize], mut index: usize) -> usize {
     while parents[index] != index {
         index = parents[index];
     }
     index
 }
 
-fn join(parents: &mut [usize], a: usize, b: usize) {
+pub(crate) fn join(parents: &mut [usize], a: usize, b: usize) {
     let (a, b) = (root(parents, a), root(parents, b));
     parents[b] = a;
 }
@@ -73,13 +75,11 @@ pub(crate) fn issues(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec
             .iter()
             .map(|part| part.world_bounds())
             .collect::<Vec<_>>();
-        let mut order = (0..members.len()).collect::<Vec<_>>();
-        order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
-        for (position, &left) in order.iter().enumerate() {
-            for &right in &order[position + 1..] {
-                if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
-                    break;
-                }
+        near_pairs(
+            &bounds,
+            (0..members.len()).collect(),
+            CONTACT_FIT_MM,
+            |left, right| {
                 let (a, b) = (members[left], members[right]);
                 let contact = *pairs
                     .entry((a.name.as_str(), b.name.as_str()))
@@ -90,8 +90,9 @@ pub(crate) fn issues(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec
                 if contact != Some(false) {
                     join(&mut possible, left, right);
                 }
-            }
-        }
+                ControlFlow::Continue(())
+            },
+        );
         let certain = islands(&members, &known);
         if certain.len() == 1 {
             continue;

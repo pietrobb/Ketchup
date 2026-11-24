@@ -1,23 +1,24 @@
-//! Rule programs and DWG files are read in a worker process of their own, in a
-//! job with a memory limit. A program that takes all the memory or never ends,
-//! or a DWG file that declares a section of hundreds of gigabytes, costs that
-//! worker, not the editor window: the worker is killed on cancel and at the
-//! deadline, and a failed allocation aborts only the worker.
+//! Rule programs, DWG and SketchUp files are read in a worker process of their own,
+//! in a job with a memory limit. A program that takes all the memory or never ends,
+//! or a file that declares a section of hundreds of gigabytes, costs that worker,
+//! not the editor window: the worker is killed on cancel and at the deadline, and a
+//! failed allocation aborts only the worker.
 //!
 //! The worker stays between requests, so an edit pays no process start; a new
 //! one starts after the last was killed or died.
 //!
 //! The worker is `ketchup-program-worker`, not the exact worker, so the exact
 //! worker that every model evaluation starts carries neither the interpreter nor
-//! the DWG reader.
-pub use crate::protocol::DwgRefusal;
+//! the DWG and SketchUp readers.
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
-    RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayWriteInput,
-    UnderlayWriteOutcome, UnderlayWritten, WorkerFailure, WorkerReply, WorkerRequest,
-    protocol_identity, read_frame, write_frame,
+    RefineOutcome, ReportOutcome, SkpInput, SkpOutcome, UnderlayInput, UnderlayOutcome,
+    UnderlayRead, UnderlayWriteInput, UnderlayWriteOutcome, UnderlayWritten, WorkerFailure,
+    WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
 };
+pub use crate::protocol::{DwgRefusal, SkpRefusal};
 use crate::underlay_reading::{UnderlayReadError, read_underlay, write_underlay};
+use crate::worker_client::WORKER_START_UP_TIMEOUT;
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
 use ketchup_model::graph::sha256_hex;
@@ -25,6 +26,7 @@ use ketchup_program::{
     CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ExactShapes, ProgramError,
     ProgramModel, Refined, Report,
 };
+use ketchup_skp::SkpModel;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -38,10 +40,7 @@ pub const PROGRAM_WORKER_MEMORY_BYTES: usize = 2 * EVALUATION_HEAP_BYTES;
 /// can run far past it, so the parent stops the worker a little later.
 const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
-/// How long evaluating a program and every check of its model may take
-/// together: the checks of the largest example program (1 854 parts) take far
-/// longer than its evaluation, 1.5 s in a release build and 28 s in a debug build.
-pub const PROGRAM_CHECK_TIME: Duration = Duration::from_secs(60);
+pub use ketchup_program::CHECK_TIME as PROGRAM_CHECK_TIME;
 
 /// One deadline for evaluating a program, its report, the exact check and the
 /// refined report: each step gets only the time the earlier ones left, so a
@@ -168,6 +167,68 @@ impl std::error::Error for DwgConversionError {
     }
 }
 
+/// Why a SketchUp file was not read as GLB.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SkpConversionError {
+    /// The SketchUp reader refused the file.
+    Refused(SkpRefusal),
+    Cancelled,
+    /// Reading needed more memory than the worker may commit.
+    MemoryLimit,
+    /// The worker could not be started, or stopped otherwise: a file nested deeper than the
+    /// reader's stack ends it too.
+    WorkerFailed(WorkerError),
+    /// No directory could be made for the GLB the worker writes.
+    OutputDirectory(std::io::ErrorKind),
+    /// The GLB the worker wrote could not be read back.
+    Output(WorkerError),
+    /// The GLB read back is not the one the worker wrote.
+    OutputDigestMismatch,
+}
+
+impl fmt::Display for SkpConversionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(refusal) => refusal.fmt(formatter),
+            Self::Cancelled => formatter.write_str("reading the SketchUp file was cancelled"),
+            Self::MemoryLimit => write!(
+                formatter,
+                "reading the SketchUp file needed more than {} GiB of memory and was stopped: \
+                 the file is damaged or declares sizes it does not hold, or its model is \
+                 larger than one import reads. Open it in SketchUp; if it opens, purge what \
+                 it does not use (Window > Model Info > Statistics > Purge Unused) or save \
+                 parts of it as separate files, then import them one by one",
+                PROGRAM_WORKER_MEMORY_BYTES >> 30
+            ),
+            Self::WorkerFailed(error) => write!(
+                formatter,
+                "the process that reads SketchUp files stopped: {error}"
+            ),
+            Self::Output(error) => write!(
+                formatter,
+                "the GLB of the SketchUp model could not be read back: {error}"
+            ),
+            Self::OutputDirectory(kind) => write!(
+                formatter,
+                "no directory could be made for the GLB of the SketchUp model: {kind}"
+            ),
+            Self::OutputDigestMismatch => {
+                formatter.write_str("the GLB file does not match the worker's digest")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SkpConversionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused(refusal) => Some(refusal),
+            Self::WorkerFailed(error) | Self::Output(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 pub struct ProgramWorker {
     executable: PathBuf,
     executable_sha256: String,
@@ -231,10 +292,29 @@ impl ProgramWorker {
         deadline: CheckDeadline,
         cancel: &CancelToken,
     ) -> Result<Evaluated, ProgramError> {
-        let time = self
-            .deadline
-            .min(deadline.request_time().map_err(Stopped::program_error)?);
-        self.evaluate_within(file_name, source, overrides, time, cancel)
+        let own = self.deadline;
+        let input = program_input(file_name, source, overrides);
+        // Its own limit stays its own: only the shared deadline's stop is renamed.
+        let mut running = self
+            .worker(
+                cancel,
+                deadline
+                    .request_time()
+                    .map_err(Stopped::program_error)?
+                    .min(WORKER_START_UP_TIMEOUT),
+            )
+            .map_err(|stopped| deadline.stopped(stopped).program_error())?;
+        let left = match deadline.request_time() {
+            Ok(left) => left,
+            Err(stopped) => {
+                self.running = Some(running);
+                return Err(stopped.program_error());
+            }
+        };
+        let reply = running.evaluate_program(input, cancel.flag(), own.min(left));
+        self.answer(running, reply)
+            .map_err(Stopped::program_error)?
+            .into()
     }
 
     fn evaluate_within(
@@ -245,11 +325,7 @@ impl ProgramWorker {
         time: Duration,
         cancel: &CancelToken,
     ) -> Result<Evaluated, ProgramError> {
-        let input = ProgramInput {
-            file_name: file_name.to_owned(),
-            source: source.to_owned(),
-            overrides: overrides.clone(),
-        };
+        let input = program_input(file_name, source, overrides);
         self.call(cancel, |client| {
             client.evaluate_program(input, cancel.flag(), time)
         })
@@ -399,6 +475,74 @@ impl ProgramWorker {
         })
     }
 
+    /// [`ketchup_skp::skp_to_glb`] in the worker, for a GLB of at most `max_glb_bytes`: the
+    /// worker writes it to a file of its own, read back whole here.
+    ///
+    /// # Errors
+    /// The reader refused the file, the worker was stopped or died, or its GLB could not be
+    /// read back.
+    pub fn convert_skp(
+        &mut self,
+        skp: &[u8],
+        max_glb_bytes: usize,
+        cancel: &CancelToken,
+    ) -> Result<SkpModel, SkpConversionError> {
+        let directory = tempfile::tempdir()
+            .map_err(|error| SkpConversionError::OutputDirectory(error.kind()))?;
+        let output = directory.path().join("model.glb");
+        let input = SkpInput {
+            skp: skp.to_vec(),
+            output: output.clone(),
+            max_glb_bytes,
+        };
+        let outcome = self
+            .call(cancel, |client| {
+                client.convert_skp(input, cancel.flag(), UNTIL_CANCELLED)
+            })
+            .map_err(Stopped::skp_error)?;
+        let (glb_sha256, version, verified, left_out, tags, node_tags, node_hidden) = match outcome
+        {
+            SkpOutcome::Converted {
+                glb_sha256,
+                version,
+                verified,
+                left_out,
+                tags,
+                node_tags,
+                node_hidden,
+            } => (
+                glb_sha256,
+                version,
+                verified,
+                left_out,
+                tags,
+                node_tags,
+                node_hidden,
+            ),
+            SkpOutcome::Refused(refusal) => return Err(SkpConversionError::Refused(refusal)),
+        };
+        let glb = crate::read_regular_file(&output, "GLB of the SketchUp model")
+            .map_err(SkpConversionError::Output)?;
+        if sha256_hex(&glb) != glb_sha256 {
+            return Err(SkpConversionError::OutputDigestMismatch);
+        }
+        Ok(SkpModel {
+            glb,
+            version,
+            verified,
+            left_out: left_out
+                .into_iter()
+                .map(|(code, count)| ketchup_skp::LeftOut { code, count })
+                .collect(),
+            tags: tags
+                .into_iter()
+                .map(|(name, visible)| ketchup_skp::SkpTag { name, visible })
+                .collect(),
+            node_tags,
+            node_hidden,
+        })
+    }
+
     /// Reads the drawing `input` names as an underlay in the worker, which writes its
     /// lines to `input.output`.
     ///
@@ -444,15 +588,28 @@ impl ProgramWorker {
         }
     }
 
-    /// [`Self::call`] with the time `deadline` has left.
+    /// [`Self::call`] with the time `deadline` has left: starting a worker takes only
+    /// what is left, and the request gets what the start left, so the check still
+    /// ends by its deadline (R1122ac, review §4 P3).
     fn call_by<T>(
         &mut self,
         deadline: CheckDeadline,
         cancel: &CancelToken,
         request: impl FnOnce(&mut ExactWorkerClient, Duration) -> Result<T, WorkerError>,
     ) -> Result<T, Stopped> {
-        let time = deadline.request_time()?;
-        self.call(cancel, |client| request(client, time))
+        let start = deadline.request_time()?.min(WORKER_START_UP_TIMEOUT);
+        let mut running = self
+            .worker(cancel, start)
+            .map_err(|stopped| deadline.stopped(stopped))?;
+        let time = match deadline.request_time() {
+            Ok(time) => time,
+            Err(stopped) => {
+                self.running = Some(running);
+                return Err(stopped);
+            }
+        };
+        let reply = request(&mut running, time);
+        self.answer(running, reply)
             .map_err(|stopped| deadline.stopped(stopped))
     }
 
@@ -462,6 +619,17 @@ impl ProgramWorker {
         cancel: &CancelToken,
         request: impl FnOnce(&mut ExactWorkerClient) -> Result<T, WorkerError>,
     ) -> Result<T, Stopped> {
+        let mut running = self.worker(cancel, WORKER_START_UP_TIMEOUT)?;
+        let reply = request(&mut running);
+        self.answer(running, reply)
+    }
+
+    /// The running worker, or a new one started within `start`.
+    fn worker(
+        &mut self,
+        cancel: &CancelToken,
+        start: Duration,
+    ) -> Result<ExactWorkerClient, Stopped> {
         if cancel.is_cancelled() {
             return Err(Stopped::Cancelled);
         }
@@ -469,29 +637,35 @@ impl ProgramWorker {
             .running
             .as_mut()
             .is_some_and(ExactWorkerClient::is_alive);
-        let mut running = match self.running.take() {
-            Some(running) if alive => running,
-            _ => self.spawn(cancel)?,
-        };
-        match request(&mut running) {
+        match self.running.take() {
+            Some(running) if alive => Ok(running),
+            _ => self.spawn(cancel, start),
+        }
+    }
+
+    /// Keeps the worker that answered; one that failed was killed by its client and is
+    /// dropped here.
+    fn answer<T>(
+        &mut self,
+        running: ExactWorkerClient,
+        reply: Result<T, WorkerError>,
+    ) -> Result<T, Stopped> {
+        match reply {
             Ok(reply) => {
                 self.running = Some(running);
                 Ok(reply)
             }
-            // The client has already killed the worker; it is dropped here.
             Err(error) => Err(stopped(error)),
         }
     }
 
-    fn spawn(&self, cancel: &CancelToken) -> Result<ExactWorkerClient, Stopped> {
+    fn spawn(&self, cancel: &CancelToken, start: Duration) -> Result<ExactWorkerClient, Stopped> {
         let executable = verify_exact_worker_identity(&self.executable, &self.executable_sha256)
             .map_err(Stopped::Failed)?;
         let mut client =
             ExactWorkerClient::spawn_guarded_with(executable, PROGRAM_WORKER_MEMORY_BYTES)
                 .map_err(Stopped::Failed)?;
-        client
-            .ping_with_cancellation(cancel.flag())
-            .map_err(stopped)?;
+        client.ping_within(cancel.flag(), start).map_err(stopped)?;
         Ok(client)
     }
 }
@@ -530,6 +704,9 @@ pub fn run_stdio() {
             }
             Frame::Message(WorkerRequest::ConvertDwg(input)) => {
                 WorkerReply::Dwg(Box::new(DwgOutcome::convert(&input)))
+            }
+            Frame::Message(WorkerRequest::ConvertSkp(input)) => {
+                WorkerReply::Skp(Box::new(SkpOutcome::convert(&input)))
             }
             Frame::Message(WorkerRequest::ReadUnderlay(input)) => {
                 WorkerReply::Underlay(Box::new(read_underlay(&input)))
@@ -630,6 +807,14 @@ fn failed_too_large(reply: &WorkerReply) -> WorkerReply {
     }
 }
 
+fn program_input(file_name: &str, source: &str, overrides: &BTreeMap<String, f64>) -> ProgramInput {
+    ProgramInput {
+        file_name: file_name.to_owned(),
+        source: source.to_owned(),
+        overrides: overrides.clone(),
+    }
+}
+
 fn stopped(error: WorkerError) -> Stopped {
     match error {
         WorkerError::Cancelled => Stopped::Cancelled,
@@ -703,6 +888,17 @@ impl Stopped {
         }
     }
 
+    fn skp_error(self) -> SkpConversionError {
+        match self {
+            Self::Cancelled => SkpConversionError::Cancelled,
+            Self::TimeLimit(after) => {
+                SkpConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
+            }
+            Self::MemoryLimit => SkpConversionError::MemoryLimit,
+            Self::Failed(error) => SkpConversionError::WorkerFailed(error),
+        }
+    }
+
     fn underlay_error(self) -> UnderlayReadError {
         match self {
             Self::Cancelled => UnderlayReadError::Cancelled,
@@ -720,7 +916,7 @@ mod tests {
     use super::*;
     use ketchup_program::{Issue, REPORT_TRUNCATED, Severity};
 
-    /// Thirty boxes that all overlap: 435 collisions.
+    /// Thirty boxes that all overlap: 435 pairs, the first of them collisions.
     fn overlapping() -> Evaluated {
         let source =
             "for i in range(30):\n    box(\"b%d\" % i, (100, 100, 100), at=(0, i * 0.01, 0))\n";
@@ -763,7 +959,11 @@ mod tests {
     /// its first issues and relations and says how many it leaves out (PRG-1).
     #[test]
     fn a_report_past_its_reply_lists_its_first_issues_and_names_the_rest() {
-        let whole = ketchup_program::report(&overlapping());
+        let mut whole = ketchup_program::report(&overlapping());
+        // The checks list the first collisions only: a report of more issues
+        // is made of copies of theirs.
+        let issues = whole.issues.iter().cycle().take(435).cloned().collect();
+        whole.set_issues(issues);
         assert!(
             !whole.ok && whole.issues.len() > 400,
             "{}",

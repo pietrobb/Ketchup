@@ -66,13 +66,19 @@ impl KetchupApp {
                 consent_attached: false,
                 launch_attached: false,
                 client_name: None,
+                previous_client: None,
+                write_log: Default::default(),
                 client_export: None,
+                client_overwrite: false,
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),
                 edits: Default::default(),
                 harnesses: None,
+                harness_rows: crate::app::connect_ai::read_harness_rows,
+                harness_work: None,
                 chosen_window_error: None,
+                stale_clients: crate::app::stale_ai_clients::StaleClientCheck::Off,
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
@@ -149,12 +155,14 @@ impl KetchupApp {
                     manual_cad_tools_visible: false,
                     shortcuts_open: false,
                     about_open: false,
+                    dock_collapsed: false,
                 },
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
                 written_drawings: None,
                 btlx: app_state::BtlxSettings::default(),
                 btlx_settings: None,
+                btlx_saving: app_state::BtlxSaving::default(),
             },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
@@ -225,11 +233,17 @@ impl KetchupApp {
             tool_preview: None,
             gesture: Gesture::default(),
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
+            // A unit test never shows a native dialog on the desktop: one it
+            // did not script is declined (review 2026-11-08 SEC-240).
+            #[cfg(not(test))]
             dialogs: Box::new(NativeFileDialogs::default()),
+            #[cfg(test)]
+            dialogs: Box::new(crate::dialogs::ScriptedFileDialogs::new()),
             reviews: app_state::ReviewWorkflows {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
                 fea_review_dialog: None,
+                thermal_review_dialog: None,
                 pdm: LocalPdmWorkflow::new(),
                 pdm_review_dialog: None,
             },
@@ -288,10 +302,10 @@ impl KetchupApp {
         }
         app.window.written_drawings = crate::app::written_drawings::of_user();
         if let Some(file) = crate::app::btlx_settings::of_user() {
-            app.window.btlx = crate::app::btlx_settings::read(&file);
-            app.window.btlx_settings = Some(file);
+            app.keep_btlx_settings_in(file);
         }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
+        app.live.stale_clients = crate::app::stale_ai_clients::StaleClientCheck::Due;
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -300,6 +314,7 @@ impl KetchupApp {
             let resources = &mut renderer.callback_resources;
             resources.insert(GpuInstancedRenderer::new(
                 &render_state.device,
+                &render_state.queue,
                 render_state.target_format,
             ));
             resources.insert(crate::renderer::underlay::GpuUnderlayRenderer::new(
@@ -1240,6 +1255,13 @@ impl KetchupApp {
                 ui.separator();
             });
             ui.menu_button(self.catalog.text("menu-window"), |ui| {
+                let mut dock_shown = !self.window.panes.dock_collapsed;
+                if ui
+                    .checkbox(&mut dock_shown, self.catalog.text("dock-side-panel"))
+                    .changed()
+                {
+                    self.window.panes.dock_collapsed = !dock_shown;
+                }
                 ui.checkbox(
                     &mut self.window.panes.outliner_visible,
                     self.catalog.text("dock-outliner"),
@@ -1512,6 +1534,7 @@ impl KetchupApp {
         self.poll_mesh_conversion(context);
         self.poll_feature_history_exact(context);
         self.poll_recent_pick();
+        self.poll_btlx_saving();
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
         } else {
@@ -1524,7 +1547,12 @@ impl KetchupApp {
             // The next frame starts the exact evaluation of what it changed.
             context.request_repaint();
         }
-        if self.poll_area_click() | self.poll_drawing_edit() {
+        // A picture decoded since on its own thread needs a new plan to be shown.
+        if self.render.cache.receive_pictures() {
+            self.render.plan = None;
+        }
+        if self.poll_area_click() | self.poll_drawing_edit() | self.render.cache.decoding_pictures()
+        {
             context.request_repaint_after(std::time::Duration::from_millis(30));
         }
         let palette = self.palette();
@@ -1570,20 +1598,13 @@ impl KetchupApp {
                     .stroke(hairline),
             )
             .show(context, |ui| self.show_tool_rail(ui));
-        egui::SidePanel::right("right-dock")
-            .resizable(true)
-            .default_width(440.0)
-            .width_range(380.0..=720.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(palette.chrome)
-                    .inner_margin(egui::Margin::symmetric(14, 8))
-                    .stroke(hairline),
-            )
-            .show(context, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                self.show_right_dock(ui);
-            });
+        self.show_right_side(
+            context,
+            egui::Frame::new()
+                .fill(palette.chrome)
+                .inner_margin(egui::Margin::symmetric(14, 8))
+                .stroke(hairline),
+        );
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(palette.viewport_outer))
             .show(context, |ui| self.viewport(ui));
@@ -1601,11 +1622,14 @@ impl KetchupApp {
         self.show_rectangular_pattern_window(context);
         self.show_circular_pattern_window(context);
         self.show_cam_export_window(context);
+        self.show_presentation_window(context);
         self.show_fea_review_window(context);
+        self.show_thermal_review_window(context);
         self.show_pdm_review_window(context);
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
         self.show_underlay_unit_window(context);
+        self.show_underlay_code_page_window(context);
         self.show_step_import_window(context);
         self.show_iges_import_window(context);
         self.show_sketchup_scene_import_window(context);
@@ -1615,6 +1639,7 @@ impl KetchupApp {
         self.show_about_window(context);
         self.show_plugin_window(context);
         self.show_program_detach_notice(context);
+        self.show_stale_ai_clients(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
         self.finish_live_image_frame(context);

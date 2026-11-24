@@ -8,13 +8,18 @@ pub(crate) mod annotations_view;
 mod annotations_view_tests;
 pub(crate) mod btlx_settings;
 mod cad_program;
+mod cam_export;
 mod commands;
-mod connect_ai;
+pub(crate) mod connect_ai;
 pub(crate) mod dimensions_ui;
 #[cfg(test)]
 #[path = "app/dimensions_ui_tests.rs"]
 mod dimensions_ui_tests;
 pub(crate) mod dock;
+mod dock_fold;
+#[cfg(test)]
+#[path = "app/dock_fold_tests.rs"]
+mod dock_fold_tests;
 mod document;
 pub(crate) mod draft;
 mod drawing;
@@ -54,11 +59,14 @@ pub(crate) mod joints_ui;
 #[path = "app/joints_ui_tests.rs"]
 mod joints_ui_tests;
 mod local_outliner;
-mod local_time;
+pub(crate) mod local_time;
+pub(crate) mod measure_axis;
 pub(crate) mod mesh_export_activity;
 mod mirror;
 mod outliner;
 mod patterns;
+pub(crate) mod presentation_dialog;
+pub(crate) mod presentation_export;
 #[cfg(test)]
 #[path = "app/production_export_tests.rs"]
 mod production_export_tests;
@@ -76,6 +84,7 @@ mod project_drawings_tests;
 #[path = "app/push_pull_house_tests.rs"]
 mod push_pull_house_tests;
 pub(crate) mod received_comments;
+mod revision_rows;
 mod save_activity;
 pub(crate) mod saved_views;
 mod scale_grips;
@@ -84,12 +93,19 @@ mod scale_grips;
 mod scene_tabs_tests;
 mod section;
 mod selection;
+mod sheet_annotations;
+#[cfg(test)]
+mod sheet_annotations_tests;
+mod sheet_annotations_ui;
 mod shell;
+pub(crate) mod skp_import;
 pub(crate) mod spaces_ui;
 #[cfg(test)]
 #[path = "app/spaces_ui_tests.rs"]
 mod spaces_ui_tests;
+pub(crate) mod stale_ai_clients;
 mod startup_arguments;
+mod storey_table;
 mod structure;
 #[cfg(test)]
 #[path = "app/tag_toggle_tests.rs"]
@@ -99,6 +115,7 @@ mod takeoff;
 #[cfg(test)]
 #[path = "app/takeoff_tests.rs"]
 mod takeoff_tests;
+mod thermal_review;
 mod thread_display;
 #[cfg(test)]
 #[path = "app/thread_display_tests.rs"]
@@ -138,8 +155,10 @@ mod viewer_settings_tests;
 mod viewer_workflow_tests;
 mod viewport;
 mod viewport_paint;
+mod workshop_export;
 pub(crate) mod written_drawings;
 
+pub(crate) use cam_export::{CamExportDialog, Machining};
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;
@@ -150,5 +169,6 @@ pub(crate) use section::SECTION_COLOR;
 pub(crate) use section::{plane_at, section_json};
 pub(crate) use shell::*;
 pub(crate) use structure::*;
+pub(crate) use thermal_review::ThermalReviewDialog;
 pub(crate) use transform::*;
 pub(crate) use viewport::*;

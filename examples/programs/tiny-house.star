@@ -12,7 +12,7 @@ L = param("length", 6200, min = 4500, max = 10000, doc = "vonkajšia dĺžka dom
 B = param("width", 4000, min = 3000, max = 6000, doc = "vonkajšia šírka domu (y)")
 CLEAR = param("clear_height", 2550, min = 2500, max = 3000, doc = "svetlá výška prízemia")
 PITCH = param("roof_pitch", 40, min = 30, max = 50, doc = "sklon strechy v stupňoch")
-KNEE = param("knee_wall", 1000, min = 400, max = 1500, doc = "nadmurovka nad podlahou podkrovia")
+KNEE = param("knee_wall", 1000, min = 400, max = 1500, doc = "nadmurovka nad podlahou podkrovia; pri sklone 30° aspoň 1300 mm, pri 35° aspoň 1100 mm, inak strecha zasahuje nad horné schodisko")
 SYSTEM = param("system", 0, min = 0, max = 1, whole = True, unit = "", doc = "skladba: 0 drevostavba 200 mm, 1 zateplená drevostavba 250 mm")
 
 WALL_C = (226, 208, 172)
@@ -124,16 +124,22 @@ load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB", "krytin
           fixed = ["sadrokartón", "fasáda", "izolácia"], name = "nosná konštrukcia")
 
 # Zaťaženia: vlastná tiaž konštrukcie (hustoty z knižnice), úžitkové na podlahe podkrovia,
-# údržba strechy a sneh na krytine (na pôdorys). Sneh na zemi sk pre miesto stavby treba
-# odčítať z mapy STN EN 1991-1-3/NA; kým nie je zadaný (0), prvky pod strechou sú neúplné.
-SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m² podľa miesta stavby (0 = nezadané)")
+# údržba strechy a sneh na krytine (na pôdorys). Ukážkové miesto stavby je Senec, 150 m n. m.,
+# v snehovej oblasti 1 mapy STN EN 1991-1-3/NA1: site() z nich vypočíta sk = a + A/b
+# (tab. NA.1). Pre iné miesto zmeň obec, výšku a oblasť z mapy, alebo zadaj sk priamo cez
+# --set snow_sk. V Česku stačí site("CZ", snow_zone = "II").
+SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m², ak nie z oblasti miesta stavby (0 = z oblasti)")
+SITE = site("SK", municipality = "Senec", altitude = 150,
+            snow_zone = None if SNOW_SK > 0 else 1,
+            sk = SNOW_SK if SNOW_SK > 0 else None,
+            source = "zadané --set snow_sk = %s kN/m²" % SNOW_SK if SNOW_SK > 0 else None)
 # Vlastnú tiaž zapína self_weight(...) na konci programu.
 area_load("úžitkové podkrovie", kind = "imposed", kn_m2 = IMPOSED_LOADS["A"][0], on = ["podlaha"],
           source = IMPOSED_LOADS["A"][1])
 area_load("údržba strechy", kind = "roof", kn_m2 = IMPOSED_LOADS["H"][0], on = ["krytina"],
           source = IMPOSED_LOADS["H"][1])
-area_load("sneh", kind = "snow", kn_m2 = snow_load(SNOW_SK, PITCH), on = ["krytina"],
-          source = "EN 1991-1-3 5.2(3), tab. 5.2; sk = %s kN/m²" % SNOW_SK)
+area_load("sneh", kind = "snow", kn_m2 = snow_load(SITE.sk, PITCH), on = ["krytina"],
+          source = "EN 1991-1-3 5.2(3), tab. 5.2; " + SITE.source)
 # Posudok prútov podľa EC5: KVH C24, vnútorné prostredie (trieda prevádzky 1).
 timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
 
@@ -163,21 +169,6 @@ WALLS = {
     "east": (gable("steny/štít východ", L - WALL), (L - WALL, 0, SLAB), (0, 1, 0)),
 }
 
-# Okná a dvere z knižnice: jedna definícia dáva otvor v každej skladbe tej steny, výrez
-# v stene konceptu aj rám s výplňou (spoločné pre obe reprezentácie); v kovaní je každé raz.
-# Stena, druh, názov, u (od začiatku steny), v (od SLAB), šírka, výška. Západný štít pri
-# nástupe na schody a východný štít nad posteľou okno v danom podlaží nemajú.
-OPENINGS = {side: [] for side in WALLS}
-for side, kind, name, u, v, width, height in [
-        ("south", "dvere", "dvere", 800, 0, 900, 2100),
-        ("south", "okno", "okná/obývačka juh", 3500, 750, 1800, 1350),
-        ("north", "okno", "okná/kuchyňa sever", L - 5400, 1000, 1000, 1100),
-        ("west", "okno", "okná/podkrovie západ", B - 2500, attic + 500 - SLAB, 1000, 1100),
-        ("east", "okno", "okná/prízemie východ", 1400, 750, 1200, 1350)]:
-    wall, origin, along = WALLS[side]
-    make, fill = (door, "drevo") if kind == "dvere" else (window, "izolačné sklo")
-    OPENINGS[side].append(make(name, origin, along, (0, 0, 1), WALL, u, v, width, height, material = "drevo",
-                               fill_material = fill, designation = kind + " {width} × {height}", cut = wall))
 
 # --- koncept: strop / podlaha podkrovia s otvormi pre schody a komín ---
 attic_floor = box("podkrovie/podlaha", (L - 2 * WALL, B - 2 * WALL, FLOOR), at = (WALL, WALL, ceiling),
@@ -304,6 +295,35 @@ d_ridge = B / 2.0 - RIDGE_W / 2.0     # bok väznice
 apex = roof_z(B / 2.0, G + R)         # hrebeň krokiev pod debnením
 ridge_top = roof_z(B / 2.0, G)        # vrch väznice, na ňom sú krokvy osedlané
 ridge_bottom = ridge_top - RIDGE_H
+
+# Okná a dvere z knižnice: jedna definícia dáva otvor v každej skladbe tej steny, výrez
+# v stene konceptu aj rám s výplňou (spoločné pre obe reprezentácie); v kovaní je každé raz.
+# Stena, druh, názov, u (od začiatku steny), v (od SLAB), šírka, výška. Západný štít pri
+# nástupe na schody a východný štít nad posteľou okno v danom podlaží nemajú.
+GABLE_SILL = 500                      # parapet okna v štíte nad podlahou podkrovia
+GABLE_WINDOW = (1500, 2500)           # okno v štíte od južného líca (y)
+
+def gable_window_height(wanted):
+    """Výška okna v štíte: nad prekladom ostane pod hornou pásnicou a kapsou väznice
+    stĺpik aspoň taký dlhý, ako je široký, takže pri malom sklone je okno nižšie
+    (review 2026-11-08 PG-243: pri 30° tam ostali kúsky 29 a 46 mm)."""
+    stud = WALL_LAYERS[2]["stud"]
+    edge = min(GABLE_WINDOW[0], B - GABLE_WINDOW[1])
+    under = min(roof_z(edge, G) - stud / cos_a, ridge_bottom - stud) - attic
+    return min(wanted, int((under - GABLE_SILL - HEADER - stud) // 10) * 10)
+
+OPENINGS = {side: [] for side in WALLS}
+for side, kind, name, u, v, width, height in [
+        ("south", "dvere", "dvere", 800, 0, 900, 2100),
+        ("south", "okno", "okná/obývačka juh", 3500, 750, 1800, 1350),
+        ("north", "okno", "okná/kuchyňa sever", L - 5400, 1000, 1000, 1100),
+        ("west", "okno", "okná/podkrovie západ", B - GABLE_WINDOW[1], attic + GABLE_SILL - SLAB,
+         GABLE_WINDOW[1] - GABLE_WINDOW[0], gable_window_height(1100)),
+        ("east", "okno", "okná/prízemie východ", 1400, 750, 1200, 1350)]:
+    wall, origin, along = WALLS[side]
+    make, fill = (door, "drevo") if kind == "dvere" else (window, "izolačné sklo")
+    OPENINGS[side].append(make(name, origin, along, (0, 0, 1), WALL, u, v, width, height, material = "drevo",
+                               fill_material = fill, designation = kind + " {width} × {height}", cut = wall))
 
 # Platformová drevostavba: steny prízemia končia hornou pásnicou, na nej leží strop
 # (stropnice s obvodovým vencom a OSB) a na jeho podlahe stoja nadmurovky a štíty

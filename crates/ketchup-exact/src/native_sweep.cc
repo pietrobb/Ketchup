@@ -317,7 +317,7 @@ std::unique_ptr<NativeOperationResult> sweep_spatial_profile_native(
     const double minimum_segment_length = tolerances().linear_mm;
     constexpr double coordinate_limit = 1000000.0;
     const double tau = 2.0 * std::acos(-1.0);
-    if (profile_segments.size() < 2 || profile_segments.size() > 64
+    if (profile_segments.size() < 2 || profile_segments.size() > tolerances().planar_profile_segments
         || path_segments.empty() || path_segments.size() > 64) {
       return error_result(STATUS_INVALID_PARAMETER, "OCCT spatial Sweep payload is malformed");
     }

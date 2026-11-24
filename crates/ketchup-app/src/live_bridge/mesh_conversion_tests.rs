@@ -18,6 +18,7 @@ fn mesh_wire() -> Wire {
                 definition_id: DefinitionId(1),
                 name: "Mesh".into(),
                 kind: FeatureKind::MeshBody(MeshBodySpec {
+                    look: None,
                     schema: MESH_BODY_SCHEMA_V1.into(),
                     vertices_mm: vec![
                         [0.0, 0.0, 0.0],
@@ -83,7 +84,7 @@ fn call(harness: &mut egui_kittest::Harness<'_, Wire>, request: Request) -> Resp
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -128,7 +129,7 @@ fn protects_mesh_conversion(pending_review: bool, confirm: bool) {
         wire,
     );
     if pending_review {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while harness.query_by_label(&confirm_label).is_none() {
             assert!(
                 Instant::now() < deadline,

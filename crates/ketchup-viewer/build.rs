@@ -1,4 +1,5 @@
-//! Gives `ketchup-viewer.exe` its icon (`assets/ketchup-viewer.ico`). Built
+//! Gives `ketchup-viewer.exe` its icon (`assets/ketchup-viewer.ico`) and
+//! version. Built
 //! with `-C target-feature=+crt-static` for MSVC, as the release Viewer is
 //! (`scripts/windows/build-installer.ps1`), it carries the Visual C++ runtime
 //! and needs no Redistributable on a clean Windows; the universal C runtime
@@ -14,5 +15,5 @@ fn main() -> std::io::Result<()> {
         println!("cargo:rustc-link-arg=/NODEFAULTLIB:libucrt.lib");
         println!("cargo:rustc-link-arg=/DEFAULTLIB:ucrt.lib");
     }
-    windows_icon::embed("ketchup-viewer.ico")
+    windows_icon::embed("ketchup-viewer.ico", "Kečup Viewer")
 }

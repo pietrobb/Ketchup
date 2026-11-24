@@ -27,6 +27,7 @@ impl KetchupApp {
             self.view
                 .contains(ViewFlag::DraftAnalysis)
                 .then_some(super::draft::draft_face_rgb as FaceColors),
+            self.file.container_data.blobs(),
             &mut self.render.cache,
         ));
         self.render.plan = Some(Arc::clone(&plan));

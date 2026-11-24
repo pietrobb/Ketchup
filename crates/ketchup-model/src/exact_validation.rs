@@ -153,6 +153,8 @@ pub struct GeneralBodyParticipant {
 pub enum GeneralBodyValidationError {
     InvalidOrHiddenInstance,
     UnavailableOrAmbiguousGeometry,
+    /// An open mesh, which has no volume to make or to weigh.
+    OpenSheet,
     ExactGraph(Box<ExactBRepGraphError>),
     StaleExactResult,
     InvalidGeometry,
@@ -170,6 +172,7 @@ impl fmt::Display for GeneralBodyValidationError {
             Self::UnavailableOrAmbiguousGeometry => {
                 formatter.write_str("body geometry is unavailable or ambiguous")
             }
+            Self::OpenSheet => formatter.write_str("body is an open sheet that closes no solid"),
             Self::ExactGraph(error) => write!(formatter, "body exact graph is invalid: {error}"),
             Self::StaleExactResult => formatter.write_str("body exact result is stale"),
             Self::InvalidGeometry => formatter.write_str("body geometry is invalid"),
@@ -261,6 +264,9 @@ impl GeneralBodyParticipant {
                     else {
                         return Err(GeneralBodyValidationError::UnavailableOrAmbiguousGeometry);
                     };
+                    if spec.is_sheet() {
+                        return Err(GeneralBodyValidationError::OpenSheet);
+                    }
                     (
                         GeneralBodySource::CanonicalMesh {
                             definition_id: occurrence.definition_id,

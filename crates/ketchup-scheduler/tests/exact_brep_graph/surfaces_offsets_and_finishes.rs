@@ -181,6 +181,7 @@ fn loft_surface_is_open_exact_geometry_and_planar_surface_rejects_profile_holes(
                     ],
                     guide: None,
                     continuity: LoftContinuity::Position,
+                    rail: None,
                 }),
             },
         ]))
@@ -840,6 +841,130 @@ fn surface_thicken_round_trips_and_real_worker_preserves_associative_identity() 
         snapshot.canonical_digest()
     );
     assert!(package.is_current(&document.current()));
+}
+
+/// A surface spanning boundary curves that meet at corners is an open exact
+/// surface the real worker builds, Save keeps and thickening turns into a solid;
+/// a boundary that is not one closed loop is refused before any revision.
+#[test]
+fn boundary_surface_spans_cornered_curves_through_the_real_worker() {
+    use ketchup_model::document::SpatialPathSegment;
+    let _turn = crate::integration_support::file_turn();
+    let line = |start_mm, end_mm| SpatialPathSegment::Line { start_mm, end_mm };
+    let definition = DefinitionId(2060);
+    let flat = FeatureId(20_600);
+    let thicken = FeatureId(20_601);
+    let saddle = FeatureId(20_602);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Boundary surface definition".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: flat,
+                definition_id: definition,
+                name: "Flat boundary surface".into(),
+                kind: FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary {
+                    segments: vec![
+                        line([0.0, 0.0, 5.0], [40.0, 0.0, 5.0]),
+                        line([40.0, 0.0, 5.0], [40.0, 30.0, 5.0]),
+                        line([40.0, 30.0, 5.0], [0.0, 30.0, 5.0]),
+                        line([0.0, 30.0, 5.0], [0.0, 0.0, 5.0]),
+                    ],
+                    inner: Vec::new(),
+                }),
+            },
+            CanonicalCommand::CreateFeature {
+                id: thicken,
+                definition_id: definition,
+                name: "Thickened boundary surface".into(),
+                kind: FeatureKind::SurfaceThicken {
+                    target: flat,
+                    thickness: dimension(2.0),
+                    direction: ShellDirection::Outward,
+                },
+            },
+            CanonicalCommand::CreateFeature {
+                id: saddle,
+                definition_id: definition,
+                name: "Saddle boundary surface".into(),
+                kind: FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary {
+                    segments: vec![
+                        line([100.0, 0.0, 0.0], [140.0, 0.0, 10.0]),
+                        line([140.0, 0.0, 10.0], [140.0, 30.0, 0.0]),
+                        line([140.0, 30.0, 0.0], [100.0, 30.0, 10.0]),
+                        line([100.0, 30.0, 10.0], [100.0, 0.0, 0.0]),
+                    ],
+                    inner: Vec::new(),
+                }),
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let graph = ExactBRepGraph::from_snapshot(&snapshot, definition, flat).unwrap();
+    assert_eq!(graph.schema, EXACT_BREP_GRAPH_SCHEMA_V23);
+    assert_eq!(graph.terminal_body_kind(), BodyKind::Surface);
+    assert_eq!(
+        graph.producer_bounds_mm().unwrap(),
+        Some([[0.0, 0.0, 5.0], [40.0, 30.0, 5.0]])
+    );
+    assert!(matches!(
+        &graph.nodes.last().unwrap().operation,
+        ExactBRepOperation::BoundarySurface { boundary, inner: None }
+            if boundary.segments.len() == 4
+    ));
+    let mut downgraded = graph.clone();
+    downgraded.schema = EXACT_BREP_GRAPH_SCHEMA_V22.to_owned();
+    assert_eq!(
+        downgraded.to_bytes(),
+        Err(ExactBRepGraphError::InvalidGraph)
+    );
+
+    let loaded = persistence::load(&persistence::save(&snapshot)).unwrap();
+    assert_eq!(
+        loaded.snapshot().canonical_digest(),
+        snapshot.canonical_digest()
+    );
+
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = supervisor.evaluate_exact_brep_graph(&graph).unwrap();
+    assert_eq!(package.volume_mm3, 0.0);
+    assert!((package.area_mm2 - 1_200.0).abs() <= 1.0e-6);
+    let thick_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, thicken).unwrap();
+    assert_eq!(thick_graph.terminal_body_kind(), BodyKind::Solid);
+    let thick = supervisor.evaluate_exact_brep_graph(&thick_graph).unwrap();
+    assert!((thick.volume_mm3 - 2_400.0).abs() <= 1.0e-3);
+    let saddle_graph = ExactBRepGraph::from_snapshot(&snapshot, definition, saddle).unwrap();
+    let saddle_package = supervisor.evaluate_exact_brep_graph(&saddle_graph).unwrap();
+    assert_eq!(saddle_package.volume_mm3, 0.0);
+    // Curved, so larger than the 40 x 30 rectangle it projects onto.
+    assert!(saddle_package.area_mm2 > 1_200.0 && saddle_package.area_mm2 < 1_300.0);
+
+    let before_invalid = document.current();
+    assert!(
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateFeature {
+                id: FeatureId(20_603),
+                definition_id: definition,
+                name: "Open boundary".into(),
+                kind: FeatureKind::SurfaceBody(SurfaceBodySpec::Boundary {
+                    segments: vec![
+                        line([0.0, 0.0, 0.0], [40.0, 0.0, 0.0]),
+                        line([40.0, 0.0, 0.0], [40.0, 30.0, 0.0]),
+                        line([40.0, 30.0, 0.0], [0.0, 30.0, 0.0]),
+                    ],
+                    inner: Vec::new(),
+                }),
+            }]))
+            .is_err()
+    );
+    assert_eq!(
+        document.current().canonical_digest(),
+        before_invalid.canonical_digest()
+    );
 }
 
 #[test]
@@ -1776,20 +1901,16 @@ fn through_cut_uses_safe_bounds_for_revolve_loft_and_imported_exact_bodies() {
                 id: loft,
                 definition_id: loft_definition,
                 name: "Lofted solid".into(),
-                kind: FeatureKind::Loft {
-                    sections: vec![
-                        LoftSection {
-                            profile: lower,
-                            elevation_mm: 0.0,
-                        },
-                        LoftSection {
-                            profile: upper,
-                            elevation_mm: 20.0,
-                        },
-                    ],
-                    guide: None,
-                    continuity: LoftContinuity::Position,
-                },
+                kind: FeatureKind::loft(vec![
+                    LoftSection {
+                        profile: lower,
+                        elevation_mm: 0.0,
+                    },
+                    LoftSection {
+                        profile: upper,
+                        elevation_mm: 20.0,
+                    },
+                ]),
             },
             CanonicalCommand::CreateFeature {
                 id: loft_cut_profile,

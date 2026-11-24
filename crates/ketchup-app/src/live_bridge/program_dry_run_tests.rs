@@ -15,6 +15,7 @@ fn check(expected: Option<Stamp>, source: Option<&str>, edits: Option<Vec<Source
 
 fn apply(source: &str) -> Request {
     Request::ApplyProgram {
+        source_folder: None,
         expected: None,
         source: source.into(),
         overrides: None,
@@ -92,10 +93,11 @@ fn check_answers_like_apply_and_publishes_nothing() {
 /// Review 2026-10-16: a check gave its report and exact check one 20 s deadline,
 /// an apply its report 60 s and its exact check a fresh 20 s, so the same program
 /// could pass one and not the other, and an apply could outlast the connection's
-/// 45 s. Both now share the request's one deadline: with it spent, the queued
-/// apply's exact check is unfinished like the check's.
+/// 45 s. A check's report and exact check share the request's one deadline.
+/// Owner 2026-11-23: an apply no longer waits for its exact check, so that
+/// check runs on its own time even with the request's deadline spent.
 #[test]
-fn a_queued_check_and_apply_share_one_request_deadline() {
+fn a_queued_check_keeps_the_request_deadline_and_an_apply_checks_on_its_own_time() {
     let (mut app, mut bridge) = setup();
     app.new_document();
     let context = egui::Context::default();
@@ -159,13 +161,13 @@ fn a_queued_check_and_apply_share_one_request_deadline() {
         checked["exact_collisions"]["state"], "incomplete",
         "{checked}"
     );
-    for key in [
-        "exact_collisions",
-        "geometry_evaluated",
-        "report",
-        "validation",
-    ] {
-        assert_eq!(checked[key], applied[key], "{key}");
+    let exact = &applied["exact_collisions"];
+    if exact["not_evaluated"][0]["reason"] != "exact_check_running" {
+        assert_eq!(
+            (exact["state"].as_str(), exact["collisions"].as_u64()),
+            (Some("verified"), Some(1)),
+            "{applied}"
+        );
     }
 }
 
