@@ -6,6 +6,8 @@
 //! whose inputs are incomplete reports its utilization from the known loads
 //! as `not_verified`, never as passing.
 
+mod braces;
+
 use crate::continuous_span;
 use crate::loads::{Brace, LOAD_KINDS, LoadReport, Loads, MemberLoad, axes, extents};
 use crate::model::{
@@ -222,6 +224,10 @@ pub struct BracingDemand {
     /// (9.34), N/mm; none when the edge is held all along.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stiffness_n_mm: Option<f64>,
+    /// The load-duration class of the combination governing N_d, whose k_mod
+    /// the braces buckle at (R1124og-PG-902).
+    #[serde(skip)]
+    duration: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -333,7 +339,7 @@ pub const BASIS: [&str; 9] = [
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow 0.5/0, on a site() above 1000 m 0.7/0.2",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
-    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified; a brace holds only when its material has a timber strength class, and bracing gives what the braces of the compressed edge must take (9.2.5.2: N_d = (1 - kcrit) M_d / h with kcrit of the member unbraced, F_d = N_d / k_f,1 = 60 or k_f,2 = 80 for glulam, C = k_s N_d / a with k_s = 4); a brace holds only where its path to the ground holds the member at least that stiffly and buckles under no less than F_d (9.2.5.3): each part of the path a beam bending, twisting and stretching between where the path enters and leaves it (E_0,mean, of softwood C24 without a strength class), buckling at k_c f_c,0,k A (6.3.2, beta_c 0.2 also for glulam) at the relative slenderness of Euler's load at E_0,05 over the length the path has run under the force along each part's axis (a part only bent sideways does not buckle), each joint slipping and turning on its fasteners (K_ser of a 6 mm fastener, 2 245 N/mm; one fastener a hinge; two where a joint names none and its contact is three times as long as the thinner part is thick), turning against their slip only about the normal of its contact, by their distances across it, and turning freely under a moment about an axis lying in the contact, which would pull them out of it (table 7.1 gives no slip for that), two grounded parts touching rigid where one pushes the other and holding no pull and no slide along their contact unless a joint() fastens them, the grounded part on the floor fixed there; each anchor taken under the force its brace puts on it: a brace fixed at both ends passes on the force across the member at the member, its length a lever turning the anchor, one turning about a joint only the force along its axis; a brace leaves for its anchor at the fasteners joining them; a strut turning about its joints carries its force along a line through their fasteners (the one most across the force where they leave it open), and the path's line is taken through each part without the moment of its distance from the part's centre; of several paths to the ground only the stiffest is taken; a diaphragm() is a rigid sheet held by the springs of its fasteners at its anchors; the strength of the braces and their fasteners is not checked, nor a bracing of several members: braces of one member whose paths share an anchorage are each given the whole stiffness and buckling force of that path",
+    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified; a brace holds only when its material has a timber strength class, and bracing gives what the braces of the compressed edge must take (9.2.5.2: N_d = (1 - kcrit) M_d / h with kcrit of the member unbraced, F_d = N_d / k_f,1 = 60 or k_f,2 = 80 for glulam, C = k_s N_d / a with k_s = 4); a brace holds only where its path to the ground holds the member at least that stiffly and buckles under no less than F_d (9.2.5.3): each part of the path a beam bending, twisting and stretching between where the path enters and leaves it (E_0,mean, of softwood C24 without a strength class), buckling at k_c f_c,0,d A (6.3.2, f_c,0,d = k_mod f_c,0,k / gamma_M of the part buckling, k_mod of the combination governing F_d; beta_c 0.2 also for glulam) at the relative slenderness of Euler's load at E_0,05 over the length the path has run under the force along each part's axis (a part only bent sideways does not buckle), each joint slipping and turning on its fasteners (K_ser of a 6 mm fastener, 2 245 N/mm; one fastener a hinge; two where a joint names none and its contact is three times as long as the thinner part is thick), turning against their slip only about the normal of its contact, by their distances across it, and turning freely under a moment about an axis lying in the contact, which would pull them out of it (table 7.1 gives no slip for that), two grounded parts touching rigid where one pushes the other and holding no pull and no slide along their contact unless a joint() fastens them, the grounded part on the floor fixed there; each anchor taken under the force its brace puts on it: a brace fixed at both ends passes on the force across the member at the member, its length a lever turning the anchor, one turning about a joint only the force along its axis; a brace leaves for its anchor at the fasteners joining them; a strut turning about its joints carries its force along a line through their fasteners (the one most across the force where they leave it open), and the path's line is taken through each part without the moment of its distance from the part's centre; of several paths to the ground only the stiffest is taken; a diaphragm() is a rigid sheet held by the springs of its fasteners at its anchors; the strength of the braces and their fasteners is not checked, nor a bracing of several members: braces of one member whose paths share an anchorage are each given the whole stiffness and buckling force of that path",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
@@ -2086,7 +2092,7 @@ fn bracing_demand(
         if by.is_empty() {
             continue;
         }
-        let mut axial = 0.0_f64;
+        let (mut axial, mut duration) = (0.0_f64, 0);
         for (lo, hi) in free_stretches(load, &[], zones, top) {
             let length = (hi - lo) * shape.arc;
             let lef = if top { length + 2.0 * h } else { length };
@@ -2095,7 +2101,7 @@ fn bracing_demand(
             }
             let sigma_crit = 0.78 * b * b * class.e0_05 / (h * lef);
             let k = kcrit((class.fm_k / sigma_crit).sqrt());
-            let mut moment = 0.0_f64;
+            let (mut moment, mut governing) = (0.0_f64, 0);
             for (seg, sections) in segments {
                 for (j, x) in seg.xs.iter().enumerate() {
                     if sections[j].is_none() || *x < lo || *x > hi {
@@ -2109,11 +2115,16 @@ fn bracing_demand(
                             &components,
                             Some(GAMMA_G_FAVOURABLE),
                         );
-                        moment = moment.max(if top { sagging } else { -hogging });
+                        let this = if top { sagging } else { -hogging };
+                        if this > moment {
+                            (moment, governing) = (this, combination.duration);
+                        }
                     }
                 }
             }
-            axial = axial.max((1.0 - k) * moment / h);
+            if (1.0 - k) * moment / h > axial {
+                (axial, duration) = ((1.0 - k) * moment / h, governing);
+            }
         }
         if axial <= 0.0 {
             continue;
@@ -2129,56 +2140,10 @@ fn bracing_demand(
             axial_n: round3(axial),
             force_n: round3(axial / k_f),
             stiffness_n_mm: (longest > 1.0).then(|| round3(K_S * axial / longest)),
+            duration,
         });
     }
     demands
-}
-
-/// The braces of `braces` whose path to the ground holds less stiffly, or
-/// buckles under less force, than `demands` ask of a brace of their edge
-/// (EN 1995-1-1 9.2.5.3: C = k_s N_d / a, F_d = N_d / k_f), with why.
-fn weak_braces<'b>(
-    braces: &'b [crate::loads::Brace],
-    demands: &[BracingDemand],
-) -> Vec<(&'b crate::loads::Brace, String)> {
-    braces
-        .iter()
-        .filter_map(|brace| {
-            let held = brace.anchorage.as_ref()?;
-            let demand = demands.iter().find(|demand| demand.edge == brace.edge)?;
-            let flexible = demand
-                .stiffness_n_mm
-                .filter(|needed| held.stiffness_n_mm < *needed);
-            let buckles = held.capacity_n.filter(|capacity| *capacity < demand.force_n);
-            if flexible.is_none() && buckles.is_none() {
-                return None;
-            }
-            let mut short = Vec::new();
-            if let Some(needed) = flexible {
-                short.push(format!(
-                    "C = {} N/mm against k_s N_d / a = {needed} N/mm",
-                    held.stiffness_n_mm
-                ));
-            }
-            if let Some(capacity) = buckles {
-                short.push(format!(
-                    "{} buckles at {capacity} N against F_d = {} N",
-                    held.buckling_in.as_deref().unwrap_or(&held.through),
-                    demand.force_n
-                ));
-            }
-            Some((
-                brace,
-                format!(
-                    "{} holds its {} edge through {}, too flexible or too slender to hold it sideways ({}; EN 1995-1-1 9.2.5.3), so it holds nothing",
-                    brace.part,
-                    brace.edge,
-                    held.through,
-                    short.join(", ")
-                ),
-            ))
-        })
-        .collect()
 }
 
 /// Shear at notched bearings (6.5.2) and compression perpendicular to the
@@ -2790,12 +2755,19 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 // to the ground is less stiff or buckles sooner than EN 1995-1-1
                 // 9.2.5.3 asks of it holds nothing, and the beam is checked
                 // without it.
-                let weak = weak_braces(&load.braced_by, &bracing);
-                check.held_by.clone_from(&load.braced_by);
+                let share = |part: &str, duration: usize| {
+                    let class = parts
+                        .get(part)
+                        .and_then(|p| p.material.as_ref())
+                        .and_then(|m| model.strength_classes.get(m));
+                    braces::design_share(class, design.class.service_class, duration)
+                };
+                let designed = braces::designed(&load.braced_by, &bracing, share);
+                let weak = braces::weak(&designed, &bracing);
+                check.held_by.clone_from(&designed);
                 if !weak.is_empty() {
                     let firm = MemberLoad {
-                        braced_by: load
-                            .braced_by
+                        braced_by: designed
                             .iter()
                             .filter(|brace| !weak.iter().any(|(weak, _)| *weak == *brace))
                             .cloned()
