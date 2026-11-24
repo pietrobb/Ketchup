@@ -247,6 +247,12 @@ fn a_client_writes_the_cam_program_for_the_controller_it_names_without_a_prompt(
     );
     assert!(not_checked.contains("no M7 or M8"), "{not_checked}");
     assert!(not_checked.contains("cut at its centre"), "{not_checked}");
+    // R1124og-CAM-901: a through hole is drilled past the stock's bottom, and the room
+    // there is checked only against fixtures the plan declares.
+    assert!(
+        not_checked.contains("under a through hole"),
+        "{not_checked}"
+    );
     assert!(dialogs.high_risk_prompts().is_empty());
     assert_eq!(app.canonical_digest(), before);
 

@@ -5,6 +5,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 
 ## Unreleased
 
+- A CAM program's result now says that the room under a through hole is not checked against the table, spoilboard or clamps: the drill goes past the stock's bottom by its tip and 1 mm, and only fixtures declared in the plan are checked there.
 - An analysis joint whose faces' meshes meet only along a line is refused with the reason: the faces touch along an edge, or one covers only part of the other and neither mesh has nodes where the other face ends. Tied, the line would act as a hinge. Before, such a joint was refused as one whose faces do not touch over an area, which did not say what to change.
 - The Viewer's Measure tool holds the points it snaps to once for each mesh, not once for each copy of it on screen. A package with many copies of the same part, as the drawn-index limit of 48 M allows, could hold about 1.7 GB of them after the pointer had passed over every copy, too much on a phone.
 - Fixed: a column, post or wall on the path that holds a member sideways was taken to bend only, not to shear, so a part deep for its length held the member more stiffly than it does. A column 400 mm deep and 2 400 mm tall held a beam at 214.9 N/mm instead of about 194, and a wall-like part 1 200 × 2 400 at about 2.2 times its stiffness. Every part on the path now shears as braces already did.
