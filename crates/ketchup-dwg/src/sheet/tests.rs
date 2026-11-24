@@ -166,6 +166,23 @@ fn a_sheets_texts_are_in_a_truetype_font() {
     assert_eq!(standard.true_type_font, "Arial");
 }
 
+/// Review 2026-11-24 og DXF-901: a sheet in millimetres was metric only in `$INSUNITS`;
+/// `$MEASUREMENT` 0 (imperial) made the line types and hatch patterns loaded later come from
+/// `acad.lin` / `acad.pat`, with ANSI31 3.175 mm apart, solid on a 1:50 plan.
+#[test]
+fn a_sheet_in_millimetres_is_metric_in_dxf_and_dwg() {
+    let document = read(&sheet_dxf(&plan_sheet()).expect("the sheet is written"));
+    assert_eq!(document.header.insertion_units, 4);
+    assert_eq!(document.header.measurement, 1, "DXF $MEASUREMENT metric");
+    let dwg = sheet_dwg(&plan_sheet()).expect("the sheet is written as DWG");
+    let dxf = crate::dwg_to_whole_dxf(&dwg, 64 << 20).expect("the DWG reads back");
+    assert_eq!(
+        read(&dxf.dxf).header.measurement,
+        1,
+        "DWG MEASUREMENT metric"
+    );
+}
+
 #[test]
 fn a_sheet_is_a_dwg_of_the_same_drawing() {
     let dwg = sheet_dwg(&plan_sheet()).expect("the sheet is written as DWG");
