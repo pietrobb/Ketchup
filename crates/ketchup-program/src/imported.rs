@@ -88,6 +88,41 @@ impl Part {
         }
     }
 
+    /// The file this part's body is read from, while the host has not read
+    /// it: the part is a point until then, so no check knows its weight, what
+    /// it touches or where it collides (review 2026-11-24 R1124og-STEP-902).
+    #[must_use]
+    pub fn unread_import(&self) -> Option<&str> {
+        self.imported()
+            .filter(|import| import.read.is_none())
+            .map(|import| import.file.as_str())
+    }
+
+    /// Why no member's statics is complete while this part's file is not
+    /// read: it is weighed or under an area load, and its load and where it
+    /// bears are not known yet (R1124og-STEP-902). None when it is read or
+    /// carries no load.
+    #[must_use]
+    pub(crate) fn unread_load(&self, model: &crate::model::ProgramModel) -> Option<String> {
+        let file = self.unread_import()?;
+        let loaded = !self.tags.is_disjoint(&model.weight_scope)
+            || (model.area_loads.iter()).any(|load| !self.tags.is_disjoint(&load.on));
+        loaded.then(|| {
+            format!(
+                "{} is read from {file:?}, which was not read yet; its load and where it \
+                 bears are not known",
+                self.name
+            )
+        })
+    }
+
+    /// The volume of the body the host read, mm³.
+    #[must_use]
+    pub fn imported_volume_mm3(&self) -> Option<f64> {
+        let read = self.imported()?.read.as_ref()?;
+        Some(read.evidence.volume_mm3).filter(|volume| *volume > 0.0)
+    }
+
     /// Where the program placed the frame of the assembly file this part
     /// was read from: its own frame with the assembly's placement of it
     /// undone ([`ProgramImport::record`]). None for a whole file or one not

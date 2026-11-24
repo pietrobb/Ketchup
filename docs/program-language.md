@@ -439,9 +439,14 @@ a `qty` below 1, stops the program. On apply the host reads each file once,
 however many parts use it; a file it cannot read stops the apply with
 `program_import_failed` naming the part, the file and why. Applying by source
 alone, without the program's file, reuses the bodies the document already
-holds. Bought parts take part in the collision check like any other part; two
-parts of one assembly file that overlap where that file places them are a
-`purchased_assembly_contact` warning, not a collision.
+holds. Once read, bought parts take part in the collision check of the window
+like any other part; two parts of one assembly file that overlap where that
+file places them are a `purchased_assembly_contact` warning, not a collision.
+Their weight is the volume the file measures, not their box. A check run before
+the file is read knows only where its origin goes: such a part is no
+`floating_part`, and a part in `self_weight()` or under an `area_load()` is in
+`loads.unassigned` and in the `missing` list of every member, which is then
+`not_verified`.
 
 ```python
 door_h = param("door_h", 2000, min = 1200, max = 2600)
