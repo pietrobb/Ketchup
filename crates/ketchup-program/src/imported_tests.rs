@@ -150,3 +150,83 @@ fn one_part_of_a_file_twice_or_a_whole_file_is_no_assembly_contact() {
     }
     assert!(!same_assembly_placement(&model.parts[0], &model.parts[1]));
 }
+
+/// A beam on two posts with a steel block 100 x 80 x 100 mm on it, 200 mm
+/// along, read from a STEP file (review 2026-11-24 R1124og-STEP-902/904).
+const BLOCK_ON_BEAM: &str = "load_path(only = ['frame'])\n\
+    material_weight('steel', kg_m3 = 7850, source = 'test')\n\
+    weight_scope(['heavy'])\n\
+    box('post a', (100, 80, 1000), material = 'C24', grounded = True)\n\
+    box('post b', (100, 80, 1000), at = (2900, 0, 0), material = 'C24', grounded = True)\n\
+    box('beam', (3000, 80, 200), at = (0, 0, 1000), material = 'C24', tags = ['frame'])\n\
+    imported('block', 'block.step', at = (200, 0, 1200), material = 'steel', tags = ['heavy'])\n";
+
+fn block_on_beam() -> ProgramModel {
+    crate::evaluate("block.star", BLOCK_ON_BEAM, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model
+}
+
+fn beam_load(report: &crate::loads::LoadReport) -> &crate::loads::MemberLoad {
+    report
+        .members
+        .iter()
+        .find(|member| member.part == "beam")
+        .unwrap_or_else(|| panic!("{report:#?}"))
+}
+
+#[test]
+fn a_bought_part_not_read_yet_is_unchecked_not_weightless_or_floating() {
+    let model = block_on_beam();
+    let report = crate::loads::loads(&model);
+    let beam = beam_load(&report);
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("block") && reason.contains("not read")),
+        "{beam:#?}"
+    );
+    assert!(
+        report
+            .unassigned
+            .get("block")
+            .is_some_and(|reason| reason.contains("block.step")),
+        "{report:#?}"
+    );
+    let issues = crate::validate::validate(&model);
+    assert!(
+        !issues
+            .iter()
+            .any(|issue| issue.kind == "floating_part" && issue.parts == ["block"]),
+        "{issues:#?}"
+    );
+}
+
+#[test]
+fn a_bought_part_weighs_its_own_volume_not_its_box() {
+    let mut model = block_on_beam();
+    let block = model.imported_parts_mut().next().unwrap();
+    ProgramImport::record(
+        block,
+        ImportedBody {
+            file_name: "block.step".to_owned(),
+            part_index: None,
+            evidence: StepImportEvidence {
+                volume_mm3: 200_000.0,
+                ..evidence([[0.0; 3], [100.0, 80.0, 100.0]])
+            },
+            placement: None,
+        },
+    );
+    // The statics finds no face of a read body to stand on and says so with
+    // the load it leaves out: 200 000 mm³ of steel is 15.4 N, where its box
+    // of 800 000 mm³ would be 61.6 N.
+    let report = crate::loads::loads(&model);
+    let beam = beam_load(&report);
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.starts_with("block ") && reason.contains("its 0.02 kN")),
+        "{beam:#?}"
+    );
+}
