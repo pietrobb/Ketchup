@@ -73,7 +73,9 @@ pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
-pub use relations::{OverlapStatus, Relation, RelationKind, relations, relations_with};
+pub use relations::{
+    OverlapStatus, RELATIONS_TRUNCATED, Relation, RelationKind, relations, relations_with,
+};
 pub use validate::{
     CHECKS_UNVERIFIED, COLLISION_UNVERIFIED, Issue, REPORT_TRUNCATED, Severity, validate,
     validate_with,
@@ -428,9 +430,11 @@ pub struct Refined {
 pub fn refine(model: &ProgramModel, exact: &ExactShapes) -> Refined {
     // The relations reuse the faces the checks took of each part.
     let mut faces = contact::ContactFaces::default();
-    let issues = validate::validate_with_faces(model, exact, &mut faces);
+    let mut issues = validate::validate_with_faces(model, exact, &mut faces);
+    let (relations, truncated) = relations::relations_with_faces(model, &[], exact, &mut faces);
+    issues.extend(truncated);
     Refined {
-        relations: relations::relations_with_faces(model, &[], exact, &mut faces),
+        relations,
         issues,
         truncated: None,
     }
@@ -465,6 +469,13 @@ pub fn report(evaluated: &Evaluated) -> Report {
     issues.extend(cutting::issues(&bom.cutting));
     let thermal = thermal::thermal_checks(&evaluated.model);
     issues.extend(thermal.issues());
+    let (relations, truncated) = relations::relations_with_faces(
+        &evaluated.model,
+        &issues,
+        &ExactShapes::default(),
+        &mut faces,
+    );
+    issues.extend(truncated);
     locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
@@ -474,12 +485,7 @@ pub fn report(evaluated: &Evaluated) -> Report {
         ok: errors == 0,
         errors,
         warnings: issues.len() - errors,
-        relations: relations::relations_with_faces(
-            &evaluated.model,
-            &issues,
-            &ExactShapes::default(),
-            &mut faces,
-        ),
+        relations,
         issues,
         params: evaluated.model.params.clone(),
         bom,

@@ -712,7 +712,13 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
     }
     let mut dropped: Vec<&str> = Vec::new();
     for brace in load.map_or(&[][..], |load| load.braced_by.as_slice()) {
-        if !braces.contains(brace) && !dropped.contains(&brace.part.as_str()) {
+        // The check's braces carry their design buckling force (R1124og-PG-902),
+        // so a brace is matched by where it holds, not by its anchorage.
+        let counted = braces.iter().any(|held| {
+            (&held.part, &held.edge, held.from_mm, held.to_mm)
+                == (&brace.part, &brace.edge, brace.from_mm, brace.to_mm)
+        });
+        if !counted && !dropped.contains(&brace.part.as_str()) {
             dropped.push(&brace.part);
         }
     }
@@ -733,7 +739,7 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
             l.says("Okraj", "Okraj"),
             l.says("Miesto", "Místo"),
             l.says("tuhosť cesty k zemi", "tuhost cesty k zemi"),
-            l.says("vzper cesty", "vzpěr cesty"),
+            l.says("vzper cesty pri f_c,0,d", "vzpěr cesty při f_c,0,d"),
             l.says("Cesta vedie cez", "Cesta vede přes"),
         ));
         for brace in braces {

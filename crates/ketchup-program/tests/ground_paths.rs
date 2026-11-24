@@ -110,19 +110,22 @@ rotate(\"col {x}\", axis = (0, 0, 1), angle = 1, pivot = ({0}, 250, 0))\n",
         }),
         ("grounded rod on the floor", |x| {
             format!(
-                "box(\"rod {x}\", (1, 1, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                "box(\"rod {x}\", (1, 1, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)
+joint(\"rod {x}\", \"block {x}\", kind = \"screw\")\n",
                 x + 20
             )
         }),
         ("grounded strip 1 x 4 on the floor", |x| {
             format!(
-                "box(\"strip {x}\", (1, 4, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                "box(\"strip {x}\", (1, 4, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)
+joint(\"strip {x}\", \"block {x}\", kind = \"screw\")\n",
                 x + 20
             )
         }),
         ("grounded strip 5 x 20 on the floor", |x| {
             format!(
-                "box(\"strip {x}\", (5, 20, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                "box(\"strip {x}\", (5, 20, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)
+joint(\"strip {x}\", \"block {x}\", kind = \"screw\")\n",
                 x + 20
             )
         }),
@@ -161,24 +164,41 @@ box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded
     }
 
     // A grounded post 100 x 160 standing on the floor under each block,
-    // beside the beam, holds it: as a cantilever 3 E I / L³ = 85 N/mm, over
-    // the 56 N/mm EN 1995-1-1 9.2.5.3 asks (review 2026-11-13 r95 structural
-    // point 1: a post 50 x 100 gave 10 N/mm and held it by a threshold).
+    // beside the beam, screwed to it, holds it: as a cantilever 3 E I / L³ =
+    // 85 N/mm, over the 56 N/mm EN 1995-1-1 9.2.5.3 asks (review 2026-11-13
+    // r95 structural point 1: a post 50 x 100 gave 10 N/mm and held it by a
+    // threshold). Bare, the block on it holds no slide (R1124og-PG-901).
     let posts = blocks(|x| {
         format!(
-            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)\n",
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)
+joint(\"under {x}\", \"block {x}\", kind = \"screw\")\n",
             x - 25
         )
     });
     assert_eq!(ignored(&posts), Vec::<&str>::new());
     assert_eq!(checked(&posts, "beam").status, "pass");
+    let bare = blocks(|x| {
+        format!(
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)\n",
+            x - 25
+        )
+    });
+    assert_ne!(checked(&bare, "beam").status, "pass");
+    assert!(
+        ignored(&bare).iter().any(|message| message
+            .contains("block 300 and under 300 only bear on each other")
+            && message.contains("fasten them with joint()")),
+        "{:?}",
+        ignored(&bare)
+    );
 
     // So does each post turned 1° about its middle, its top still flat
     // against the block's bottom (capability review 768).
     let turned = blocks(|x| {
         format!(
             "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)
-rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 170, 0))\n",
+rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 170, 0))
+joint(\"under {x}\", \"block {x}\", kind = \"screw\")\n",
             x - 25,
             x + 25
         )
@@ -221,8 +241,8 @@ joint(\"board {x}\", \"block {x}\", kind = \"screw\")
 
 /// Capability review 771 (PG-163): a free stud under each block, joined to
 /// nothing, holds nothing sideways whether it stands on the bare floor or on a
-/// grounded slab lying on it. A grounded stud 100 x 160 on the slab holds the
-/// beam.
+/// grounded slab lying on it. A grounded stud 100 x 160 on the slab, screwed
+/// to it and to the block, holds the beam.
 #[test]
 fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
     const SLAB: &str = "box(\"slab\", (5900, 400, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
@@ -233,8 +253,15 @@ fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
             } else {
                 ("", 0, 2400)
             };
+            let screwed = if grounded.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "joint(\"under {x}\", \"slab\", kind = \"screw\")\njoint(\"under {x}\", \"block {x}\", kind = \"screw\")\n"
+                )
+            };
             format!(
-                "{base}box(\"under {x}\", (100, 160, {height}), at = ({}, 100, {z}), material = \"GL24h\"{grounded})\n",
+                "{base}box(\"under {x}\", (100, 160, {height}), at = ({}, 100, {z}), material = \"GL24h\"{grounded})\n{screwed}",
                 x - 25
             )
         })
@@ -267,7 +294,8 @@ fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
     let standing = |(dx, dy): (i32, i32)| {
         blocks(|x| {
             format!(
-                "box(\"strip {x}\", ({dx}, {dy}, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                "box(\"strip {x}\", ({dx}, {dy}, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)
+joint(\"strip {x}\", \"block {x}\", kind = \"screw\")\n",
                 x + 20
             )
         })
@@ -306,7 +334,9 @@ fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
 /// beam while one rod 7 x 7 x 2 400 did not. A stack bends over the height
 /// it reaches as one post, its pieces screwed end on turning on them; grounded
 /// pieces 100 x 160 stacked hold (review 2026-11-13 r95 structural point 1:
-/// pieces 50 x 50, 1.3 N/mm as a cantilever, held it by a threshold).
+/// pieces 50 x 50, 1.3 N/mm as a cantilever, held it by a threshold). Each
+/// piece is screwed to the next: stacked bare they hold no slide
+/// (R1124og-PG-901).
 #[test]
 fn stacked_short_pieces_are_as_slender_as_one_rod() {
     let stacked = |section: (i32, i32), chained: bool| {
@@ -326,16 +356,14 @@ fn stacked_short_pieces_are_as_slender_as_one_rod() {
                     250 - section.1,
                     400 * level
                 ));
-                if chained {
-                    let above = if level == 5 {
-                        format!("block {x}")
-                    } else {
-                        format!("piece {x} {}", level + 1)
-                    };
-                    joints.push_str(&format!(
-                        "joint(\"piece {x} {level}\", \"{above}\", kind = \"screw\")\n"
-                    ));
-                }
+                let above = if level == 5 {
+                    format!("block {x}")
+                } else {
+                    format!("piece {x} {}", level + 1)
+                };
+                joints.push_str(&format!(
+                    "joint(\"piece {x} {level}\", \"{above}\", kind = \"screw\")\n"
+                ));
             }
             pieces + &joints
         })
@@ -528,13 +556,16 @@ joint(\"lath {x}\", \"block {x}\", kind = \"screw\")
 /// Review 2026-11-13 r95 P3: every part on the path had to be as deep across
 /// the member as it, so grounded posts 200 x 200 on a grounded strip footing
 /// 5 900 x 300 x 100 on the floor were no ground, while the same strip 400 wide
-/// was. The footing ending the path on the floor holds however shallow.
+/// was. The footing ending the path on the floor holds however shallow. The
+/// parts are screwed together (R1124og-PG-901).
 #[test]
 fn a_strip_footing_shallower_than_the_beam_is_ground() {
     const STRIP: &str = "box(\"strip\", (5900, 300, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
     let held = blocks(|x| {
         format!(
-            "{}box(\"post {x}\", (200, 200, 2300), at = ({}, 100, 100), material = \"GL24h\", grounded = True)\n",
+            "{}box(\"post {x}\", (200, 200, 2300), at = ({}, 100, 100), material = \"GL24h\", grounded = True)
+joint(\"post {x}\", \"strip\", kind = \"screw\")
+joint(\"post {x}\", \"block {x}\", kind = \"screw\")\n",
             if x == PLACES[0] { STRIP } else { "" },
             x - 75
         )
@@ -554,8 +585,14 @@ fn a_strip_footing_shallower_than_the_beam_is_ground() {
 fn a_post_touching_the_anchorage_on_a_speck_is_no_ground() {
     let posts = |off: f64, height: f64| {
         blocks(|x| {
+            // Face to face, the block is screwed down (R1124og-PG-901).
+            let screwed = if off == 0.0 {
+                format!("joint(\"post {x}\", \"block {x}\", kind = \"screw\")\n")
+            } else {
+                String::new()
+            };
             format!(
-                "box(\"post {x}\", (400, 400, {height}), at = ({}, {}, 0), material = \"GL24h\", grounded = True)\n",
+                "box(\"post {x}\", (400, 400, {height}), at = ({}, {}, 0), material = \"GL24h\", grounded = True)\n{screwed}",
                 f64::from(x) + off,
                 200.0 + off
             )

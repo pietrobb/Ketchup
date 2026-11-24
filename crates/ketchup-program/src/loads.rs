@@ -145,8 +145,8 @@ pub struct BraceAnchorage {
     pub through: String,
     /// The force across the member per millimetre it moves there, N/mm.
     pub stiffness_n_mm: f64,
-    /// The largest force across the member before a part of the path
-    /// buckles, N; none where no part carries it along its length.
+    /// The force across the member a part of the path buckles under, N: k_c f_c,0,k A here,
+    /// k_c f_c,0,d A in a member check's `held_by`; none where no part carries it along its length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity_n: Option<f64>,
     /// The part of the path that buckles first.
@@ -464,8 +464,11 @@ fn face_area_mm2(part: &Part, axis: usize) -> f64 {
 
 fn volume_m3(part: &Part) -> f64 {
     let size = extents(part);
-    let mm3 = match (&part.body, profile_area(part)) {
-        (ProgramPartBody::Extrusion { distance_mm, .. }, Some(area)) => area * distance_mm,
+    // A bought part weighs the volume its file has, not its box (review
+    // 2026-11-24 R1124og-STEP-904: a hinge's box is three to four times it).
+    let mm3 = match (&part.body, profile_area(part), part.imported_volume_mm3()) {
+        (_, _, Some(volume)) => volume,
+        (ProgramPartBody::Extrusion { distance_mm, .. }, Some(area), _) => area * distance_mm,
         _ => size.iter().product(),
     };
     mm3 * M3_PER_MM3
@@ -1122,7 +1125,12 @@ fn own_loads(model: &ProgramModel, frames: &[Frame]) -> OwnLoads {
     let mut patches: Vec<Vec<Patch>> = parts.iter().map(|_| Vec::new()).collect();
     let mut missing: Vec<BTreeSet<String>> = parts.iter().map(|_| BTreeSet::new()).collect();
     let mut edge_on: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut unread = BTreeMap::new();
     for (item, part) in parts.iter().enumerate() {
+        if part.unread_import().is_some() {
+            unread.extend(part.unread_load(model).map(|why| (part.name.clone(), why)));
+            continue;
+        }
         let whole = |loads_n: Loads, source: &str| Patch {
             from_mm: 0.0,
             to_mm: frames[item].length,
@@ -1174,6 +1182,7 @@ fn own_loads(model: &ProgramModel, frames: &[Frame]) -> OwnLoads {
         patches,
         missing,
         edge_on,
+        unread,
     }
 }
 
@@ -1181,6 +1190,8 @@ struct OwnLoads {
     patches: Vec<Vec<Patch>>,
     missing: Vec<BTreeSet<String>>,
     edge_on: BTreeMap<String, Vec<String>>,
+    /// Loaded parts whose file is not read yet, with why (R1124og-STEP-902).
+    unread: BTreeMap<String, String>,
 }
 
 /// Why a member over `list` tips: over the supports it lifts off (`lifted`),
@@ -2902,6 +2913,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         if unloaded {
             reasons.insert("no load is declared (self_weight() or area_load())".to_owned());
         }
+        reasons.extend(own.unread.values().cloned());
         report.members.push(member_load(
             part,
             &frames[item],
@@ -2914,6 +2926,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     }
     report.stray_fasteners = stray;
     report.edge_on = own.edge_on;
+    report.unassigned.extend(own.unread);
     for [member, anchorage] in &small_anchorages {
         let reason =
             format!("it is braced sideways from {anchorage}, smaller across it than it is deep");

@@ -699,10 +699,12 @@ joint(\"batten\", \"beam\", kind = \"screw\"{beam_joint})
 }
 
 /// `source` with a grounded stand on the floor beside the beam (y 800 - 1 400)
-/// up to the batten's underside less 10 mm, for an anchorage to stand on.
+/// up to the batten's underside less 10 mm, for an anchorage to stand on,
+/// screwed to it (bare, it holds no slide, R1124og-PG-901).
 fn stood(source: String) -> String {
     format!(
-        "{source}box(\"stand\", (5900, 600, 2390), at = (0, 800, 0), material = \"GL24h\", grounded = True)\n"
+        "{source}box(\"stand\", (5900, 600, 2390), at = (0, 800, 0), material = \"GL24h\", grounded = True)
+joint(\"wall\", \"stand\", kind = \"screw\")\n"
     )
 }
 
@@ -2732,5 +2734,54 @@ joint(\"strip {x}\", \"wall\", kind = \"screw\")
             "{side} mm: {:?}",
             beam.missing
         );
+    }
+}
+
+/// Review 2026-11-24 R1124og-PG-902: a brace's path buckled at k_c f_c,0,k A,
+/// the characteristic strength, against the design force F_d = 263.24 N, so C24
+/// strips buckling at 293 and 385 N passed the beam. At f_c,0,d = k_mod f_c,0,k
+/// / gamma_M (EN 1995-1-1 6.23; C24 medium-term 0.8 / 1.3) a strip whose
+/// characteristic force is above F_d but its design force below holds nothing.
+#[test]
+fn a_brace_buckles_at_the_design_strength() {
+    for side in [15.0, 16.0] {
+        let mut source = slender_beam(&[]).replace(
+            "timber_design({\"GL24h\": \"GL24h\"})",
+            "timber_design({\"GL24h\": \"GL24h\", \"C24\": \"C24\"})",
+        );
+        source.push_str(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+        );
+        for x in [1200.0, 2400.0, 4600.0] {
+            source.push_str(&format!(
+                "box(\"strip {x}\", ({side}, 1100, {side}), at = ({x}, 0, 2400), material = \"C24\")
+joint(\"strip {x}\", \"beam\", kind = \"screw\")
+joint(\"strip {x}\", \"wall\", kind = \"screw\")
+"
+            ));
+        }
+        let strips = report(&source, &[]);
+        let characteristic: Vec<f64> = strips
+            .loads
+            .members
+            .iter()
+            .filter(|load| load.part == "beam")
+            .flat_map(|load| &load.braced_by)
+            .filter_map(|brace| brace.anchorage.as_ref()?.capacity_n)
+            .collect();
+        assert_eq!(characteristic.len(), 3, "{side} mm: {characteristic:?}");
+        let beam = member(&strips, "beam");
+        for k in characteristic {
+            let design = (k * (0.8 / 1.3) * 1000.0).round() / 1000.0;
+            assert!(design < 263.24 && 263.24 < k, "{side} mm: {design} / {k}");
+            let reason = format!("buckles at k_c f_c,0,d A = {design} N against F_d = 263.24 N");
+            assert!(
+                beam.missing.iter().any(|why| why.contains(&reason)),
+                "{side} mm: {reason} in {:?}",
+                beam.missing
+            );
+        }
+        assert_ne!(beam.status, "pass", "{side} mm: {beam:?}");
+        assert!(beam.held_by.is_empty(), "{side} mm: {:?}", beam.held_by);
     }
 }

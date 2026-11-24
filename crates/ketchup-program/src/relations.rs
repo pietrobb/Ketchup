@@ -71,6 +71,9 @@ pub enum OverlapStatus {
     BoxesOnly,
     /// Two parts of one bought assembly overlap where its file places them.
     PurchasedAssembly,
+    /// The collision check stopped listing pairs before this one, so it is
+    /// neither a collision nor cleared (review 2026-11-24 R1124og-PG-904).
+    Unchecked,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -371,18 +374,40 @@ pub fn relations_with(
     issues: &[Issue],
     exact: &ExactShapes,
 ) -> Vec<Relation> {
-    relations_with_faces(model, issues, exact, &mut ContactFaces::default())
+    relations_with_faces(model, issues, exact, &mut ContactFaces::default()).0
 }
 
-/// [`relations_with`] on the faces the checks already took of each part.
+/// [`relations_with`] on the faces the checks already took of each part, with
+/// the issue saying that relations were left out when more than
+/// [`MAX_OVERLAPPING_PAIRS`] pairs overlap (review 2026-11-24 R1124og-PG-904:
+/// they were dropped without a word).
 pub(crate) fn relations_with_faces<'a>(
     model: &'a ProgramModel,
     issues: &[Issue],
     exact: &ExactShapes,
     faces: &mut ContactFaces<'a>,
-) -> Vec<Relation> {
-    relations_by_bounds(model, issues, exact, true, faces)
+) -> (Vec<Relation>, Option<Issue>) {
+    let (relations, truncated) = relations_by_bounds(model, issues, exact, true, faces);
+    let issue = truncated.then(|| Issue {
+        source_lines: Vec::new(),
+        severity: crate::Severity::Warning,
+        kind: RELATIONS_TRUNCATED,
+        parts: Vec::new(),
+        message: format!(
+            "more than {MAX_OVERLAPPING_PAIRS} pairs of parts overlap; relations list the first \
+             {MAX_OVERLAPPING_PAIRS} and leave the rest out"
+        ),
+        where_mm: None,
+        hint: "Parts placed in a loop that does not move them lie on top of each other: give \
+               each its own place, then check again."
+            .to_owned(),
+    });
+    (relations, issue)
 }
+
+/// The kind of the issue saying relations were left out past
+/// [`MAX_OVERLAPPING_PAIRS`].
+pub const RELATIONS_TRUNCATED: &str = "relations_truncated";
 
 /// How many pairs whose bounds overlap [`relations_by_bounds`] relates, the
 /// jointed besides: each costs the volume they share, and parts a loop placed
@@ -407,7 +432,7 @@ fn relations_by_bounds<'a>(
     exact: &ExactShapes,
     skip_by_bounds: bool,
     faces: &mut ContactFaces<'a>,
-) -> Vec<Relation> {
+) -> (Vec<Relation>, bool) {
     let parts = &model.parts;
     let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
     let joint_of = |a: &Part, b: &Part| {
@@ -418,13 +443,14 @@ fn relations_by_bounds<'a>(
             .map(|joint| joint.name.as_str())
     };
     let mut pairs = Vec::new();
-    let mut overlapping = 0_usize;
+    let (mut overlapping, mut truncated) = (0_usize, false);
     // Bounds further apart than the limit and its margin on one axis are
     // further apart than the limit, and so are the boxes inside them.
     let reach = GAP_LIMIT_MM + BOUNDS_MARGIN_MM;
     near_pairs(&bounds, (0..parts.len()).collect(), reach, |left, right| {
         if boxes_overlap(&bounds[left], &bounds[right]) {
             if overlapping == MAX_OVERLAPPING_PAIRS {
+                truncated = true;
                 return ControlFlow::Continue(());
             }
             overlapping += 1;
@@ -450,12 +476,13 @@ fn relations_by_bounds<'a>(
         })
         .collect();
     sync_with_issues(&mut relations, issues);
-    relations
+    (relations, truncated)
 }
 
 /// Settles collision/unverified/boxes-only overlaps from the current issues,
 /// e.g. after the exact solids decided an unverified pair.
 pub fn sync_with_issues(relations: &mut [Relation], issues: &[Issue]) {
+    const COLLISION: &str = "collision";
     fn pair<'a>(kind: &'a str, a: &'a str, b: &'a str) -> (&'a str, &'a str, &'a str) {
         (kind, a.min(b), a.max(b))
     }
@@ -465,24 +492,27 @@ pub fn sync_with_issues(relations: &mut [Relation], issues: &[Issue]) {
         .map(|issue| pair(issue.kind, &issue.parts[0], &issue.parts[1]))
         .collect();
     let issue_for = |parts: &[String; 2], kind| flagged.contains(&pair(kind, &parts[0], &parts[1]));
+    // An issue of these kinds naming no parts says the check stopped listing
+    // them: a pair it does not name may be one it never listed.
+    let capped = issues.iter().any(|issue| {
+        issue.parts.is_empty() && [COLLISION, COLLISION_UNVERIFIED].contains(&issue.kind)
+    });
     for relation in relations {
-        if !matches!(
-            relation.status,
+        let unsettled = match relation.status {
             Some(
-                OverlapStatus::Collision
-                    | OverlapStatus::Unverified
-                    | OverlapStatus::BoxesOnly
-                    | OverlapStatus::PurchasedAssembly
-            )
-        ) {
-            continue;
-        }
-        relation.status = Some(if issue_for(&relation.parts, "collision") {
+                OverlapStatus::Collision | OverlapStatus::Unverified | OverlapStatus::Unchecked,
+            ) => true,
+            Some(OverlapStatus::BoxesOnly | OverlapStatus::PurchasedAssembly) => false,
+            _ => continue,
+        };
+        relation.status = Some(if issue_for(&relation.parts, COLLISION) {
             OverlapStatus::Collision
         } else if issue_for(&relation.parts, COLLISION_UNVERIFIED) {
             OverlapStatus::Unverified
         } else if issue_for(&relation.parts, PURCHASED_ASSEMBLY_CONTACT) {
             OverlapStatus::PurchasedAssembly
+        } else if unsettled && capped {
+            OverlapStatus::Unchecked
         } else {
             OverlapStatus::BoxesOnly
         });
