@@ -145,6 +145,56 @@ fn every_library_g_code_dialect_applies_the_tool_length_and_reaches_safe_z_befor
     }
 }
 
+/// R1124og-CAM-900: the last retract leaves the tip at the safe Z, a few millimetres over the work.
+/// A controller that moves when G49 cancels the tool length runs the spindle that length lower,
+/// into the part. A program that applies the tool length sends Z to the machine's reference
+/// (G28 or G53) before it cancels the length, or leaves the cancel to the end of the program.
+#[test]
+fn a_program_cancels_the_tool_length_only_at_the_machine_reference() {
+    let ids = CamPostprocessorDialect::library_ids().unwrap();
+    let mut checked = 0;
+    for id in ids.iter().filter(|id| *id != "controller_neutral_json") {
+        let written = output(CamPostprocessorDialect::library(id).unwrap());
+        let text = std::str::from_utf8(&written.content).unwrap();
+        let lines = text.lines().map(words).collect::<Vec<_>>();
+        let is = |word: &str, code: &str| {
+            word.strip_prefix(&code[..1])
+                .is_some_and(|number| number.trim_start_matches('0') == &code[1..])
+        };
+        let has = |line: &[String], code: &str| line.iter().any(|word| is(word, code));
+        if !lines.iter().any(|line| has(line, "G43")) {
+            continue;
+        }
+        checked += 1;
+        let last_motion = lines
+            .iter()
+            .rposition(|line| line.iter().any(|w| w.starts_with(['X', 'Y'])))
+            .unwrap();
+        let mut at_reference = false;
+        for line in &lines[last_motion + 1..] {
+            if (has(line, "G28") || has(line, "G53")) && line.iter().any(|w| w.starts_with('Z')) {
+                at_reference = true;
+            }
+            assert!(
+                at_reference || !has(line, "G49"),
+                "{id}: G49 before Z reaches the machine reference in {text}"
+            );
+        }
+        if let Some(incremental) = lines[last_motion + 1..]
+            .iter()
+            .rposition(|line| has(line, "G91"))
+        {
+            assert!(
+                lines[last_motion + 1 + incremental..]
+                    .iter()
+                    .any(|line| has(line, "G90")),
+                "{id}: the program ends incremental (G91) in {text}"
+            );
+        }
+    }
+    assert!(checked >= 3, "only {checked} dialects apply a tool length");
+}
+
 #[test]
 fn grbl_program_uses_only_words_grbl_1_1_lists_and_names_the_tool_in_a_comment() {
     let text = library_text("grbl");
