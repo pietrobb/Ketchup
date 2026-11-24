@@ -12,6 +12,7 @@ use std::io::Cursor;
 use std::ops::Range;
 
 mod compare;
+mod draw_order;
 mod drawn;
 mod refusal;
 mod revisions;
@@ -778,6 +779,8 @@ struct Drawing<'a> {
     block_records: Option<(usize, Option<Vec<u8>>)>,
     /// The number after the highest of the drawing's `*D<n>` blocks.
     next_dimension_block: u64,
+    /// The pair `BLOCK_RECORD` of model space's block record.
+    model_space: Option<usize>,
     /// Where each record of the OBJECTS section starts, and the pair `ENDSEC` closing it.
     objects: Vec<usize>,
     objects_end: Option<usize>,
@@ -822,10 +825,12 @@ struct NewBlocks {
     next_dimension: u64,
 }
 
-/// The entities the edits add: those drawn under the drawing's own and those over them.
+/// The entities the edits add: those drawn under the drawing's own, with their handles, and
+/// those over them.
 #[derive(Default)]
 struct Added {
     under: Vec<u8>,
+    fills: Vec<u64>,
     over: Vec<u8>,
 }
 
@@ -873,11 +878,13 @@ impl<'a> Drawing<'a> {
             blocks_end: None,
             block_records: None,
             next_dimension_block: 1,
+            model_space: None,
             objects: Vec::new(),
             objects_end: None,
         };
         let mut section = String::new();
         let mut record = String::new();
+        let mut record_at = 0;
         let mut table = (String::new(), None::<Vec<u8>>);
         let mut max_handle = None::<u64>;
         let mut version = Vec::new();
@@ -896,6 +903,7 @@ impl<'a> Drawing<'a> {
                 }
                 0 => {
                     record = name(pair);
+                    record_at = index;
                     match (section.as_str(), record.as_str()) {
                         ("BLOCKS", "BLOCK") => drawing.blocks.push(BlockAt {
                             start: index,
@@ -944,6 +952,12 @@ impl<'a> Drawing<'a> {
                         "$ACADVER" => version = value(next).to_ascii_uppercase(),
                         _ => {}
                     }
+                }
+                2 if section == "TABLES"
+                    && record == "BLOCK_RECORD"
+                    && name(pair) == "*MODEL_SPACE" =>
+                {
+                    drawing.model_space = Some(record_at);
                 }
                 2 if section == "TABLES" && record == "LAYER" => {
                     if let Some(name) = decode(value(pair)) {
@@ -1234,7 +1248,7 @@ impl<'a> Drawing<'a> {
             }
         }
         let detached = self.detached_hatches(&moves);
-        let (objects_edits, removed) =
+        let (mut objects_edits, removed) =
             self.objects_without(removed, (!moves.is_empty()).then_some(&moves));
         // The handles each entity names no more: the removed, and for a hatch let go of its
         // boundary each the other.
@@ -1278,12 +1292,14 @@ impl<'a> Drawing<'a> {
             replaced[entity] = Some(Some(mapped));
         }
         let added = self.added_objects(&read, edits, frame, &removed, &mut handles, &mut blocks)?;
+        self.fills_under(&added.fills, &removed, &mut handles, &mut objects_edits);
         Ok(self.spliced(handles, objects_edits, &removed, replaced, added, blocks))
     }
 
     /// The objects `edits` adds, copied or drawn, as entities: the fills drawn, written at
     /// the start of the ENTITIES section so they lie under the drawing's lines, and the rest,
-    /// written at its end.
+    /// written at its end. The fills take their handles first, so that every entity added
+    /// over them has a higher one ([`Self::fills_under`]).
     fn added_objects(
         &self,
         read: &ReadObjects,
@@ -1294,10 +1310,24 @@ impl<'a> Drawing<'a> {
         blocks: &mut NewBlocks,
     ) -> Result<Added, EditedDxfError> {
         let mut added = Added::default();
-        for (edit, first) in edits.added.iter().zip(added_ids(read.objects, edits)) {
-            if edits.removed_objects.contains(&first) {
-                continue;
-            }
+        let kept: Vec<&AddedObject> = edits
+            .added
+            .iter()
+            .zip(added_ids(read.objects, edits))
+            .filter(|(_, first)| !edits.removed_objects.contains(first))
+            .map(|(edit, _)| edit)
+            .collect();
+        let is_fill = |edit: &AddedObject| {
+            matches!(
+                edit,
+                AddedObject::Drawn {
+                    shape: DrawnShape::Hatch { .. },
+                    ..
+                }
+            )
+        };
+        let (fills, others): (Vec<_>, Vec<_>) = kept.into_iter().partition(|edit| is_fill(edit));
+        for edit in fills.into_iter().chain(others) {
             match edit {
                 AddedObject::Copy { of, map } | AddedObject::Stretched { of, map } => {
                     let entity = self.entity_of(read, *of)?;
@@ -1313,9 +1343,12 @@ impl<'a> Drawing<'a> {
                         .extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
                 }
                 AddedObject::Drawn { layer, shape } => {
+                    // A HATCH takes one handle, the next.
+                    let handle = *handles;
                     let drawn = self.drawn(layer, shape, frame, handles)?;
-                    if matches!(shape, DrawnShape::Hatch { .. }) {
+                    if is_fill(edit) {
                         added.under.extend(drawn);
+                        added.fills.extend(handle);
                     } else {
                         added.over.extend(drawn);
                     }
@@ -1388,7 +1421,8 @@ impl<'a> Drawing<'a> {
             let at = self.pairs[index].start();
             edits_at.push((at..at, blocks.records));
         }
-        edits_at.sort_by_key(|(range, _)| range.start);
+        // What is inserted where another edit starts goes before it.
+        edits_at.sort_by_key(|(range, _)| (range.start, range.end));
         for (range, with) in edits_at {
             splice(&mut out, range, &with);
         }

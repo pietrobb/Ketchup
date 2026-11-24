@@ -236,16 +236,26 @@ pub fn measured_pairs(model: &ProgramModel) -> BTreeSet<(String, String)> {
 }
 
 /// Parts requiring native collision or explicitly requested distance checks.
+/// A part read from a file not read yet has no solid to measure: none is
+/// built for it (review 2026-11-24 R1124og-STEP-902).
 #[must_use]
 pub fn exact_candidates(model: &ProgramModel) -> BTreeSet<String> {
     let parts = &model.parts;
+    let read = |name: &String| {
+        model
+            .part(name)
+            .is_some_and(|part| part.unread_import().is_none())
+    };
     let mut names: BTreeSet<String> = measured_pairs(model)
         .into_iter()
         .flat_map(|(a, b)| [a, b])
+        .filter(read)
         .collect();
     // Asked once per part, not once per pair: thousands of overlapping boxes
     // are millions of pairs (nightly 2026-11-23, 2-5 s past the deadline).
-    let shaped: Vec<bool> = parts.iter().map(|part| !box_is_solid(part)).collect();
+    let shaped: Vec<bool> = (parts.iter())
+        .map(|part| !box_is_solid(part) && part.unread_import().is_none())
+        .collect();
     if !shaped.contains(&true) {
         return names;
     }

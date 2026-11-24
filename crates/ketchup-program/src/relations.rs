@@ -466,9 +466,12 @@ fn relations_by_bounds<'a>(
     }
     pairs.sort_unstable();
     pairs.dedup();
+    // A part read from a file not read yet is a point: how it relates to
+    // another is not known ([`crate::validate::IMPORT_UNREAD`] says so).
+    let unread = |index: usize| parts[index].unread_import().is_some();
     let mut relations: Vec<Relation> = pairs
         .into_iter()
-        .filter(|(a, b)| a != b)
+        .filter(|(a, b)| a != b && !unread(*a) && !unread(*b))
         .filter_map(|(a, b)| {
             let pair_bounds = skip_by_bounds.then(|| [&bounds[a], &bounds[b]]);
             let (a, b) = (&parts[a], &parts[b]);
