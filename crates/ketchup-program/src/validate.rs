@@ -441,23 +441,25 @@ const MAX_UNVERIFIED_COLLISIONS: usize = 2_000;
 
 /// The issue in place of overlapping pairs past `limit` of kind `kind`.
 fn too_many_collisions(kind: &'static str, limit: usize) -> Issue {
-    let (severity, what) = if kind == COLLISION_UNVERIFIED {
+    let (severity, what, rest) = if kind == COLLISION_UNVERIFIED {
         (
             Severity::Warning,
             "pairs of parts whose bounding boxes overlap",
+            "the rest not, though the search for collisions went on past them",
         )
     } else {
-        (Severity::Error, "pairs of parts overlap")
+        (
+            Severity::Error,
+            "pairs of parts overlap",
+            "the rest of the pairs not checked",
+        )
     };
     Issue {
         source_lines: Vec::new(),
         severity,
         kind,
         parts: Vec::new(),
-        message: format!(
-            "more than {limit} {what}; the first {limit} are listed and the rest of the pairs \
-             not checked"
-        ),
+        message: format!("more than {limit} {what}; the first {limit} are listed and {rest}"),
         where_mm: None,
         hint: "Parts placed in a loop that does not move them lie on top of each other: give \
                each its own place, then check again."
@@ -477,48 +479,63 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             return ControlFlow::Continue(());
         }
         let before = issues.len();
-        collision(
-            model,
-            exact,
-            &model.parts[left],
-            &model.parts[right],
-            issues,
-        );
+        // Past the listed unverified pairs the search goes on without listing
+        // them: a collision further on must still fail the program (review
+        // 2026-11-24 R1124og-PG-903, a loop of drilled parts hid one).
+        let list_unverified = unverified < MAX_UNVERIFIED_COLLISIONS;
+        let pair = (&model.parts[left], &model.parts[right]);
+        // Once more are known than are listed, a pair only the exact solids
+        // settle, without their answer, cannot be a collision: skip the cost.
+        if unverified > MAX_UNVERIFIED_COLLISIONS
+            && needs_exact_shapes(pair.0, pair.1)
+            && exact.between(pair.0, pair.1).is_none()
+        {
+            return ControlFlow::Continue(());
+        }
+        if collision(model, exact, pair, list_unverified, issues) {
+            unverified += 1;
+        }
         let Some(found) = issues.get(before) else {
             return ControlFlow::Continue(());
         };
-        let kind = found.kind;
-        let (count, limit) = if kind == COLLISION_UNVERIFIED {
-            (&mut unverified, MAX_UNVERIFIED_COLLISIONS)
-        } else {
-            (&mut collided, MAX_COLLISIONS)
-        };
-        *count += 1;
-        if *count <= limit {
+        if found.kind == COLLISION_UNVERIFIED {
+            unverified += 1;
+            return ControlFlow::Continue(());
+        }
+        collided += 1;
+        if collided <= MAX_COLLISIONS {
             return ControlFlow::Continue(());
         }
         issues.truncate(before);
-        issues.push(too_many_collisions(kind, limit));
+        issues.push(too_many_collisions("collision", MAX_COLLISIONS));
         ControlFlow::Break(())
     });
+    if unverified > MAX_UNVERIFIED_COLLISIONS {
+        issues.push(too_many_collisions(
+            COLLISION_UNVERIFIED,
+            MAX_UNVERIFIED_COLLISIONS,
+        ));
+    }
 }
 
-/// Reports the overlap of parts `a` and `b` that nothing allows.
+/// Reports the overlap of parts `a` and `b` that nothing allows; one only the
+/// exact solids settle just when `list_unverified`, and whether it left such
+/// an overlap out.
 fn collision(
     model: &ProgramModel,
     exact: &ExactShapes,
-    a: &Part,
-    b: &Part,
+    (a, b): (&Part, &Part),
+    list_unverified: bool,
     issues: &mut Vec<Issue>,
-) {
+) -> bool {
     if model.are_alternatives(a, b) {
-        return;
+        return false;
     }
     let Some(region) = overlap(a, b) else {
-        return;
+        return false;
     };
     if !booleans_leave_overlap(a, b) || !booleans_leave_overlap(b, a) || trims_separate(a, b) {
-        return;
+        return false;
     }
     let seated = seated_in_pocket(a, b);
     let declared = model.joints.iter().any(|joint| {
@@ -529,7 +546,7 @@ fn collision(
                 .is_some_and(|volume| contains(volume, region))
     });
     if seated || declared || threaded_into(a, b, region) {
-        return;
+        return false;
     }
     let (min, max) = region;
     if needs_exact_shapes(a, b) {
@@ -551,7 +568,7 @@ fn collision(
                     hint: "Nothing to fix in the program: the file's maker assembled them so."
                         .to_owned(),
                 });
-                return;
+                return false;
             }
             Some(pair) if pair.penetrating() => {
                 issues.push(Issue {
@@ -570,9 +587,10 @@ fn collision(
                            from the other, or declare a joint with a volume."
                         .to_owned(),
                 });
-                return;
+                return false;
             }
-            Some(_) => return,
+            Some(_) => return false,
+            None if !list_unverified => return true,
             None => {}
         }
         issues.push(Issue {
@@ -594,7 +612,7 @@ fn collision(
                    a box-only check cannot."
                 .to_owned(),
         });
-        return;
+        return false;
     }
     issues.push(Issue {
         source_lines: Vec::new(),
@@ -614,6 +632,7 @@ fn collision(
                for the other part, or declare a joint with a volume."
             .to_owned(),
     });
+    false
 }
 
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
