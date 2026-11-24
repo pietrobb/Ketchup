@@ -52,6 +52,7 @@ mod suffix_suppress_resume;
 mod suffix_suppress_resume_verifier;
 mod topology_identity;
 mod underlay;
+mod underlay_dxf_draw_order;
 mod underlay_dxf_write;
 mod underlay_edits;
 mod underlay_fill;

@@ -183,6 +183,9 @@ fn sheet_document(sheet: &Sheet) -> Result<CadDocument, DwgError> {
     guarded(Stage::BuildSheet, || {
         let mut document = CadDocument::new();
         document.header.insertion_units = 4;
+        // Metric too, so that line types and hatch patterns loaded later come from
+        // `acadiso.lin` / `acadiso.pat`, not the inch ones (review 2026-11-24 og DXF-901).
+        document.header.measurement = 1;
         add_line_types(&mut document);
         // AutoCAD's own `txt` shapes are not on other systems and have no Central European
         // letters; Arial is everywhere.
