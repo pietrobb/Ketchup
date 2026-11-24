@@ -527,6 +527,58 @@ fn stacked_occurrences_bonded_over_a_face_deform_as_one_body_and_apart_ones_are_
     );
 }
 
+/// R1124og-FEA-900: a block standing on another moved by half its length
+/// covers half its face. The meshes of the two faces have nodes only at their
+/// corners, so they meet only along the row of nodes where one face ends:
+/// tied, that row would be a hinge. The joint is refused for it, not as faces
+/// that do not touch over an area, as it was.
+#[test]
+fn a_block_bonded_over_half_its_face_is_refused_for_meshes_that_meet_along_a_line() {
+    let _turn = crate::integration_support::file_turn();
+    let (mut document, definition, extrusion, lower) = simple_extrusion_document();
+    let upper = OccurrenceId(910);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateOccurrence {
+                id: upper,
+                definition_id: definition,
+                name: "Overhanging occurrence".into(),
+                // The block is 8 mm long in x: this one overhangs the lower by half.
+                transform: Transform::from_translation(4.0, 0.0, HEIGHT_MM).unwrap(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+        ]))
+        .unwrap();
+    let snapshot = document.current();
+    let mut supervisor =
+        ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker")).unwrap();
+    let package = block_mesh(&mut supervisor, &snapshot, definition, extrusion);
+    let corners = |z: f64| {
+        package
+            .mesh
+            .vertices_mm
+            .iter()
+            .filter(|point| (point[2] - z).abs() < 1.0e-6)
+            .count()
+    };
+    assert_eq!((corners(0.0), corners(HEIGHT_MM)), (4, 4));
+    let setup = stack_setup(
+        lower,
+        upper,
+        bottom_and_top(&package),
+        ExactFeaJointKind::Bonded,
+    );
+    let refused = assembly_bound_model(&snapshot, &[&package, &package], &setup).unwrap_err();
+    assert_eq!(refused, ExactFeaSetupError::MeetsAlongALine { joint: 0 });
+    let said = refused.to_string();
+    assert!(
+        said.contains("joint 1") && said.contains("only part of the other"),
+        "{said}"
+    );
+}
+
 /// R1120ac-FEA-901: a block bonded on its top to one block and on its side to
 /// another has the nodes of the edge between the faces in both joints; it was
 /// refused as `InvalidJoint { joint: 1 }` by which face of each joint came
@@ -668,7 +720,7 @@ fn faces_touching_only_along_an_edge_are_not_bonded() {
     for (lower_face, beside_face) in [(top, west), (top, top)] {
         assert_eq!(
             joined(lower_face, beside_face).unwrap_err(),
-            ExactFeaSetupError::InvalidJoint { joint: 0 }
+            ExactFeaSetupError::MeetsAlongALine { joint: 0 }
         );
     }
     assert!(joined(east, west).is_ok());
