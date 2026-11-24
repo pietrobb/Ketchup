@@ -889,3 +889,97 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 24
     assert_eq!(stiffnesses(&beside, "brace"), alone);
     assert_ne!(checked(&beside, "beam").status, "pass");
 }
+
+/// The column of [`a_bare_contact_between_grounded_parts_only_pushes`] braced
+/// by a brace, with `head` beside it.
+fn column_with(head: impl Fn(i32) -> String) -> Report {
+    beam_with(
+        |x| {
+            format!(
+                "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 2400), ({}, 958, 2400)])
+{}",
+                x - 50,
+                x - 200,
+                x + 15,
+                x - 15,
+                x - 30,
+                x + 30,
+                head(x)
+            )
+        },
+        "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+    )
+}
+
+/// Capability review 1031 of R1124og-PG-901, the review's own `d_side_block`:
+/// a grounded block 200 x 400 x 200 standing bare on a post 200 x 200 and
+/// bearing bare on the column's face, the column pulled along that face, held
+/// the brace at 184 N/mm. Neither bare contact holds a slide along it, so the
+/// column holds alone, whether or not the block is screwed to its post.
+#[test]
+fn a_block_on_a_post_beside_the_column_holds_no_slide() {
+    let alone = stiffnesses(&column_with(|_| String::new()), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    let side = |screwed_to_post: bool| {
+        column_with(move |x| {
+            let mut source = format!(
+                "box(\"block {x}\", (200, 400, 200), at = ({}, 760, 2200), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (200, 200, 2200), at = ({}, 860, 0), material = \"GL24h\", grounded = True)
+",
+                x + 200,
+                x + 200
+            );
+            if screwed_to_post {
+                source.push_str(&format!(
+                    "joint(\"block {x}\", \"post {x}\", kind = \"screw\")\n"
+                ));
+            }
+            source
+        })
+    };
+    for screwed_to_post in [false, true] {
+        let run = side(screwed_to_post);
+        assert_eq!(stiffnesses(&run, "brace"), alone, "{screwed_to_post}");
+        assert_ne!(checked(&run, "beam").status, "pass", "{screwed_to_post}");
+    }
+}
+
+/// Capability review 1031 of R1124og-PG-901, the review's `h_stack`: the
+/// column screwed to a grounded block standing on a post held the brace at
+/// 273 N/mm whether the block stood bare on the post or was screwed to it.
+/// Standing bare the block holds no slide on the post, so the column holds
+/// alone; screwed, the post holds it.
+#[test]
+fn a_block_standing_bare_on_its_post_holds_no_slide() {
+    let alone = stiffnesses(&column_with(|_| String::new()), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    let stack = |screwed_to_post: bool| {
+        column_with(move |x| {
+            let mut source = format!(
+                "box(\"block {x}\", (200, 400, 200), at = ({}, 970, 2200), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (200, 200, 2200), at = ({}, 1170, 0), material = \"GL24h\", grounded = True)
+joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 2300), ({}, 970, 2300)])
+",
+                x - 100,
+                x - 100,
+                x - 50,
+                x + 50
+            );
+            if screwed_to_post {
+                source.push_str(&format!(
+                    "joint(\"block {x}\", \"post {x}\", kind = \"screw\")\n"
+                ));
+            }
+            source
+        })
+    };
+    let bare = stack(false);
+    assert_eq!(stiffnesses(&bare, "brace"), alone);
+    assert_ne!(checked(&bare, "beam").status, "pass");
+    for stiffness in stiffnesses(&stack(true), "brace") {
+        assert!(stiffness > 10.0, "{stiffness}");
+    }
+}
