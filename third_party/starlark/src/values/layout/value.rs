@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating, and stops building a repr past it. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating, and stops building a repr past it; to_json refuses nesting past MAX_JSON_DEPTH. See PATCH.md.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -106,6 +106,8 @@ use crate::values::record::instance::FrozenRecord;
 use crate::values::record::record_type::RecordType;
 use crate::values::recursive_repr_or_json_guard::json_stack_push;
 use crate::values::recursive_repr_or_json_guard::repr_stack_push;
+use crate::values::recursive_repr_or_json_guard::JsonRefused;
+use crate::values::recursive_repr_or_json_guard::MAX_JSON_DEPTH;
 use crate::values::stack_guard;
 use crate::values::starlark_type_id::StarlarkTypeId;
 use crate::values::string::str_type::StarlarkStr;
@@ -1248,7 +1250,10 @@ impl<'v> Serialize for Value<'v> {
     {
         match json_stack_push(*self) {
             Ok(_guard) => erased_serde::serialize(self.get_ref().as_serialize(), s),
-            Err(..) => Err(serde::ser::Error::custom(ToJsonCycleError(self.get_type()))),
+            Err(JsonRefused::Cycle) => {
+                Err(serde::ser::Error::custom(ToJsonCycleError(self.get_type())))
+            }
+            Err(JsonRefused::TooDeep) => Err(serde::ser::Error::custom(ToJsonDepthError)),
         }
     }
 }
@@ -1360,6 +1365,11 @@ pub trait ValueLike<'v>:
 #[derive(Debug, thiserror::Error)]
 #[error("Cycle detected when serializing value of type `{0}` to JSON")]
 struct ToJsonCycleError(&'static str);
+
+/// Ketchup patch: see [`MAX_JSON_DEPTH`].
+#[derive(Debug, thiserror::Error)]
+#[error("Value nests lists, tuples, dicts or structs more than {MAX_JSON_DEPTH} deep to convert to JSON")]
+struct ToJsonDepthError;
 
 impl<'v> Sealed for Value<'v> {}
 

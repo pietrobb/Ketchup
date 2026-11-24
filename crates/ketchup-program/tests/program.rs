@@ -1274,6 +1274,35 @@ fn a_program_nesting_thousands_deep_is_refused_with_its_line() {
     }
 }
 
+/// R1124og-PG-905: nesting built while the program runs, not written in its
+/// source, still overflowed the stack and killed the process with no answer:
+/// `json.encode` of a list in a list a thousand deep, and a garbage collection
+/// copying a list put in a list 600 000 times. `json.encode` refuses it with
+/// the line; the collection copies it whole.
+#[test]
+fn nesting_built_while_the_program_runs_does_not_overflow_the_stack() {
+    for (kind, value) in [("list", "[x]"), ("dict", "{\"k\": x}")] {
+        let source = format!(
+            "x = []\nfor i in range(1000):\n    x = {value}\ns = json.encode(x)\nbox(\"a\", (1, 2, 3))\n"
+        );
+        let error = run("deep.star", &source, &BTreeMap::new()).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("more than 200 deep to convert to JSON"),
+            "{kind}: {}",
+            error.message
+        );
+        assert_eq!(error.location.map(|at| at.at.line), Some(4), "{kind}");
+    }
+    let shallow = "x = 1\nfor i in range(150):\n    x = [x]\nbox(\"a\", (1, 2, 2 + len(json.encode(x)) // 1000))\n";
+    run("shallow.star", shallow, &BTreeMap::new()).unwrap();
+
+    let chain = "x = []\nt = ()\nfor i in range(600000):\n    x = [x]\n    t = (t, i)\nbox(\"a\", (1, 2, 3))\n";
+    let (evaluated, _) = run("chain.star", chain, &BTreeMap::new()).unwrap();
+    assert_eq!(evaluated.model.parts.len(), 1);
+}
+
 #[test]
 fn a_tapped_hole_drills_the_tap_drill_and_the_machining_report_names_the_thread() {
     let (evaluated, report) = run(

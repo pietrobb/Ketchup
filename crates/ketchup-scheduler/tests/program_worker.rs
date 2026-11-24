@@ -79,6 +79,27 @@ fn a_program_nesting_thousands_deep_is_a_syntax_error_in_the_worker() {
     assert_eq!(worker.process_id(), pid);
 }
 
+/// R1124og-PG-905: nesting built while the program runs killed the worker the
+/// same way: `json.encode` of a list in a list a thousand times. It comes back
+/// as an error at its line, and the worker stays.
+#[test]
+fn json_of_a_value_nested_a_thousand_deep_is_an_error_in_the_worker() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let deep = format!("{BOX}x = []\nfor i in range(1000):\n    x = [x]\ns = json.encode(x)\n");
+    let error = run(&mut worker, &deep).unwrap_err();
+    assert_eq!(error.code, "evaluation_error", "{error}");
+    assert!(error.message.contains("200 deep"), "{error}");
+    assert_eq!(
+        error.location.as_ref().map(|at| at.at.line),
+        Some(5),
+        "{error}"
+    );
+    let pid = worker.process_id();
+    assert_eq!(run(&mut worker, BOX).unwrap().model.parts.len(), 1);
+    assert_eq!(worker.process_id(), pid);
+}
+
 #[test]
 fn a_builtin_loop_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
