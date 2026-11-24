@@ -164,7 +164,7 @@ fn a_slovak_calculation_lists_the_stretches_held_and_what_their_braces_take() {
     let [top] = beam.bracing.as_slice() else {
         panic!("one braced edge: {:?}", beam.bracing);
     };
-    let kn = |n: f64| format!("{:.2} kN", n / 1000.0).replace('.', ",");
+    let kn = |n: f64| format!("{:.3} kN", n / 1000.0).replace('.', ",");
     assert!(text.contains("N_d (9.2.5.2(4))"), "{text}");
     assert!(
         text.contains(&format!(
@@ -345,6 +345,34 @@ joint(\"batten {index}\", \"post {index}\", kind = \"screw\")
     );
     assert!(
         !text.contains("Výstuhy, ich ukotvenie a spojovacie"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_brace_refused_by_a_few_newtons_does_not_print_the_force_it_must_take() {
+    // R1124og-PG-907: forces were printed in kN to two decimals, so a brace
+    // holding 259 N against 263 N read "0,26 kN" against "0,26 kN". They
+    // print to the newton.
+    let mut report = report(&slender_beam(true));
+    let beam = report
+        .design
+        .members
+        .iter_mut()
+        .find(|m| m.part == "beam")
+        .unwrap();
+    let anchorage = beam.held_by[0].anchorage.as_mut().unwrap();
+    anchorage.capacity_n = Some(259.0);
+    let [top] = beam.bracing.as_mut_slice() else {
+        panic!("one braced edge: {:?}", beam.bracing);
+    };
+    top.force_n = 263.0;
+    top.axial_n = 5_000.2;
+    let html = document("calculation.star", &report, Language::Slovak);
+    let text = section(&html, "beam");
+    assert!(text.contains("<td class=\"n\">0,259 kN</td>"), "{text}");
+    assert!(
+        text.contains("<td class=\"n\">5,000 kN</td><td class=\"n\">0,263 kN</td>"),
         "{text}"
     );
 }
