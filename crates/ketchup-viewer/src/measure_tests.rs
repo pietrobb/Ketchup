@@ -70,9 +70,13 @@ pub(crate) fn half_cylinder() -> Mesh {
 
 /// A package with one component per mesh, each mesh placed as written.
 pub(crate) fn package(meshes: &[Mesh]) -> Package {
-    let identity = [
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
+    let copies: Vec<_> = (0..meshes.len()).map(|mesh| (mesh, [0.0; 3])).collect();
+    package_of_copies(meshes, &copies)
+}
+
+/// A package with one component per copy `(mesh, offset)`: that mesh moved
+/// by `offset` (source mm).
+fn package_of_copies(meshes: &[Mesh], copies: &[(usize, [f64; 3])]) -> Package {
     let mut binary = Vec::new();
     let (mut views, mut accessors, mut gltf_meshes, mut nodes) = (vec![], vec![], vec![], vec![]);
     let mut append = |binary: &mut Vec<u8>, bytes: Vec<u8>, count: usize, kind: &str, component| {
@@ -84,7 +88,7 @@ pub(crate) fn package(meshes: &[Mesh]) -> Package {
         binary.extend(bytes);
         accessors.len() - 1
     };
-    for (index, (points, triangles, lines)) in meshes.iter().enumerate() {
+    for (points, triangles, lines) in meshes {
         // Source Z-up millimetres to GLB Y-up metres.
         let bytes = points
             .iter()
@@ -104,7 +108,14 @@ pub(crate) fn package(meshes: &[Mesh]) -> Package {
         gltf_meshes.push(json!({"primitives":[
             {"attributes":{"POSITION":position},"indices":faces,"mode":4},
             {"attributes":{"POSITION":position},"indices":edges,"mode":1}]}));
-        nodes.push(json!({"matrix":identity,"mesh":index}));
+    }
+    for (index, &(mesh, [x, y, z])) in copies.iter().enumerate() {
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let mut moved = identity;
+        moved[12..15].copy_from_slice(&[x / 1000.0, z / 1000.0, -y / 1000.0]);
+        nodes.push(json!({"matrix":moved,"mesh":mesh}));
         nodes.push(json!({"matrix":identity,"children":[index * 2],
             "extras":{"ketchupEntity":"occurrence","ketchupDefinitionId":1,
                 "ketchupInstancePath":format!("occurrence:{}", 10 + index)}}));
@@ -113,7 +124,7 @@ pub(crate) fn package(meshes: &[Mesh]) -> Package {
         "asset":{"version":"2.0","generator":"Ketchup","extras":{
             "ketchupSourceDigest":"aaaaaaaaaaaaaaaa","ketchupSourceUnit":"millimetre",
             "unit":"metre","upAxis":"Y"}},
-        "scene":0,"scenes":[{"nodes":(0..meshes.len()).map(|i| i * 2 + 1).collect::<Vec<_>>()}],
+        "scene":0,"scenes":[{"nodes":(0..copies.len()).map(|i| i * 2 + 1).collect::<Vec<_>>()}],
         "nodes":nodes,"meshes":gltf_meshes,"buffers":[{"byteLength":binary.len()}],
         "bufferViews":views,"accessors":accessors
     });
@@ -147,7 +158,7 @@ pub(crate) fn package(meshes: &[Mesh]) -> Package {
                 color_srgb: None,
                 local_dimensions: None,
             }],
-            occurrences: (0..meshes.len())
+            occurrences: (0..copies.len())
                 .map(|index| Occurrence {
                     name: format!("Part {index}"),
                     definition_id: 1,
@@ -231,6 +242,32 @@ fn a_vertex_beats_the_edges_and_the_face_near_it_and_the_top_corner_hides_the_bo
     // Off the model the pointer still catches the corner.
     let snap = snap_at(&mut measure, &scene, &BOTH, [100.0, 100.0], [6.0, -6.0]);
     assert_at(snap, SnapKind::Vertex, [100.0, 100.0, 50.0], false);
+}
+
+/// R1124og-VW-900: the points to snap to were held per copy, so a package of
+/// many copies of one mesh held them as many times once the pointer had
+/// passed over each. They are held per mesh, and each copy snaps where it is.
+#[test]
+fn copies_of_one_mesh_hold_its_points_once_and_snap_where_they_are() {
+    let copies = [
+        (0, [0.0; 3]),
+        (0, [150.0, 0.0, 0.0]),
+        (0, [300.0, 0.0, 0.0]),
+    ];
+    let model = Model::from_package(package_of_copies(&[block()], &copies)).expect("model");
+    let camera = scene().1;
+    let scene = (model, camera);
+    let mut measure = Measure::default();
+    for corner in [[100.0, 100.0], [250.0, 100.0], [400.0, 0.0]] {
+        let snap = snap_at(&mut measure, &scene, &[true; 3], corner, [-3.0, 4.0]);
+        assert_at(
+            snap,
+            SnapKind::Vertex,
+            [f64::from(corner[0]), f64::from(corner[1]), 50.0],
+            false,
+        );
+    }
+    assert_eq!(measure.meshes_held(), 1);
 }
 
 /// Review 2026-10-24 VW-23: only four candidates were checked for being in

@@ -76,8 +76,10 @@ pub struct Measure {
     pub done: Option<Measured>,
     pub hover: Option<Snap>,
     curvature: HashMap<usize, MeshCurvature>,
-    /// Per body, worked out at its first snap, not at every pointer move.
-    points: HashMap<usize, BodyPoints>,
+    /// Per mesh, worked out at the first snap on any of its copies, not at
+    /// every pointer move; each copy places them as it is drawn, so a mesh
+    /// shown many times is held once (R1124og-VW-900).
+    points: HashMap<usize, MeshPoints>,
 }
 
 impl Measure {
@@ -139,15 +141,24 @@ impl Measure {
             if !pointer.visible[body.occurrence] || !near(&screen, body.bounds_mm, at) {
                 continue;
             }
+            let placement = Affine3::from_column_major(body.world_matrix_f64_mm);
+            let world = |local: [f64; 3]| -> [f64; 3] {
+                placement.transform_point(Vec3::from(local)).into()
+            };
             let points = self
                 .points
-                .entry(index)
-                .or_insert_with(|| BodyPoints::of(model, index));
-            for &(point, key) in &points.vertices {
-                consider(&mut vertices, point, index, [key; 2]);
+                .entry(body.mesh)
+                .or_insert_with(|| MeshPoints::of(model, body.mesh));
+            for &(local, key) in &points.vertices {
+                consider(&mut vertices, world(local), index, [key; 2]);
             }
             for &(ends, keys) in &points.edges {
-                consider(&mut edges, closest_to_ray(origin, ray, ends), index, keys);
+                consider(
+                    &mut edges,
+                    closest_to_ray(origin, ray, ends.map(world)),
+                    index,
+                    keys,
+                );
             }
         }
         for (kind, mut candidates) in [(SnapKind::Vertex, vertices), (SnapKind::Edge, edges)] {
@@ -186,6 +197,12 @@ impl Measure {
             kind: SnapKind::Face,
             approximate: curvature.triangles[hit.primitive][hit.triangle],
         })
+    }
+
+    /// How many meshes have their points worked out.
+    #[cfg(test)]
+    pub(crate) fn meshes_held(&self) -> usize {
+        self.points.len()
     }
 
     fn curvature(&mut self, model: &Model, mesh: usize) -> &MeshCurvature {
@@ -311,40 +328,33 @@ fn front_plane(model: &Model, hit: Hit, ray: Vec3) -> Option<(Vec3, Vec3)> {
     Some((Vec3::from(hit.point), normal))
 }
 
-/// One body's mesh vertices, each position once, and its model edges, in
-/// world millimetres with the vertex keys they stand on.
+/// One mesh's vertices, each position once, and its model edges, in the
+/// mesh's own source millimetres with the vertex keys they stand on.
 #[derive(Debug)]
-struct BodyPoints {
+struct MeshPoints {
     vertices: Vec<([f64; 3], Key)>,
     edges: Vec<([[f64; 3]; 2], [Key; 2])>,
 }
 
-impl BodyPoints {
-    fn of(model: &Model, body: usize) -> Self {
-        let body = &model.bodies[body];
-        let placement = Affine3::from_column_major(body.world_matrix_f64_mm);
-        let world = |local: [f32; 3]| -> [f64; 3] {
-            placement
-                .transform_point(Vec3::from(source_point(local)))
-                .into()
-        };
+impl MeshPoints {
+    fn of(model: &Model, mesh: usize) -> Self {
         let mut seen = HashSet::new();
         let mut vertices = Vec::new();
-        for (positions, _) in model.triangle_buffers(body.mesh) {
+        for (positions, _) in model.triangle_buffers(mesh) {
             for chunk in positions.chunks_exact(12) {
                 let local: [f32; 3] = std::array::from_fn(|k| {
                     f32::from_le_bytes(chunk[k * 4..k * 4 + 4].try_into().expect("point"))
                 });
                 if seen.insert(key(local)) {
-                    vertices.push((world(local), key(local)));
+                    vertices.push((source_point(local), key(local)));
                 }
             }
         }
         let mut edges = Vec::new();
-        for (positions, indices) in model.line_buffers(body.mesh) {
+        for (positions, indices) in model.line_buffers(mesh) {
             for segment in 0..indices.len() / 8 {
                 let ends = [0, 1].map(|end| indexed_point(positions, indices, segment * 2 + end));
-                edges.push((ends.map(world), ends.map(key)));
+                edges.push((ends.map(source_point), ends.map(key)));
             }
         }
         Self { vertices, edges }
