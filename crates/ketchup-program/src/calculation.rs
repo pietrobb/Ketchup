@@ -173,8 +173,10 @@ fn number(value: f64, decimals: usize) -> String {
     decimal_commas(&format!("{value:.decimals$}"))
 }
 
+/// To the newton (R1124og-PG-907): at two decimals a brace holding 259 N read
+/// as holding the 263 N it was refused for.
 fn kilonewtons(newtons: f64) -> String {
-    number(newtons / 1000.0, 2)
+    number(newtons / 1000.0, 3)
 }
 
 fn escape(text: &str) -> String {
