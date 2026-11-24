@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a garbage collection copying values nested deeper than MAX_TRACE_DEPTH defers tracing them. See PATCH.md.
 
 use std::any::type_name;
 use std::any::TypeId;
@@ -347,12 +348,18 @@ impl<'v> AValue<'v> for AValueTuple {
 
         debug_assert_eq!(content.len(), x.len());
 
-        for elem in content.iter_mut() {
-            tracer.trace(elem);
+        let deep = tracer.too_deep();
+        if !deep {
+            for elem in content.iter_mut() {
+                tracer.trace(elem);
+            }
         }
         r.fill(x);
         let extra = unsafe { &mut *extra };
         maybe_uninit_write_slice(extra, content);
+        if deep {
+            defer_trace_slice(tracer, extra);
+        }
         v
     }
 }
@@ -513,12 +520,18 @@ impl<'v> AValue<'v> for AValueArray {
 
         debug_assert_eq!(content.len(), x.len());
 
-        content.trace(tracer);
+        let deep = tracer.too_deep();
+        if !deep {
+            content.trace(tracer);
+        }
 
         // Note when copying we are dropping extra capacity.
         r.fill(Array::new(content.len() as u32, content.len() as u32));
         let extra = unsafe { &mut *extra };
         maybe_uninit_write_slice(extra, content);
+        if deep {
+            defer_trace_slice(tracer, extra);
+        }
         v
     }
 }
@@ -621,7 +634,7 @@ impl<T: StarlarkValue<'static>> AValue<'static> for AValueSimple<T> {
 unsafe fn heap_copy_impl<'v, A>(
     me: *mut AValueRepr<A::StarlarkValue>,
     tracer: &Tracer<'v>,
-    trace: impl FnOnce(&mut A::StarlarkValue, &Tracer<'v>),
+    trace: impl FnOnce(&mut A::StarlarkValue, &Tracer<'v>) + 'v,
 ) -> Value<'v>
 where
     A: AValue<'v, ExtraElem = ()>,
@@ -629,10 +642,31 @@ where
     let (v, r) = tracer.reserve::<A>();
     let mut x =
         AValueHeader::overwrite_with_forward::<A::StarlarkValue>(me, ForwardPtr::new_unfrozen(v));
+    // Ketchup patch: deep in a nesting, the copy is traced where it lies once
+    // the collection is back at the roots, instead of recursing further.
+    if tracer.too_deep() {
+        let copy = r.payload_ptr();
+        r.fill(x);
+        tracer.defer(Box::new(move |tracer| trace(unsafe { &mut *copy }, tracer)));
+        return v;
+    }
     // We have to put the forwarding node in _before_ we trace in case there are cycles
     trace(&mut x, tracer);
     r.fill(x);
     v
+}
+
+/// Ketchup patch: trace the values a copy's `extra` was just filled with once
+/// the collection is back at the roots ([`Tracer::defer`]).
+fn defer_trace_slice<'v>(tracer: &Tracer<'v>, extra: &mut [mem::MaybeUninit<Value<'v>>]) {
+    let values = extra.as_mut_ptr().cast::<Value<'v>>();
+    let len = extra.len();
+    tracer.defer(Box::new(move |tracer| {
+        // The copy lies in the new arena, which outlives the collection.
+        for value in unsafe { std::slice::from_raw_parts_mut(values, len) } {
+            tracer.trace(value);
+        }
+    }));
 }
 
 pub(crate) struct AValueComplex<T>(PhantomData<T>);

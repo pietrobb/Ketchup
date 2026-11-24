@@ -48,12 +48,23 @@ more than it. The refusal's error loses its type when a method returns it as
 `anyhow::Error`, and `ketchup-program` must report it with the code `memory_limit` like the
 worker's own memory limit.
 
+Nesting a program builds while it runs (review 2026-11-24 R1124og-PG-905): `x = [x]` a
+thousand times and `json.encode(x)`, or `x = [x]` 600 000 times alone, overflowed the
+evaluation's stack and killed the process. `to_json` refuses containers nested more than
+`MAX_JSON_DEPTH` (200) deep with an error (`src/values/recursive_repr_or_json_guard.rs`).
+A garbage collection copies a value and traces the values it holds by recursion; past
+`MAX_TRACE_DEPTH` (256) values deep, it copies the value and defers tracing the copy
+(`Tracer::defer`, `src/values/layout/heap/heap_type.rs`, `src/values/layout/avalue.rs`)
+until it is back at the roots, so any nesting is copied on a bounded stack.
+
 `src/lib.rs` also allows two lints that newer rustc reports in the unchanged upstream
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
 
 Changed files, each marked with a "Modified for Kecup" line under its license header
 (Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`, `src/eval/compiler/stmt.rs`,
-`src/values/layout/heap/heap_type.rs`, `src/values/layout/value.rs`,
+`src/values/layout/heap/heap_type.rs`, `src/values/layout/heap/arena.rs`,
+`src/values/layout/avalue.rs`, `src/values/layout/value.rs`,
+`src/values/recursive_repr_or_json_guard.rs`,
 `src/values/types/{list,tuple}/{globals,value}.rs`,
 `src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,
 `src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs`,

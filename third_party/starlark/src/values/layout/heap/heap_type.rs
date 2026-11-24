@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: adds the heap bound (Heap::set_allocation_limit), its error and the bytes it counts outside the arena. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: adds the heap bound (Heap::set_allocation_limit), its error and the bytes it counts outside the arena; a garbage collection defers tracing past MAX_TRACE_DEPTH. See PATCH.md.
 
 use std::any;
 use std::cell::Cell;
@@ -1084,9 +1084,20 @@ impl Heap {
 
         let tracer = Tracer::<'v> {
             arena: Arena::default(),
+            depth: Cell::new(0),
+            deferred: RefCell::new(Vec::new()),
             phantom: PhantomData,
         };
         f(&tracer);
+        // Ketchup patch: trace what was copied too deep to trace at once, each
+        // from the bottom of the stack again.
+        loop {
+            let next = tracer.deferred.borrow_mut().pop();
+            match next {
+                Some(trace) => trace(&tracer),
+                None => break,
+            }
+        }
         self.arena.set(tracer.arena);
         // Ketchup patch: only the big integers, dicts and sets that survived still
         // hold memory outside the arena; the count includes what they grew by.
@@ -1137,8 +1148,19 @@ impl Heap {
 /// Used to perform garbage collection by [`Trace::trace`](crate::values::Trace::trace).
 pub struct Tracer<'v> {
     arena: Arena<Bump>,
+    /// Ketchup patch: how many values are being copied inside one another.
+    depth: Cell<usize>,
+    /// Ketchup patch: tracing of values copied [`MAX_TRACE_DEPTH`] deep, run
+    /// after the roots are traced.
+    deferred: RefCell<Vec<Box<dyn FnOnce(&Tracer<'v>) + 'v>>>,
     phantom: PhantomData<&'v ()>,
 }
+
+/// Ketchup patch: how deeply a collection copies values inside one another
+/// before it defers tracing the next one. Copying recurses through every
+/// value a value holds, so a list built `x = [x]` 600 000 times overflowed the
+/// stack and killed the process (review 2026-11-24 R1124og-PG-905).
+const MAX_TRACE_DEPTH: usize = 256;
 
 impl<'v> Tracer<'v> {
     /// Walk over a value during garbage collection.
@@ -1190,10 +1212,27 @@ impl<'v> Tracer<'v> {
         // Case 2: We have already been replaced with a forwarding, or need to freeze
         let res = match old_val.unpack() {
             AValueOrForwardUnpack::Forward(x) => unsafe { x.forward_ptr().unpack_unfrozen_value() },
-            AValueOrForwardUnpack::Header(v) => unsafe { v.unpack().heap_copy(self) },
+            AValueOrForwardUnpack::Header(v) => {
+                self.depth.set(self.depth.get() + 1);
+                let copy = unsafe { v.unpack().heap_copy(self) };
+                self.depth.set(self.depth.get() - 1);
+                copy
+            }
         };
 
         res
+    }
+
+    /// Ketchup patch: whether a value copied now is [`MAX_TRACE_DEPTH`] deep, so
+    /// the values it holds are to be traced later ([`Tracer::defer`]).
+    pub(crate) fn too_deep(&self) -> bool {
+        self.depth.get() >= MAX_TRACE_DEPTH
+    }
+
+    /// Ketchup patch: run `trace` once the collection is back at the roots. It
+    /// traces a copy in place, which holds its old values until then.
+    pub(crate) fn defer(&self, trace: Box<dyn FnOnce(&Tracer<'v>) + 'v>) {
+        self.deferred.borrow_mut().push(trace);
     }
 }
 
