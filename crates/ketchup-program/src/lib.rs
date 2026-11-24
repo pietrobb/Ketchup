@@ -82,7 +82,7 @@ pub fn check_time_limit(total: std::time::Duration) -> ProgramError {
             "evaluating the program and its checks took longer than {} s together and were \
              stopped; shorten the program's loops, or move apart parts that lie in one place \
              or within {} mm of many others (a loop that does not move its parts, thousands \
-             of boards side by side), which the checks compare pair by pair",
+             of parts side by side), which the checks compare pair by pair",
             total.as_secs(),
             relations::GAP_LIMIT_MM
         ),
