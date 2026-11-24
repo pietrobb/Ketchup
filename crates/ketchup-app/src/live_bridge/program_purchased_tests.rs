@@ -139,6 +139,82 @@ fn a_step_file_is_read_once_until_its_bytes_change() {
     assert_eq!(hinges(&app)["hinge 4"].0, 2100.0);
 }
 
+/// R1124og-STEP-903: a file replaced by other bytes of the same size and time
+/// of change (`cp -p`, `rsync -t`, an unpacked archive) is read again; the
+/// document does not seal the old body for it.
+#[test]
+fn a_file_of_other_bytes_with_the_same_size_and_time_is_read_again() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let folder = folder();
+    let file = folder.path().join("parts/box.step");
+    let when = std::fs::metadata(&file).unwrap().modified().unwrap();
+    bridge
+        .execute(
+            &mut app,
+            apply(WARDROBE, Some(folder.path()), 2000.0),
+            false,
+        )
+        .unwrap();
+    assert_eq!(bridge.program_folder.worker_reads(), 1);
+    let first = hinges(&app)["hinge 0"].1;
+
+    let bytes = std::fs::read_to_string(&file).unwrap();
+    let other = bytes.replacen("('Author')", "('Writer')", 1);
+    assert_ne!(other, bytes);
+    assert_eq!(other.len(), bytes.len());
+    std::fs::write(&file, &other).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+    bridge
+        .execute(
+            &mut app,
+            apply(WARDROBE, Some(folder.path()), 2200.0),
+            false,
+        )
+        .unwrap();
+    assert_eq!(bridge.program_folder.worker_reads(), 2);
+    let second = hinges(&app)["hinge 0"].1;
+    assert_ne!(second, first, "the old file's body stayed");
+    assert_eq!(second, ketchup_model::graph::sha256_bytes(other.as_bytes()));
+}
+
+/// R1124og-STEP-901: the folder an apply gave belongs to that document. After
+/// another document is opened, a program of the same file name applied
+/// without its folder does not read the files of the first one.
+#[test]
+fn another_document_does_not_read_from_the_folder_of_the_first() {
+    let (mut app, mut bridge) = setup();
+    let folder = folder();
+    bridge
+        .execute(
+            &mut app,
+            apply(
+                "door_h = param('door_h', 2000)\nboard('door', (600, 18, door_h))\n",
+                Some(folder.path()),
+                2000.0,
+            ),
+            false,
+        )
+        .unwrap();
+    app.new_document();
+    bridge.invalidate_document_context();
+    assert!(
+        bridge
+            .execute(&mut app, apply(WARDROBE, None, 2000.0), false)
+            .is_err()
+    );
+    let details = format!("{:#}", take_error_details().unwrap());
+    assert!(
+        details.contains("apply the program from its file"),
+        "{details}"
+    );
+}
+
 /// A hall of 22 bought parts, 5 of one assembly part and 17 of another file,
 /// reads each file once; applies after it read none while the files stay
 /// unchanged, in a window that has not read them yet too: the document holds

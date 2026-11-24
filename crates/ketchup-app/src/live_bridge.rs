@@ -67,6 +67,7 @@ mod admission;
 pub mod bootstrap;
 mod busy;
 pub mod consent;
+mod document_context;
 mod drawing_edit;
 mod drawing_export;
 mod drawings;
@@ -1796,23 +1797,6 @@ impl LiveBridge {
         self.batch_jobs.clear();
         self.batch_job_key = RandomState::new();
         self.next_batch_job = 1;
-        self.image.revoke();
-    }
-
-    pub(super) fn invalidate_document_context(&mut self) {
-        // The running job was asked of the document that goes: it stops, and
-        // one that would change it answers stale_document (review 2026-11-02 MCP-122).
-        self.document_epoch = self.document_epoch.wrapping_add(1);
-        if let Some(job) = &self.program_check_job {
-            job.request_cancelled().store(true, Ordering::Release);
-        }
-        self.observed = None;
-        self.client_states.clear();
-        self.pending = None;
-        self.batch_jobs.clear();
-        self.batch_job_key = RandomState::new();
-        self.next_batch_job = 1;
-        self.query.invalidate();
         self.image.revoke();
     }
 

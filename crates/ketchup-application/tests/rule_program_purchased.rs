@@ -128,6 +128,78 @@ fn the_program_places_each_bought_part_and_keeps_the_document() {
     assert!(session.rule_program().is_some());
 }
 
+/// A folder whose every file and assembly part is its own body.
+struct Kit;
+
+impl ImportFiles for Kit {
+    fn read(
+        &mut self,
+        file: &str,
+        part: Option<&str>,
+    ) -> Result<Option<ImportedBody>, ketchup_rejection::Rejection> {
+        let mut evidence = hinge_evidence();
+        evidence.source_sha256 = ketchup_model::graph::sha256_bytes(file.as_bytes());
+        Ok(Some(ImportedBody {
+            file_name: file.rsplit('/').next().unwrap_or(file).to_owned(),
+            part_index: part.map(|part| u32::from(part == "plate")),
+            evidence,
+            placement: None,
+        }))
+    }
+}
+
+fn program(source: &str) -> RuleProgramSource {
+    RuleProgramSource {
+        variants: Default::default(),
+        file_name: "kit.star".into(),
+        source: source.into(),
+        overrides: BTreeMap::new(),
+    }
+}
+
+/// R1124og-STEP-900: without the program's folder, a part takes the body the
+/// document holds only when it was read from the same file, by the same path,
+/// as the same assembly part; another file of the same name or another part of
+/// the same file is refused, not given the old body.
+#[test]
+fn without_the_folder_only_the_same_file_and_part_keep_their_body() {
+    let screw = "imported('fitting', 'kit.step', part = 'screw')\n\
+        imported('one', 'a/model.step', at = (100, 0, 0))\n";
+    let mut session = DocumentSession::default();
+    session
+        .apply_rule_program_reading(program(screw), false, &mut Kit, CheckDeadline::start())
+        .unwrap();
+    // The same program again: the document's bodies.
+    session
+        .apply_rule_program_reading(program(screw), false, &mut NoFiles, CheckDeadline::start())
+        .unwrap();
+
+    for (changed, why) in [
+        (screw.replace("'screw'", "'plate'"), "another part"),
+        (screw.replace("a/model", "b/model"), "another folder"),
+        (
+            format!("{screw}imported('other', 'c/model.step', at = (300, 0, 0))\n"),
+            "a new part of a file of the same name",
+        ),
+    ] {
+        let error = session
+            .apply_rule_program_reading(
+                program(&changed),
+                false,
+                &mut NoFiles,
+                CheckDeadline::start(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{why}: took the body of another file or part"));
+        assert!(
+            error
+                .to_string()
+                .contains("apply the program from its file"),
+            "{why}: {error}"
+        );
+    }
+}
+
 #[test]
 fn a_file_that_cannot_be_read_says_which_part_and_why() {
     let mut session = DocumentSession::default();
