@@ -294,27 +294,32 @@ impl ProgramWorker {
     ) -> Result<Evaluated, ProgramError> {
         let own = self.deadline;
         let input = program_input(file_name, source, overrides);
-        // Its own limit stays its own: only the shared deadline's stop is renamed.
+        let shared = |stopped: Stopped| deadline.stopped(stopped).checks_error();
         let mut running = self
             .worker(
                 cancel,
                 deadline
                     .request_time()
-                    .map_err(Stopped::program_error)?
+                    .map_err(Stopped::checks_error)?
                     .min(WORKER_START_UP_TIMEOUT),
             )
-            .map_err(|stopped| deadline.stopped(stopped).program_error())?;
+            .map_err(shared)?;
         let left = match deadline.request_time() {
             Ok(left) => left,
             Err(stopped) => {
                 self.running = Some(running);
-                return Err(stopped.program_error());
+                return Err(stopped.checks_error());
             }
         };
         let reply = running.evaluate_program(input, cancel.flag(), own.min(left));
-        self.answer(running, reply)
-            .map_err(Stopped::program_error)?
-            .into()
+        // Its own limit stays its own; a stop at the time the checks left is theirs
+        // (review 2026-11-24 og PG-909).
+        let answer = self.answer(running, reply);
+        if left < own {
+            answer.map_err(shared)?.into()
+        } else {
+            answer.map_err(Stopped::program_error)?.into()
+        }
     }
 
     fn evaluate_within(
@@ -854,6 +859,15 @@ impl Stopped {
             code,
             message,
             location: None,
+        }
+    }
+
+    /// [`Self::program_error`] of a stop at the deadline the program and its checks
+    /// share: a time limit is that deadline's.
+    fn checks_error(self) -> ProgramError {
+        match self {
+            Self::TimeLimit(total) => ketchup_program::check_time_limit(total),
+            other => other.program_error(),
         }
     }
 

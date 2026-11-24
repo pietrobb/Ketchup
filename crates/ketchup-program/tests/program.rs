@@ -728,6 +728,23 @@ fn a_set_of_no_parameter_ends_with_exit_code_2_and_names_the_parameter_meant() {
     );
 }
 
+/// Review 2026-11-24 og PG-908: `ketchup-program check` past its deadline said only
+/// "checking the program took longer than 60 s", with no cause and nothing to change
+/// (AGENTS §2). It is the error the window's worker gives at the same deadline.
+#[test]
+fn checks_past_their_deadline_name_the_deadline_the_causes_and_what_to_change() {
+    let error = ketchup_program::check_time_limit(ketchup_program::CHECK_TIME);
+    assert_eq!(error.code, "time_limit");
+    for said in [
+        "took longer than 60 s together",
+        "shorten the program's loops",
+        "within 20 mm of many others",
+        "a loop that does not move its parts",
+    ] {
+        assert!(error.message.contains(said), "{said}: {error}");
+    }
+}
+
 #[test]
 fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     let source = "n = param(\"count\", 2, min = 1, max = 4)\nfor i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
