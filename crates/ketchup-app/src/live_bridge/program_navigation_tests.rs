@@ -155,6 +155,7 @@ fn apply_and_check_refuse_an_override_the_program_refuses() {
         edits: None,
         overrides: Some(overrides),
         file_name: Some("seat.star".into()),
+        source_folder: None,
     };
     let wide = NARROW.replace("max = 600", "max = 1000");
     bridge

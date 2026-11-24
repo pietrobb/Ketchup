@@ -196,11 +196,12 @@ impl Report {
             .buildups
             .iter()
             .any(|check| check.status == "not_verified");
+        let unread_import = (self.issues.iter()).any(|issue| issue.kind == validate::IMPORT_UNREAD);
         match (self.ok, self.statics()) {
             _ if !self.unused_overrides.is_empty() => 2,
             (false, _) | (_, Statics::Failed) => 1,
             (true, Statics::NotVerified) => 3,
-            _ if thermal_unverified => 3,
+            _ if thermal_unverified || unread_import => 3,
             _ => 0,
         }
     }

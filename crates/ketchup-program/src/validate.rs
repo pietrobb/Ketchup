@@ -30,6 +30,11 @@ pub const PURCHASED_ASSEMBLY_CONTACT: &str = "purchased_assembly_contact";
 /// worker's limits: nothing was checked, and nothing was found to pass.
 pub const CHECKS_UNVERIFIED: &str = "checks_unverified";
 
+/// Issue kind of a bought part whose STEP file is not read yet: until it is,
+/// the part is a point, so what it touches and where it collides are not
+/// checked (review 2026-11-24 R1124og-STEP-902).
+pub const IMPORT_UNREAD: &str = "import_unread";
+
 /// Issue kind of a report that lists only its first issues and relations:
 /// the whole one did not fit the program worker's reply.
 pub const REPORT_TRUNCATED: &str = "report_truncated";
@@ -783,6 +788,10 @@ fn joints<'a>(
         let (Some(a), Some(b)) = (model.part(&joint.parts[0]), model.part(&joint.parts[1])) else {
             continue;
         };
+        // What a part read from a file not read yet touches is not known.
+        if a.unread_import().is_some() || b.unread_import().is_some() {
+            continue;
+        }
         // `None`: apart by an unknown clearance above the contact tolerance.
         let apart = match exact.decides(a, b) {
             Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
@@ -1000,6 +1009,31 @@ fn support<'a>(
     }
 }
 
+/// Each bought part whose file is not read yet: a point until it is, so its
+/// contacts and collisions go unchecked and the report says so.
+fn unread_imports(model: &ProgramModel, issues: &mut Vec<Issue>) {
+    for part in &model.parts {
+        let Some(file) = part.unread_import() else {
+            continue;
+        };
+        issues.push(Issue {
+            source_lines: Vec::new(),
+            severity: Severity::Warning,
+            kind: IMPORT_UNREAD,
+            parts: vec![part.name.clone()],
+            message: format!(
+                "{} is read from {file:?}, which was not read yet: what it touches, where it \
+                 collides and what it weighs are not checked",
+                part.name
+            ),
+            where_mm: None,
+            hint: "Check the program from its file, or apply it, so Kečup reads the STEP file \
+                   next to it."
+                .to_owned(),
+        });
+    }
+}
+
 /// What `production(tags=…)` leaves out without being told to: tags no part
 /// carries (an error when nothing is made at all) and bought parts and bars
 /// that carry none of its tags, which then reach no hardware list or bar
@@ -1206,6 +1240,7 @@ pub(crate) fn validate_with_faces<'a>(
     faces: &mut ContactFaces<'a>,
 ) -> Vec<Issue> {
     let mut issues = model.declared_issues.clone();
+    unread_imports(model, &mut issues);
     params(model, &mut issues);
     production(model, &mut issues);
     crate::motion::issues(model, &mut issues);

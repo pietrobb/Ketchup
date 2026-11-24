@@ -202,6 +202,70 @@ fn a_bought_part_not_read_yet_is_unchecked_not_weightless_or_floating() {
     );
 }
 
+/// A hinge read from a STEP file, set into a door and joined to it
+/// (review 2026-11-24 R1124og-STEP-902: before its file is read it was a
+/// point, `boxes_only` against the door, and the check passed with exit 0).
+const HINGE_IN_DOOR: &str = "door = box('door', (600, 18, 800), grounded = True)\n\
+    hinge = imported('hinge', 'hinge.step', at = (50, 9, 100))\n\
+    joint(door, hinge, kind = 'none')\n\
+    plate = imported('plate', 'plate.step', at = (50, 40, 100))\n\
+    joint(door, plate, kind = 'none')\n";
+
+#[test]
+fn a_bought_part_not_read_yet_has_its_contacts_and_collisions_unchecked() {
+    let (evaluated, report) =
+        crate::run("door.star", HINGE_IN_DOOR, &BTreeMap::new()).unwrap_or_else(|e| panic!("{e}"));
+    let unread = |issues: &[crate::Issue]| -> Vec<String> {
+        (issues.iter())
+            .filter(|issue| issue.kind == crate::validate::IMPORT_UNREAD)
+            .inspect(|issue| assert_eq!(issue.severity, crate::Severity::Warning))
+            .map(|issue| format!("{}: {}", issue.parts.join(","), issue.message))
+            .collect()
+    };
+    let told = unread(&report.issues);
+    assert!(
+        matches!(&told[..], [hinge, plate] if hinge.starts_with("hinge: ")
+            && hinge.contains("hinge.step") && plate.starts_with("plate: ")),
+        "{told:#?}"
+    );
+    // A point says nothing of what a part touches: no relation and no joint
+    // error claim it, inside the door (the hinge) or 22 mm off it (the plate).
+    assert!(report.relations.is_empty(), "{:#?}", report.relations);
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "joint_without_contact"),
+        "{:#?}",
+        report.issues
+    );
+    assert_eq!(report.exit_code(), 3, "{:#?}", report.issues);
+
+    // Read, it is checked like any part.
+    let mut model = evaluated.model;
+    ProgramImport::record(
+        model.imported_parts_mut().next().unwrap(),
+        ImportedBody {
+            file_name: "hinge.step".to_owned(),
+            part_index: None,
+            evidence: evidence([[-20.0, -20.0, -5.0], [20.0, 20.0, 5.0]]),
+            placement: None,
+        },
+    );
+    let issues = crate::validate::validate(&model);
+    let told = unread(&issues);
+    assert!(
+        matches!(&told[..], [plate] if plate.starts_with("plate: ")),
+        "{told:#?}"
+    );
+    assert!(
+        crate::relations(&model, &issues)
+            .iter()
+            .any(|relation| relation.parts == ["door", "hinge"]),
+        "{issues:#?}"
+    );
+}
+
 #[test]
 fn a_bought_part_weighs_its_own_volume_not_its_box() {
     let mut model = block_on_beam();

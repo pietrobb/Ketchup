@@ -354,8 +354,7 @@ pub enum Request {
         /// Absolute folder of the program's file, its STEP files' root; absent keeps the last.
         source_folder: Option<String>,
     },
-    /// Plans and exactly checks a whole program (`source`) or a patch (`edits`)
-    /// like `ApplyProgram`, without publishing anything.
+    /// Plans and exactly checks a whole program (`source`) or a patch (`edits`) like `ApplyProgram`, publishing nothing.
     CheckProgram {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -367,6 +366,7 @@ pub enum Request {
         overrides: Option<std::collections::BTreeMap<String, f64>>,
         #[serde(default)]
         file_name: Option<String>,
+        source_folder: Option<String>,
     },
     MeasureFaces {
         expected: Stamp,
@@ -3286,7 +3286,7 @@ impl LiveBridge {
                 self.program_variant_request(app, request, ui_busy, cancelled)
             }
             request @ Request::CheckProgram { .. } => {
-                Self::check_program_now(app, request, ui_busy, cancelled)
+                self.check_program_now(app, request, ui_busy, cancelled)
             }
             Request::Undo { expected } => {
                 Self::undo_or_redo(app, &expected, AppCommand::Undo, ui_busy, cancelled)
