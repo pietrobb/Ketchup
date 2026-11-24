@@ -203,6 +203,8 @@ fn anchored_deck(end_wall_kind: &str) -> String {
 box(\"start plate\", (100, 1080, 100), at = (0, 0, 2422), material = \"GL24h\", grounded = True)
 joint(\"deck b\", \"end plate\", kind = \"{end_wall_kind}\")
 joint(\"deck a\", \"start plate\", kind = \"screw\")
+joint(\"end plate\", \"end wall\", kind = \"screw\")
+joint(\"start plate\", \"start wall\", kind = \"screw\")
 diaphragm([\"deck\"], anchored_to = [\"end plate\", \"start plate\"])
 "
     ))
@@ -383,6 +385,7 @@ fn a_diaphragm_anchored_to_small_parts_leaves_the_beam_not_verified() {
             extra.push_str(&format!(
                 "box(\"pillar {x}\", (100, 100, 2390), at = ({x}, 300, 0), material = \"GL24h\", grounded = True)
 box(\"anchor {x}\", ({size}), at = ({x}, 345, 2390), material = \"GL24h\", grounded = True)
+joint(\"anchor {x}\", \"pillar {x}\", kind = \"screw\")
 joint(\"anchor {x}\", \"{deck}\", kind = \"screw\")
 "
             ));
@@ -431,7 +434,8 @@ joint(\"lath {x}\", \"beam\", kind = \"screw\")
 #[test]
 fn a_declared_brace_is_anchored_by_the_rules_of_a_found_one() {
     // As deep as the beam: one smaller across it leaves it not verified (R1112 P3).
-    let wall_top = "box(\"wall top\", (5900, 100, 400), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
+    let wall_top = "box(\"wall top\", (5900, 100, 400), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)
+joint(\"wall top\", \"wall\", kind = \"screw\")\n";
     let good = report(&laths_over(
         wall_top,
         "joint(\"lath {x}\", \"wall top\", kind = \"screw\")",
@@ -470,7 +474,8 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 300)
 /// "motion", which lets the parts move, held the beam and it passed.
 #[test]
 fn a_joint_whose_parts_move_anchors_no_brace() {
-    let wall_top = "box(\"wall top\", (5900, 100, 400), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
+    let wall_top = "box(\"wall top\", (5900, 100, 400), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)
+joint(\"wall top\", \"wall\", kind = \"screw\")\n";
     for kind in ["slide", "motion"] {
         let moving = report(&laths_over(
             wall_top,
