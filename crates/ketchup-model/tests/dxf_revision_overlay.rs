@@ -231,6 +231,97 @@ fn compare(
     )
 }
 
+/// A drawing of `entities` with the text styles PLAIN and SAME in Arial and NOTES in
+/// romans.shx.
+fn font_drawing(entities: &[String]) -> Vec<u8> {
+    let style = |name: &str, font: &str| {
+        format!("0\nSTYLE\n2\n{name}\n70\n0\n40\n0\n41\n1\n50\n0\n71\n0\n42\n250\n3\n{font}\n")
+    };
+    let mut dxf = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nSTYLE\n70\n3\n{}{}{}0\nENDTAB\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n",
+        style("PLAIN", "arial.ttf"),
+        style("SAME", "arial.ttf"),
+        style("NOTES", "romans.shx"),
+    );
+    for entity in entities {
+        dxf.push_str(entity);
+    }
+    dxf.push_str("0\nENDSEC\n0\nEOF\n");
+    dxf.into_bytes()
+}
+
+/// An open LWPOLYLINE of `handle` along `y` with the groups `width` after its head
+/// (43) or after each vertex (40, 41).
+fn wide_polyline(handle: &str, y: f64, head: &str, vertex: &str) -> String {
+    format!(
+        "0\nLWPOLYLINE\n5\n{handle}\n100\nAcDbEntity\n8\nwalls\n100\nAcDbPolyline\n90\n2\n70\n0\n\
+         {head}10\n0\n20\n{y}\n{vertex}10\n5000\n20\n{y}\n{vertex}"
+    )
+}
+
+/// R1124og-DXF-902: a revision that sets a text in another font or draws a polyline
+/// wider was reported unchanged; it is changed in style, also against the earlier
+/// revision as the document saved it. A text whose style is renamed but keeps its font
+/// is unchanged.
+#[test]
+fn a_revision_that_sets_a_text_in_another_font_or_draws_a_line_wider_is_restyled() {
+    let entities = |revised: bool| {
+        let pick = |plain: &'static str, revised_as: &'static str| {
+            if revised { revised_as } else { plain }
+        };
+        vec![
+            styled_text("A0", pick("7\nPLAIN\n", "7\nNOTES\n")),
+            styled_text("A1", pick("7\nPLAIN\n", "7\nSAME\n")),
+            wide_polyline("A2", 1000.0, pick("", "43\n50\n"), ""),
+            wide_polyline(
+                "A3",
+                2000.0,
+                "",
+                pick("40\n20\n41\n20\n", "40\n20\n41\n80\n"),
+            ),
+            format!(
+                "0\nMTEXT\n5\nA4\n100\nAcDbEntity\n8\nwalls\n100\nAcDbMText\n\
+                 10\n0\n20\n7000\n30\n0\n40\n250\n71\n1\n1\n{}\n",
+                pick("{\\fArial|b0|i0;Izba}", "{\\fTimes New Roman|b0|i0;Izba}")
+            ),
+            wide_polyline("A5", 3000.0, "43\n50\n", ""),
+        ]
+    };
+    let a = read(&font_drawing(&entities(false)));
+    let b = read(&font_drawing(&entities(true)));
+    let saved =
+        ketchup_model::underlay::UnderlayLines::decode(&a.lines.encode(), a.lines.layers().len())
+            .expect("the saved lines read back");
+    assert_eq!(saved, a.lines, "widths and fonts are saved");
+    for earlier in [&a.lines, &saved] {
+        let comparison = compare_revisions(
+            Revision {
+                lines: earlier,
+                offset_mm: a.offset_mm,
+            },
+            Revision {
+                lines: &b.lines,
+                offset_mm: b.offset_mm,
+            },
+        );
+        assert_eq!(
+            handles(&comparison.changed),
+            ["A0", "A2", "A3", "A4"],
+            "{comparison:?}"
+        );
+        assert!(
+            comparison
+                .changed
+                .iter()
+                .all(|entity| entity.difference == Some(Difference::Style)),
+            "{comparison:?}"
+        );
+        assert_eq!(comparison.unchanged, 2, "A1 and A5 draw alike");
+    }
+}
+
 /// Review 2026-11-10 og:R1110-UL-401: ArchiCAD, Revit and Allplan give every entity a
 /// new handle on each export, so one real change was reported as every entity removed
 /// and added again. Those drawn alike in the same place pair up as renumbered.

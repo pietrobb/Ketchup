@@ -244,6 +244,7 @@ pub fn revision_overlay(
             color: Some(color),
             weight_hmm: OVERLAY_WEIGHT_HMM,
             pattern_mm: Vec::new(),
+            ..LineStyle::default()
         });
         let (tops, _) = handled(revision.lines);
         for revised in entities.iter() {

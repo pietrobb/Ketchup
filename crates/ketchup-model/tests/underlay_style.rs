@@ -68,6 +68,7 @@ fn style(color: Option<[u8; 3]>, weight_hmm: u16, pattern_mm: &[f64]) -> LineSty
         color,
         weight_hmm,
         pattern_mm: pattern_mm.to_vec(),
+        ..LineStyle::default()
     }
 }
 
