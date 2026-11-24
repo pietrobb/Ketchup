@@ -90,6 +90,27 @@ impl CheckDeadline {
             other => other,
         }
     }
+
+    /// The time a worker may take to start: its own limit, or what is left if less.
+    fn start_up(self) -> Result<Duration, Stopped> {
+        Ok(self.request_time()?.min(WORKER_START_UP_TIMEOUT))
+    }
+
+    /// A worker start within `start` that stopped. Its time limit is the deadline's
+    /// only when the deadline cut the start short; at the worker's own limit no
+    /// program ran, so the worker did not start (R1124og-PG-909).
+    fn not_started(self, start: Duration, stopped: Stopped) -> Stopped {
+        match stopped {
+            Stopped::TimeLimit(_) if start < WORKER_START_UP_TIMEOUT => {
+                Stopped::TimeLimit(self.total)
+            }
+            Stopped::TimeLimit(after) => Stopped::Failed(WorkerError::Spawn(format!(
+                "it did not answer within {} s of starting",
+                after.as_secs()
+            ))),
+            other => other,
+        }
+    }
 }
 
 /// Reading one DWG file, or one drawing as an underlay, has no deadline: it ends, is
@@ -295,15 +316,10 @@ impl ProgramWorker {
         let own = self.deadline;
         let input = program_input(file_name, source, overrides);
         let shared = |stopped: Stopped| deadline.stopped(stopped).checks_error();
+        let start = deadline.start_up().map_err(Stopped::checks_error)?;
         let mut running = self
-            .worker(
-                cancel,
-                deadline
-                    .request_time()
-                    .map_err(Stopped::checks_error)?
-                    .min(WORKER_START_UP_TIMEOUT),
-            )
-            .map_err(shared)?;
+            .worker(cancel, start)
+            .map_err(|stopped| deadline.not_started(start, stopped).checks_error())?;
         let left = match deadline.request_time() {
             Ok(left) => left,
             Err(stopped) => {
@@ -602,10 +618,10 @@ impl ProgramWorker {
         cancel: &CancelToken,
         request: impl FnOnce(&mut ExactWorkerClient, Duration) -> Result<T, WorkerError>,
     ) -> Result<T, Stopped> {
-        let start = deadline.request_time()?.min(WORKER_START_UP_TIMEOUT);
+        let start = deadline.start_up()?;
         let mut running = self
             .worker(cancel, start)
-            .map_err(|stopped| deadline.stopped(stopped))?;
+            .map_err(|stopped| deadline.not_started(start, stopped))?;
         let time = match deadline.request_time() {
             Ok(time) => time,
             Err(stopped) => {
@@ -929,6 +945,42 @@ impl Stopped {
 mod tests {
     use super::*;
     use ketchup_program::{Issue, REPORT_TRUNCATED, Severity};
+
+    /// R1124og-PG-909: a worker that did not answer its start-up handshake within its
+    /// own limit ran no program, so the shared deadline and the program are not
+    /// blamed; only a start the deadline cut short is the deadline's.
+    #[test]
+    fn a_worker_that_did_not_start_is_not_blamed_on_the_shared_deadline() {
+        let deadline = CheckDeadline::after(Duration::from_secs(60));
+        let Ok(start) = deadline.start_up() else {
+            panic!("time is left")
+        };
+        assert_eq!(start, WORKER_START_UP_TIMEOUT);
+        let error = deadline
+            .not_started(start, Stopped::TimeLimit(start))
+            .checks_error();
+        assert_eq!(error.code, "worker_failed", "{}", error.message);
+        assert!(
+            error.message.contains("did not answer within 30 s"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("shorten"), "{}", error.message);
+
+        let short = CheckDeadline::after(Duration::from_secs(10));
+        let Ok(start) = short.start_up() else {
+            panic!("time is left")
+        };
+        assert!(start < WORKER_START_UP_TIMEOUT);
+        let error = short
+            .not_started(start, Stopped::TimeLimit(start))
+            .checks_error();
+        let expected = ketchup_program::check_time_limit(Duration::from_secs(10));
+        assert_eq!(
+            (error.code, error.message),
+            (expected.code, expected.message)
+        );
+    }
 
     /// Thirty boxes that all overlap: 435 pairs, the first of them collisions.
     fn overlapping() -> Evaluated {
