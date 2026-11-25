@@ -1,4 +1,4 @@
-//! Review 2026-11-25 R1125og-PG-1006: two drilled boards overlapping by
+//! Review 2026-11-25 R1125og-PG-1006: two drilled parts overlapping by
 //! 50 x 100 x 18 mm passed with exit 0 and only a `collision_unverified`
 //! warning, although their holes remove at most about 1 000 mm³ of the
 //! 90 000 mm³ their boxes share. Boxes settle such a pair: holes, pockets and
