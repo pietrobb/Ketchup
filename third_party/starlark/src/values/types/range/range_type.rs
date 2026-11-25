@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: the iterator reports the length of a range longer than `i32::MAX`. See PATCH.md.
+
 use std::fmt;
 use std::fmt::Display;
 use std::num::NonZeroI32;
@@ -85,6 +87,24 @@ impl Range {
             return Ok(self_length == other_length);
         } else {
             return Ok(false);
+        }
+    }
+
+    /// Ketchup patch: the number of items, which can pass `i32::MAX`
+    /// (`range(2147483647, -2147483648, -1)`). The iterator reports it, so a collection
+    /// of the range is checked against the heap bound; it reported no length there and
+    /// `enumerate` panicked (review 2026-11-26 R1126og-PG-1103).
+    fn count(&self) -> u64 {
+        let (start, stop, step) = (self.start as i64, self.stop as i64, self.step.get() as i64);
+        let (dist, step) = if step > 0 {
+            (stop - start, step)
+        } else {
+            (start - stop, -step)
+        };
+        if dist <= 0 {
+            0
+        } else {
+            ((dist - 1) / step + 1) as u64
         }
     }
 
@@ -203,9 +223,9 @@ impl<'v> StarlarkValue<'v> for Range {
         let Some(rem_range) = self.rem_range_at_iter(index) else {
             return (0, Some(0));
         };
-        match rem_range.length() {
-            Ok(length) => (length as usize, Some(length as usize)),
-            Err(_) => (0, None),
+        match usize::try_from(rem_range.count()) {
+            Ok(length) => (length, Some(length)),
+            Err(_) => (usize::MAX, None),
         }
     }
 

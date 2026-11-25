@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: enumerate, reversed and sorted check the list they build against the heap bound. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: enumerate, reversed and sorted check the list they build against the heap bound as it grows. See PATCH.md.
 
 //! A module with the standard function and constants that are by default in all
 //! dialect of Starlark
@@ -166,10 +166,14 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         let it = it.get().iterate(heap)?;
         // Ketchup patch: a list slot and a pair for each item, checked against the
         // heap bound before allocating; `enumerate(range(10**9))` panicked past
-        // `u32::MAX` bytes (review 2026-11-25 R1125lo-3).
-        heap.check_allocation(it.size_hint().0, 3 * std::mem::size_of::<Value>())?;
+        // `u32::MAX` bytes (review 2026-11-25 R1125lo-3), and over a range longer than
+        // `i32::MAX` past the check (R1126og-PG-1103).
         let v = it.enumerate().map(move |(k, v)| (k as i32 + start, v));
-        Ok(AllocList(v))
+        Ok(AllocList(heap.collect_bounded(
+            v,
+            0,
+            3 * std::mem::size_of::<Value>(),
+        )?))
     }
 
     /// [getattr](
@@ -312,8 +316,7 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         let it = a.get().iterate(heap)?;
         // Ketchup patch: checked against the heap bound before collecting;
         // `reversed(range(10**9))` panicked past `u32::MAX` bytes (review 2026-11-25 R1125lo-3).
-        heap.check_allocation(it.size_hint().0, std::mem::size_of::<Value>())?;
-        let mut v: Vec<Value> = it.collect();
+        let mut v = heap.collect_bounded(it, 0, std::mem::size_of::<Value>())?;
         v.reverse();
         Ok(v)
     }
@@ -351,18 +354,17 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         let it = x.get().iterate(eval.heap())?;
         // Ketchup patch: a (value, key) pair for each item, checked against the heap
         // bound before collecting; `sorted(range(10**9))` panicked past `u32::MAX` bytes
-        // (review 2026-11-25 R1125lo-3).
-        eval.heap()
-            .check_allocation(it.size_hint().0, std::mem::size_of::<(Value, Value)>())?;
+        // (review 2026-11-25 R1125lo-3), and over a range longer than `i32::MAX` past the
+        // check (R1126og-PG-1103).
+        let heap = eval.heap();
+        let pair = std::mem::size_of::<(Value, Value)>();
         let mut it = match key {
-            None => it.map(|x| (x, x)).collect(),
-            Some(key) => {
-                let mut v = Vec::new();
-                for el in it {
-                    v.push((el, key.invoke_pos(&[el], eval)?));
-                }
-                v
-            }
+            None => heap.collect_bounded(it.map(|x| (x, x)), 0, pair)?,
+            Some(key) => heap.try_collect_bounded(
+                it.map(|el| Ok((el, key.invoke_pos(&[el], eval)?))),
+                0,
+                pair,
+            )?,
         };
 
         let mut compare_ok = Ok(());

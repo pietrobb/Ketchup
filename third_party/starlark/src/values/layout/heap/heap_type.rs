@@ -757,6 +757,46 @@ impl Heap {
         }
     }
 
+    /// Ketchup patch: collects `items`, checking `item_bytes` for each against the bound
+    /// before the vector grows, with `already` more counted as held. An iterator that
+    /// reports no length, or a length past `i32::MAX`, is refused at the bound rather
+    /// than collected past it (review 2026-11-26 R1126og-PG-1103).
+    pub(crate) fn try_collect_bounded<T>(
+        &self,
+        items: impl Iterator<Item = crate::Result<T>>,
+        already: usize,
+        item_bytes: usize,
+    ) -> crate::Result<Vec<T>> {
+        let mut collected = Vec::new();
+        let reserve = |collected: &mut Vec<T>, additional: usize| {
+            let count = already
+                .saturating_add(collected.len())
+                .saturating_add(additional);
+            self.check_allocation(count, item_bytes)?;
+            collected.reserve_exact(additional);
+            crate::Result::Ok(())
+        };
+        reserve(&mut collected, items.size_hint().0)?;
+        for item in items {
+            if collected.len() == collected.capacity() {
+                let more = cmp::max(collected.len(), 4);
+                reserve(&mut collected, more)?;
+            }
+            collected.push(item?);
+        }
+        Ok(collected)
+    }
+
+    /// [`Heap::try_collect_bounded`] of items that cannot fail.
+    pub(crate) fn collect_bounded<T>(
+        &self,
+        items: impl Iterator<Item = T>,
+        already: usize,
+        item_bytes: usize,
+    ) -> crate::Result<Vec<T>> {
+        self.try_collect_bounded(items.map(Ok), already, item_bytes)
+    }
+
     /// Whether this heap reached its bound: an operation was refused, or the heap
     /// holds more than the bound. The refusal's error loses its type when a
     /// method returns it as `anyhow::Error`, so the embedder asks the heap.
