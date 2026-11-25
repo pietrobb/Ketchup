@@ -1114,6 +1114,73 @@ fn bare_blocks_never_weaken_the_column_they_bear_on() {
     }
 }
 
+/// Review 2026-11-26 R1126og-PG-1106: a path was split at no more than three
+/// bare contacts slanting to the force, and through the next one it was held
+/// rigidly every way, the fault of PG-1003. The column of
+/// [`a_bare_contact_holds_only_the_force_along_its_normal`] turned 30 / 60
+/// degrees, its broad faces bearing bare on a grounded block each side, held
+/// the brace at 4.263 / 9.768 N/mm; the blocks cut across into four, the
+/// search keeping off one piece after the other reached a fourth and held at
+/// 4.429 / 10.844, though pieces hold no more than the block they are cut
+/// from.
+#[test]
+fn blocks_cut_into_pieces_hold_no_more_than_whole() {
+    let faced = |beta: f64, pieces: i32| {
+        beam_with(
+            |x| {
+                let turn = |part: &str| {
+                    format!(
+                        "rotate({part}, axis = (0, 0, 1), angle = {beta}, pivot = ({x}, 955, 2400))\n"
+                    )
+                };
+                let mut source = format!(
+                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+c = box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+{}joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 2400), ({}, 955, 2400)])
+",
+                    x - 50,
+                    x - 200,
+                    turn("c"),
+                    x + 15,
+                    x - 15,
+                    x - 5,
+                    x + 5,
+                );
+                let wide = 400 / pieces;
+                for (side, y) in [("south", 750), ("north", 970)] {
+                    for k in 0..pieces {
+                        source.push_str(&format!(
+                            "b = box(\"{side} {x} {k}\", ({wide}, 200, 2300), at = ({}, {y}, 0), material = \"GL24h\", grounded = True)\n{}",
+                            x - 200 + k * wide,
+                            turn("b"),
+                        ));
+                    }
+                }
+                source
+            },
+            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+        )
+    };
+    for beta in [30.0_f64, 60.0] {
+        let whole = stiffnesses(&faced(beta, 1), "brace");
+        assert_eq!(whole.len(), 2 * PLACES.len(), "{beta}: {whole:?}");
+        let alone = stiffnesses(&turned_column(beta, false, 20, Some(5)), "brace");
+        assert_eq!(alone.len(), whole.len(), "{beta}: {alone:?}");
+        assert!(whole[0] > 2.0 * alone[0], "{beta}: {whole:?}");
+        for pieces in [4, 5, 8] {
+            let held = stiffnesses(&faced(beta, pieces), "brace");
+            assert_eq!(held.len(), whole.len(), "{beta} {pieces}: {held:?}");
+            for ((held, whole), alone) in held.iter().zip(&whole).zip(&alone) {
+                assert!(
+                    *held <= whole * (1.0 + 1e-9) && *held >= alone * (1.0 - 1e-9),
+                    "{beta}, {pieces} pieces: {held} N/mm, the whole blocks {whole}, none {alone}"
+                );
+            }
+        }
+    }
+}
+
 /// Review 2026-11-25 R1125og-PG-1005: a grounded wall standing bare on a
 /// grounded slab, a brace screwed to its head, holds nothing, the bare contact
 /// holding no slide; the reason said the wall reaches the floor through nothing
