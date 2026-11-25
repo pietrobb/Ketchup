@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: `extend` checks the list against the heap bound as it grows. See PATCH.md.
+
 //! Methods for the `list` type.
 
 use starlark_derive::starlark_module;
@@ -112,7 +114,11 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
             res.double(heap);
         } else {
             let it = other.get().iterate(heap)?;
-            res.extend(it, heap);
+            // Ketchup patch: checked against the heap bound as it grows;
+            // `l.extend(range(10**9))` panicked past `u32::MAX` bytes (review 2026-11-26
+            // R1126og-PG-1103).
+            let items = heap.collect_bounded(it, res.len(), std::mem::size_of::<Value>())?;
+            res.extend(items, heap);
         }
         Ok(NoneType)
     }

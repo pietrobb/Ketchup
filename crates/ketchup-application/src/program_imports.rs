@@ -141,9 +141,11 @@ fn from_document(
 }
 
 /// Whether `feature` is the [`feature_name`] of the part `name` read from
-/// `file` as `part`: the same path once `\` is `/` and `./` is dropped (on
-/// Windows in any case), or, for a body placed before the name held the
-/// program's path (R1125og-STEP-1001), the bare name of the file.
+/// `file` as `part`: the same path once `./` is dropped (and, on Windows,
+/// `\` is `/` and in any case), or, for a body placed before the name held
+/// the program's path (R1125og-STEP-1001), the bare name of the file. A body
+/// placed since names even a file at the program's root through `./`, so a
+/// file of the same name in a folder is not taken for it (R1126og-STEP-1100).
 fn names_file(feature: &str, name: &str, file: &str, part: Option<&str>) -> bool {
     let suffix = part.map_or_else(String::new, |part| format!(", part {part}"));
     let Some(path) = feature
@@ -153,6 +155,7 @@ fn names_file(feature: &str, name: &str, file: &str, part: Option<&str>) -> bool
     else {
         return false;
     };
+    let bare = !has_folder(path);
     let (path, file) = (normalized(path), normalized(file));
     let same = |a: &str, b: &str| {
         if cfg!(windows) {
@@ -161,14 +164,23 @@ fn names_file(feature: &str, name: &str, file: &str, part: Option<&str>) -> bool
             a == b
         }
     };
-    same(&path, &file)
-        || (!path.contains('/') && same(&path, file.rsplit('/').next().unwrap_or(&file)))
+    same(&path, &file) || (bare && same(&path, file.rsplit('/').next().unwrap_or(&file)))
+}
+
+/// Whether `path` names a folder, `./` included: `\` separates folders on
+/// Windows only; elsewhere it is part of a file's name (R1126og-STEP-1101).
+fn has_folder(path: &str) -> bool {
+    path.contains('/') || (cfg!(windows) && path.contains('\\'))
 }
 
 /// `path` with `/` between folders and without `.` folders.
 fn normalized(path: &str) -> String {
-    path.replace('\\', "/")
-        .split('/')
+    let path = if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_owned()
+    };
+    path.split('/')
         .filter(|folder| *folder != ".")
         .collect::<Vec<_>>()
         .join("/")
@@ -199,8 +211,16 @@ fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBod
 /// The name of the feature holding the body of the part `name`: the file by
 /// the path the program gives it, and the assembly part it is, so a later
 /// apply without the folder finds the body of that file and part only
-/// ([`placed_part_name`] reads the part back).
+/// ([`placed_part_name`] reads the part back). A file at the program's root
+/// is named through `./`, unlike the bare name of a body placed before #228.
 fn feature_name(name: &str, file: &str, part: Option<&str>) -> String {
+    let rooted;
+    let file = if has_folder(file) {
+        file
+    } else {
+        rooted = format!("./{file}");
+        &rooted
+    };
     match part {
         Some(part) => format!("{name} from {file}, part {part}"),
         None => format!("{name} from {file}"),
@@ -416,4 +436,40 @@ pub(crate) fn append_imported(
         commands.push(CanonicalCommand::RecordImport(receipt));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{feature_name, names_file};
+
+    /// R1126og-STEP-1100: a body named today names a root file through `./`;
+    /// only a body named before #228 by the bare name stands for the file in
+    /// any folder (R1125og-STEP-1001).
+    #[test]
+    fn only_a_body_named_before_228_by_the_bare_name_stands_for_any_folder() {
+        for part in [None, Some("screw")] {
+            let today = feature_name("hinge", "hinge.step", part);
+            assert!(names_file(&today, "hinge", "hinge.step", part));
+            assert!(names_file(&today, "hinge", "./hinge.step", part));
+            assert!(!names_file(&today, "hinge", "hettich/hinge.step", part));
+            let suffix = part.map_or_else(String::new, |part| format!(", part {part}"));
+            let old = format!("hinge from hinge.step{suffix}");
+            for file in ["hinge.step", "hettich/hinge.step", "./hettich/hinge.step"] {
+                assert!(names_file(&old, "hinge", file, part), "{file}");
+            }
+        }
+    }
+
+    /// R1126og-STEP-1101: outside Windows `a\b.step` is a file at the root
+    /// whose name holds `\`, not `b.step` in the folder `a`.
+    #[test]
+    fn a_backslash_separates_folders_on_windows_only() {
+        let feature = feature_name("one", "a/b.step", None);
+        assert_eq!(
+            names_file(&feature, "one", "a\\b.step", None),
+            cfg!(windows)
+        );
+        let feature = feature_name("one", "a\\b.step", None);
+        assert_eq!(names_file(&feature, "one", "a/b.step", None), cfg!(windows));
+    }
 }

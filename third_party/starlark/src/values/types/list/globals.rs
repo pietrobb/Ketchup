@@ -119,8 +119,7 @@ pub(crate) fn register_list(globals: &mut GlobalsBuilder) {
                 heap.alloc_list(xs.content())
             } else {
                 let it = a.get().iterate(heap)?;
-                heap.check_allocation(it.size_hint().0, std::mem::size_of::<Value>())?;
-                heap.alloc(AllocList(it))
+                heap.alloc_list(&heap.collect_bounded(it, 0, std::mem::size_of::<Value>())?)
             }
         } else {
             heap.alloc(AllocList::EMPTY)
