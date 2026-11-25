@@ -1007,17 +1007,6 @@ impl<'a> Drawing<'a> {
         drawing.lightweight = version.as_slice() >= b"AC1014".as_slice();
         drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
         drawing.transparency = version.as_slice() >= b"AC1024".as_slice();
-        drawing.owner = drawing.entities.iter().find_map(|entity| {
-            let record =
-                &pairs[entity.pairs.start..entity.records.get(1).map_or(entity.pairs.end, |r| r.0)];
-            let paper = record
-                .iter()
-                .any(|pair| pair.code == 67 && value(pair) == b"1");
-            (!paper)
-                .then(|| record.iter().find(|pair| pair.code == 330))
-                .flatten()
-                .map(|pair| value(pair).to_vec())
-        });
         for (index, entity) in drawing.entities.iter().enumerate() {
             if let Some(handle) = entity.handle {
                 drawing
@@ -1028,6 +1017,7 @@ impl<'a> Drawing<'a> {
             }
         }
         drawing.pairs = pairs;
+        drawing.owner = drawing.space_owner();
         Ok(drawing)
     }
 
