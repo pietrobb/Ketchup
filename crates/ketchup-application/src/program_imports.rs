@@ -145,9 +145,7 @@ fn from_document(
 /// Windows in any case), or, for a body placed before the name held the
 /// program's path (R1125og-STEP-1001), the bare name of the file.
 fn names_file(feature: &str, name: &str, file: &str, part: Option<&str>) -> bool {
-    let suffix = part
-        .map(|part| format!(", part {part}"))
-        .unwrap_or_default();
+    let suffix = part.map_or_else(String::new, |part| format!(", part {part}"));
     let Some(path) = feature
         .strip_prefix(name)
         .and_then(|rest| rest.strip_prefix(" from "))
