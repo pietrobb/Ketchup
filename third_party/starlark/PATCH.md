@@ -65,6 +65,12 @@ with an error; messages (`fail`, a missing key) and printed lines keep the `...`
 key) recursed too; it now takes the stack guard `==` and `<` already take, and fails past
 it. `enumerate`, `reversed` and `sorted` check the list they build against the heap bound
 like `list(iterable)` (R1125lo-3): `enumerate(range(10**9))` panicked past `u32::MAX` bytes.
+A range longer than `i32::MAX` reported no length, so those checks passed (review 2026-11-26
+R1126og-PG-1103); the range now reports its length (`src/values/types/range/range_type.rs`), and
+`Heap::collect_bounded` checks a collection against the bound each time it grows, so an
+iterator of unknown length is refused at the bound too. `list()`, `tuple()`, `enumerate`,
+`reversed`, `sorted`, `list.extend` and `+=` on a list collect through it, and `zip` checks the
+tuples it builds.
 
 `src/lib.rs` also allows two lints that newer rustc reports in the unchanged upstream
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
@@ -78,7 +84,8 @@ Changed files, each marked with a "Modified for Kecup" line under its license he
 `src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,
 `src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs`,
 `src/values/types/dict/{globals,refs,value}.rs`, `src/values/types/set/{refs,set}.rs`,
-`src/eval/bc/instr_impl.rs`, `src/stdlib/json.rs` and `src/stdlib/funcs/other.rs`. `LICENSE` is the Apache License 2.0 the
+`src/eval/bc/instr_impl.rs`, `src/stdlib/json.rs`, `src/stdlib/funcs/{other,zip}.rs`,
+`src/values/types/list/methods.rs` and `src/values/types/range/range_type.rs`. `LICENSE` is the Apache License 2.0 the
 upstream project (https://github.com/facebook/starlark-rust) is published under; the
 crates.io package does not carry it.
 

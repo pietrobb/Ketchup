@@ -230,44 +230,54 @@ fn a_bought_part_in_a_component_can_be_applied_again() {
         .unwrap_or_else(|error| panic!("without the folder: {error}"));
 }
 
-/// R1125og-STEP-1001: a document saved before the body's name held the
-/// program's path ("hinge from hinge.step") keeps its body when the program
-/// names the file through a folder, as "./" or with `\`.
+/// R1126og-STEP-1100: a body read today from the file at the program's root
+/// is that file's only; without the folder, a file of the same name in a
+/// folder is refused, not given the root file's body (R1124og-STEP-900).
+/// Only a body named before #228 by the bare file name stands for the file
+/// in any folder (R1125og-STEP-1001, `names_file` tests).
 #[test]
-fn a_body_named_by_the_bare_file_name_stays_the_programs() {
-    let mut session = DocumentSession::default();
-    session
-        .apply_rule_program_reading(
-            program("imported('hinge', 'hinge.step')\n"),
-            false,
-            &mut Kit,
-            CheckDeadline::start(),
-        )
-        .unwrap();
-    for (at, path) in [
-        (10, "hettich/hinge.step"),
-        (20, "./hettich/hinge.step"),
-        (30, "hettich\\\\hinge.step"),
-    ] {
+fn a_file_at_the_root_does_not_stand_for_one_of_the_same_name_in_a_folder() {
+    for part in ["", ", part = 'screw'"] {
+        let mut session = DocumentSession::default();
         session
             .apply_rule_program_reading(
-                program(&format!("imported('hinge', '{path}', at = ({at}, 0, 0))\n")),
+                program(&format!("imported('hinge', 'hinge.step'{part})\n")),
+                false,
+                &mut Kit,
+                CheckDeadline::start(),
+            )
+            .unwrap();
+        // The same file again, as the program names it or through "./".
+        for (at, path) in [(10, "hinge.step"), (20, "./hinge.step")] {
+            session
+                .apply_rule_program_reading(
+                    program(&format!(
+                        "imported('hinge', '{path}', at = ({at}, 0, 0){part})\n"
+                    )),
+                    false,
+                    &mut NoFiles,
+                    CheckDeadline::start(),
+                )
+                .unwrap_or_else(|error| panic!("{path}{part}: {error}"));
+        }
+        let error = session
+            .apply_rule_program_reading(
+                program(&format!(
+                    "imported('hinge', 'hettich/hinge.step', at = (30, 0, 0){part})\n"
+                )),
                 false,
                 &mut NoFiles,
                 CheckDeadline::start(),
             )
-            .unwrap_or_else(|error| panic!("{path}: {error}"));
+            .err()
+            .unwrap_or_else(|| panic!("hettich/hinge.step{part} took the root file's body"));
+        assert!(
+            error
+                .to_string()
+                .contains("apply the program from its file"),
+            "{part}: {error}"
+        );
     }
-    // The stored program names the folder, the body the bare name: a change
-    // applied from the program's file reads the old program from it too.
-    session
-        .apply_rule_program_reading(
-            program("imported('hinge', 'hettich/hinge.step', at = (40, 0, 0))\n"),
-            false,
-            &mut Kit,
-            CheckDeadline::start(),
-        )
-        .unwrap_or_else(|error| panic!("from its file: {error}"));
 }
 
 #[test]

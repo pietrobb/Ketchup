@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a collection is due by the bytes the heap bound counts, big integer digits included. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a collection is due by the bytes the heap bound counts, big integer digits included; `+=` on a list checks it as the list grows. See PATCH.md.
 
 //! Evaluation environment, provide converters from Ast* element to value.
 //!
@@ -631,7 +631,15 @@ pub(crate) fn add_assign<'v>(
                 list.double(heap);
             } else {
                 // TODO: if RHS is list, consider calling `List::extend_from_slice`.
-                list.extend(rhs.iterate(heap)?, heap);
+                // Ketchup patch: checked against the heap bound as it grows;
+                // `l += range(10**9)` panicked past `u32::MAX` bytes (review 2026-11-26
+                // R1126og-PG-1103).
+                let items = heap.collect_bounded(
+                    rhs.iterate(heap)?,
+                    list.len(),
+                    std::mem::size_of::<Value>(),
+                )?;
+                list.extend(items, heap);
             }
             Ok(lhs)
         }
