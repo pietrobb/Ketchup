@@ -769,6 +769,8 @@ struct Drawing<'a> {
     code_page_renamed: Option<String>,
     /// The owner (group 330) of the entities of model space.
     owner: Option<Vec<u8>>,
+    /// The owner pairs written as `owner` instead ([`Self::misowned_entities`]).
+    misowned: BTreeSet<usize>,
     /// Each layer name as read, with the bytes the drawing writes it in.
     layers: Vec<(String, Vec<u8>)>,
     /// The blocks of the BLOCKS section.
@@ -873,6 +875,7 @@ impl<'a> Drawing<'a> {
             code_page_value: None,
             code_page_renamed: None,
             owner: None,
+            misowned: BTreeSet::new(),
             layers: Vec::new(),
             blocks: Vec::new(),
             blocks_end: None,
@@ -1018,6 +1021,7 @@ impl<'a> Drawing<'a> {
         }
         drawing.pairs = pairs;
         drawing.owner = drawing.space_owner();
+        drawing.misowned = drawing.misowned_entities();
         Ok(drawing)
     }
 
@@ -1703,8 +1707,9 @@ impl<'a> Drawing<'a> {
     /// names any (review 2026-10-29 CD-68).
     fn without_removed(&self, entity: &Entity, removed: &BTreeSet<u64>) -> Option<Vec<u8>> {
         let names = entity.pairs.clone().any(|index| {
-            (330..=369).contains(&self.pairs[index].code)
-                && hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
+            self.misowned.contains(&index)
+                || (330..=369).contains(&self.pairs[index].code)
+                    && hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
         });
         if !names {
             return None;
@@ -2450,6 +2455,9 @@ impl<'a> Drawing<'a> {
             let pair = &self.pairs[index];
             let raw = self.value(index);
             let mut value = value.map(<[u8]>::to_vec);
+            if value.is_none() && self.misowned.contains(&index) {
+                value.clone_from(&self.owner);
+            }
             if let Some((own, primary, original)) = copy {
                 if pair.code == 102 {
                     in_group = raw.starts_with(b"{");

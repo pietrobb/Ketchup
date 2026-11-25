@@ -286,13 +286,20 @@ def product(expression: str) -> int:
     return value
 
 
+def newest_underlay_version(source: str) -> int:
+    """The highest version of an underlay's blob whose magic `source` names (0 for none),
+    not how often magics are written: a comment or test repeating one would hide a newer
+    blob (review 2026-11-26 R1126og-DXF-1103)."""
+    return max((int(digits) for digits in re.findall(r'b"KUNDRLY(\d+)"', source)), default=0)
+
+
 def underlay_versions(tag: str) -> int:
     """How many versions of an underlay's blob the release draws (0 before underlays): a
     file it opens with a newer one shows the underlay blank (review 2026-11-25
     R1125og-DXF-1001)."""
     path = f"{tag}:crates/ketchup-model/src/underlay.rs"
     listed = subprocess.run(["git", "cat-file", "-e", path], cwd=ROOT, capture_output=True, check=False)
-    return len(re.findall(r'b"KUNDRLY\d"', git("show", path))) if listed.returncode == 0 else 0
+    return newest_underlay_version(git("show", path)) if listed.returncode == 0 else 0
 
 
 def what_it_reads(tag: str) -> list[str]:

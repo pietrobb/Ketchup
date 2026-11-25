@@ -120,6 +120,12 @@ def test_what_a_release_reads_is_a_product_of_integers():
 def test_the_underlay_versions_a_release_draws_come_from_its_source():
     # Review 2026-11-25 R1125og-DXF-1001: a release opened files whose underlay it drew blank.
     assert checker.underlay_versions("HEAD") >= 7
+    # Review 2026-11-26 R1126og-DXF-1103: the newest version, not how often a magic is written:
+    # a comment repeating one hid a newer blob.
+    source = 'const MAGICS = [b"KUNDRLY1", b"KUNDRLY2", b"KUNDRLY3"];\n// b"KUNDRLY2" and b"KUNDRLY3" grew\n'
+    assert checker.newest_underlay_version(source) == 3
+    assert checker.newest_underlay_version('[b"KUNDRLY9", b"KUNDRLY10"]') == 10
+    assert checker.newest_underlay_version("") == 0
     tags = subprocess.run(
         ["git", "tag", "--list", "v0.2.0", "v0.3.3"], cwd=ROOT, capture_output=True, text=True, check=False
     ).stdout.split()
