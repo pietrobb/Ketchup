@@ -1015,3 +1015,114 @@ joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 23
         assert!(stiffness > 10.0, "{stiffness}");
     }
 }
+
+/// Review 2026-11-25 R1125og-PG-1003: the column of
+/// [`a_bare_contact_between_grounded_parts_only_pushes`] between two grounded
+/// blocks bearing bare on its ends, everything turned `beta` in plan, held the
+/// brace at 3.64 N/mm turned 0.2 degrees, 11.4 turned 60, though the column
+/// holds 0.665 its weak way: a bare contact the force was not quite along was
+/// rigid every way. It holds only the force along its normal, the column the
+/// rest its weak way, so k / cos² beta.
+#[test]
+fn a_bare_contact_holds_only_the_force_along_its_normal() {
+    let braced = |beta: f64, blocks: bool| {
+        beam_with(
+            |x| {
+                let turn = |part: &str| {
+                    format!(
+                        "rotate({part}, axis = (0, 0, 1), angle = {beta}, pivot = ({x}, 955, 2400))\n"
+                    )
+                };
+                let mut source = format!(
+                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+c = box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+{}joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 2400), ({}, 955, 2400)])
+",
+                    x - 50,
+                    x - 200,
+                    turn("c"),
+                    x + 15,
+                    x - 15,
+                    x - 5,
+                    x + 5,
+                );
+                if blocks {
+                    for (name, from) in [("west", x - 400), ("east", x + 200)] {
+                        source.push_str(&format!(
+                            "{name} = box(\"{name} {x}\", (200, 200, 2400), at = ({from}, 860, 0), material = \"GL24h\", grounded = True)\n{}",
+                            turn(name)
+                        ));
+                    }
+                }
+                source
+            },
+            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+        )
+    };
+    let weak = stiffnesses(&braced(0.0, false), "brace");
+    assert_eq!(weak.len(), 2 * PLACES.len(), "{weak:?}");
+    assert_eq!(stiffnesses(&braced(0.0, true), "brace"), weak);
+    for beta in [0.2_f64, 2.0, 30.0, 60.0] {
+        let expected = weak[0] / beta.to_radians().cos().powi(2);
+        let held = stiffnesses(&braced(beta, true), "brace");
+        assert_eq!(held.len(), 2 * PLACES.len(), "{beta}: {held:?}");
+        for stiffness in held {
+            assert!(
+                (0.97 * expected..=1.1 * expected).contains(&stiffness),
+                "{beta}: {stiffness} against {expected}"
+            );
+        }
+    }
+}
+
+/// Review 2026-11-25 R1125og-PG-1005: a grounded wall standing bare on a
+/// grounded slab, a brace screwed to its head, holds nothing, the bare contact
+/// holding no slide; the reason said the wall reaches the floor through nothing
+/// besides the beam. It names the wall and the slab bearing bare, and screwed
+/// to the slab the wall holds.
+#[test]
+fn a_wall_standing_bare_on_a_slab_is_named() {
+    let braced = |screwed: bool| {
+        beam_with(
+            |x| {
+                let mut source = format!(
+                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+box(\"slab {x}\", (600, 600, 100), at = ({}, 700, 0), material = \"GL24h\", grounded = True)
+box(\"wall {x}\", (400, 20, 2300), at = ({}, 950, 100), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"wall {x}\", kind = \"screw\", fasteners = [({}, 952, 2400), ({}, 958, 2400)])
+",
+                    x - 50,
+                    x - 300,
+                    x - 200,
+                    x + 15,
+                    x - 15,
+                    x - 30,
+                    x + 30,
+                );
+                if screwed {
+                    source.push_str(&format!(
+                        "joint(\"wall {x}\", \"slab {x}\", kind = \"screw\")\n"
+                    ));
+                }
+                source
+            },
+            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+        )
+    };
+    let bare = braced(false);
+    let why = refused(&bare);
+    for x in PLACES {
+        let named = format!(
+            "slab {x} and wall {x} only bear on each other, which holds no pull and no slide along their contact"
+        );
+        assert!(why.iter().any(|line| line.contains(&named)), "{why:?}");
+    }
+    assert_ne!(checked(&bare, "beam").status, "pass");
+    let screwed = stiffnesses(&braced(true), "brace");
+    assert_eq!(screwed.len(), 2 * PLACES.len(), "{screwed:?}");
+    for stiffness in screwed {
+        assert!(stiffness > 0.0, "{stiffness}");
+    }
+}
