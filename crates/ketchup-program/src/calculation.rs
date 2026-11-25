@@ -736,23 +736,29 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
     }
     if !braces.is_empty() {
         out.push_str(&format!(
-            "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>C ({})</th><th>F_cap ({})</th><th>k_mod ({})</th><th>{}</th></tr>\n",
+            "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>C ({})</th><th>F_cap ({})</th><th>F_d ({})</th><th>k_mod ({})</th><th>{}</th></tr>\n",
             l.says("Výstuha", "Výztuha"),
             l.says("Okraj", "Okraj"),
             l.says("Miesto", "Místo"),
             l.says("tuhosť cesty k zemi", "tuhost cesty k zemi"),
             l.says("vzper cesty pri f_c,0,d", "vzpěr cesty při f_c,0,d"),
+            l.says("tej kombinácie", "té kombinace"),
             l.says("kombinácia najbližšia vzperu", "kombinace nejbližší vzpěru"),
             l.says("Cesta vedie cez", "Cesta vede přes"),
         ));
         for brace in braces {
-            let (stiffness, capacity, governing, through) = match &brace.anchorage {
+            let (stiffness, capacity, asked, governing, through) = match &brace.anchorage {
                 Some(anchorage) => (
                     format!("{} N/mm", number(anchorage.stiffness_n_mm, 1)),
                     anchorage.capacity_n.map_or_else(
                         || l.says("bez vzperu", "bez vzpěru").to_owned(),
                         |n| format!("{} kN", kilonewtons(n)),
                     ),
+                    // R1126og-PG-1104: F_d of the combination the path buckles
+                    // in, not the largest F_d of the table below.
+                    anchorage
+                        .force_n
+                        .map_or_else(|| "—".to_owned(), |n| format!("{} kN", kilonewtons(n))),
                     // R1125og-PG-1001: the combination and k_mod it buckles at.
                     match (anchorage.k_mod, &anchorage.combination) {
                         (Some(kmod), Some(combination)) => {
@@ -766,6 +772,7 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
                     "—".to_owned(),
                     "—".to_owned(),
                     "—".to_owned(),
+                    "—".to_owned(),
                     l.says(
                         "doska tuhej dosky (diafragmy), nevypočítaná",
                         "deska tuhé desky (diafragmy), nevypočtena",
@@ -774,7 +781,7 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
                 ),
             };
             out.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{stiffness}</td><td class=\"n\">{capacity}</td><td>{governing}</td><td>{through}</td></tr>\n",
+                "<tr><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{stiffness}</td><td class=\"n\">{capacity}</td><td class=\"n\">{asked}</td><td>{governing}</td><td>{through}</td></tr>\n",
                 escape(&brace.part),
                 edge(&brace.edge),
                 at(brace),
@@ -804,8 +811,8 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
         out.push_str(&format!(
             "</table>\n<p class=\"note\">{}</p>\n",
             l.says(
-                "Výstuha sa započíta, len keď jej cesta k zemi drží prvok aspoň s tuhosťou C a vybočí až pri sile väčšej ako F_d (EN 1995-1-1 9.2.5.3). Pevnosť výstuh a ich spojovacích prostriedkov na sily F_d posúdená nie je.",
-                "Výztuha se započítá, jen když její cesta k zemi drží prvek alespoň s tuhostí C a vybočí až při síle větší než F_d (EN 1995-1-1 9.2.5.3). Pevnost výztuh a jejich spojovacích prostředků na síly F_d posouzena není."
+                "Výstuha sa započíta, len keď jej cesta k zemi drží prvok aspoň s tuhosťou C a v každej kombinácii vybočí až pri sile väčšej ako F_d tej kombinácie, pri jej k_mod (EN 1995-1-1 9.2.5.3). N_d a F_d tu sú najväčšie zo všetkých kombinácií; pri výstuhe je F_d kombinácie najbližšej vzperu. Pevnosť výstuh a ich spojovacích prostriedkov na sily F_d posúdená nie je.",
+                "Výztuha se započítá, jen když její cesta k zemi drží prvek alespoň s tuhostí C a v každé kombinaci vybočí až při síle větší než F_d té kombinace, při jejím k_mod (EN 1995-1-1 9.2.5.3). N_d a F_d zde jsou největší ze všech kombinací; u výztuhy je F_d kombinace nejbližší vzpěru. Pevnost výztuh a jejich spojovacích prostředků na síly F_d posouzena není."
             )
         ));
     }

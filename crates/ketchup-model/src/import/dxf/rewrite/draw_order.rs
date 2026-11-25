@@ -36,7 +36,19 @@ impl Drawing<'_> {
         let (Some(objects_end), Some(space)) = (self.objects_end, self.model_space) else {
             return;
         };
-        if fills.is_empty() || !self.lightweight {
+        if !self.lightweight {
+            return;
+        }
+        // A sort table an earlier export wrote without its class gets it (review
+        // 2026-11-26 og DXF-1100), with a fill or without one.
+        let sorted = self
+            .objects
+            .iter()
+            .any(|&start| self.value(start).eq_ignore_ascii_case(b"SORTENTSTABLE"));
+        if sorted {
+            self.class_of_sort_tables(edits);
+        }
+        if fills.is_empty() {
             return;
         }
         let space = self.record_at(space);
@@ -141,13 +153,15 @@ impl Drawing<'_> {
         added.extend(entries);
         let at = self.pairs[objects_end].start();
         edits.push((at..at, added));
-        self.class_of_sort_tables(edits);
+        if !sorted {
+            self.class_of_sort_tables(edits);
+        }
     }
 
     /// The CLASS record of SORTENTSTABLE, when the drawing has none (review 2026-11-25 og
     /// DXF-1004): AutoCAD and ezdxf list each class of object a drawing holds. Put in its
-    /// CLASSES section, or in one written before TABLES; with an instance count when the
-    /// drawing's classes have one.
+    /// CLASSES section, or in one written before TABLES; with an instance count where the
+    /// drawing's classes have one or its version does ([`Self::counts_instances`]).
     fn class_of_sort_tables(&self, edits: &mut ObjectEdits) {
         let named = |index: usize, code: i32, name: &[u8]| {
             self.pairs[index].code == code && self.value(index).eq_ignore_ascii_case(name)
@@ -166,14 +180,18 @@ impl Drawing<'_> {
                 return;
             }
             let counted = (start + 2..end).any(|index| self.pairs[index].code == 91);
-            (self.pairs[end].start(), counted, false)
+            (
+                self.pairs[end].start(),
+                counted || self.counts_instances(),
+                false,
+            )
         } else {
             let Some(tables) = section(b"TABLES") else {
                 return;
             };
             self.push_pair(&mut class, 0, b"SECTION");
             self.push_pair(&mut class, 2, b"CLASSES");
-            (self.pairs[tables].start(), false, true)
+            (self.pairs[tables].start(), self.counts_instances(), true)
         };
         self.push_pair(&mut class, 0, b"CLASS");
         self.push_pair(&mut class, 1, b"SORTENTSTABLE");
@@ -189,6 +207,19 @@ impl Drawing<'_> {
             self.push_pair(&mut class, 0, b"ENDSEC");
         }
         edits.push((at..at, class));
+    }
+
+    /// Whether a CLASS record has its instance count (91): from DXF 2004 (AC1018) on, by
+    /// `$ACADVER`, not by whether the drawing's classes are written with one (review
+    /// 2026-11-26 og DXF-1101).
+    fn counts_instances(&self) -> bool {
+        (0..self.pairs.len().saturating_sub(1))
+            .find(|index| {
+                self.pairs[*index].code == 9 && self.value(*index).eq_ignore_ascii_case(b"$ACADVER")
+            })
+            .is_some_and(|index| {
+                self.value(index + 1).to_ascii_uppercase().as_slice() >= b"AC1018".as_slice()
+            })
     }
 
     /// The reactor group naming `owner`, and the owner.
@@ -324,6 +355,26 @@ impl Drawing<'_> {
             }
             self.owner_pair(&head).map(|at| self.value(at).to_vec())
         })
+    }
+
+    /// The owner pairs (330) of the entities of model space that name no block record: the
+    /// group or hatch an export before R1125og-DXF-1000 gave the entities it added. Each is
+    /// written naming model space's block record (review 2026-11-26 og DXF-1100).
+    pub(super) fn misowned_entities(&self) -> BTreeSet<usize> {
+        let space = self.model_space.map(|space| self.record_at(space));
+        if space.and_then(|space| self.own_handle(&space)).is_none() {
+            return BTreeSet::new();
+        }
+        let records = self.block_record_handles();
+        self.entities
+            .iter()
+            .filter_map(|entity| {
+                let head = Self::head(entity);
+                let owner = self.owner_pair(&head)?;
+                let named = hex(self.value(owner))?;
+                (!records.contains(&named) && !self.in_paper_space(&head)).then_some(owner)
+            })
+            .collect()
     }
 
     /// The handles of the drawing's block records.
