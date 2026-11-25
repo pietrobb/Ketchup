@@ -24,6 +24,7 @@ use acadrust::{
     EntityType, ReadStats,
 };
 
+mod draw_order;
 pub mod sheet;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -152,7 +153,7 @@ pub fn dwg_to_whole_dxf(dwg: &[u8], max_dxf_bytes: usize) -> Result<DwgDrawing, 
 
 fn convert(dwg: &[u8], mut out: SectionWriter) -> Result<DwgDrawing, DwgError> {
     let max_dxf_bytes = out.limit;
-    let outcome = guarded(Stage::ReadDwg, || {
+    let mut outcome = guarded(Stage::ReadDwg, || {
         DwgReader::from_stream_with_options(Cursor::new(dwg), DwgReadOptions::failsafe())
             .read_with_stats()
     })?;
@@ -161,6 +162,7 @@ fn convert(dwg: &[u8], mut out: SectionWriter) -> Result<DwgDrawing, DwgError> {
             diagnostic: outcome.stats.diagnostics.first().map(|d| d.message.clone()),
         });
     }
+    draw_order::complete_sort_tables(&mut outcome.document);
     let written = guarded(Stage::WriteDxf, || {
         DxfWriter::new(&outcome.document).write_to_writer(&mut out)
     });
