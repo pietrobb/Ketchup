@@ -22,7 +22,7 @@ use ketchup_geometry::linalg::{dot, length, scale, sub};
 use ketchup_model::tolerance::ALONG_AXIS_NEGLIGIBLE;
 
 /// How many bare contacts slanting to the force one path is split at, one
-/// within the other.
+/// within the other; past them a path keeps off such contacts.
 const SPLITS: usize = 3;
 
 /// A bare contact a path pushes through slanting to the force.
@@ -51,7 +51,8 @@ struct Search<'a, 'f> {
 
 impl Search<'_, '_> {
     /// The path under the force `probe` kept off the contacts `cut`, split
-    /// at up to `left` bare contacts slanting to the force.
+    /// at up to `left` bare contacts slanting to the force and kept off the
+    /// ones past them.
     fn split(
         &self,
         probe: Probe,
@@ -62,23 +63,25 @@ impl Search<'_, '_> {
         let (found, route) =
             footing.search(self.anchor, self.member, self.apart, probe, self.start, cut)?;
         let pushes = footing.pushes_through(&route, probe.along);
-        let Some(slant) = (left > 0)
-            .then(|| footing.slanting(&route, probe.along))
-            .flatten()
-        else {
+        let Some(slant) = footing.slanting(&route, probe.along) else {
             return Some((found, route, pushes));
+        };
+        let mut kept_off = cut.to_vec();
+        kept_off.push(slant.pair);
+        // Review 2026-11-26 R1126og-PG-1106: past the splits the next slanting
+        // contact was held rigidly every way. It holds besides the path
+        // without it, never instead of it, so the path keeps off it.
+        let Some(below) = left.checked_sub(1) else {
+            return self.split(probe, &kept_off, 0);
         };
         let along = |way: [f64; 3]| Probe {
             along: way,
             ..probe
         };
-        let below = left - 1;
         let (pushed, mut parts, _) = self.split(along(slant.normal), cut, below)?;
         let (slid, beside, _) = self.split(along(slant.tangent), cut, below)?;
         parts.extend(beside);
         let split = combined(&slant, &pushed, &slid);
-        let mut kept_off = cut.to_vec();
-        kept_off.push(slant.pair);
         match self.split(probe, &kept_off, below) {
             Some(without) if without.0.stiffness_n_mm > split.stiffness_n_mm => Some(without),
             _ => Some((split, parts, true)),
