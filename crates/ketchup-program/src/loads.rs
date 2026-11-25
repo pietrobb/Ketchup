@@ -2304,10 +2304,9 @@ fn declared_bracing<'a>(
                             ),
                         )
                     } else {
+                        let anchors: Vec<usize> = ties.iter().map(|(other, _)| *other).collect();
                         (
-                            format!(
-                                "{brace} is not anchored: the grounded parts it is fastened to hold it nowhere they touch, in line with {target} or within its width, or reach the floor through nothing besides {target} or another load_path() member, where it sways with {target}; it holds nothing"
-                            ),
+                            footing.why_unfastened(brace, target, &anchors),
                             format!(
                                 "Fasten {brace} where it touches a grounded part beside {target}, across {target} and beyond its side."
                             ),
