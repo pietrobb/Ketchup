@@ -11,23 +11,50 @@ fn program(step: &str, depth: usize, used: &str) -> String {
     format!("x = 1\nfor i in range({depth}):\n    x = {step}\n{used}\nbox(\"a\", (1, 2, 3))\n")
 }
 
+/// R1126og-PG-1105: the text of a value nested past the bound ended in `...`, so two lists 250
+/// deep ending in 1 and in 2 had the same `str()` and a dict keyed by it kept one of them. Text
+/// a program gets as a value is refused there with its line; only messages and printed lines
+/// still end in `...`.
 #[test]
-fn str_and_repr_of_a_deeply_nested_value_end_in_an_ellipsis() {
-    for (step, used) in [
-        ("[x]", "s = str((x,))"),
-        ("[x]", "s = repr([x])"),
-        ("struct(a = x)", "s = str(struct(a = x))"),
-        ("(x,)", "s = str(x)"),
-        ("{\"k\": x}", "s = repr(x)"),
-    ] {
-        let used = format!("{used}\nif \"...\" not in s or len(s) > 10000:\n    fail(len(s))");
-        let source = program(step, 300_000, &used);
-        run("deep.star", &source, &BTreeMap::new())
-            .unwrap_or_else(|error| panic!("{step} {used}: {error}"));
+fn text_of_a_deeply_nested_value_is_refused_with_its_line() {
+    for depth in [250, 300_000] {
+        for (step, used) in [
+            ("[x]", "s = str((x,))"),
+            ("[x]", "s = repr([x])"),
+            ("struct(a = x)", "s = str(struct(a = x))"),
+            ("(x,)", "s = str(x)"),
+            ("{\"k\": x}", "s = repr(x)"),
+            ("[x]", "s = \"%s\" % (x,)"),
+            ("[x]", "s = \"a %r b %d\" % (x, 1)"),
+            ("[x]", "s = \"{}\".format(x)"),
+            ("[x]", "s = \"a {!r} b {}\".format(x, 1)"),
+            ("[x]", "s = f\"a {x} b\""),
+        ] {
+            let source = program(step, depth, used);
+            let error = run("deep.star", &source, &BTreeMap::new())
+                .err()
+                .unwrap_or_else(|| panic!("{depth} {step} {used}: no error"));
+            assert!(
+                error.message.contains("more than 200 deep"),
+                "{depth} {used}: {}",
+                error.message
+            );
+            assert_eq!(
+                error.location.map(|at| at.at.line),
+                Some(4),
+                "{depth} {used}"
+            );
+        }
     }
-    // A value within the bound is written whole.
-    let shallow = program("[x]", 150, "if \"...\" in str(x):\n    fail(\"cut\")");
+    // A value within the bound is written whole, and printing a deeper one shows `...`.
+    let shallow = program(
+        "[x]",
+        150,
+        "if \"...\" in str(x) or str(x) == str([x]):\n    fail(\"cut\")",
+    );
     run("shallow.star", &shallow, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+    let printed = program("[x]", 300_000, "print(x)");
+    run("print.star", &printed, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
 }
 
 #[test]

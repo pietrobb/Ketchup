@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: to_json refuses containers nested deeper than MAX_JSON_DEPTH, and repr writes them as `...`. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: to_json refuses containers nested deeper than MAX_JSON_DEPTH, and repr writes them as `...` (refused by whole_text where the text becomes a value). See PATCH.md.
 
 //! Detect recursion when doing `repr` or `to_json`.
 
@@ -83,6 +83,34 @@ thread_local! {
     static JSON_STACK: Cell<SmallSet<RawPointer>> = const { Cell::new(SmallSet::new()) };
 }
 
+thread_local! {
+    /// Ketchup patch: whether `repr` wrote a value as `...` since [`whole_text`] began.
+    static REPR_CUT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Ketchup patch: see [`whole_text`].
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Value nests lists, tuples, dicts or structs more than {MAX_JSON_DEPTH} deep to be written as text"
+)]
+struct TextDepthError;
+
+/// Ketchup patch: `collect`, which writes values as text a program gets as a
+/// value (`str`, `repr`, `%`, `format`, an f-string), refused if it wrote one
+/// as `...`: two values differing past [`MAX_JSON_DEPTH`] would get the same
+/// text (review 2026-11-26 R1126og-PG-1105). Messages and printed lines keep
+/// the `...`.
+pub(crate) fn whole_text<T>(collect: impl FnOnce() -> T) -> crate::Result<T> {
+    let before = REPR_CUT.with(|cut| cut.replace(false));
+    let made = collect();
+    let cut = REPR_CUT.with(|cut| cut.replace(before || cut.get()));
+    if unlikely(cut) {
+        Err(crate::Error::new_other(TextDepthError))
+    } else {
+        Ok(made)
+    }
+}
+
 /// Push a value to the stack, return error if it is already on the stack.
 /// Ketchup patch: or if the stack is [`MAX_JSON_DEPTH`] deep already: `str()`
 /// and `repr()` of a list in a tuple 200 000 deep overflowed the stack too
@@ -92,6 +120,7 @@ pub(crate) fn repr_stack_push(value: Value) -> Result<ReprStackGuard, ReprRefuse
         let mut stack = Cell::take(repr_stack);
         if unlikely(stack.len() >= MAX_JSON_DEPTH) {
             repr_stack.set(stack);
+            REPR_CUT.with(|cut| cut.set(true));
             Err(ReprRefused::TooDeep)
         } else if unlikely(!stack.insert(value.ptr_value())) {
             repr_stack.set(stack);

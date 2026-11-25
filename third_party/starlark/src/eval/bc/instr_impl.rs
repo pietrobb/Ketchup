@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a dict comprehension counts what its dict grows by against the heap bound. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a dict comprehension counts what its dict grows by against the heap bound; `"{}".format(x)` fails for a value too deep to write whole. See PATCH.md.
 
 //! Instruction implementations.
 
@@ -790,7 +790,7 @@ impl InstrNoFlowImpl for InstrFormatOneImpl {
         (before, arg, after, target): &(FrozenStringValue, BcSlotIn, FrozenStringValue, BcSlotOut),
     ) -> crate::Result<()> {
         let arg = frame.get_bc_slot(*arg);
-        let r = format_one(before.as_str(), arg, after.as_str(), eval.heap());
+        let r = format_one(before.as_str(), arg, after.as_str(), eval.heap())?;
         frame.set_bc_slot(*target, r.to_value());
         Ok(())
     }
