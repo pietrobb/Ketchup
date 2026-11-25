@@ -1025,41 +1025,7 @@ joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 23
 /// rest its weak way, so k / cos² beta.
 #[test]
 fn a_bare_contact_holds_only_the_force_along_its_normal() {
-    let braced = |beta: f64, blocks: bool| {
-        beam_with(
-            |x| {
-                let turn = |part: &str| {
-                    format!(
-                        "rotate({part}, axis = (0, 0, 1), angle = {beta}, pivot = ({x}, 955, 2400))\n"
-                    )
-                };
-                let mut source = format!(
-                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
-c = box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
-{}joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
-joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 2400), ({}, 955, 2400)])
-",
-                    x - 50,
-                    x - 200,
-                    turn("c"),
-                    x + 15,
-                    x - 15,
-                    x - 5,
-                    x + 5,
-                );
-                if blocks {
-                    for (name, from) in [("west", x - 400), ("east", x + 200)] {
-                        source.push_str(&format!(
-                            "{name} = box(\"{name} {x}\", (200, 200, 2400), at = ({from}, 860, 0), material = \"GL24h\", grounded = True)\n{}",
-                            turn(name)
-                        ));
-                    }
-                }
-                source
-            },
-            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
-        )
-    };
+    let braced = |beta: f64, blocks: bool| turned_column(beta, blocks, 20, Some(5));
     let weak = stiffnesses(&braced(0.0, false), "brace");
     assert_eq!(weak.len(), 2 * PLACES.len(), "{weak:?}");
     assert_eq!(stiffnesses(&braced(0.0, true), "brace"), weak);
@@ -1072,6 +1038,78 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 24
                 (0.97 * expected..=1.1 * expected).contains(&stiffness),
                 "{beta}: {stiffness} against {expected}"
             );
+        }
+    }
+}
+
+/// The column of [`a_bare_contact_between_grounded_parts_only_pushes`],
+/// `thick` thick, everything turned `beta` in plan about its head, with or
+/// without two grounded blocks bearing bare on its ends; the brace fixed to
+/// it by two screws `spread` either side of its middle, else by one screw at
+/// each end.
+fn turned_column(beta: f64, blocks: bool, thick: i32, spread: Option<i32>) -> Report {
+    beam_with(
+        |x| {
+            let turn = |part: &str| {
+                format!(
+                    "rotate({part}, axis = (0, 0, 1), angle = {beta}, pivot = ({x}, 955, 2400))\n"
+                )
+            };
+            let (to_beam, to_column) = match spread {
+                Some(spread) => (
+                    format!("({}, 14, 2400), ({}, 66, 2400)", x + 15, x - 15),
+                    format!("({}, 955, 2400), ({}, 955, 2400)", x - spread, x + spread),
+                ),
+                None => (format!("({x}, 40, 2400)"), format!("({x}, 955, 2400)")),
+            };
+            let mut source = format!(
+                "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+c = box(\"column {x}\", (400, {thick}, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+{}joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [{to_beam}])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [{to_column}])
+",
+                x - 50,
+                x - 200,
+                turn("c"),
+            );
+            if blocks {
+                for (name, from) in [("west", x - 400), ("east", x + 200)] {
+                    source.push_str(&format!(
+                        "{name} = box(\"{name} {x}\", (200, 200, 2400), at = ({from}, 860, 0), material = \"GL24h\", grounded = True)\n{}",
+                        turn(name)
+                    ));
+                }
+            }
+            source
+        },
+        "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+    )
+}
+
+/// Review 2026-11-26 R1126og-PG-1100: blocks bearing bare on the column's ends
+/// can only hold it, yet with the brace's screws 15 either side they lowered
+/// it from 0.885 / 1.324 / 2.629 N/mm to 0.522 / 0.548 / 0.835 turned 30 / 45
+/// / 60 degrees, and a column 400 x 100 turned 30, the brace on one screw at
+/// each end, from 98.0 (pass) to 54.6 (fail): each of the force's parts
+/// split at the contact twisted the column about the point 940 mm off held,
+/// and their gives were added with no term for the twists cancelling.
+#[test]
+fn bare_blocks_never_weaken_the_column_they_bear_on() {
+    for (thick, spread) in [(20, Some(15)), (100, None)] {
+        for beta in [30.0_f64, 45.0, 60.0] {
+            let alone = turned_column(beta, false, thick, spread);
+            let blocked = turned_column(beta, true, thick, spread);
+            let (without, with) = (stiffnesses(&alone, "brace"), stiffnesses(&blocked, "brace"));
+            assert_eq!(with.len(), without.len(), "{with:?} {without:?}");
+            for (with, without) in with.iter().zip(&without) {
+                assert!(
+                    *with >= without * (1.0 - 1e-9),
+                    "{thick} {spread:?} {beta}: {with} with the blocks, {without} without"
+                );
+            }
+            if checked(&alone, "beam").status == "pass" {
+                assert_eq!(checked(&blocked, "beam").status, "pass", "{thick} {beta}");
+            }
         }
     }
 }

@@ -762,7 +762,8 @@ impl<'a> Footing<'a> {
     /// [`Self::reached`] by the force `probe`: the path giving least, found
     /// as the shortest by its give, what each part and joint gives adding up
     /// along it, buckling as [`Self::rods`] after `start`; with the parts it
-    /// runs through, the anchor first.
+    /// runs through, the anchor first. It passes no contact between a pair of
+    /// parts `cut` (lesser index first).
     fn search(
         &self,
         anchor: usize,
@@ -770,6 +771,7 @@ impl<'a> Footing<'a> {
         apart: &[usize],
         probe: Probe,
         start: f64,
+        cut: &[(usize, usize)],
     ) -> Option<(Anchorage, Vec<usize>)> {
         let Probe {
             held,
@@ -815,7 +817,10 @@ impl<'a> Footing<'a> {
                     || self.member[next]
                     || bends
                     || apart.binary_search(&next).is_ok();
-                if kept || (!self.ends(next) && depth(&self.parts[next], frame) < deep) {
+                if kept
+                    || cut.contains(&(item.min(next), item.max(next)))
+                    || (!self.ends(next) && depth(&self.parts[next], frame) < deep)
+                {
                     continue;
                 }
                 if self.bears(item, next, sideways) == Some(false) {
@@ -845,6 +850,11 @@ impl<'a> Footing<'a> {
             }
         }
         let Some((total, end, own, foot)) = best else {
+            // A path kept off a contact it could pass says nothing of why
+            // the anchor holds nowhere.
+            if !cut.is_empty() {
+                return None;
+            }
             self.met_pivots
                 .borrow_mut()
                 .entry(anchor)
