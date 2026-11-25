@@ -15,13 +15,14 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: str() and repr() check the text they build against the heap bound (Heap::set_allocation_limit). See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: str() and repr() check the text they build against the heap bound (Heap::set_allocation_limit) and refuse a value too deep to write whole (whole_text). See PATCH.md.
 
 use starlark_derive::starlark_module;
 
 use crate as starlark;
 use crate::environment::GlobalsBuilder;
 use crate::eval::Evaluator;
+use crate::values::recursive_repr_or_json_guard::whole_text;
 use crate::values::string::StarlarkStr;
 use crate::values::StringValue;
 use crate::values::Value;
@@ -112,8 +113,8 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<StringValue<'v>> {
         let mut s = eval.string_pool.alloc();
-        a.collect_repr(&mut s);
-        let checked = eval.heap().check_allocation(s.len(), 1);
+        let checked = whole_text(|| a.collect_repr(&mut s))
+            .and_then(|()| eval.heap().check_allocation(s.len(), 1));
         let r = checked.map(|()| eval.heap().alloc_str(&s));
         eval.string_pool.release(s);
         r.map_err(crate::Error::into_anyhow)
@@ -144,8 +145,8 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
             Ok(a)
         } else {
             let mut s = eval.string_pool.alloc();
-            a.collect_repr(&mut s);
-            let checked = eval.heap().check_allocation(s.len(), 1);
+            let checked = whole_text(|| a.collect_repr(&mut s))
+                .and_then(|()| eval.heap().check_allocation(s.len(), 1));
             let r = checked.map(|()| eval.heap().alloc_str(&s));
             eval.string_pool.release(s);
             r.map_err(crate::Error::into_anyhow)

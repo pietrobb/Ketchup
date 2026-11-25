@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: % checks the text it builds against the heap bound (Heap::set_allocation_limit). See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: % checks the text it builds against the heap bound (Heap::set_allocation_limit) and refuses a value too deep to write whole (whole_text). See PATCH.md.
 
 //! String interpolation-related code.
 //! Based on <https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting>
@@ -28,6 +28,7 @@ use thiserror::Error;
 
 use crate::values::float::float;
 use crate::values::float::StarlarkFloat;
+use crate::values::recursive_repr_or_json_guard::whole_text;
 use crate::values::string::dot_format::format_one;
 use crate::values::types::int::int_or_big::StarlarkIntRef;
 use crate::values::types::num::value::NumRef;
@@ -224,11 +225,14 @@ pub(crate) fn percent(format: &str, value: Value, heap: &Heap) -> crate::Result<
             Some(PercentSFormat::Str) => {
                 let arg = next_value()?;
                 match arg.unpack_str() {
-                    None => arg.collect_repr(&mut res),
+                    None => whole_text(|| arg.collect_repr(&mut res))?,
                     Some(s) => res.push_str(s),
                 }
             }
-            Some(PercentSFormat::Repr) => next_value()?.collect_repr(&mut res),
+            Some(PercentSFormat::Repr) => {
+                let arg = next_value()?;
+                whole_text(|| arg.collect_repr(&mut res))?
+            }
             Some(PercentSFormat::Dec) => {
                 let value = next_value()?;
                 match value.unpack_num() {
@@ -414,7 +418,7 @@ pub(crate) fn percent_s_one<'v>(
                 },
                 None => arg,
             };
-            format_one(before, one, after, heap)
+            format_one(before, one, after, heap)?
         }
     })
 }

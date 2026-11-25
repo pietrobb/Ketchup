@@ -724,6 +724,10 @@ again or repair a separated joint; contact validation still reports that separat
   through stacked sections (`loft`), and their booleans; any part can be
   rotated. Fillet, chamfer, cut and push_pull apply to extruded and revolved
   parts only; paths are planar or spatial lines and arcs, not splines.
+- A value the program builds may nest lists, tuples, dicts and structs at most 200 deep to
+  become text: `str()`, `repr()`, `%`, `format` and f-strings of a deeper one, and
+  `json.encode`, are refused with the line. A `fail()` message, a missing-key error and
+  `print` write the part past that depth as `...`.
 - Program apply/patch retains the parametrically owned source and reconciles surviving
   parts. Editing a part the program makes, in the window or by a typed edit, is written
   into the source: a move edits a literal `at=` or adds `move()`, a turn adds `rotate()`,
