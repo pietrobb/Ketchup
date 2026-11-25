@@ -1165,18 +1165,16 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 24
     for beta in [30.0_f64, 60.0] {
         let whole = stiffnesses(&faced(beta, 1), "brace");
         assert_eq!(whole.len(), 2 * PLACES.len(), "{beta}: {whole:?}");
-        let alone = turned_column(beta, false, 20, Some(5));
-        assert!(
-            whole[0] > 2.0 * stiffnesses(&alone, "brace")[0],
-            "{beta}: {whole:?}"
-        );
+        let alone = stiffnesses(&turned_column(beta, false, 20, Some(5)), "brace");
+        assert_eq!(alone.len(), whole.len(), "{beta}: {alone:?}");
+        assert!(whole[0] > 2.0 * alone[0], "{beta}: {whole:?}");
         for pieces in [4, 5, 8] {
             let held = stiffnesses(&faced(beta, pieces), "brace");
             assert_eq!(held.len(), whole.len(), "{beta} {pieces}: {held:?}");
-            for (held, whole) in held.iter().zip(&whole) {
+            for ((held, whole), alone) in held.iter().zip(&whole).zip(&alone) {
                 assert!(
-                    *held <= whole * (1.0 + 1e-9),
-                    "{beta}, {pieces} pieces: {held} N/mm, the whole blocks {whole}"
+                    *held <= whole * (1.0 + 1e-9) && *held >= alone * (1.0 - 1e-9),
+                    "{beta}, {pieces} pieces: {held} N/mm, the whole blocks {whole}, none {alone}"
                 );
             }
         }

@@ -78,11 +78,18 @@ impl Search<'_, '_> {
             along: way,
             ..probe
         };
-        let (pushed, mut parts, _) = self.split(along(slant.normal), cut, below)?;
-        let (slid, beside, _) = self.split(along(slant.tangent), cut, below)?;
+        let without = self.split(probe, &kept_off, below);
+        // A part of the force finding no path through the contact leaves the
+        // path without it, not none.
+        let (Some((pushed, mut parts, _)), Some((slid, beside, _))) = (
+            self.split(along(slant.normal), cut, below),
+            self.split(along(slant.tangent), cut, below),
+        ) else {
+            return without;
+        };
         parts.extend(beside);
         let split = combined(&slant, &pushed, &slid);
-        match self.split(probe, &kept_off, below) {
+        match without {
             Some(without) if without.0.stiffness_n_mm > split.stiffness_n_mm => Some(without),
             _ => Some((split, parts, true)),
         }
