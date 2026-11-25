@@ -84,6 +84,31 @@ fn an_r12_sheet_written_as_dwg_keeps_its_line_and_its_text_with_the_escaped_char
     assert_eq!(text.insertion_point, Vector3::new(30.0, 60.0, 0.0));
 }
 
+/// Review 2026-11-25 og DXF-1003: a drawing in millimetres that does not say it is metric
+/// (the R12 plan export has `$INSUNITS` 4 only) was written as DWG with `MEASUREMENT` 0, so
+/// line types and hatch patterns loaded later came from the inch `acad.lin` / `acad.pat`.
+/// A `$MEASUREMENT` the drawing gives, and a drawing in inches, keep theirs.
+#[test]
+fn a_drawing_in_millimetres_is_written_as_a_metric_dwg() {
+    let measurement = |dxf: &str| {
+        let dwg = dxf_to_dwg(dxf.as_bytes()).expect("written as DWG");
+        let read = dwg_to_dxf(&dwg, 64 * 1024 * 1024).expect("the DWG reads");
+        DxfReader::from_reader(Cursor::new(read.dxf))
+            .and_then(DxfReader::read)
+            .expect("the DXF of the DWG reads")
+            .header
+            .measurement
+    };
+    assert_eq!(measurement(R12_SHEET), 1, "millimetres");
+    let inches = R12_SHEET.replace("$INSUNITS\n70\n4\n", "$INSUNITS\n70\n1\n");
+    assert_eq!(measurement(&inches), 0, "inches");
+    let said = R12_SHEET.replace(
+        "$INSUNITS\n70\n4\n",
+        "$INSUNITS\n70\n4\n9\n$MEASUREMENT\n70\n0\n",
+    );
+    assert_eq!(measurement(&said), 0, "the drawing's own");
+}
+
 /// Review 2026-10-31 P3: an MTEXT without a reference width (group 41) was written into
 /// the DWG with acadrust's default width 10, so its text wrapped after every word. It
 /// stays unwrapped (width 0); a width the drawing gives is kept.

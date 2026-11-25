@@ -200,6 +200,76 @@ fn without_the_folder_only_the_same_file_and_part_keep_their_body() {
     }
 }
 
+/// R1125og-STEP-1000: a bought part inside a component stays changeable;
+/// its body is the component's own occurrence, not one at the document root.
+#[test]
+fn a_bought_part_in_a_component_can_be_applied_again() {
+    let unit = |width: u32| {
+        format!(
+            "door = box('door', ({width}, 18, 600))\n\
+             hinge = imported('hinge', 'hettich/hinge.step', at = (0, 0, 100))\n\
+             c = component('door unit', [door, hinge])\n\
+             instance('door 2', c, at = (1000, 0, 0))\n"
+        )
+    };
+    let mut session = DocumentSession::default();
+    session
+        .apply_rule_program_reading(program(&unit(400)), false, &mut Kit, CheckDeadline::start())
+        .unwrap();
+    // A change applied from the program's file, then one without it.
+    session
+        .apply_rule_program_reading(program(&unit(500)), false, &mut Kit, CheckDeadline::start())
+        .unwrap_or_else(|error| panic!("from its file: {error}"));
+    session
+        .apply_rule_program_reading(
+            program(&unit(600)),
+            false,
+            &mut NoFiles,
+            CheckDeadline::start(),
+        )
+        .unwrap_or_else(|error| panic!("without the folder: {error}"));
+}
+
+/// R1125og-STEP-1001: a document saved before the body's name held the
+/// program's path ("hinge from hinge.step") keeps its body when the program
+/// names the file through a folder, as "./" or with `\`.
+#[test]
+fn a_body_named_by_the_bare_file_name_stays_the_programs() {
+    let mut session = DocumentSession::default();
+    session
+        .apply_rule_program_reading(
+            program("imported('hinge', 'hinge.step')\n"),
+            false,
+            &mut Kit,
+            CheckDeadline::start(),
+        )
+        .unwrap();
+    for (at, path) in [
+        (10, "hettich/hinge.step"),
+        (20, "./hettich/hinge.step"),
+        (30, "hettich\\\\hinge.step"),
+    ] {
+        session
+            .apply_rule_program_reading(
+                program(&format!("imported('hinge', '{path}', at = ({at}, 0, 0))\n")),
+                false,
+                &mut NoFiles,
+                CheckDeadline::start(),
+            )
+            .unwrap_or_else(|error| panic!("{path}: {error}"));
+    }
+    // The stored program names the folder, the body the bare name: a change
+    // applied from the program's file reads the old program from it too.
+    session
+        .apply_rule_program_reading(
+            program("imported('hinge', 'hettich/hinge.step', at = (40, 0, 0))\n"),
+            false,
+            &mut Kit,
+            CheckDeadline::start(),
+        )
+        .unwrap_or_else(|error| panic!("from its file: {error}"));
+}
+
 #[test]
 fn a_file_that_cannot_be_read_says_which_part_and_why() {
     let mut session = DocumentSession::default();

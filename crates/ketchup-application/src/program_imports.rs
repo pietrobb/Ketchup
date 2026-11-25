@@ -106,17 +106,17 @@ fn failed(part: &Part, file: &str, rejection: &Rejection) -> RuleProgramApplyErr
     }
 }
 
-/// The body the document places for the part `name`, read from `file` by the
-/// path the program gives and as the assembly part `part`; none when the
-/// program now names another file, folder or part (R1124og-STEP-900): a body
-/// of a file of the same name is not that file's.
+/// The body the document places for the part `name`, at the document's root
+/// or inside a component (R1125og-STEP-1000), read from `file` by the path
+/// the program gives and as the assembly part `part`; none when the program
+/// now names another file, folder or part (R1124og-STEP-900): a body of a
+/// file of the same name is not that file's.
 fn from_document(
     snapshot: &Snapshot,
     name: &str,
     file: &str,
     part: Option<&str>,
 ) -> Option<ImportedBody> {
-    let feature_name = feature_name(name, file, part);
     snapshot.definitions().find_map(|definition| {
         let [feature] = definition.feature_ids() else {
             return None;
@@ -128,14 +128,50 @@ fn from_document(
         let receipt = snapshot.import_receipt(spec.import_id)?;
         let placed_for_part = snapshot.occurrences().any(|occurrence| {
             occurrence.definition_id() == definition.id() && occurrence.name() == name
+        }) || snapshot.local_occurrences().any(|occurrence| {
+            occurrence.definition_id() == definition.id() && occurrence.name() == name
         });
         (receipt.format() == ImportFormat::Step
             && definition.name() == name
-            && feature.name() == feature_name
+            && names_file(feature.name(), name, file, part)
             && spec.source_part_index.is_some() == part.is_some()
             && placed_for_part)
             .then(|| body_of(spec, receipt))
     })
+}
+
+/// Whether `feature` is the [`feature_name`] of the part `name` read from
+/// `file` as `part`: the same path once `\` is `/` and `./` is dropped (on
+/// Windows in any case), or, for a body placed before the name held the
+/// program's path (R1125og-STEP-1001), the bare name of the file.
+fn names_file(feature: &str, name: &str, file: &str, part: Option<&str>) -> bool {
+    let suffix = part.map_or_else(String::new, |part| format!(", part {part}"));
+    let Some(path) = feature
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(" from "))
+        .and_then(|rest| rest.strip_suffix(suffix.as_str()))
+    else {
+        return false;
+    };
+    let (path, file) = (normalized(path), normalized(file));
+    let same = |a: &str, b: &str| {
+        if cfg!(windows) {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    };
+    same(&path, &file)
+        || (!path.contains('/') && same(&path, file.rsplit('/').next().unwrap_or(&file)))
+}
+
+/// `path` with `/` between folders and without `.` folders.
+fn normalized(path: &str) -> String {
+    path.replace('\\', "/")
+        .split('/')
+        .filter(|folder| *folder != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn body_of(spec: &ImportedExactBodySpec, receipt: &ImportReceipt) -> ImportedBody {

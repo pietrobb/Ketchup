@@ -24,6 +24,7 @@ use acadrust::{
     EntityType, ReadStats,
 };
 
+mod draw_order;
 pub mod sheet;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -152,7 +153,7 @@ pub fn dwg_to_whole_dxf(dwg: &[u8], max_dxf_bytes: usize) -> Result<DwgDrawing, 
 
 fn convert(dwg: &[u8], mut out: SectionWriter) -> Result<DwgDrawing, DwgError> {
     let max_dxf_bytes = out.limit;
-    let outcome = guarded(Stage::ReadDwg, || {
+    let mut outcome = guarded(Stage::ReadDwg, || {
         DwgReader::from_stream_with_options(Cursor::new(dwg), DwgReadOptions::failsafe())
             .read_with_stats()
     })?;
@@ -161,6 +162,7 @@ fn convert(dwg: &[u8], mut out: SectionWriter) -> Result<DwgDrawing, DwgError> {
             diagnostic: outcome.stats.diagnostics.first().map(|d| d.message.clone()),
         });
     }
+    draw_order::complete_sort_tables(&mut outcome.document);
     let written = guarded(Stage::WriteDxf, || {
         DxfWriter::new(&outcome.document).write_to_writer(&mut out)
     });
@@ -193,6 +195,14 @@ fn read_dxf(dxf: &[u8]) -> Result<CadDocument, DwgError> {
         DxfReader::from_reader(Cursor::new(source))?.read()
     })?;
     document.version = DxfVersion::AC1032;
+    // Metric when its units are and it does not say otherwise, so that line types and
+    // hatch patterns loaded later come from `acadiso.*` (review 2026-11-25 og DXF-1003).
+    const METRIC_UNITS: [i16; 10] = [4, 5, 6, 7, 12, 13, 14, 15, 16, 17];
+    if METRIC_UNITS.contains(&document.header.insertion_units)
+        && !dxf.windows(12).any(|name| name == b"$MEASUREMENT")
+    {
+        document.header.measurement = 1;
+    }
     for handle in mtexts_without_width(dxf) {
         if let Some(EntityType::MText(text)) = document.get_entity_mut(Handle::new(handle)) {
             text.rectangle_width = 0.0;
