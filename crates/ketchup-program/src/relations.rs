@@ -74,6 +74,9 @@ pub enum OverlapStatus {
     /// The collision check stopped listing pairs before this one, so it is
     /// neither a collision nor cleared (review 2026-11-24 R1124og-PG-904).
     Unchecked,
+    /// The two are alternatives of one part (`alternatives()`): only one is
+    /// built, so the collision check leaves them out (R1125og-PG-1007).
+    Alternatives,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -213,7 +216,14 @@ fn overlap_status(model: &ProgramModel, a: &Part, b: &Part) -> (OverlapStatus, O
     if b.subtracts(a) {
         return (OverlapStatus::Subtracted, Some(b.name.clone()));
     }
-    if !validate::booleans_leave_overlap(a, b) || !validate::booleans_leave_overlap(b, a) {
+    // The pairs the collision check leaves out on purpose (R1125og-PG-1007).
+    if model.are_alternatives(a, b) {
+        return (OverlapStatus::Alternatives, None);
+    }
+    if !validate::booleans_leave_overlap(a, b)
+        || !validate::booleans_leave_overlap(b, a)
+        || validate::trims_separate(a, b)
+    {
         return (OverlapStatus::Removed, None);
     }
     let Some(region) = validate::overlap(a, b) else {

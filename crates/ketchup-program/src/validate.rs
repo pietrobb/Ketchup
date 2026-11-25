@@ -120,7 +120,7 @@ pub struct Issue {
 }
 
 /// Bounds of `b` in the frame of `a` when both share one orientation.
-fn in_frame_of(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
+pub(crate) fn in_frame_of(a: &Part, b: &Part) -> Option<([f64; 3], [f64; 3])> {
     if !frame::same_orientation(&a.rotation, &b.rotation) {
         return None;
     }
@@ -346,7 +346,7 @@ fn kept_half_spaces(part: &Part) -> Vec<([f64; 3], f64)> {
 
 /// Whether trims leave `a` and `b` no common volume, as the two halves of a
 /// split: their boxes and kept half-spaces share at most a face.
-fn trims_separate(a: &Part, b: &Part) -> bool {
+pub(crate) fn trims_separate(a: &Part, b: &Part) -> bool {
     let trims: Vec<_> = kept_half_spaces(a)
         .into_iter()
         .chain(kept_half_spaces(b))
@@ -595,8 +595,30 @@ fn collision(
                 return false;
             }
             Some(_) => return false,
-            None if !list_unverified => return true,
             None => {}
+        }
+        if let Some(volume) = crate::certain_overlap::certain_overlap_mm3(a, b) {
+            issues.push(Issue {
+                source_lines: Vec::new(),
+                severity: Severity::Error,
+                kind: "collision",
+                parts: vec![a.name.clone(), b.name.clone()],
+                message: format!(
+                    "the solids of {} and {} overlap by at least {} mm³: their boxes share \
+                     more than their holes, pockets and subtracted tools can remove",
+                    a.name,
+                    b.name,
+                    volume.round()
+                ),
+                where_mm: Some((min.map(round), max.map(round))),
+                hint: "Move or resize one part so they only touch, or cut a pocket/groove \
+                       for the other part, or declare a joint with a volume."
+                    .to_owned(),
+            });
+            return false;
+        }
+        if !list_unverified {
+            return true;
         }
         issues.push(Issue {
             source_lines: Vec::new(),

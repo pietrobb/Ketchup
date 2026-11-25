@@ -1078,7 +1078,7 @@ fn the_fasteners_examples_have_no_collision_on_the_exact_solids() {
 /// PROGRAM_EXACT_RUNNING_AFTER (2 s, easily reached by a debug build) is
 /// followed the way a client does: the issues report answers busy until the
 /// check ends, then pages its verdict.
-pub(super) fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
+pub(crate) fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
     if result["exact_collisions"]["not_evaluated"][0]["reason"] != "exact_check_running" {
         assert_eq!(result["geometry_evaluated"], true, "{result}");
         let issues = result["report"]["issues"].as_array().unwrap().clone();

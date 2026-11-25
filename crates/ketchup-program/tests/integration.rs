@@ -6,6 +6,7 @@ mod brace_load_duration;
 mod bracing_edge;
 mod buildup;
 mod calculation;
+mod certain_overlaps;
 mod calculation_texts;
 mod cnc_dxf;
 mod components;
