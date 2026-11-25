@@ -7,6 +7,7 @@
 //! point 1: every threshold of slenderness was passed by the next shape past
 //! it).
 
+mod bare;
 mod joint;
 mod sheet;
 mod stiffness;
@@ -424,19 +425,21 @@ impl<'a> Footing<'a> {
         );
         let mut found: Option<(Anchorage, BTreeSet<usize>)> = None;
         for probe in probes {
-            let Some((mut this, mut route)) = self.search(anchor, member, &key.2, probe, reach)
+            let Some((mut this, mut route, pushes)) =
+                self.bearing_search(anchor, member, &key.2, probe, reach)
             else {
                 found = None;
                 break;
             };
             // A path pushing through a bare contact holds the other way
             // without it, or not at all.
-            if self.pushes_through(&route, probe.along) {
+            if pushes {
                 let back = Probe {
                     along: scale(probe.along, -1.0),
                     ..probe
                 };
-                let Some((pulled, through)) = self.search(anchor, member, &key.2, back, reach)
+                let Some((pulled, through, _)) =
+                    self.bearing_search(anchor, member, &key.2, back, reach)
                 else {
                     found = None;
                     break;
@@ -995,14 +998,6 @@ impl<'a> Footing<'a> {
         Some(facing * dot(apart, normal) > 0.0)
     }
 
-    /// Whether the path `route` (its parts in order) pushes through a bare
-    /// contact ([`Self::bears`]) under a force `along`.
-    fn pushes_through(&self, route: &[usize], along: [f64; 3]) -> bool {
-        route
-            .windows(2)
-            .any(|pair| self.bears(pair[0], pair[1], along) == Some(true))
-    }
-
     /// The fasteners a joint naming none is taken to have between `a` and
     /// `b`: two at the ends of their contact, along its longest way, where it
     /// is three times as long as the thinner part is thick, else one (as the
@@ -1083,8 +1078,30 @@ impl<'a> Footing<'a> {
                 pivots.join(", ")
             ));
         }
+        why.extend(self.why_bare(resting));
+        format!("{}, so it sways with {target}", why.join("; "))
+    }
+
+    /// Why the grounded parts `brace` is fastened to, `anchors`, hold it
+    /// nowhere, naming the bare contacts their paths could not pass (review
+    /// 2026-11-25 R1125og-PG-1005: a wall standing bare on a slab was said to
+    /// reach the floor through nothing besides the member).
+    pub(super) fn why_unfastened(&self, brace: &str, target: &str, anchors: &[usize]) -> String {
+        let mut why = format!(
+            "{brace} is not anchored: the grounded parts it is fastened to hold it nowhere they touch, in line with {target} or within its width, or reach the floor through nothing besides {target} or another load_path() member, where it sways with {target}"
+        );
+        if let Some(bare) = self.why_bare(anchors) {
+            why.push_str("; ");
+            why.push_str(&bare);
+        }
+        why + "; it holds nothing"
+    }
+
+    /// The grounded pairs touching bare that the searches from `anchors`
+    /// could not pass, and why ([`Self::bears`]).
+    fn why_bare(&self, anchors: &[usize]) -> Option<String> {
         let met = self.met_bare.borrow();
-        let mut bare: Vec<String> = resting
+        let mut bare: Vec<String> = anchors
             .iter()
             .filter_map(|anchor| met.get(anchor))
             .flatten()
@@ -1092,13 +1109,12 @@ impl<'a> Footing<'a> {
             .collect();
         bare.sort_unstable();
         bare.dedup();
-        if !bare.is_empty() {
-            why.push(format!(
+        (!bare.is_empty()).then(|| {
+            format!(
                 "{} only bear on each other, which holds no pull and no slide along their contact: fasten them with joint()",
                 bare.join(", ")
-            ));
-        }
-        format!("{}, so it sways with {target}", why.join("; "))
+            )
+        })
     }
 }
 

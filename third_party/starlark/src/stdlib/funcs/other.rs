@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: enumerate, reversed and sorted check the list they build against the heap bound. See PATCH.md.
 
 //! A module with the standard function and constants that are by default in all
 //! dialect of Starlark
@@ -162,11 +163,12 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         #[starlark(default = 0)] start: i32,
         heap: &'v Heap,
     ) -> starlark::Result<impl AllocValue<'v>> {
-        let v = it
-            .get()
-            .iterate(heap)?
-            .enumerate()
-            .map(move |(k, v)| (k as i32 + start, v));
+        let it = it.get().iterate(heap)?;
+        // Ketchup patch: a list slot and a pair for each item, checked against the
+        // heap bound before allocating; `enumerate(range(10**9))` panicked past
+        // `u32::MAX` bytes (review 2026-11-25 R1125lo-3).
+        heap.check_allocation(it.size_hint().0, 3 * std::mem::size_of::<Value>())?;
+        let v = it.enumerate().map(move |(k, v)| (k as i32 + start, v));
         Ok(AllocList(v))
     }
 
@@ -307,7 +309,11 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         #[starlark(require = pos)] a: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
         heap: &'v Heap,
     ) -> starlark::Result<Vec<Value<'v>>> {
-        let mut v: Vec<Value> = a.get().iterate(heap)?.collect();
+        let it = a.get().iterate(heap)?;
+        // Ketchup patch: checked against the heap bound before collecting;
+        // `reversed(range(10**9))` panicked past `u32::MAX` bytes (review 2026-11-25 R1125lo-3).
+        heap.check_allocation(it.size_hint().0, std::mem::size_of::<Value>())?;
+        let mut v: Vec<Value> = it.collect();
         v.reverse();
         Ok(v)
     }
@@ -343,6 +349,11 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<AllocList<impl IntoIterator<Item = Value<'v>>>> {
         let it = x.get().iterate(eval.heap())?;
+        // Ketchup patch: a (value, key) pair for each item, checked against the heap
+        // bound before collecting; `sorted(range(10**9))` panicked past `u32::MAX` bytes
+        // (review 2026-11-25 R1125lo-3).
+        eval.heap()
+            .check_allocation(it.size_hint().0, std::mem::size_of::<(Value, Value)>())?;
         let mut it = match key {
             None => it.map(|x| (x, x)).collect(),
             Some(key) => {
