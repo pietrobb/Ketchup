@@ -365,7 +365,8 @@ joint(\"strut {x}\", \"column {x}\", kind = \"screw\", fasteners = [({screw_x}, 
 /// 0.0231 x 1.503 (its weak way) + 0.977 / 266 (its strong way) + slip, about
 /// 0.040 mm/N, and the plate holds the beam about 0.977 / 0.040 = 24 N/mm,
 /// against about 56 asked. With both screws on the plate's axis it holds the
-/// column's strong way, about 211.
+/// column's strong way, about 194 with the column's shear, L / (5/6 G A) =
+/// 0.0005 mm/N; 214.9 without it (R1124og-PG-906).
 #[test]
 fn a_strut_pushes_along_the_line_through_its_screws() {
     let plate = |beam_screw: i32| {
@@ -395,7 +396,7 @@ joint(\"plate {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 950, 24
     assert_ne!(checked(&slanting, "beam").status, "pass");
     let straight = plate(5);
     for stiffness in stiffnesses(&straight, "plate") {
-        assert!((180.0..=230.0).contains(&stiffness), "{stiffness}");
+        assert!((185.0..=205.0).contains(&stiffness), "{stiffness}");
     }
 }
 
@@ -420,6 +421,7 @@ fn a_fixed_brace_twists_its_anchor_by_its_length() {
 rotate(rod, axis = (0, 0, 1), angle = 30, pivot = ({x}, 40, 2450))
 box(\"head {x}\", (400, 400, 400), at = ({}, {}, 2000), material = \"GL24h\", grounded = True)
 box(\"column {x}\", (20, 400, 2000), at = ({}, {}, 0), material = \"GL24h\", grounded = True)
+joint(\"head {x}\", \"column {x}\", kind = \"screw\")
 joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
 joint(\"brace {x}\", \"head {x}\", kind = \"screw\", fasteners = [({near_x}, {near_y}, 2400), ({far_x}, {far_y}, 2400)])
 ",
@@ -459,6 +461,7 @@ fn a_deck_on_one_anchor_twists_it_by_its_length() {
                 "box(\"deck {x}\", (750, 600, 22), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"deck {x}\"])
 box(\"plate {x}\", (400, 400, 100), at = ({}, 200, 2300), material = \"GL24h\", grounded = True)
 box(\"column {x}\", (20, 400, 2300), at = ({}, 200, 0), material = \"GL24h\", grounded = True)
+joint(\"plate {x}\", \"column {x}\", kind = \"screw\")
 joint(\"deck {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 20, 2400), ({x}, 60, 2400)])
 joint(\"deck {x}\", \"plate {x}\", kind = \"screw\", fasteners = [({}, 210, 2400), ({}, 590, 2400)])
 diaphragm([\"deck {x}\"], anchored_to = [\"plate {x}\"])
@@ -503,6 +506,8 @@ box(\"plate {x}\", (200, {wide}, 100), at = ({}, {y}, 2300), material = \"GL24h\
 box(\"plate2 {x}\", (200, {wide}, 100), at = ({}, {y}, 2300), material = \"GL24h\", grounded = True)
 box(\"column {x}\", (20, {wide}, 2300), at = ({}, {y}, 0), material = \"GL24h\", grounded = True)
 box(\"column2 {x}\", (20, {wide}, 2300), at = ({}, {y}, 0), material = \"GL24h\", grounded = True)
+joint(\"plate {x}\", \"column {x}\", kind = \"screw\")
+joint(\"plate2 {x}\", \"column2 {x}\", kind = \"screw\")
 joint(\"deck {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 20, 2400), ({x}, 60, 2400)])
 joint(\"deck {x}\", \"plate {x}\", kind = \"screw\", fasteners = [({}, {}, 2400), ({}, {}, 2400)])
 joint(\"deck {x}\", \"plate2 {x}\", kind = \"screw\", fasteners = [({}, {}, 2400), ({}, {}, 2400)])
@@ -584,6 +589,7 @@ fn a_stocky_block_on_the_path_does_not_buckle() {
                 "box(\"hanger {x}\", (50, 100, 600), at = ({x}, 80, 2300), material = \"GL24h\", tags = [\"hanger\"])
 box(\"block {x}\", (200, 400, 200), at = ({}, 80, 2700), material = \"GL24h\", grounded = True)
 box(\"column {x}\", (200, 200, 2700), at = ({}, 180, 0), material = \"GL24h\", grounded = True)
+joint(\"block {x}\", \"column {x}\", kind = \"screw\")
 joint(\"hanger {x}\", \"beam\", kind = \"screw\")
 joint(\"hanger {x}\", \"block {x}\", kind = \"screw\")
 ",
@@ -628,6 +634,7 @@ fn a_bare_contact_between_grounded_parts_only_pushes() {
         format!(
             "box(\"block {x}\", (200, 400, 200), at = ({}, 970, 2200), material = \"GL24h\", grounded = True)
 box(\"post {x}\", (200, 200, 2200), at = ({}, 1170, 0), material = \"GL24h\", grounded = True)
+joint(\"block {x}\", \"post {x}\", kind = \"screw\")
 ",
             x - 100,
             x - 100
@@ -663,11 +670,9 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 24
     assert_eq!(stiffnesses(&bearing, "brace"), alone);
     assert_ne!(checked(&bearing, "beam").status, "pass");
     assert!(
-        bearing
-            .design
-            .basis
-            .iter()
-            .any(|line| line.contains("holding no pull unless a joint() fastens them")),
+        bearing.design.basis.iter().any(|line| line.contains(
+            "holding no pull and no slide along their contact unless a joint() fastens them"
+        )),
         "{:?}",
         bearing.design.basis
     );
@@ -719,7 +724,8 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 24
                     source.push_str(&format!(
                         "b = box(\"block {x}\", (200, 400, 200), at = ({}, 970, 2200), material = \"GL24h\", grounded = True)
 {}p = box(\"post {x}\", (200, 200, 2200), at = ({}, 1170, 0), material = \"GL24h\", grounded = True)
-{}",
+{}joint(\"block {x}\", \"post {x}\", kind = \"screw\")
+",
                         x - 100,
                         turn("b"),
                         x - 100,
@@ -756,4 +762,225 @@ joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 955, 24
         screwed.iter().any(|stiffness| *stiffness > 100.0),
         "{screwed:?}"
     );
+}
+
+/// Review 2026-11-24 R1124og-PG-900: a plate 300 x 1 000 x 40 on the beam, one
+/// screw at (x, 40) on the beam and one at (x + 140, 950) on a grounded block
+/// 300 x 400 x 100, screwed to a grounded column 20 (x) x 400 (y) x 2 300
+/// under it, held the beam at 214.9 N/mm and passed, as with both
+/// screws in line: the joint on the block was asked for its lever from the
+/// middle of the contact, which lies in line with the beam's screw, and fixed
+/// the plate. A brace on one screw turns about that screw, and one on a screw
+/// at each end pushes along the line through them, d = (0.152, 0.988): the
+/// column gives along d 0.0306 (its weak way) + 0.0032 (its strong way) +
+/// 0.0011 (slip) = 0.035 mm/N, and the plate holds the beam at most
+/// 0.977 / 0.035 = 28 N/mm, about 13 with the column twisting, against about
+/// 56 asked.
+#[test]
+fn a_brace_turns_about_its_screw_not_the_middle_of_its_contact() {
+    let plate = |anchor_screw: i32| {
+        beam_with(
+            |x| {
+                format!(
+                    "box(\"plate {x}\", (300, 1000, 40), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"plate\"])
+box(\"block {x}\", (300, 400, 100), at = ({}, 800, 2300), material = \"GL24h\", grounded = True)
+box(\"column {x}\", (20, 400, 2300), at = ({}, 800, 0), material = \"GL24h\", grounded = True)
+joint(\"plate {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 40, 2400)])
+joint(\"plate {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 950, 2400)])
+joint(\"block {x}\", \"column {x}\", kind = \"screw\")
+",
+                    x - 150,
+                    x - 150,
+                    x - 10,
+                    x + anchor_screw,
+                )
+            },
+            "brace([\"beam\"], by = [\"plate\"], edge = \"top\")\n",
+        )
+    };
+    let offset = plate(140);
+    let found = stiffnesses(&offset, "plate");
+    assert_eq!(found.len(), PLACES.len(), "{found:?}");
+    for stiffness in found {
+        assert!((5.0..=30.0).contains(&stiffness), "{stiffness}");
+    }
+    assert_ne!(checked(&offset, "beam").status, "pass");
+    for stiffness in stiffnesses(&plate(0), "plate") {
+        assert!(stiffness > 100.0, "{stiffness}");
+    }
+}
+
+/// R1124og-PG-900: a strip 16 x 1 500 x 16 screwed once to the beam at y 40
+/// and once at y 1 480 to a grounded wall it lies on from y 900, held the beam
+/// at F_cap 283.4 N against 263 asked and passed: it buckled over 1 160 mm, to
+/// the middle of its contact with the wall. On a screw at each end it is a
+/// strut pinned at its screws, buckling over the 1 440 mm between them:
+/// N_E = 192.5 N, k_c = 0.0345, F_cap = 185.6 N.
+#[test]
+fn a_strip_on_one_screw_at_each_end_buckles_between_its_screws() {
+    let held = beam_with(
+        |x| {
+            format!(
+                "box(\"strip {x}\", (16, 1500, 16), at = ({}, 0, 2400), material = \"C24\", tags = [\"strip\"])
+joint(\"strip {x}\", \"beam\", kind = \"screw\", fasteners = [({x}, 40, 2400)])
+joint(\"strip {x}\", \"wall\", kind = \"screw\", fasteners = [({x}, 1480, 2400)])
+",
+                x - 8
+            )
+        },
+        "timber_design({\"C24\": \"C24\"})
+box(\"wall\", (5900, 600, 2400), at = (0, 900, 0), material = \"GL24h\", grounded = True)
+brace([\"beam\"], by = [\"strip\"], edge = \"top\")\n",
+    );
+    let braces: Vec<_> = held
+        .loads
+        .members
+        .iter()
+        .flat_map(|load| &load.braced_by)
+        .filter(|brace| brace.part.starts_with("strip"))
+        .collect();
+    assert_eq!(braces.len(), PLACES.len(), "{braces:?}");
+    for brace in braces {
+        let anchorage = brace.anchorage.as_ref().expect("a path to the ground");
+        let capacity = anchorage.capacity_n.expect("the strip buckles");
+        assert!((capacity - 185.6).abs() < 2.0, "{brace:?}");
+    }
+    assert_ne!(checked(&held, "beam").status, "pass");
+}
+
+/// Review 2026-11-24 R1124og-PG-901: the column of
+/// [`a_bare_contact_between_grounded_parts_only_pushes`] pulled along its
+/// face, a grounded block bearing on that face without a fastener (200 x 400
+/// x 200 on a post in the review; here a block 200 x 400 x 2 400 on the floor),
+/// held the brace at 184 N/mm, the column alone at 0.665: a bare contact lying
+/// along the force was taken as holding both ways. It holds only a push across
+/// it, so nothing along it.
+#[test]
+fn a_bare_contact_along_the_force_holds_nothing() {
+    let braced = |side: bool| {
+        beam_with(
+            |x| {
+                let mut source = format!(
+                    "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 2400), ({}, 958, 2400)])
+",
+                    x - 50,
+                    x - 200,
+                    x + 15,
+                    x - 15,
+                    x - 30,
+                    x + 30,
+                );
+                if side {
+                    source.push_str(&format!(
+                        "box(\"block {x}\", (200, 400, 2400), at = ({}, 760, 0), material = \"GL24h\", grounded = True)\n",
+                        x + 200,
+                    ));
+                }
+                source
+            },
+            "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+        )
+    };
+    let alone = stiffnesses(&braced(false), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    let beside = braced(true);
+    assert_eq!(stiffnesses(&beside, "brace"), alone);
+    assert_ne!(checked(&beside, "beam").status, "pass");
+}
+
+/// The column of [`a_bare_contact_between_grounded_parts_only_pushes`] braced
+/// by a brace, with `head` beside it.
+fn column_with(head: impl Fn(i32) -> String) -> Report {
+    beam_with(
+        |x| {
+            format!(
+                "box(\"brace {x}\", (100, 960, 100), at = ({}, 0, 2400), material = \"GL24h\", tags = [\"brace\"])
+box(\"column {x}\", (400, 20, 2400), at = ({}, 950, 0), material = \"GL24h\", grounded = True)
+joint(\"brace {x}\", \"beam\", kind = \"screw\", fasteners = [({}, 14, 2400), ({}, 66, 2400)])
+joint(\"brace {x}\", \"column {x}\", kind = \"screw\", fasteners = [({}, 952, 2400), ({}, 958, 2400)])
+{}",
+                x - 50,
+                x - 200,
+                x + 15,
+                x - 15,
+                x - 30,
+                x + 30,
+                head(x)
+            )
+        },
+        "brace([\"beam\"], by = [\"brace\"], edge = \"top\")\n",
+    )
+}
+
+/// Capability review 1031 of R1124og-PG-901, the review's own `d_side_block`:
+/// a grounded block 200 x 400 x 200 standing bare on a post 200 x 200 and
+/// bearing bare on the column's face, the column pulled along that face, held
+/// the brace at 184 N/mm. Neither bare contact holds a slide along it, so the
+/// column holds alone, whether or not the block is screwed to its post.
+#[test]
+fn a_block_on_a_post_beside_the_column_holds_no_slide() {
+    let alone = stiffnesses(&column_with(|_| String::new()), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    let side = |screwed_to_post: bool| {
+        column_with(move |x| {
+            let mut source = format!(
+                "box(\"block {x}\", (200, 400, 200), at = ({}, 760, 2200), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (200, 200, 2200), at = ({}, 860, 0), material = \"GL24h\", grounded = True)
+",
+                x + 200,
+                x + 200
+            );
+            if screwed_to_post {
+                source.push_str(&format!(
+                    "joint(\"block {x}\", \"post {x}\", kind = \"screw\")\n"
+                ));
+            }
+            source
+        })
+    };
+    for screwed_to_post in [false, true] {
+        let run = side(screwed_to_post);
+        assert_eq!(stiffnesses(&run, "brace"), alone, "{screwed_to_post}");
+        assert_ne!(checked(&run, "beam").status, "pass", "{screwed_to_post}");
+    }
+}
+
+/// Capability review 1031 of R1124og-PG-901, the review's `h_stack`: the
+/// column screwed to a grounded block standing on a post held the brace at
+/// 273 N/mm whether the block stood bare on the post or was screwed to it.
+/// Standing bare the block holds no slide on the post, so the column holds
+/// alone; screwed, the post holds it.
+#[test]
+fn a_block_standing_bare_on_its_post_holds_no_slide() {
+    let alone = stiffnesses(&column_with(|_| String::new()), "brace");
+    assert_eq!(alone.len(), 2 * PLACES.len(), "{alone:?}");
+    let stack = |screwed_to_post: bool| {
+        column_with(move |x| {
+            let mut source = format!(
+                "box(\"block {x}\", (200, 400, 200), at = ({}, 970, 2200), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (200, 200, 2200), at = ({}, 1170, 0), material = \"GL24h\", grounded = True)
+joint(\"column {x}\", \"block {x}\", kind = \"screw\", fasteners = [({}, 970, 2300), ({}, 970, 2300)])
+",
+                x - 100,
+                x - 100,
+                x - 50,
+                x + 50
+            );
+            if screwed_to_post {
+                source.push_str(&format!(
+                    "joint(\"block {x}\", \"post {x}\", kind = \"screw\")\n"
+                ));
+            }
+            source
+        })
+    };
+    let bare = stack(false);
+    assert_eq!(stiffnesses(&bare, "brace"), alone);
+    assert_ne!(checked(&bare, "beam").status, "pass");
+    for stiffness in stiffnesses(&stack(true), "brace") {
+        assert!(stiffness > 10.0, "{stiffness}");
+    }
 }

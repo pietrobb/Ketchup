@@ -30,6 +30,11 @@ pub const PURCHASED_ASSEMBLY_CONTACT: &str = "purchased_assembly_contact";
 /// worker's limits: nothing was checked, and nothing was found to pass.
 pub const CHECKS_UNVERIFIED: &str = "checks_unverified";
 
+/// Issue kind of a bought part whose STEP file is not read yet: until it is,
+/// the part is a point, so what it touches and where it collides are not
+/// checked (review 2026-11-24 R1124og-STEP-902).
+pub const IMPORT_UNREAD: &str = "import_unread";
+
 /// Issue kind of a report that lists only its first issues and relations:
 /// the whole one did not fit the program worker's reply.
 pub const REPORT_TRUNCATED: &str = "report_truncated";
@@ -441,23 +446,25 @@ const MAX_UNVERIFIED_COLLISIONS: usize = 2_000;
 
 /// The issue in place of overlapping pairs past `limit` of kind `kind`.
 fn too_many_collisions(kind: &'static str, limit: usize) -> Issue {
-    let (severity, what) = if kind == COLLISION_UNVERIFIED {
+    let (severity, what, rest) = if kind == COLLISION_UNVERIFIED {
         (
             Severity::Warning,
             "pairs of parts whose bounding boxes overlap",
+            "the rest not, though the search for collisions went on past them",
         )
     } else {
-        (Severity::Error, "pairs of parts overlap")
+        (
+            Severity::Error,
+            "pairs of parts overlap",
+            "the rest of the pairs not checked",
+        )
     };
     Issue {
         source_lines: Vec::new(),
         severity,
         kind,
         parts: Vec::new(),
-        message: format!(
-            "more than {limit} {what}; the first {limit} are listed and the rest of the pairs \
-             not checked"
-        ),
+        message: format!("more than {limit} {what}; the first {limit} are listed and {rest}"),
         where_mm: None,
         hint: "Parts placed in a loop that does not move them lie on top of each other: give \
                each its own place, then check again."
@@ -477,48 +484,63 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
             return ControlFlow::Continue(());
         }
         let before = issues.len();
-        collision(
-            model,
-            exact,
-            &model.parts[left],
-            &model.parts[right],
-            issues,
-        );
+        // Past the listed unverified pairs the search goes on without listing
+        // them: a collision further on must still fail the program (review
+        // 2026-11-24 R1124og-PG-903, a loop of drilled parts hid one).
+        let list_unverified = unverified < MAX_UNVERIFIED_COLLISIONS;
+        let pair = (&model.parts[left], &model.parts[right]);
+        // Once more are known than are listed, a pair only the exact solids
+        // settle, without their answer, cannot be a collision: skip the cost.
+        if unverified > MAX_UNVERIFIED_COLLISIONS
+            && needs_exact_shapes(pair.0, pair.1)
+            && exact.between(pair.0, pair.1).is_none()
+        {
+            return ControlFlow::Continue(());
+        }
+        if collision(model, exact, pair, list_unverified, issues) {
+            unverified += 1;
+        }
         let Some(found) = issues.get(before) else {
             return ControlFlow::Continue(());
         };
-        let kind = found.kind;
-        let (count, limit) = if kind == COLLISION_UNVERIFIED {
-            (&mut unverified, MAX_UNVERIFIED_COLLISIONS)
-        } else {
-            (&mut collided, MAX_COLLISIONS)
-        };
-        *count += 1;
-        if *count <= limit {
+        if found.kind == COLLISION_UNVERIFIED {
+            unverified += 1;
+            return ControlFlow::Continue(());
+        }
+        collided += 1;
+        if collided <= MAX_COLLISIONS {
             return ControlFlow::Continue(());
         }
         issues.truncate(before);
-        issues.push(too_many_collisions(kind, limit));
+        issues.push(too_many_collisions("collision", MAX_COLLISIONS));
         ControlFlow::Break(())
     });
+    if unverified > MAX_UNVERIFIED_COLLISIONS {
+        issues.push(too_many_collisions(
+            COLLISION_UNVERIFIED,
+            MAX_UNVERIFIED_COLLISIONS,
+        ));
+    }
 }
 
-/// Reports the overlap of parts `a` and `b` that nothing allows.
+/// Reports the overlap of parts `a` and `b` that nothing allows; one only the
+/// exact solids settle just when `list_unverified`, and whether it left such
+/// an overlap out.
 fn collision(
     model: &ProgramModel,
     exact: &ExactShapes,
-    a: &Part,
-    b: &Part,
+    (a, b): (&Part, &Part),
+    list_unverified: bool,
     issues: &mut Vec<Issue>,
-) {
+) -> bool {
     if model.are_alternatives(a, b) {
-        return;
+        return false;
     }
     let Some(region) = overlap(a, b) else {
-        return;
+        return false;
     };
     if !booleans_leave_overlap(a, b) || !booleans_leave_overlap(b, a) || trims_separate(a, b) {
-        return;
+        return false;
     }
     let seated = seated_in_pocket(a, b);
     let declared = model.joints.iter().any(|joint| {
@@ -529,7 +551,7 @@ fn collision(
                 .is_some_and(|volume| contains(volume, region))
     });
     if seated || declared || threaded_into(a, b, region) {
-        return;
+        return false;
     }
     let (min, max) = region;
     if needs_exact_shapes(a, b) {
@@ -551,7 +573,7 @@ fn collision(
                     hint: "Nothing to fix in the program: the file's maker assembled them so."
                         .to_owned(),
                 });
-                return;
+                return false;
             }
             Some(pair) if pair.penetrating() => {
                 issues.push(Issue {
@@ -570,9 +592,10 @@ fn collision(
                            from the other, or declare a joint with a volume."
                         .to_owned(),
                 });
-                return;
+                return false;
             }
-            Some(_) => return,
+            Some(_) => return false,
+            None if !list_unverified => return true,
             None => {}
         }
         issues.push(Issue {
@@ -594,7 +617,7 @@ fn collision(
                    a box-only check cannot."
                 .to_owned(),
         });
-        return;
+        return false;
     }
     issues.push(Issue {
         source_lines: Vec::new(),
@@ -614,6 +637,7 @@ fn collision(
                for the other part, or declare a joint with a volume."
             .to_owned(),
     });
+    false
 }
 
 fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
@@ -764,6 +788,10 @@ fn joints<'a>(
         let (Some(a), Some(b)) = (model.part(&joint.parts[0]), model.part(&joint.parts[1])) else {
             continue;
         };
+        // What a part read from a file not read yet touches is not known.
+        if a.unread_import().is_some() || b.unread_import().is_some() {
+            continue;
+        }
         // `None`: apart by an unknown clearance above the contact tolerance.
         let apart = match exact.decides(a, b) {
             Some(pair) => pair.gap_mm().map_or(Some(None), |gap| {
@@ -954,8 +982,14 @@ fn support<'a>(
         .filter(|item| supported[*item])
         .map(|item| root(&groups, item))
         .collect();
+    // A bought part whose file is not read yet is a point: what it touches is
+    // not known, which the statics and collisions say, not that it floats
+    // (review 2026-11-24 R1124og-STEP-902).
     for (index, part) in model.parts.iter().enumerate() {
-        if part.is_solid() && !standing.contains(&root(&groups, index)) {
+        if part.is_solid()
+            && part.unread_import().is_none()
+            && !standing.contains(&root(&groups, index))
+        {
             issues.push(Issue {
                 source_lines: Vec::new(),
                 severity: Severity::Warning,
@@ -972,6 +1006,31 @@ fn support<'a>(
                 hint: "Move it onto a supporting part or connect it with a joint.".to_owned(),
             });
         }
+    }
+}
+
+/// Each bought part whose file is not read yet: a point until it is, so its
+/// contacts and collisions go unchecked and the report says so.
+fn unread_imports(model: &ProgramModel, issues: &mut Vec<Issue>) {
+    for part in &model.parts {
+        let Some(file) = part.unread_import() else {
+            continue;
+        };
+        issues.push(Issue {
+            source_lines: Vec::new(),
+            severity: Severity::Warning,
+            kind: IMPORT_UNREAD,
+            parts: vec![part.name.clone()],
+            message: format!(
+                "{} is read from {file:?}, which was not read yet: what it touches, where it \
+                 collides and what it weighs are not checked",
+                part.name
+            ),
+            where_mm: None,
+            hint: "Check the program from its file, or apply it, so Kečup reads the STEP file \
+                   next to it."
+                .to_owned(),
+        });
     }
 }
 
@@ -1181,6 +1240,7 @@ pub(crate) fn validate_with_faces<'a>(
     faces: &mut ContactFaces<'a>,
 ) -> Vec<Issue> {
     let mut issues = model.declared_issues.clone();
+    unread_imports(model, &mut issues);
     params(model, &mut issues);
     production(model, &mut issues);
     crate::motion::issues(model, &mut issues);

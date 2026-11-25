@@ -67,6 +67,7 @@ mod admission;
 pub mod bootstrap;
 mod busy;
 pub mod consent;
+mod document_context;
 mod drawing_edit;
 mod drawing_export;
 mod drawings;
@@ -354,8 +355,7 @@ pub enum Request {
         /// Absolute folder of the program's file, its STEP files' root; absent keeps the last.
         source_folder: Option<String>,
     },
-    /// Plans and exactly checks a whole program (`source`) or a patch (`edits`)
-    /// like `ApplyProgram`, without publishing anything.
+    /// Plans and exactly checks a whole program (`source`) or a patch (`edits`) like `ApplyProgram`, publishing nothing.
     CheckProgram {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -367,6 +367,7 @@ pub enum Request {
         overrides: Option<std::collections::BTreeMap<String, f64>>,
         #[serde(default)]
         file_name: Option<String>,
+        source_folder: Option<String>,
     },
     MeasureFaces {
         expected: Stamp,
@@ -1796,23 +1797,6 @@ impl LiveBridge {
         self.batch_jobs.clear();
         self.batch_job_key = RandomState::new();
         self.next_batch_job = 1;
-        self.image.revoke();
-    }
-
-    pub(super) fn invalidate_document_context(&mut self) {
-        // The running job was asked of the document that goes: it stops, and
-        // one that would change it answers stale_document (review 2026-11-02 MCP-122).
-        self.document_epoch = self.document_epoch.wrapping_add(1);
-        if let Some(job) = &self.program_check_job {
-            job.request_cancelled().store(true, Ordering::Release);
-        }
-        self.observed = None;
-        self.client_states.clear();
-        self.pending = None;
-        self.batch_jobs.clear();
-        self.batch_job_key = RandomState::new();
-        self.next_batch_job = 1;
-        self.query.invalidate();
         self.image.revoke();
     }
 
@@ -3286,7 +3270,7 @@ impl LiveBridge {
                 self.program_variant_request(app, request, ui_busy, cancelled)
             }
             request @ Request::CheckProgram { .. } => {
-                Self::check_program_now(app, request, ui_busy, cancelled)
+                self.check_program_now(app, request, ui_busy, cancelled)
             }
             Request::Undo { expected } => {
                 Self::undo_or_redo(app, &expected, AppCommand::Undo, ui_busy, cancelled)

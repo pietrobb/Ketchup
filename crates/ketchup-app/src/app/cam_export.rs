@@ -97,8 +97,10 @@ pub(crate) struct Machining {
 impl Machining {
     /// What the simulation of the stock, the plan's fixtures, the cutter and its holder
     /// leaves to the user.
-    pub(crate) const NOT_CHECKED: [&'static str; 7] = [
+    pub(crate) const NOT_CHECKED: [&'static str; 8] = [
         "the machine itself: travel limits, spindle head, table and clamps not declared as fixtures of the plan",
+        // R1124og-CAM-901: the planner checks only the flute length of a through hole.
+        "the room under a through hole: the drill goes past the stock's bottom by its tip and 1 mm, and only fixtures declared in the plan are checked there, not the table, spoilboard or clamps under it",
         "cutting forces, tool deflection or breakage, and whether the feeds and speeds suit the tool and material",
         "the tool length and work offset values set on the controller; the program only calls them",
         "how the controller runs the program beyond the dialect's codes; run it in the controller's simulator or dry first",

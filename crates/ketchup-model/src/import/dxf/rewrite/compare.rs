@@ -25,7 +25,8 @@ pub enum Difference {
     Fill,
     /// It draws alike but in another color, linetype or lineweight, its own or its
     /// layer's (review 2026-11-10 og:R1110-UL-400: a wall dashed as to be pulled down
-    /// was reported unchanged). Only revisions are compared by it; an edit is written into
+    /// was reported unchanged), or a polyline of it is wider or a text of it is set in
+    /// another font (R1124og-DXF-902). Only revisions are compared by it; an edit is written into
     /// the file's entity whatever style it has now.
     Style,
 }

@@ -1158,6 +1158,7 @@ mod tests {
             color: Some([255, 0, 0]),
             weight_hmm: 50,
             pattern_mm: vec![20.0, -10.0, 0.0, -10.0],
+            ..LineStyle::default()
         });
         builder.add("walls", &[line([0.0, 100.0], [100.0, 100.0])]);
         let (_, lines) = builder.finish();
@@ -1260,6 +1261,7 @@ mod tests {
             color: Some([200, 30, 30]),
             weight_hmm: 0,
             pattern_mm: Vec::new(),
+            ..LineStyle::default()
         });
         let square = |low: f64, high: f64| vec![[low, low], [high, low], [high, high], [low, high]];
         builder.add_fill("fills", &[square(0.0, 100.0), square(40.0, 60.0)]);

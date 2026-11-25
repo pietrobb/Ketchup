@@ -488,9 +488,11 @@ fn joints(
                     tied.contains(node)
                         || lies_on(nodes, leader, nodes[*node].position_mm).is_some()
                 };
-                if ties.is_empty() || !follower.iter().any(|triangle| triangle.iter().all(touches))
-                {
+                if ties.is_empty() {
                     return Err(refused);
+                }
+                if !follower.iter().any(|triangle| triangle.iter().all(touches)) {
+                    return Err(ExactFeaSetupError::MeetsAlongALine { joint: index });
                 }
                 // A node on the other face that follows no joint, as it leads
                 // a tie of another or the triangle under it has a node that

@@ -31,8 +31,11 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 
 `ketchup-program check` exits with 0 when the program has no error-level issue and its
 statics, if it has any, are verified; 1 for an error-level issue or a failing member or
-joint; 3 when nothing fails but a member or joint is not verified or a load reaches no
-member (`statics_verdict` in the summary); 2 when the program cannot be evaluated, or
+joint; 3 when nothing fails but a member or joint is not verified, a load reaches no
+member (`statics_verdict` in the summary) or a bought part's STEP file is not read
+(`import_unread`); 2 when the program cannot be evaluated, when evaluating it and its
+checks take longer than 60 s together (`time_limit`; the error names the usual causes,
+loops and many parts close together, and what to change), or
 not as asked: a `--set` name the program has no `param()` of is listed in
 `unused_overrides` and said on stderr with the parameter it likely means, in any case
 (`--set Snow_SK: the program has no parameter Snow_SK; did you mean snow_sk?`).
@@ -85,7 +88,8 @@ Full report fields:
   (edge or corner only), `overlap` (`depth_mm` and `status`: `subtracted`
   with `cut_in` naming the part that holds the socket and `depth_mm` how far
   the other reaches in at its deepest; `removed`, `pocket`, `joint`,
-  `collision`, `unverified`, `boxes_only`, `purchased_assembly`) or `gap`
+  `collision`, `unverified`, `boxes_only`, `purchased_assembly`, `unchecked`
+  when the collision check stopped listing pairs before this one) or `gap`
   (`gap_mm`); `direction`
   is the world unit vector from the first part towards the second; `joint`
   names a declared joint; `approx` marks a pair measured on the box of a
@@ -112,7 +116,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 |---|---|
 | `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, an int in the program even with a default written `3.0`, whose fraction stops the program at `param()`, naming the parameter. An override outside `min`/`max`, or one with a fraction (or of 1e9 or more) for a `whole=True` count, is not used: the program is built with the default and reports `param_out_of_range`, so a document saved before its program narrowed still opens. The window's field, MCP `set_params` and program `apply`/`check` with `overrides` refuse such a value outright; a default outside `min`/`max` is reported as `param_out_of_range` |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there, and `"material:axis"`, the axis the cut list keeps its blank square to; an extrusion turned in its profile's plane needs that one to keep it) |
-| `imported(name, file, part=, at=, material=, color=, attributes=, tags=, grounded=False)` | a part whose body is the STEP file `file` (`.step` or `.stp`), given relative to the folder of the program's own file and inside it (an absolute path, a drive or a `..` out of that folder is refused). `part=` takes one part of an assembly file, by its name or by the name of its placement there; without it the whole file. The file's origin and axes are the part's own, so `at=`, `move`, `rotate` and `place` move it like any part. The host reads the file after the evaluation, so the program does not know the body's size, and the part takes no operation (hole, pocket, cut, boolean) and is no tool: shape the parts it fits instead. Bought parts use the library's `purchased()` |
+| `imported(name, file, part=, at=, material=, color=, attributes=, tags=, grounded=False)` | a part whose body is the STEP file `file` (`.step` or `.stp`), given relative to the folder of the program's own file and inside it (an absolute path, a drive or a `..` out of that folder is refused). `part=` takes one part of an assembly file, by its name or by the name of its placement there; without it the whole file. The file's origin and axes are the part's own, so `at=`, `move`, `rotate` and `place` move it like any part. The host reads the file after the evaluation, so the program does not know the body's size, and the part takes no operation (hole, pocket, cut, boolean) and is no tool: shape the parts it fits instead. Applied without the program's folder, a part takes the body the document holds for it only when that was read from the same path as the same `part=`; another path or part is refused until the program is applied from its file. Bought parts use the library's `purchased()` |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
 | `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, through=False, id=)` | a hole drilled along the face's inward normal; returns an operation reference for `joint_link`; `face` is a name or a `face()` value; on a round face `at=(angle, v)` |
@@ -438,9 +442,20 @@ a `qty` below 1, stops the program. On apply the host reads each file once,
 however many parts use it; a file it cannot read stops the apply with
 `program_import_failed` naming the part, the file and why. Applying by source
 alone, without the program's file, reuses the bodies the document already
-holds. Bought parts take part in the collision check like any other part; two
-parts of one assembly file that overlap where that file places them are a
-`purchased_assembly_contact` warning, not a collision.
+holds. Once read, bought parts take part in the collision check of the window
+like any other part; two parts of one assembly file that overlap where that
+file places them are a `purchased_assembly_contact` warning, not a collision.
+Their weight is the volume the file measures, not their box. A check run before
+the file is read knows only where its origin goes: such a part is no
+`floating_part`, and a part in `self_weight()` or under an `area_load()` is in
+`loads.unassigned` and in the `missing` list of every member, which is then
+`not_verified`. Its touches, joints and collisions are not checked either: the
+report has an `import_unread` warning naming the part and the file, no relation
+of it, and the exact check builds the other parts and lists it in
+`not_evaluated` (the CLI and headless check never read STEP files). The window's
+check reads them from the program's folder as an apply does: MCP `program check`
+with `source_path` gives it that folder, and the check keeps no folder for later
+applies.
 
 ```python
 door_h = param("door_h", 2000, min = 1200, max = 2600)
@@ -667,9 +682,11 @@ outside it.
 | `production_tag_unused` | error / warning | no part carries a tag of `production(tags=…)`; an error when therefore nothing is made, a warning when another tag still makes parts |
 | `production_leaves_out_ordered_parts` | warning | bought parts (`designation`) or bars (`cut_length_mm`) carry none of the `production()` tags, so they reach no hardware list or bar schedule; `tag()` them to order them |
 | `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
-| `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured |
+| `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured; past the first 2 000 such pairs one issue says more were left unlisted, and the search for collisions goes on past them |
+| `relations_truncated` | warning | more than 20 000 pairs of parts overlap; `relations` lists the first 20 000 and leaves the rest out |
 | `purchased_assembly_contact` | warning | the solids of two different parts of one STEP assembly file overlap where that file places them (both `part=` of the same file, placed from the same frame): the maker assembled them so, and it is no collision |
 | `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |
+| `import_unread` | warning | a bought part's STEP file is not read yet, so the part is a point: what it touches, where it collides and what it weighs are not checked; check or apply the program from its file |
 | `checks_unverified` | warning | the checks did not finish within the program worker's time, memory or size limit; the edit is still applied, and no collision, relation, joint or load was checked |
 | `report_truncated` | error or warning | the whole report did not fit one reply of the program worker, so it lists only its first issues (errors first) and relations; an error when an error was left out |
 

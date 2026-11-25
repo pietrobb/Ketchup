@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: to_json refuses containers nested deeper than MAX_JSON_DEPTH. See PATCH.md.
 
 //! Detect recursion when doing `repr` or `to_json`.
 
@@ -55,8 +56,19 @@ impl Drop for JsonStackGuard {
 /// Returned when `repr` is called recursively and a cycle is detected.
 pub(crate) struct ReprCycle;
 
-/// Returned when `to_json` is called recursively and a cycle is detected.
-pub(crate) struct JsonCycle;
+/// Why `to_json` refused to go into a value.
+pub(crate) enum JsonRefused {
+    /// The value is already being serialized: a cycle.
+    Cycle,
+    /// Ketchup patch: the value is [`MAX_JSON_DEPTH`] containers deep.
+    TooDeep,
+}
+
+/// Ketchup patch: how deeply containers may nest in `to_json`. Serializing
+/// recurses a few kilobytes of stack per level; a list built `x = [x]` a
+/// thousand times overflowed even a 64 MB stack and killed the process
+/// (review 2026-11-24 R1124og-PG-905).
+pub(crate) const MAX_JSON_DEPTH: usize = 200;
 
 thread_local! {
     static REPR_STACK: Cell<SmallSet<RawPointer>> = const { Cell::new(SmallSet::new()) };
@@ -81,12 +93,16 @@ pub(crate) fn repr_stack_push(value: Value) -> Result<ReprStackGuard, ReprCycle>
 }
 
 /// Push a value to the stack, return error if it is already on the stack.
-pub(crate) fn json_stack_push(value: Value) -> Result<JsonStackGuard, JsonCycle> {
+/// Ketchup patch: or if the stack is [`MAX_JSON_DEPTH`] deep already.
+pub(crate) fn json_stack_push(value: Value) -> Result<JsonStackGuard, JsonRefused> {
     JSON_STACK.with(|json_stack| {
         let mut stack = Cell::take(json_stack);
-        if unlikely(!stack.insert(value.ptr_value())) {
+        if unlikely(stack.len() >= MAX_JSON_DEPTH) {
             json_stack.set(stack);
-            Err(JsonCycle)
+            Err(JsonRefused::TooDeep)
+        } else if unlikely(!stack.insert(value.ptr_value())) {
+            json_stack.set(stack);
+            Err(JsonRefused::Cycle)
         } else {
             json_stack.set(stack);
             Ok(JsonStackGuard)

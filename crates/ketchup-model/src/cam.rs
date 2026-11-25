@@ -1134,8 +1134,9 @@ impl CamToolpath {
                     validate_z_range(*top_z_mm, *bottom_z_mm, target_bounds)?;
                     // A hole is drilled to size in one go: no finishing pass takes an
                     // axial allowance off later. A through hole is drilled until the
-                    // full diameter has passed its exit; under it the setup's fixtures
-                    // or spoilboard must leave room, which the simulation checks.
+                    // full diameter has passed its exit. Only the flute length is
+                    // checked here; the simulation checks the room under the exit
+                    // against declared fixtures alone (R1124og-CAM-901).
                     let finished_z = if *through {
                         *bottom_z_mm - plan.tool.tip_length_mm() - DRILL_BREAKTHROUGH_MM
                     } else {

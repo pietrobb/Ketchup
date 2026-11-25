@@ -728,6 +728,23 @@ fn a_set_of_no_parameter_ends_with_exit_code_2_and_names_the_parameter_meant() {
     );
 }
 
+/// Review 2026-11-24 og PG-908: `ketchup-program check` past its deadline said only
+/// "checking the program took longer than 60 s", with no cause and nothing to change
+/// (AGENTS §2). It is the error the window's worker gives at the same deadline.
+#[test]
+fn checks_past_their_deadline_name_the_deadline_the_causes_and_what_to_change() {
+    let error = ketchup_program::check_time_limit(ketchup_program::CHECK_TIME);
+    assert_eq!(error.code, "time_limit");
+    for said in [
+        "took longer than 60 s together",
+        "shorten the program's loops",
+        "within 20 mm of many others",
+        "a loop that does not move its parts",
+    ] {
+        assert!(error.message.contains(said), "{said}: {error}");
+    }
+}
+
 #[test]
 fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     let source = "n = param(\"count\", 2, min = 1, max = 4)\nfor i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
@@ -1272,6 +1289,35 @@ fn a_program_nesting_thousands_deep_is_refused_with_its_line() {
     for source in [nested, shallow, branches, table, notes] {
         run("fine.star", &source, &BTreeMap::new()).unwrap();
     }
+}
+
+/// R1124og-PG-905: nesting built while the program runs, not written in its
+/// source, still overflowed the stack and killed the process with no answer:
+/// `json.encode` of a list in a list a thousand deep, and a garbage collection
+/// copying a list put in a list 600 000 times. `json.encode` refuses it with
+/// the line; the collection copies it whole.
+#[test]
+fn nesting_built_while_the_program_runs_does_not_overflow_the_stack() {
+    for (kind, value) in [("list", "[x]"), ("dict", "{\"k\": x}")] {
+        let source = format!(
+            "x = []\nfor i in range(1000):\n    x = {value}\ns = json.encode(x)\nbox(\"a\", (1, 2, 3))\n"
+        );
+        let error = run("deep.star", &source, &BTreeMap::new()).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("more than 200 deep to convert to JSON"),
+            "{kind}: {}",
+            error.message
+        );
+        assert_eq!(error.location.map(|at| at.at.line), Some(4), "{kind}");
+    }
+    let shallow = "x = 1\nfor i in range(150):\n    x = [x]\nbox(\"a\", (1, 2, 2 + len(json.encode(x)) // 1000))\n";
+    run("shallow.star", shallow, &BTreeMap::new()).unwrap();
+
+    let chain = "x = []\nt = ()\nfor i in range(600000):\n    x = [x]\n    t = (t, i)\nbox(\"a\", (1, 2, 3))\n";
+    let (evaluated, _) = run("chain.star", chain, &BTreeMap::new()).unwrap();
+    assert_eq!(evaluated.model.parts.len(), 1);
 }
 
 #[test]

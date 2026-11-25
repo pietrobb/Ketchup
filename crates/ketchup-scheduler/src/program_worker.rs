@@ -90,6 +90,24 @@ impl CheckDeadline {
             other => other,
         }
     }
+
+    /// The time a worker may take to start: its own limit, or what is left if less.
+    fn start_up(self) -> Result<Duration, Stopped> {
+        Ok(self.request_time()?.min(WORKER_START_UP_TIMEOUT))
+    }
+
+    /// A worker start within `start` that stopped. Its time limit is the deadline's
+    /// only when the deadline cut the start short; at the worker's own limit no
+    /// program ran, so the worker did not start (R1124og-PG-909).
+    fn not_started(self, start: Duration, stopped: Stopped) -> Stopped {
+        match stopped {
+            Stopped::TimeLimit(_) if start < WORKER_START_UP_TIMEOUT => {
+                Stopped::TimeLimit(self.total)
+            }
+            Stopped::TimeLimit(after) => Stopped::NotStarted(after),
+            other => other,
+        }
+    }
 }
 
 /// Reading one DWG file, or one drawing as an underlay, has no deadline: it ends, is
@@ -101,6 +119,8 @@ const UNTIL_CANCELLED: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 enum Stopped {
     Cancelled,
     TimeLimit(Duration),
+    /// A new worker did not answer within its own start-up time; no request ran.
+    NotStarted(Duration),
     MemoryLimit,
     Failed(WorkerError),
 }
@@ -294,27 +314,27 @@ impl ProgramWorker {
     ) -> Result<Evaluated, ProgramError> {
         let own = self.deadline;
         let input = program_input(file_name, source, overrides);
-        // Its own limit stays its own: only the shared deadline's stop is renamed.
+        let shared = |stopped: Stopped| deadline.stopped(stopped).checks_error();
+        let start = deadline.start_up().map_err(Stopped::checks_error)?;
         let mut running = self
-            .worker(
-                cancel,
-                deadline
-                    .request_time()
-                    .map_err(Stopped::program_error)?
-                    .min(WORKER_START_UP_TIMEOUT),
-            )
-            .map_err(|stopped| deadline.stopped(stopped).program_error())?;
+            .worker(cancel, start)
+            .map_err(|stopped| deadline.not_started(start, stopped).checks_error())?;
         let left = match deadline.request_time() {
             Ok(left) => left,
             Err(stopped) => {
                 self.running = Some(running);
-                return Err(stopped.program_error());
+                return Err(stopped.checks_error());
             }
         };
         let reply = running.evaluate_program(input, cancel.flag(), own.min(left));
-        self.answer(running, reply)
-            .map_err(Stopped::program_error)?
-            .into()
+        // Its own limit stays its own; a stop at the time the checks left is theirs
+        // (review 2026-11-24 og PG-909).
+        let answer = self.answer(running, reply);
+        if left < own {
+            answer.map_err(shared)?.into()
+        } else {
+            answer.map_err(Stopped::program_error)?.into()
+        }
     }
 
     fn evaluate_within(
@@ -597,10 +617,10 @@ impl ProgramWorker {
         cancel: &CancelToken,
         request: impl FnOnce(&mut ExactWorkerClient, Duration) -> Result<T, WorkerError>,
     ) -> Result<T, Stopped> {
-        let start = deadline.request_time()?.min(WORKER_START_UP_TIMEOUT);
+        let start = deadline.start_up()?;
         let mut running = self
             .worker(cancel, start)
-            .map_err(|stopped| deadline.stopped(stopped))?;
+            .map_err(|stopped| deadline.not_started(start, stopped))?;
         let time = match deadline.request_time() {
             Ok(time) => time,
             Err(stopped) => {
@@ -845,6 +865,14 @@ impl Stopped {
                     PROGRAM_WORKER_MEMORY_BYTES >> 30
                 ),
             ),
+            Self::NotStarted(after) => (
+                "worker_failed",
+                format!(
+                    "the process that evaluates programs did not answer within {} s of starting; \
+                     no program ran, so try again once the machine is less busy",
+                    after.as_secs()
+                ),
+            ),
             Self::Failed(error) => (
                 "worker_failed",
                 format!("the process that evaluates programs stopped: {error}"),
@@ -854,6 +882,15 @@ impl Stopped {
             code,
             message,
             location: None,
+        }
+    }
+
+    /// [`Self::program_error`] of a stop at the deadline the program and its checks
+    /// share: a time limit is that deadline's.
+    fn checks_error(self) -> ProgramError {
+        match self {
+            Self::TimeLimit(total) => ketchup_program::check_time_limit(total),
+            other => other.program_error(),
         }
     }
 
@@ -869,7 +906,9 @@ impl Stopped {
                  of memory and was stopped; too many parts overlap or touch one another",
                 PROGRAM_WORKER_MEMORY_BYTES >> 30
             ),
-            Self::Cancelled | Self::Failed(_) => return self.program_error(),
+            Self::Cancelled | Self::NotStarted(_) | Self::Failed(_) => {
+                return self.program_error();
+            }
         };
         ProgramError {
             message,
@@ -880,7 +919,7 @@ impl Stopped {
     fn dwg_error(self) -> DwgConversionError {
         match self {
             Self::Cancelled => DwgConversionError::Cancelled,
-            Self::TimeLimit(after) => {
+            Self::TimeLimit(after) | Self::NotStarted(after) => {
                 DwgConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
             }
             Self::MemoryLimit => DwgConversionError::MemoryLimit,
@@ -891,7 +930,7 @@ impl Stopped {
     fn skp_error(self) -> SkpConversionError {
         match self {
             Self::Cancelled => SkpConversionError::Cancelled,
-            Self::TimeLimit(after) => {
+            Self::TimeLimit(after) | Self::NotStarted(after) => {
                 SkpConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
             }
             Self::MemoryLimit => SkpConversionError::MemoryLimit,
@@ -902,7 +941,7 @@ impl Stopped {
     fn underlay_error(self) -> UnderlayReadError {
         match self {
             Self::Cancelled => UnderlayReadError::Cancelled,
-            Self::TimeLimit(after) => {
+            Self::TimeLimit(after) | Self::NotStarted(after) => {
                 UnderlayReadError::WorkerFailed(WorkerError::RequestTimedOut(after))
             }
             Self::MemoryLimit => UnderlayReadError::MemoryLimit,
@@ -915,6 +954,44 @@ impl Stopped {
 mod tests {
     use super::*;
     use ketchup_program::{Issue, REPORT_TRUNCATED, Severity};
+
+    /// R1124og-PG-909: a worker that did not answer its start-up handshake within its
+    /// own limit ran no program, so the shared deadline and the program are not
+    /// blamed; only a start the deadline cut short is the deadline's.
+    #[test]
+    fn a_worker_that_did_not_start_is_not_blamed_on_the_shared_deadline() {
+        let deadline = CheckDeadline::after(Duration::from_secs(60));
+        let Ok(start) = deadline.start_up() else {
+            panic!("time is left")
+        };
+        assert_eq!(start, WORKER_START_UP_TIMEOUT);
+        let error = deadline
+            .not_started(start, Stopped::TimeLimit(start))
+            .checks_error();
+        assert_eq!(error.code, "worker_failed", "{}", error.message);
+        assert!(
+            error
+                .message
+                .contains("did not answer within 30 s of starting; no program ran"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("shorten"), "{}", error.message);
+
+        let short = CheckDeadline::after(Duration::from_secs(10));
+        let Ok(start) = short.start_up() else {
+            panic!("time is left")
+        };
+        assert!(start < WORKER_START_UP_TIMEOUT);
+        let error = short
+            .not_started(start, Stopped::TimeLimit(start))
+            .checks_error();
+        let expected = ketchup_program::check_time_limit(Duration::from_secs(10));
+        assert_eq!(
+            (error.code, error.message),
+            (expected.code, expected.message)
+        );
+    }
 
     /// Thirty boxes that all overlap: 435 pairs, the first of them collisions.
     fn overlapping() -> Evaluated {

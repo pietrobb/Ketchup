@@ -519,7 +519,10 @@ impl LiveBridge {
         self.pending = None;
         let stamp = app.live_bridge_stamp();
         if stamp.document_id != before_stamp.document_id {
+            // The program's folder goes with the document this apply made.
+            let given = self.program_folder.take_given();
             self.invalidate_document_context();
+            self.program_folder.restore_given(given);
         } else {
             self.query.invalidate();
         }

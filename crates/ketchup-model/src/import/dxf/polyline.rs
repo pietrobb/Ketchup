@@ -519,10 +519,21 @@ pub(super) fn parse_lwpolyline(
     {
         return Err(DxfImportError::MalformedPairs);
     }
+    // Its constant width, else the widest of its vertices: a wall redrawn wider in a
+    // revision is told apart (R1124og-DXF-902). The width is not drawn.
+    let width = match parse_optional_number(record, 43)? {
+        Some(width) => width,
+        None => record
+            .iter()
+            .filter(|pair| matches!(pair.code, 40 | 41))
+            .map(|pair| parse_number(pair.value))
+            .try_fold(0.0_f64, |widest, width| Ok(widest.max(width?)))?,
+    };
     let mut profile = build_polyline_profile(layer, ordinal, vertices, closed, units, diagnostics)?;
     if mirrored {
         profile.segments = profile.segments.into_iter().map(mirror_ocs).collect();
     }
+    profile.style.width = if width.is_finite() { width.abs() } else { 0.0 };
     Ok(profile)
 }
 

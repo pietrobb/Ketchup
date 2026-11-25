@@ -79,6 +79,27 @@ fn a_program_nesting_thousands_deep_is_a_syntax_error_in_the_worker() {
     assert_eq!(worker.process_id(), pid);
 }
 
+/// R1124og-PG-905: nesting built while the program runs killed the worker the
+/// same way: `json.encode` of a list in a list a thousand times. It comes back
+/// as an error at its line, and the worker stays.
+#[test]
+fn json_of_a_value_nested_a_thousand_deep_is_an_error_in_the_worker() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let deep = format!("{BOX}x = []\nfor i in range(1000):\n    x = [x]\ns = json.encode(x)\n");
+    let error = run(&mut worker, &deep).unwrap_err();
+    assert_eq!(error.code, "evaluation_error", "{error}");
+    assert!(error.message.contains("200 deep"), "{error}");
+    assert_eq!(
+        error.location.as_ref().map(|at| at.at.line),
+        Some(5),
+        "{error}"
+    );
+    let pid = worker.process_id();
+    assert_eq!(run(&mut worker, BOX).unwrap().model.parts.len(), 1);
+    assert_eq!(worker.process_id(), pid);
+}
+
 #[test]
 fn a_builtin_loop_past_the_deadline_is_killed() {
     let _turn = crate::integration_support::file_turn();
@@ -89,6 +110,48 @@ fn a_builtin_loop_past_the_deadline_is_killed() {
     assert!(error.message.contains("longer than 2 s"), "{error}");
     assert_eq!(worker.process_id(), None);
     assert_eq!(run(&mut worker, BOX).unwrap().model.parts.len(), 1);
+}
+
+/// Review 2026-11-24 og PG-909: a program stopped by the deadline its checks share was
+/// said to run past its own time, the time left, and blamed alone: in a debug build (its
+/// own limit 325 s) a stop after 60 s read "the program ran longer than 58 s … shorten
+/// loops". It now names the check's deadline; a stop at its own limit still names that.
+#[test]
+fn a_program_stopped_by_the_check_deadline_names_that_deadline() {
+    let _turn = crate::integration_support::file_turn();
+    let endless = "x = max(range(2147483647))\n";
+    let mut patient = worker().with_deadline(Duration::from_secs(60));
+    let error = patient
+        .evaluate_by(
+            "test.star",
+            endless,
+            &BTreeMap::new(),
+            CheckDeadline::after(Duration::from_secs(2)),
+            &CancelToken::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "time_limit", "{error}");
+    assert!(
+        error.message.contains("2 s") && error.message.contains("its checks"),
+        "{error}"
+    );
+    assert!(!error.message.contains("ran longer than 1 s"), "{error}");
+
+    let mut worker = worker().with_deadline(Duration::from_secs(2));
+    let error = worker
+        .evaluate_by(
+            "test.star",
+            endless,
+            &BTreeMap::new(),
+            CheckDeadline::after(Duration::from_secs(60)),
+            &CancelToken::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "time_limit", "{error}");
+    assert!(
+        error.message.starts_with("the program ran longer than 2 s"),
+        "{error}"
+    );
 }
 
 #[test]

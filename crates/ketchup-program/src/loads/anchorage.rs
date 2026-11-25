@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::ControlFlow;
-use stiffness::{SLIP_PER_FASTENER, Tie, brace_give, part_capacity, part_give, pushed_along};
+use stiffness::{SLIP_PER_FASTENER, Tie, part_capacity, part_give, pushed_along};
 
 /// The modulus of elasticity, mean and fifth percentile, and the compressive
 /// strength f_c,0,k, N/mm², of a part of no wood strength class:
@@ -72,6 +72,9 @@ pub(super) struct Footing<'a> {
     known: RefCell<BTreeMap<Asked, Option<Reached>>>,
     /// The parts each anchor's search met turning about one fastener.
     met_pivots: RefCell<BTreeMap<usize, BTreeSet<usize>>>,
+    /// The grounded pairs touching without a joint() each anchor's search
+    /// could not pass, the force sliding or pulling their contact.
+    met_bare: RefCell<BTreeMap<usize, BTreeSet<(usize, usize)>>>,
 }
 
 /// An anchorage and the parts its paths to the ground run through.
@@ -334,6 +337,7 @@ impl<'a> Footing<'a> {
             joined,
             known: RefCell::default(),
             met_pivots: RefCell::default(),
+            met_bare: RefCell::default(),
         }
     }
 
@@ -544,7 +548,16 @@ impl<'a> Footing<'a> {
             return self.reached(anchor, member, apart, 0.0, None);
         }
         let obb = self.parts[by].obb();
-        let at = self.meets(by, anchor, apart);
+        // The brace leaves for its anchor at the fasteners joining them, not
+        // the middle of their contact (review 2026-11-24 R1124og-PG-900: a
+        // plate on one screw 140 mm off the line of the member's screw, the
+        // middle of its contact in line, was fixed to its anchor, and a strip
+        // on one screw at each end buckled only to the middle of its contact).
+        let at = self
+            .joined
+            .get(&(by.min(anchor), by.max(anchor)))
+            .and_then(|fasteners| middle(fasteners))
+            .unwrap_or_else(|| self.meets(by, anchor, apart));
         let run = length(sub(point, at));
         let mut route = BTreeSet::new();
         let mut found: Option<Anchorage> = None;
@@ -574,7 +587,7 @@ impl<'a> Footing<'a> {
                     };
                     route.extend(through);
                     let anchor_give = 1.0 / from_anchor.stiffness_n_mm;
-                    let own = brace_give(&obb, self.moduli[by].0, point, at, sideways)
+                    let own = part_give(&obb, self.moduli[by].0, point, at, point, sideways)
                         + to_member
                         + to_anchor;
                     let capacity = part_capacity(
@@ -767,6 +780,7 @@ impl<'a> Footing<'a> {
         give[anchor] = 0.0;
         let mut queue = BinaryHeap::from([Reverse((0_u64, anchor))]);
         let mut pivots = BTreeSet::new();
+        let mut bare = BTreeSet::new();
         // The path's whole give, its last part, that part's give and where it
         // stands on the floor.
         let mut best: Option<(f64, usize, f64, [f64; 3])> = None;
@@ -799,6 +813,7 @@ impl<'a> Footing<'a> {
                     continue;
                 }
                 if self.bears(item, next, sideways) == Some(false) {
+                    bare.insert((item.min(next), item.max(next)));
                     continue;
                 }
                 let Some(tie) = self.tie(item, next) else {
@@ -829,6 +844,11 @@ impl<'a> Footing<'a> {
                 .entry(anchor)
                 .or_default()
                 .extend(pivots);
+            self.met_bare
+                .borrow_mut()
+                .entry(anchor)
+                .or_default()
+                .extend(bare);
             return None;
         };
         let (mut weakest, mut most, mut at) = (end, own, end);
@@ -946,13 +966,15 @@ impl<'a> Footing<'a> {
 
     /// Whether `a` pushes `b` under a force `along` on the path, where the two
     /// only bear on each other: both grounded, touching with no joint() between
-    /// them, the force having any part across their contact; None where they
-    /// hold each other either way, a joint fastening them or their contact
-    /// lying wholly along the force. A bare contact only pushes (review
+    /// them, the force having any part across their contact, and not where
+    /// their contact lies along the force; None where a joint fastens them, so
+    /// they hold each other either way. A bare contact only pushes (review
     /// 2026-11-22 R1122ac-PG-1101: a column bearing on a grounded block held a
     /// brace pulling it away at 247 N/mm, the column alone at 0.6; capability
     /// review 1023: turned 46° in plan, the pull half across the contact, the
-    /// block still held it at 235).
+    /// block still held it at 235), and holds nothing sliding along it (review
+    /// 2026-11-24 R1124og-PG-901: a block against the column's face, pulled
+    /// along it, held it at 184).
     fn bears(&self, a: usize, b: usize, along: [f64; 3]) -> Option<bool> {
         if !(self.grounded[a] && self.grounded[b])
             || self.joined.contains_key(&(a.min(b), a.max(b)))
@@ -962,7 +984,7 @@ impl<'a> Footing<'a> {
         let normal = self.contact_normal(a, b)?;
         let facing = dot(normal, along);
         if facing.abs() <= ALONG_AXIS_NEGLIGIBLE {
-            return None;
+            return Some(false);
         }
         let apart = sub(self.parts[b].obb().centre, self.parts[a].obb().centre);
         Some(facing * dot(apart, normal) > 0.0)
@@ -1052,6 +1074,21 @@ impl<'a> Footing<'a> {
             why.push(format!(
                 "{} held by a single fastener, a pivot the path turns about",
                 pivots.join(", ")
+            ));
+        }
+        let met = self.met_bare.borrow();
+        let mut bare: Vec<String> = resting
+            .iter()
+            .filter_map(|anchor| met.get(anchor))
+            .flatten()
+            .map(|(a, b)| format!("{} and {}", self.parts[*a].name, self.parts[*b].name))
+            .collect();
+        bare.sort_unstable();
+        bare.dedup();
+        if !bare.is_empty() {
+            why.push(format!(
+                "{} only bear on each other, which holds no pull and no slide along their contact: fasten them with joint()",
+                bare.join(", ")
             ));
         }
         format!("{}, so it sways with {target}", why.join("; "))

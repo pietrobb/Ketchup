@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: Reservation::payload_ptr for a garbage collection's deferred tracing. See PATCH.md.
 
 //! A heap storing AValue traits. The heap is a sequence of the
 //! AValue vtable, followed by the payload.
@@ -107,6 +108,11 @@ impl<'v, T: AValue<'v>> Reservation<'v, T> {
 
     pub(crate) fn ptr(&self) -> &'v AValueHeader {
         unsafe { &(*self.pointer).header }
+    }
+
+    /// Ketchup patch: where [`Reservation::fill`] puts the value.
+    pub(crate) fn payload_ptr(&self) -> *mut T::StarlarkValue {
+        unsafe { ptr::addr_of_mut!((*self.pointer).payload) }
     }
 }
 

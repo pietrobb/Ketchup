@@ -82,7 +82,7 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/app/viewport.rs": 4813,
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
-    "crates/ketchup-app/src/live_bridge.rs": 3421,
+    "crates/ketchup-app/src/live_bridge.rs": 3405,
     "crates/ketchup-application/src/planner.rs": 4306,
     "crates/ketchup-application/src/validation.rs": 4053,
     "crates/ketchup-assistant/src/sidecar.rs": 3972,
@@ -565,8 +565,10 @@ CASTS_AND_ALLOWS = {
     # 2026-11-13 r95 P3: the count saw none of them): starlark's value heap and
     # process-wrap's process groups and job objects, and its ProcessMeter (8: the window's
     # memory budget reads and stops worker processes through their handle or pid).
+    # Starlark 596 -> 599 (review 2026-11-24 R1124og-PG-905): a garbage collection traces
+    # a value copied too deep later, in place in the new arena, through the copy's address.
     "third_party/process-wrap unsafe": 57,
-    "third_party/starlark unsafe": 596,
+    "third_party/starlark unsafe": 599,
 }
 
 

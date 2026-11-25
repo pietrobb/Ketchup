@@ -17,7 +17,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::SystemTime;
 
 /// The largest STEP file a program reads; a bought part's file is a few MiB.
 const MAX_STEP_BYTES: u64 = 256 * 1024 * 1024;
@@ -46,14 +45,28 @@ impl ProgramFolder {
         cancelled: Arc<AtomicBool>,
         snapshot: &Snapshot,
     ) -> StepFiles {
-        if let Some(folder) = given {
-            self.given = Some((file_name.to_owned(), folder));
+        if let Some(folder) = &given {
+            self.given = Some((file_name.to_owned(), folder.clone()));
         }
-        let folder = self
-            .given
-            .as_ref()
-            .filter(|(name, _)| name == file_name)
-            .map(|(_, folder)| folder.clone());
+        self.check_files(given, file_name, worker_path, cancelled, snapshot)
+    }
+
+    /// [`Self::files`] for a check, which publishes nothing and so keeps no
+    /// folder for later applies (review 2026-11-24 R1124og-STEP-902: a check
+    /// had no folder at all and refused every bought part not placed yet).
+    pub(crate) fn check_files(
+        &self,
+        given: Option<PathBuf>,
+        file_name: &str,
+        worker_path: Option<PathBuf>,
+        cancelled: Arc<AtomicBool>,
+        snapshot: &Snapshot,
+    ) -> StepFiles {
+        let folder = given.or_else(|| {
+            (self.given.as_ref())
+                .filter(|(name, _)| name == file_name)
+                .map(|(_, folder)| folder.clone())
+        });
         StepFiles::new(
             folder,
             worker_path,
@@ -61,6 +74,18 @@ impl ProgramFolder {
             snapshot,
             Arc::clone(&self.cache),
         )
+    }
+
+    /// The folder an apply gave, taken from this window: another document
+    /// does not read the STEP files of this one's (R1124og-STEP-901). What
+    /// was read stays cached; its bytes are checked on every read.
+    pub(crate) fn take_given(&mut self) -> Option<(String, PathBuf)> {
+        self.given.take()
+    }
+
+    /// The folder an apply gave to the document it replaced the window's with.
+    pub(crate) fn restore_given(&mut self, given: Option<(String, PathBuf)>) {
+        self.given = given;
     }
 
     /// How many times the exact worker read a STEP file for a program.
@@ -77,13 +102,11 @@ struct StepCache {
     worker_reads: usize,
 }
 
-/// A file as last read: its size and time of change to see it unchanged
-/// without reading it, its SHA-256 to see it unchanged when only its time
-/// changed, and what the worker read of it.
+/// A file as last read: its size, its SHA-256 to see it unchanged, and what
+/// the worker read of it.
 #[derive(Clone)]
 struct CachedFile {
     length: u64,
-    modified: Option<SystemTime>,
     sha: [u8; 32],
     bytes: Arc<Vec<u8>>,
     /// The file as one body.
@@ -205,25 +228,19 @@ impl StepFiles {
             .collect()
     }
 
-    /// The file at `path` as the cache holds it when its size and time of
-    /// change, or else its bytes, are unchanged; otherwise as read now.
+    /// The file at `path` as the cache holds it when its bytes are unchanged;
+    /// otherwise as read now. Its bytes are hashed every time: a file
+    /// replaced by other bytes of the same size and time of change (`cp -p`,
+    /// `rsync -t`, an unpacked archive, a 2 s FAT clock) is another file
+    /// (R1124og-STEP-903).
     fn cached(&self, path: &Path) -> Result<CachedFile, Rejection> {
-        let metadata = std::fs::metadata(path)
-            .map_err(|error| unreadable("its size cannot be read").caused_by(error))?;
-        let length = metadata.len();
+        let length = std::fs::metadata(path)
+            .map_err(|error| unreadable("its size cannot be read").caused_by(error))?
+            .len();
         if length > MAX_STEP_BYTES {
             return Err(unreadable(format!(
                 "it holds {length} bytes, more than the {MAX_STEP_BYTES} a bought part's file may"
             )));
-        }
-        let modified = metadata.modified().ok();
-        let kept = lock(&self.cache).files.get(path).cloned();
-        if let Some(kept) = &kept
-            && kept.length == length
-            && modified.is_some()
-            && kept.modified == modified
-        {
-            return Ok(kept.clone());
         }
         let bytes = std::fs::read(path)
             .map_err(|io| unreadable("its bytes cannot be read").caused_by(io))?;
@@ -231,11 +248,11 @@ impl StepFiles {
             return Err(unreadable("the file is empty"));
         }
         let sha = sha256_bytes(&bytes);
+        let kept = lock(&self.cache).files.get(path).cloned();
         Ok(match kept.filter(|kept| kept.sha == sha) {
-            Some(kept) => CachedFile { modified, ..kept },
+            Some(kept) => kept,
             None => CachedFile {
                 length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                modified,
                 sha,
                 bytes: Arc::new(bytes),
                 whole: self.known.get(&sha).cloned(),

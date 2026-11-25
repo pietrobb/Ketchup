@@ -69,11 +69,34 @@ pub use execution_budget::{MAX_HEAP_BYTES as EVALUATION_HEAP_BYTES, MAX_TIME as 
 /// checks of the largest example program (1 854 parts) take far longer than
 /// its evaluation, 1.5 s in a release build and 28 s in a debug build.
 pub const CHECK_TIME: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The program and its checks stopped together at `total`, the deadline they
+/// share ([`CHECK_TIME`]), with the causes and what to change (review
+/// 2026-11-24 og PG-908, PG-909: the command line gave no advice, and the
+/// window's worker named its own time and blamed the program alone).
+#[must_use]
+pub fn check_time_limit(total: std::time::Duration) -> ProgramError {
+    ProgramError {
+        code: "time_limit",
+        message: format!(
+            "evaluating the program and its checks took longer than {} s together and were \
+             stopped; shorten the program's loops, or move apart parts that lie in one place \
+             or within {} mm of many others (a loop that does not move its parts, thousands \
+             of parts side by side), which the checks compare pair by pair",
+            total.as_secs(),
+            relations::GAP_LIMIT_MM
+        ),
+        location: None,
+    }
+}
+
 pub use model::{
     ProgramFeature, ProgramFeatureKind, ProgramFeatureParameter, ProgramModel,
     ProgramParameterValueType, ProgramPartBody, ProgramProfileSegment,
 };
-pub use relations::{OverlapStatus, Relation, RelationKind, relations, relations_with};
+pub use relations::{
+    OverlapStatus, RELATIONS_TRUNCATED, Relation, RelationKind, relations, relations_with,
+};
 pub use validate::{
     CHECKS_UNVERIFIED, COLLISION_UNVERIFIED, Issue, REPORT_TRUNCATED, Severity, validate,
     validate_with,
@@ -194,11 +217,12 @@ impl Report {
             .buildups
             .iter()
             .any(|check| check.status == "not_verified");
+        let unread_import = (self.issues.iter()).any(|issue| issue.kind == validate::IMPORT_UNREAD);
         match (self.ok, self.statics()) {
             _ if !self.unused_overrides.is_empty() => 2,
             (false, _) | (_, Statics::Failed) => 1,
             (true, Statics::NotVerified) => 3,
-            _ if thermal_unverified => 3,
+            _ if thermal_unverified || unread_import => 3,
             _ => 0,
         }
     }
@@ -428,9 +452,11 @@ pub struct Refined {
 pub fn refine(model: &ProgramModel, exact: &ExactShapes) -> Refined {
     // The relations reuse the faces the checks took of each part.
     let mut faces = contact::ContactFaces::default();
-    let issues = validate::validate_with_faces(model, exact, &mut faces);
+    let mut issues = validate::validate_with_faces(model, exact, &mut faces);
+    let (relations, truncated) = relations::relations_with_faces(model, &[], exact, &mut faces);
+    issues.extend(truncated);
     Refined {
-        relations: relations::relations_with_faces(model, &[], exact, &mut faces),
+        relations,
         issues,
         truncated: None,
     }
@@ -465,6 +491,13 @@ pub fn report(evaluated: &Evaluated) -> Report {
     issues.extend(cutting::issues(&bom.cutting));
     let thermal = thermal::thermal_checks(&evaluated.model);
     issues.extend(thermal.issues());
+    let (relations, truncated) = relations::relations_with_faces(
+        &evaluated.model,
+        &issues,
+        &ExactShapes::default(),
+        &mut faces,
+    );
+    issues.extend(truncated);
     locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
@@ -474,12 +507,7 @@ pub fn report(evaluated: &Evaluated) -> Report {
         ok: errors == 0,
         errors,
         warnings: issues.len() - errors,
-        relations: relations::relations_with_faces(
-            &evaluated.model,
-            &issues,
-            &ExactShapes::default(),
-            &mut faces,
-        ),
+        relations,
         issues,
         params: evaluated.model.params.clone(),
         bom,
