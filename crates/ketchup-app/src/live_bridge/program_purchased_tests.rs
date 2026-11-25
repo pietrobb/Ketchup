@@ -255,6 +255,42 @@ fn another_document_does_not_read_from_the_folder_of_the_first() {
     );
 }
 
+/// R1125og-STEP-1002: an apply that replaces the document without a folder
+/// does not hand the folder of the document before to the new one.
+#[test]
+fn a_replacing_apply_without_a_folder_keeps_no_folder() {
+    let (app, _) = setup();
+    let snapshot = app.document.current();
+    let folder = folder();
+    let mut program_folder = super::program_check::step_files::ProgramFolder::default();
+    let mut files = |given: Option<&Path>| {
+        drop(program_folder.files(
+            given.map(Path::to_path_buf),
+            "wardrobe.star",
+            None,
+            Arc::new(AtomicBool::new(false)),
+            &snapshot,
+        ));
+    };
+    // An apply from the folder, then one that replaces the document without it.
+    files(Some(folder.path()));
+    files(None);
+    assert_eq!(program_folder.given_by_request(), None);
+    // The folder the replacing apply gave goes with the new document.
+    let mut program_folder = super::program_check::step_files::ProgramFolder::default();
+    drop(program_folder.files(
+        Some(folder.path().to_path_buf()),
+        "wardrobe.star",
+        None,
+        Arc::new(AtomicBool::new(false)),
+        &snapshot,
+    ));
+    assert_eq!(
+        program_folder.given_by_request(),
+        Some(("wardrobe.star".to_owned(), folder.path().to_path_buf()))
+    );
+}
+
 /// A hall of 22 bought parts, 5 of one assembly part and 17 of another file,
 /// reads each file once; applies after it read none while the files stay
 /// unchanged, in a window that has not read them yet too: the document holds
@@ -927,12 +963,15 @@ fn a_named_assembly_part_sits_where_its_assembly_places_it() {
         };
     apply_at(&mut app, &mut bridge, Some(folder.path()), 2000.0);
     assert_eq!(bridge.program_folder.worker_reads(), 1);
+    // Three parts of one file: its bytes hashed once (R1125og-STEP-1003).
+    assert_eq!(bridge.program_folder.hashes(), 1);
 
     // A window that has read nothing yet takes the placements the document
     // holds, reading nothing; a host with no folder keeps them too.
     bridge.program_folder = Default::default();
     apply_at(&mut app, &mut bridge, Some(folder.path()), 2400.0);
     assert_eq!(bridge.program_folder.worker_reads(), 0);
+    assert_eq!(bridge.program_folder.hashes(), 1);
     apply_at(&mut app, &mut bridge, None, 2200.0);
 
     // One bracket placed twice: its own name, or a subassembly holding both,

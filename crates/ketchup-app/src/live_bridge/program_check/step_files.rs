@@ -30,6 +30,8 @@ const MAX_CACHED_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) struct ProgramFolder {
     /// The program file's name and its folder, as an apply last gave them.
     given: Option<(String, PathBuf)>,
+    /// Whether the last apply gave the folder itself.
+    given_now: bool,
     cache: Arc<Mutex<StepCache>>,
 }
 
@@ -45,6 +47,7 @@ impl ProgramFolder {
         cancelled: Arc<AtomicBool>,
         snapshot: &Snapshot,
     ) -> StepFiles {
+        self.given_now = given.is_some();
         if let Some(folder) = &given {
             self.given = Some((file_name.to_owned(), folder.clone()));
         }
@@ -83,6 +86,14 @@ impl ProgramFolder {
         self.given.take()
     }
 
+    /// The folder the last apply gave itself, taken from this window, for
+    /// the document it replaced the window's with; none when it came without
+    /// one: the folder of the document before is not the new one's
+    /// (R1125og-STEP-1002).
+    pub(crate) fn given_by_request(&mut self) -> Option<(String, PathBuf)> {
+        self.given.take().filter(|_| self.given_now)
+    }
+
     /// The folder an apply gave to the document it replaced the window's with.
     pub(crate) fn restore_given(&mut self, given: Option<(String, PathBuf)>) {
         self.given = given;
@@ -93,6 +104,12 @@ impl ProgramFolder {
     pub(crate) fn worker_reads(&self) -> usize {
         lock(&self.cache).worker_reads
     }
+
+    /// How many times the bytes of a STEP file were hashed for a program.
+    #[cfg(test)]
+    pub(crate) fn hashes(&self) -> usize {
+        lock(&self.cache).hashes
+    }
 }
 
 /// The STEP files read, by their canonical path.
@@ -100,6 +117,7 @@ impl ProgramFolder {
 struct StepCache {
     files: BTreeMap<PathBuf, CachedFile>,
     worker_reads: usize,
+    hashes: usize,
 }
 
 /// A file as last read: its size, its SHA-256 to see it unchanged, and what
@@ -149,6 +167,9 @@ pub(crate) struct StepFiles {
     /// file and the name `part=` gave: an unchanged file's assembly is not
     /// read again for them, in a window that has not read it yet either.
     known_parts: BTreeMap<([u8; 32], String), Placed>,
+    /// The files this request already read, by their canonical path: each is
+    /// read and hashed once however many of its parts it places.
+    read_now: BTreeMap<PathBuf, CachedFile>,
     cache: Arc<Mutex<StepCache>>,
 }
 
@@ -216,6 +237,7 @@ impl StepFiles {
             sources: BTreeMap::new(),
             known,
             known_parts,
+            read_now: BTreeMap::new(),
             cache,
         }
     }
@@ -229,7 +251,7 @@ impl StepFiles {
     }
 
     /// The file at `path` as the cache holds it when its bytes are unchanged;
-    /// otherwise as read now. Its bytes are hashed every time: a file
+    /// otherwise as read now. Its bytes are hashed once per request: a file
     /// replaced by other bytes of the same size and time of change (`cp -p`,
     /// `rsync -t`, an unpacked archive, a 2 s FAT clock) is another file
     /// (R1124og-STEP-903).
@@ -248,7 +270,11 @@ impl StepFiles {
             return Err(unreadable("the file is empty"));
         }
         let sha = sha256_bytes(&bytes);
-        let kept = lock(&self.cache).files.get(path).cloned();
+        let kept = {
+            let mut cache = lock(&self.cache);
+            cache.hashes += 1;
+            cache.files.get(path).cloned()
+        };
         Ok(match kept.filter(|kept| kept.sha == sha) {
             Some(kept) => kept,
             None => CachedFile {
@@ -581,7 +607,10 @@ impl ImportFiles for StepFiles {
             .and_then(|name| name.to_str())
             .ok_or_else(|| unreadable("the file's name is not UTF-8"))?
             .to_owned();
-        let mut cached = self.cached(&path)?;
+        let mut cached = match self.read_now.get(&path) {
+            Some(cached) => cached.clone(),
+            None => self.cached(&path)?,
+        };
         let read = match part {
             None => self.whole(&mut cached).map(|whole| (None, whole, None)),
             Some(name) => self
@@ -590,7 +619,8 @@ impl ImportFiles for StepFiles {
         };
         // What the worker read stays known, a file it refused too.
         let (sha, bytes) = (cached.sha, Arc::clone(&cached.bytes));
-        lock(&self.cache).keep(path, cached);
+        lock(&self.cache).keep(path.clone(), cached.clone());
+        self.read_now.insert(path, cached);
         let (part_index, evidence, placement) = read?;
         self.sources.insert(sha, bytes);
         Ok(Some(ImportedBody {
