@@ -138,6 +138,22 @@ impl Obb {
         )
     }
 
+    /// The eight world corners.
+    #[must_use]
+    pub fn corners(&self) -> [[f64; 3]; 8] {
+        std::array::from_fn(|index| {
+            std::array::from_fn(|world| {
+                self.centre[world]
+                    + (0..3)
+                        .map(|i| {
+                            let sign = if index >> i & 1 == 1 { 1.0 } else { -1.0 };
+                            sign * self.half[i] * self.axes[i][world]
+                        })
+                        .sum::<f64>()
+            })
+        })
+    }
+
     /// Largest separation along any separating axis candidate (face normals of
     /// both boxes and their edge cross products). Positive: the boxes are at
     /// least that far apart. Near zero: they touch. Negative: they overlap by at
