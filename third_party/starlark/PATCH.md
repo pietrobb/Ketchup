@@ -56,6 +56,12 @@ A garbage collection copies a value and traces the values it holds by recursion;
 `MAX_TRACE_DEPTH` (256) values deep, it copies the value and defers tracing the copy
 (`Tracer::defer`, `src/values/layout/heap/heap_type.rs`, `src/values/layout/avalue.rs`)
 until it is back at the roots, so any nesting is copied on a bounded stack.
+`str()`, `repr()` and the messages built from them (`fail`, a missing key) still recursed
+without bound (review 2026-11-25 R1125og-PG-1002, R1125lo-2): a value nested more than
+`MAX_JSON_DEPTH` deep is written `...` there (`repr_stack_push`). Hashing a value (a dict
+key) recursed too; it now takes the stack guard `==` and `<` already take, and fails past
+it. `enumerate`, `reversed` and `sorted` check the list they build against the heap bound
+like `list(iterable)` (R1125lo-3): `enumerate(range(10**9))` panicked past `u32::MAX` bytes.
 
 `src/lib.rs` also allows two lints that newer rustc reports in the unchanged upstream
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
@@ -69,7 +75,7 @@ Changed files, each marked with a "Modified for Kecup" line under its license he
 `src/values/types/string/{methods,str_type,dot_format,globals,interpolation}.rs`,
 `src/values/types/bigint.rs`, `src/values/types/int/pointer_i32.rs`,
 `src/values/types/dict/{globals,refs,value}.rs`, `src/values/types/set/{refs,set}.rs`,
-`src/eval/bc/instr_impl.rs` and `src/stdlib/json.rs`. `LICENSE` is the Apache License 2.0 the
+`src/eval/bc/instr_impl.rs`, `src/stdlib/json.rs` and `src/stdlib/funcs/other.rs`. `LICENSE` is the Apache License 2.0 the
 upstream project (https://github.com/facebook/starlark-rust) is published under; the
 crates.io package does not carry it.
 

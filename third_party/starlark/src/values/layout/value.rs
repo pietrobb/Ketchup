@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating, and stops building a repr past it; to_json refuses nesting past MAX_JSON_DEPTH. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: checks the bytes an operation would build against the heap bound (Heap::set_allocation_limit) before allocating, and stops building a repr past it; to_json refuses nesting past MAX_JSON_DEPTH, repr writes it as `...` and hashing refuses it past the stack guard. See PATCH.md.
 
 // Possible optimisations:
 // Avoid the Box duplication
@@ -107,6 +107,7 @@ use crate::values::record::record_type::RecordType;
 use crate::values::recursive_repr_or_json_guard::json_stack_push;
 use crate::values::recursive_repr_or_json_guard::repr_stack_push;
 use crate::values::recursive_repr_or_json_guard::JsonRefused;
+use crate::values::recursive_repr_or_json_guard::ReprRefused;
 use crate::values::recursive_repr_or_json_guard::MAX_JSON_DEPTH;
 use crate::values::stack_guard;
 use crate::values::starlark_type_id::StarlarkTypeId;
@@ -174,7 +175,8 @@ impl Display for Value<'_> {
                 // strings must display "with quotes", so we get everything consistent.
                 Display::fmt(self.get_ref().as_display(), f)
             }
-            Err(..) => {
+            Err(ReprRefused::TooDeep) => f.write_str("..."),
+            Err(ReprRefused::Cycle) => {
                 let mut recursive = String::new();
                 self.get_ref().collect_repr_cycle(&mut recursive);
                 write!(f, "{}", recursive)
@@ -1416,13 +1418,17 @@ impl<'v> ValueLike<'v> for Value<'v> {
             Ok(_guard) => {
                 self.get_ref().collect_repr(collector);
             }
-            Err(..) => {
+            Err(ReprRefused::TooDeep) => collector.push_str("..."),
+            Err(ReprRefused::Cycle) => {
                 self.get_ref().collect_repr_cycle(collector);
             }
         }
     }
 
     fn write_hash(self, hasher: &mut StarlarkHasher) -> crate::Result<()> {
+        // Ketchup patch: a tuple key nested 1 000 000 deep overflowed the stack
+        // (review 2026-11-25 R1125lo-2); refused like a deep `==`.
+        let _guard = stack_guard::stack_guard()?;
         self.get_ref().write_hash(hasher)
     }
 
