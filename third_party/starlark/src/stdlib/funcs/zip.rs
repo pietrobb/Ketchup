@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: zip checks the tuples it builds against the heap bound. See PATCH.md.
+
 use allocative::Allocative;
 use starlark_derive::starlark_module;
 
@@ -89,20 +91,25 @@ pub(crate) fn register_zip(globals: &mut GlobalsBuilder) {
         heap: &'v Heap,
     ) -> starlark::Result<Vec<Value<'v>>> {
         let mut v = Vec::new();
-        let mut first = true;
-        for arg in args.items {
+        for (width, arg) in args.items.into_iter().enumerate() {
+            let it = arg.get().iterate(heap)?;
+            // Ketchup patch: each item takes a slot and a tuple, checked against the heap
+            // bound before they are built; `zip(range(10**9), range(10**9))` took memory
+            // until the process was killed (review 2026-11-26 R1126og-PG-1103).
+            let item_bytes = (width + 4) * std::mem::size_of::<Value>();
+            if width == 0 {
+                v = heap.collect_bounded(it.map(|e| heap.alloc((e,))), 0, item_bytes)?;
+                continue;
+            }
+            heap.check_allocation(v.len(), item_bytes)?;
             let mut idx = 0;
-            for e in arg.get().iterate(heap)? {
-                if first {
-                    v.push(heap.alloc((e,)));
-                    idx += 1;
-                } else if idx < v.len() {
+            for e in it {
+                if idx < v.len() {
                     v[idx] = v[idx].add(heap.alloc((e,)), heap)?;
                     idx += 1;
                 }
             }
             v.truncate(idx);
-            first = false;
         }
         Ok(v)
     }
