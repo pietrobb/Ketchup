@@ -230,7 +230,7 @@ pub(super) fn weak<'b>(braces: &'b [Brace], demands: &[BracingDemand]) -> Vec<(&
 
 /// Why `braces` leave their member not verified (review 2026-11-25
 /// R1125og-PG-1004): a brace, or the part of its path buckling, of a material
-/// whose timber strength class names no product, whose k_mod and gamma_M are
+/// whose strength class names no product, whose k_mod and gamma_M are
 /// unknown; as a member of it is not verified (review 2026-11-02 PG-106).
 pub(super) fn unknown_products<'m>(
     braces: &[Brace],
