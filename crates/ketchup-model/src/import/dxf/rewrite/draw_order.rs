@@ -44,6 +44,7 @@ impl Drawing<'_> {
             return;
         };
         let table = self.sort_table(space_handle, objects_end);
+        let records = self.block_record_handles();
         let mut own: Vec<(u64, usize, u64)> = self
             .entities
             .iter()
@@ -51,7 +52,7 @@ impl Drawing<'_> {
             .filter_map(|(at, entity)| {
                 let handle = entity.handle.filter(|handle| !removed.contains(handle))?;
                 let key = table.as_ref().and_then(|table| table.keys.get(&handle));
-                self.in_space(entity, space_handle)
+                self.in_space(entity, space_handle, &records)
                     .then(|| (key.copied().unwrap_or(handle), at, handle))
             })
             .collect();
@@ -140,6 +141,54 @@ impl Drawing<'_> {
         added.extend(entries);
         let at = self.pairs[objects_end].start();
         edits.push((at..at, added));
+        self.class_of_sort_tables(edits);
+    }
+
+    /// The CLASS record of SORTENTSTABLE, when the drawing has none (review 2026-11-25 og
+    /// DXF-1004): AutoCAD and ezdxf list each class of object a drawing holds. Put in its
+    /// CLASSES section, or in one written before TABLES; with an instance count when the
+    /// drawing's classes have one.
+    fn class_of_sort_tables(&self, edits: &mut ObjectEdits) {
+        let named = |index: usize, code: i32, name: &[u8]| {
+            self.pairs[index].code == code && self.value(index).eq_ignore_ascii_case(name)
+        };
+        let section = |name: &[u8]| {
+            (0..self.pairs.len().saturating_sub(1))
+                .find(|index| named(*index, 0, b"SECTION") && named(index + 1, 2, name))
+        };
+        let mut class = Vec::new();
+        let (at, counted, new_section) = if let Some(start) = section(b"CLASSES") {
+            let Some(end) = (start + 2..self.pairs.len()).find(|index| named(*index, 0, b"ENDSEC"))
+            else {
+                return;
+            };
+            if (start + 2..end).any(|index| named(index, 1, b"SORTENTSTABLE")) {
+                return;
+            }
+            let counted = (start + 2..end).any(|index| self.pairs[index].code == 91);
+            (self.pairs[end].start(), counted, false)
+        } else {
+            let Some(tables) = section(b"TABLES") else {
+                return;
+            };
+            self.push_pair(&mut class, 0, b"SECTION");
+            self.push_pair(&mut class, 2, b"CLASSES");
+            (self.pairs[tables].start(), false, true)
+        };
+        self.push_pair(&mut class, 0, b"CLASS");
+        self.push_pair(&mut class, 1, b"SORTENTSTABLE");
+        self.push_pair(&mut class, 2, b"AcDbSortentsTable");
+        self.push_pair(&mut class, 3, b"ObjectDBX Classes");
+        self.push_pair(&mut class, 90, b"0");
+        if counted {
+            self.push_pair(&mut class, 91, b"1");
+        }
+        self.push_pair(&mut class, 280, b"0");
+        self.push_pair(&mut class, 281, b"0");
+        if new_section {
+            self.push_pair(&mut class, 0, b"ENDSEC");
+        }
+        edits.push((at..at, class));
     }
 
     /// The reactor group naming `owner`, and the owner.
@@ -241,15 +290,68 @@ impl Drawing<'_> {
         })
     }
 
-    /// Whether `entity` is of the space of block record `space`: owned by it, or by none
-    /// and not in paper space.
-    fn in_space(&self, entity: &Entity, space: u64) -> bool {
-        let head = entity.pairs.start..entity.records.get(1).map_or(entity.pairs.end, |r| r.0);
-        if let Some(owner) = self.owner_pair(&head) {
-            return hex(self.value(owner)) == Some(space);
+    /// Whether `entity` is of the space of block record `space`: owned by it, or not owned
+    /// by another of the block records `records` and not in paper space. An owner that is no
+    /// block record is the group or hatch an export before R1125og-DXF-1000 gave its entities.
+    fn in_space(&self, entity: &Entity, space: u64, records: &BTreeSet<u64>) -> bool {
+        let head = Self::head(entity);
+        match self
+            .owner_pair(&head)
+            .and_then(|owner| hex(self.value(owner)))
+        {
+            Some(owner) if owner == space => true,
+            Some(owner) if records.contains(&owner) => false,
+            _ => !self.in_paper_space(&head),
         }
-        !head
-            .into_iter()
+    }
+
+    /// The owner (330) of the entities added to model space (R1125og-DXF-1000): the handle
+    /// of model space's block record, otherwise the owner of its first entity outside the
+    /// 102 groups, where a reactor names a group, an associative hatch or a dimension.
+    pub(super) fn space_owner(&self) -> Option<Vec<u8>> {
+        let record = self.model_space.map(|space| self.record_at(space));
+        if let Some(at) = record.and_then(|record| {
+            record
+                .clone()
+                .find(|index| matches!(self.pairs[*index].code, 5 | 105))
+        }) {
+            return Some(self.value(at).to_vec());
+        }
+        self.entities.iter().find_map(|entity| {
+            let head = Self::head(entity);
+            if self.in_paper_space(&head) {
+                return None;
+            }
+            self.owner_pair(&head).map(|at| self.value(at).to_vec())
+        })
+    }
+
+    /// The handles of the drawing's block records.
+    fn block_record_handles(&self) -> BTreeSet<u64> {
+        let Some((end, _)) = self.block_records else {
+            return BTreeSet::new();
+        };
+        let is = |index: usize, name: &[u8]| {
+            self.pairs[index].code == 0 && self.value(index).eq_ignore_ascii_case(name)
+        };
+        let start = (0..end)
+            .rev()
+            .find(|index| is(*index, b"TABLE"))
+            .unwrap_or(0);
+        (start..end)
+            .filter(|index| is(*index, b"BLOCK_RECORD"))
+            .filter_map(|index| self.own_handle(&self.record_at(index)))
+            .collect()
+    }
+
+    /// The pairs of `entity`'s own record, before those of its vertices or attributes.
+    fn head(entity: &Entity) -> Range<usize> {
+        entity.pairs.start..entity.records.get(1).map_or(entity.pairs.end, |r| r.0)
+    }
+
+    /// Whether the record `head` is marked as in paper space (67 is 1).
+    fn in_paper_space(&self, head: &Range<usize>) -> bool {
+        head.clone()
             .any(|index| self.pairs[index].code == 67 && self.value(index) == b"1")
     }
 }

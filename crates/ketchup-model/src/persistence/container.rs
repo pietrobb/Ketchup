@@ -39,6 +39,21 @@ impl EntryFlag {
         }
     }
 
+    /// The flag of a blob: optional, and lost by the releases where they would not draw
+    /// it, so that they refuse its file as newer (review 2026-11-25 R1125og-DXF-1001).
+    pub(super) fn of_blob(bytes: &[u8]) -> Self {
+        if crate::underlay::UnderlayLines::newer_than_releases_draw(bytes) {
+            Self::LostByReleasedReaders
+        } else {
+            Self::Optional
+        }
+    }
+
+    /// Whether a blob may be kept with this flag.
+    pub(super) const fn fits_blob(self) -> bool {
+        !matches!(self, Self::Required)
+    }
+
     /// The flag byte this entry is written with.
     pub(super) const fn byte(self) -> u8 {
         match self {

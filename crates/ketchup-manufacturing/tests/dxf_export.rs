@@ -118,6 +118,11 @@ fn profiles_export_as_r12_polylines_and_a_slovak_name_becomes_an_ascii_layer() {
     let exported = export_visible_profiles_dxf(&document.current()).unwrap();
     let text = String::from_utf8(exported.dxf.clone()).unwrap();
     assert!(text.contains("$ACADVER\n1\nAC1009\n"), "{text}");
+    // Metric, not only in millimetres (review 2026-11-25 og DXF-1003).
+    assert!(
+        text.contains("$INSUNITS\n70\n4\n9\n$MEASUREMENT\n70\n1\n"),
+        "{text}"
+    );
     assert!(text.contains("0\nTABLE\n2\nLAYER\n"));
     assert!(
         !text.contains("BLOCK") && !text.contains("INSERT"),

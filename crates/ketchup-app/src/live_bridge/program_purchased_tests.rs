@@ -255,6 +255,42 @@ fn another_document_does_not_read_from_the_folder_of_the_first() {
     );
 }
 
+/// R1125og-STEP-1002: an apply that replaces the document without a folder
+/// does not hand the folder of the document before to the new one.
+#[test]
+fn a_replacing_apply_without_a_folder_keeps_no_folder() {
+    let (app, _) = setup();
+    let snapshot = app.document.current();
+    let folder = folder();
+    let mut program_folder = super::program_check::step_files::ProgramFolder::default();
+    let mut files = |given: Option<&Path>| {
+        drop(program_folder.files(
+            given.map(Path::to_path_buf),
+            "wardrobe.star",
+            None,
+            Arc::new(AtomicBool::new(false)),
+            &snapshot,
+        ));
+    };
+    // An apply from the folder, then one that replaces the document without it.
+    files(Some(folder.path()));
+    files(None);
+    assert_eq!(program_folder.given_by_request(), None);
+    // The folder the replacing apply gave goes with the new document.
+    let mut program_folder = super::program_check::step_files::ProgramFolder::default();
+    drop(program_folder.files(
+        Some(folder.path().to_path_buf()),
+        "wardrobe.star",
+        None,
+        Arc::new(AtomicBool::new(false)),
+        &snapshot,
+    ));
+    assert_eq!(
+        program_folder.given_by_request(),
+        Some(("wardrobe.star".to_owned(), folder.path().to_path_buf()))
+    );
+}
+
 /// A hall of 22 bought parts, 5 of one assembly part and 17 of another file,
 /// reads each file once; applies after it read none while the files stay
 /// unchanged, in a window that has not read them yet too: the document holds
@@ -481,6 +517,22 @@ fn perf_twenty_two_parts_of_one_file_reapply_within_a_second() {
     }
 }
 
+/// The apply answer with the exact verdict and issues of its check once that
+/// has ended. Under load the answer can come before the exact check ends
+/// (`exact_check_running`), and its issues then list no exact collision yet
+/// (R1125lo-4).
+fn settled(wire: &mut Wire, applied: Value) -> Value {
+    if applied["exact_collisions"]["not_evaluated"][0]["reason"] != "exact_check_running" {
+        return applied;
+    }
+    let (exact, issues) =
+        super::program_edit::exact_assemblies::settled_exact_check(wire, &applied);
+    let mut settled = applied;
+    settled["exact_collisions"] = exact;
+    settled["report"]["issues"] = Value::Array(issues);
+    settled
+}
+
 /// The pairs of parts the apply answer reports as colliding, sorted.
 fn collisions(applied: &Value) -> Vec<Vec<String>> {
     let mut pairs = applied["report"]["issues"]
@@ -523,10 +575,11 @@ board('floor', (200, 200, 100), at = (-100, 400, -50))\n\
 board('near', (20, 100, 100), at = (56, 450, 100))\n\
 board('touch', (20, 60, 30), at = (55, 470, 60))\n\
 board('far', (100, 18, 100), at = (5000, 5000, 5000))\n";
-    let applied = wire
+    let answer = wire
         .call_within(apply(source, None, 2000.0), Duration::from_secs(120))
         .result
         .unwrap();
+    let applied = settled(&mut wire, answer);
     assert_eq!(
         collisions(&applied),
         [
@@ -556,12 +609,14 @@ fn bought_parts_collide_with_boards_and_export_with_them() {
     let mut wire = Wire::connect(app);
     let folder = folder();
     let mut applied = |source: &str| {
-        wire.call_within(
-            apply(source, Some(folder.path()), 2000.0),
-            Duration::from_secs(120),
-        )
-        .result
-        .unwrap()
+        let answer = wire
+            .call_within(
+                apply(source, Some(folder.path()), 2000.0),
+                Duration::from_secs(120),
+            )
+            .result
+            .unwrap();
+        settled(&mut wire, answer)
     };
     // The box is 10 x 20 x 30 mm, its 30 mm along -x from x = 18: 18 x 18 x
     // 10 mm of it lie in the door.
@@ -927,12 +982,15 @@ fn a_named_assembly_part_sits_where_its_assembly_places_it() {
         };
     apply_at(&mut app, &mut bridge, Some(folder.path()), 2000.0);
     assert_eq!(bridge.program_folder.worker_reads(), 1);
+    // Three parts of one file: its bytes hashed once (R1125og-STEP-1003).
+    assert_eq!(bridge.program_folder.hashes(), 1);
 
     // A window that has read nothing yet takes the placements the document
     // holds, reading nothing; a host with no folder keeps them too.
     bridge.program_folder = Default::default();
     apply_at(&mut app, &mut bridge, Some(folder.path()), 2400.0);
     assert_eq!(bridge.program_folder.worker_reads(), 0);
+    assert_eq!(bridge.program_folder.hashes(), 1);
     apply_at(&mut app, &mut bridge, None, 2200.0);
 
     // One bracket placed twice: its own name, or a subassembly holding both,

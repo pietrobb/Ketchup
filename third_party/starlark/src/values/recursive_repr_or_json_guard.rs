@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: to_json refuses containers nested deeper than MAX_JSON_DEPTH. See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: to_json refuses containers nested deeper than MAX_JSON_DEPTH, and repr writes them as `...`. See PATCH.md.
 
 //! Detect recursion when doing `repr` or `to_json`.
 
@@ -53,8 +53,13 @@ impl Drop for JsonStackGuard {
     }
 }
 
-/// Returned when `repr` is called recursively and a cycle is detected.
-pub(crate) struct ReprCycle;
+/// Why `repr` did not go into a value.
+pub(crate) enum ReprRefused {
+    /// The value is already being written: a cycle.
+    Cycle,
+    /// Ketchup patch: the value is [`MAX_JSON_DEPTH`] containers deep; written `...`.
+    TooDeep,
+}
 
 /// Why `to_json` refused to go into a value.
 pub(crate) enum JsonRefused {
@@ -79,12 +84,18 @@ thread_local! {
 }
 
 /// Push a value to the stack, return error if it is already on the stack.
-pub(crate) fn repr_stack_push(value: Value) -> Result<ReprStackGuard, ReprCycle> {
+/// Ketchup patch: or if the stack is [`MAX_JSON_DEPTH`] deep already: `str()`
+/// and `repr()` of a list in a tuple 200 000 deep overflowed the stack too
+/// (review 2026-11-25 R1125og-PG-1002).
+pub(crate) fn repr_stack_push(value: Value) -> Result<ReprStackGuard, ReprRefused> {
     REPR_STACK.with(|repr_stack| {
         let mut stack = Cell::take(repr_stack);
-        if unlikely(!stack.insert(value.ptr_value())) {
+        if unlikely(stack.len() >= MAX_JSON_DEPTH) {
             repr_stack.set(stack);
-            Err(ReprCycle)
+            Err(ReprRefused::TooDeep)
+        } else if unlikely(!stack.insert(value.ptr_value())) {
+            repr_stack.set(stack);
+            Err(ReprRefused::Cycle)
         } else {
             repr_stack.set(stack);
             Ok(ReprStackGuard)

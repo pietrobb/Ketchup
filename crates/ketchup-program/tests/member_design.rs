@@ -2774,7 +2774,9 @@ joint(\"strip {x}\", \"wall\", kind = \"screw\")
         for k in characteristic {
             let design = (k * (0.8 / 1.3) * 1000.0).round() / 1000.0;
             assert!(design < 263.24 && 263.24 < k, "{side} mm: {design} / {k}");
-            let reason = format!("buckles at k_c f_c,0,d A = {design} N against F_d = 263.24 N");
+            let reason = format!(
+                "buckles at k_c f_c,0,d A = {design} N (k_mod 0.8, 1.35 permanent + 1.5 imposed) against F_d = 263.24 N"
+            );
             assert!(
                 beam.missing.iter().any(|why| why.contains(&reason)),
                 "{side} mm: {reason} in {:?}",

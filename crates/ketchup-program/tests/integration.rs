@@ -2,10 +2,12 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod brace_joints;
+mod brace_load_duration;
 mod bracing_edge;
 mod buildup;
 mod calculation;
 mod calculation_texts;
+mod certain_overlaps;
 mod cnc_dxf;
 mod components;
 mod connectivity;
@@ -13,6 +15,7 @@ mod contact_review;
 mod cutting;
 mod declared_bracing_bypasses;
 mod declared_bracing_doubts;
+mod deep_values;
 mod document;
 mod drill_material;
 mod edge_finish_fit;

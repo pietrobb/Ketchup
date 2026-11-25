@@ -1132,7 +1132,10 @@ fn side_entries<'a>(
     }
     for (hash, bytes) in container_data.blobs.iter() {
         if !container_data.imported_source_blobs.contains(hash) || imported_sources.contains(hash) {
-            entries.insert(format!("blobs/{hash}"), (EntryFlag::Optional, &bytes[..]));
+            entries.insert(
+                format!("blobs/{hash}"),
+                (EntryFlag::of_blob(bytes), &bytes[..]),
+            );
         }
     }
     for extension in container_data.extensions.values() {
@@ -1765,10 +1768,7 @@ fn load_container(bytes: &[u8], restore_history: bool) -> Result<LoadOutcome, Pe
     let mut container_data = ContainerData::default();
     for (path, (flag, content)) in entries {
         if let Some(hash) = path.strip_prefix("blobs/") {
-            if flag != EntryFlag::Optional
-                || hash.len() != 64
-                || crate::graph::sha256_hex(&content) != hash
-            {
+            if !flag.fits_blob() || hash.len() != 64 || crate::graph::sha256_hex(&content) != hash {
                 return Err(PersistenceError::InvalidBlobHash);
             }
             if Arc::make_mut(&mut container_data.blobs)

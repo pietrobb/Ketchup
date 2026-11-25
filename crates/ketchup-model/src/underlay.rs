@@ -218,6 +218,20 @@ const MAGICS: [&[u8; 8]; 7] = [
     b"KUNDRLY7",
 ];
 
+/// How many versions of the blob the released Kečup read: 0.3.0 to 0.3.3 know 1 to 6.
+const RELEASED_VERSIONS: usize = 6;
+
+impl UnderlayLines {
+    /// Whether `blob` is lines in a version no released Kečup draws: one that opened its
+    /// file would show the underlay blank (review 2026-11-25 R1125og-DXF-1001).
+    #[must_use]
+    pub fn newer_than_releases_draw(blob: &[u8]) -> bool {
+        MAGICS[RELEASED_VERSIONS..]
+            .iter()
+            .any(|magic| blob.starts_with(*magic))
+    }
+}
+
 /// The deflate level of a written blob: the default, which keeps a 12 MB drawing to a
 /// third of its bytes in about a third of a second.
 const DEFLATE_LEVEL: u8 = 6;

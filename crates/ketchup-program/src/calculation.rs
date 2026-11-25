@@ -736,25 +736,34 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
     }
     if !braces.is_empty() {
         out.push_str(&format!(
-            "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>C ({})</th><th>F_cap ({})</th><th>{}</th></tr>\n",
+            "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>C ({})</th><th>F_cap ({})</th><th>k_mod ({})</th><th>{}</th></tr>\n",
             l.says("Výstuha", "Výztuha"),
             l.says("Okraj", "Okraj"),
             l.says("Miesto", "Místo"),
             l.says("tuhosť cesty k zemi", "tuhost cesty k zemi"),
             l.says("vzper cesty pri f_c,0,d", "vzpěr cesty při f_c,0,d"),
+            l.says("kombinácia najbližšia vzperu", "kombinace nejbližší vzpěru"),
             l.says("Cesta vedie cez", "Cesta vede přes"),
         ));
         for brace in braces {
-            let (stiffness, capacity, through) = match &brace.anchorage {
+            let (stiffness, capacity, governing, through) = match &brace.anchorage {
                 Some(anchorage) => (
                     format!("{} N/mm", number(anchorage.stiffness_n_mm, 1)),
                     anchorage.capacity_n.map_or_else(
                         || l.says("bez vzperu", "bez vzpěru").to_owned(),
                         |n| format!("{} kN", kilonewtons(n)),
                     ),
+                    // R1125og-PG-1001: the combination and k_mod it buckles at.
+                    match (anchorage.k_mod, &anchorage.combination) {
+                        (Some(kmod), Some(combination)) => {
+                            format!("{} ({})", number(kmod, 2), escape(combination))
+                        }
+                        _ => "—".to_owned(),
+                    },
                     escape(&anchorage.through),
                 ),
                 None => (
+                    "—".to_owned(),
                     "—".to_owned(),
                     "—".to_owned(),
                     l.says(
@@ -765,7 +774,7 @@ fn held(out: &mut String, load: Option<&MemberLoad>, member: &MemberCheck, l: La
                 ),
             };
             out.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{stiffness}</td><td class=\"n\">{capacity}</td><td>{through}</td></tr>\n",
+                "<tr><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"n\">{stiffness}</td><td class=\"n\">{capacity}</td><td>{governing}</td><td>{through}</td></tr>\n",
                 escape(&brace.part),
                 edge(&brace.edge),
                 at(brace),

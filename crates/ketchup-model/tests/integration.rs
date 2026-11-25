@@ -57,6 +57,7 @@ mod underlay_dxf_write;
 mod underlay_edits;
 mod underlay_fill;
 mod underlay_objects;
+mod underlay_released_readers;
 mod underlay_snap;
 mod underlay_style;
 mod underlay_text;

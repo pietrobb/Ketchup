@@ -2,13 +2,14 @@
   {
     "schema": "ketchup.cam-gcode-dialect.v1",
     "id": "iso_metric_gcode",
-    "name": "ISO 6983 metric G-code, Ketchup layout",
+    "name": "ISO 6983 metric G-code with FANUC-style G43 and G28, Ketchup layout",
     "sources": [
       "ISO 6983-1:2009 word-address format: G0/G1/G2/G3 with X Y Z, incremental I J arc centres, F feed, S speed, T tool with M6, M3/M5 spindle, M30 end, G21 millimetres, G90 absolute, G17 XY plane, G54-G59 work offsets.",
       "The program first cancels cutter radius and tool length compensation and canned cycles and sets feed per minute (G40 G49 G80 G94), then applies the length of the tool it changes to with G43 H on the rapid to the safe Z (R1119og-MF-801), so a controller measuring Z from the spindle nose keeps the tip at the programmed Z. The first move across starts only at the safe Z (MF-804).",
       "At the end the spindle stops and Z returns to the machine reference point (G91 G28 Z0, then G90) before G49 cancels the tool length: a controller that moves to cancel the length would otherwise run the tip that length below the last safe Z, into the part (R1124og-CAM-900).",
       "The Ketchup records (plan, toolpath and simulation digests, feeds, safe height) are comments in parentheses, which ISO 6983 controllers skip; a ';' comment ends the block on some controllers.",
-      "A whole value is written without a decimal point (X10, F900). A controller without decimal point programming reads such a value in its least input increment, X10 as 0.010 mm; for such a controller use the FANUC dialect, which writes every value with a decimal point."
+      "A whole value is written without a decimal point (X10, F900). A controller without decimal point programming reads such a value in its least input increment, X10 as 0.010 mm; for such a controller use the FANUC dialect, which writes every value with a decimal point.",
+      "Assumes FANUC meanings for two words ISO 6983 leaves to the controller (R1125og-CAM-1000): G43 H<tool> applies the length stored under the tool's number, and G28 returns the named axis to the machine reference point. Only the word format follows ISO 6983; a controller that reads these words otherwise needs its own dialect. On Heidenhain ISO, for example, G28 is a mirror image, so this program would mirror the part instead of lifting Z."
     ],
     "decimals": 6,
     "decimal_point": "when_fractional",
@@ -58,7 +59,8 @@
       "FANUC milling programming conventions: a program between '%' lines with an O program number, N sequence numbers, comments only in parentheses, G00/G01/G02/G03 with incremental I J arc centres, T M06 tool change, G43 H tool length compensation before the first Z move, M03/M05 spindle, M30 end.",
       "FANUC reads an axis or feed value written without a decimal point in least input increments (0.001 mm on IS-B), so every X, Y, Z, I, J and F value is written with a decimal point and three decimals at most.",
       "The program ends with Z at the machine reference point (G91 G28 Z0., then G90) before G49 cancels the tool length, since a FANUC control can move to cancel the length and would otherwise run the tip that length below the last safe Z (R1124og-CAM-900).",
-      "Older FANUC controls accept only upper-case letters, so the whole program, digests included, is upper case."
+      "Older FANUC controls accept only upper-case letters, so the whole program, digests included, is upper case.",
+      "Assumes the control's G28 reference point for Z is at the top of its travel, as a FANUC mill's usually is, and the tool lengths are stored under the tool numbers G43 H reads (R1125og-CAM-1000)."
     ],
     "decimals": 3,
     "decimal_point": "always",
@@ -154,7 +156,8 @@
     "sources": [
       "https://linuxcnc.org/docs/html/gcode/overview.html (read 2026-11-16): a file that starts with a '%' line must end with one; M2 or M30 ends the program; comments in parentheses; at most 256 characters on a line; M6 T tool change; G43 tool length offset (modal group 8).",
       "Arc centres I J are incremental, the RS274/NGC default (G91.1).",
-      "The program ends with a rapid to machine Z0 (G53 G0 Z0, the homed top of Z on a usual LinuxCNC setup) before G49 cancels the tool length, so the cancel never moves the tip toward the part (R1124og-CAM-900)."
+      "The program ends with a rapid to machine Z0 (G53 G0 Z0, the homed top of Z on a usual LinuxCNC setup) before G49 cancels the tool length, so the cancel never moves the tip toward the part (R1124og-CAM-900).",
+      "Assumes Z homes to machine 0 at the top of its travel (HOME = 0 at the positive end of the Z joint in the INI file), the usual LinuxCNC mill setup, and the tool lengths are in the tool table under the tool numbers G43 H reads. On a machine whose machine Z0 is elsewhere, G53 G0 Z0 runs Z to that place instead, so change the end line in a copy of this dialect (R1125og-CAM-1000)."
     ],
     "decimals": 4,
     "decimal_point": "when_fractional",
