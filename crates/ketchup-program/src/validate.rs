@@ -490,10 +490,12 @@ fn collisions(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec<Issue>
         let list_unverified = unverified < MAX_UNVERIFIED_COLLISIONS;
         let pair = (&model.parts[left], &model.parts[right]);
         // Once more are known than are listed, a pair only the exact solids
-        // settle, without their answer, cannot be a collision: skip the cost.
+        // settle, without their answer, is a collision only when the boxes
+        // prove it (R1126og-PG-1101): skip the rest of the cost.
         if unverified > MAX_UNVERIFIED_COLLISIONS
             && needs_exact_shapes(pair.0, pair.1)
             && exact.between(pair.0, pair.1).is_none()
+            && crate::certain_overlap::certain_overlap_mm3(pair.0, pair.1).is_none()
         {
             return ControlFlow::Continue(());
         }
