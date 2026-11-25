@@ -2,6 +2,7 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod brace_joints;
+mod brace_load_duration;
 mod bracing_edge;
 mod buildup;
 mod calculation;
