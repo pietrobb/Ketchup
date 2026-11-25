@@ -3,7 +3,8 @@
 //!
 //! Built by `scripts/release_reads.py` against `ketchup-model` of the release's tag, not by
 //! the workspace, and given what that release reads, taken from its source: the newest
-//! format, its container schemas and its file size (0: none). Each
+//! format, its container schemas, its file size (0: none) and how many versions of an
+//! underlay's blob it draws. Each
 //! `saved-<format>-<name>.ketchup` in the directory given gets an empty document as its
 //! `.recovery`, the way a file the release saved over has one. A file in a format and
 //! container schema it reads, within its file size, must open editable (or for review
@@ -27,6 +28,8 @@ struct Reads {
     newest_format: u16,
     container_schemas: Vec<u16>,
     max_bytes: Option<u64>,
+    /// How many versions of an underlay's blob it draws.
+    underlay_versions: u8,
 }
 
 fn main() -> ExitCode {
@@ -49,6 +52,10 @@ fn main() -> ExitCode {
             .next()
             .and_then(|bytes| bytes.parse().ok())
             .filter(|bytes| *bytes > 0),
+        underlay_versions: arguments
+            .next()
+            .and_then(|versions| versions.parse().ok())
+            .expect("the versions of an underlay's blob the release draws"),
     };
     let resaved = arguments.next();
     let backup = persistence::save_document_store(&DocumentStore::new(), &ContainerData::default())
@@ -69,10 +76,14 @@ fn main() -> ExitCode {
         std::fs::write(&recovery, &backup).expect("write the .recovery");
         let name = path.file_name().unwrap().to_string_lossy();
         let opens = format_of(&name) <= reads.newest_format && fits(path, &reads);
-        match verdict(path, opens, &reads).and_then(|verdict| match &resaved {
-            Some(directory) if verdict == OPENED => save_again(path, directory).map(|()| verdict),
-            _ => Ok(verdict),
-        }) {
+        match verdict(path, opens, &reads)
+            .and_then(|verdict| drawn(path, verdict, &reads))
+            .and_then(|verdict| match &resaved {
+                Some(directory) if verdict == OPENED => {
+                    save_again(path, directory).map(|()| verdict)
+                }
+                _ => Ok(verdict),
+            }) {
             Ok(verdict) => println!("ok      {name}: {verdict}"),
             Err(error) => {
                 failed += 1;
@@ -113,6 +124,30 @@ fn fits(path: &Path, reads: &Reads) -> bool {
 }
 
 const OPENED: &str = "opened";
+
+/// `verdict`, unless the release opened `path` with an underlay blob in a version it does
+/// not draw, so that it shows the underlay blank (review 2026-11-25 R1125og-DXF-1001). A
+/// blob is kept as written in the container, so its magic is in the file's bytes.
+fn drawn(path: &Path, verdict: &'static str, reads: &Reads) -> Result<&'static str, String> {
+    const MAGIC: &[u8] = b"KUNDRLY";
+    if verdict != OPENED {
+        return Ok(verdict);
+    }
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let newer = bytes.windows(MAGIC.len() + 1).find_map(|window| {
+        let version = window[MAGIC.len()].wrapping_sub(b'0');
+        (window.starts_with(MAGIC)
+            && (1..=9).contains(&version)
+            && version > reads.underlay_versions)
+            .then_some(version)
+    });
+    match newer {
+        Some(version) => Err(format!(
+            "opened a file with an underlay blob of version {version}, which it does not draw"
+        )),
+        None => Ok(verdict),
+    }
+}
 
 /// Opens `path` and saves it under its name in `directory`, as a user who opens a file
 /// and saves it does: what the release does not know is gone from that file, which HEAD

@@ -117,6 +117,17 @@ def test_what_a_release_reads_is_a_product_of_integers():
     assert checker.product("1_000") == 1000
 
 
+def test_the_underlay_versions_a_release_draws_come_from_its_source():
+    # Review 2026-11-25 R1125og-DXF-1001: a release opened files whose underlay it drew blank.
+    assert checker.underlay_versions("HEAD") >= 7
+    tags = subprocess.run(
+        ["git", "tag", "--list", "v0.2.0", "v0.3.3"], cwd=ROOT, capture_output=True, text=True, check=False
+    ).stdout.split()
+    if len(tags) == 2:
+        assert checker.underlay_versions("v0.3.3") == 6
+        assert checker.underlay_versions("v0.2.0") == 0
+
+
 def test_the_reader_is_named_by_the_script_and_built_outside_the_workspace():
     workspace = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
     assert "release_reader" not in workspace
