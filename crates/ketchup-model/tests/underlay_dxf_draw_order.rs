@@ -390,3 +390,74 @@ fn entities_added_are_owned_by_model_space_when_the_first_entity_is_in_a_group()
         }
     }
 }
+
+/// Review 2026-11-26 og DXF-1100: a drawing exported before R1125og-DXF-1000 and DXF-1004
+/// has a sort table of model space with no CLASS record, and entities of model space owned
+/// by a group. Exported again, with a fill or without one, its sort table gets its class
+/// and those entities are owned by model space.
+#[test]
+fn an_earlier_exports_sort_table_gets_its_class_and_its_entities_model_space() {
+    let xdictionary = "102\n{ACAD_XDICTIONARY\n360\nE\n102\n}\n";
+    let objects = "0\nDICTIONARY\n5\nE\n330\n1F\n100\nAcDbDictionary\n280\n1\n281\n1\n\
+                   3\nACAD_SORTENTS\n360\nF\n\
+                   0\nSORTENTSTABLE\n5\nF\n102\n{ACAD_REACTORS\n330\nE\n102\n}\n330\nE\n\
+                   100\nAcDbSortentsTable\n330\n1F\n331\nA2\n5\nA0\n331\nA0\n5\nA2\n\
+                   0\nGROUP\n5\n3C\n102\n{ACAD_REACTORS\n330\nD\n102\n}\n330\nD\n100\nAcDbGroup\n\
+                   300\n\n70\n0\n71\n1\n340\nA0\n";
+    for version in ["AC1015", "AC1018", "AC1032"] {
+        let source = plan(version, xdictionary, objects)
+            .replacen("5\nA1\n330\n1F\n", "5\nA1\n330\n3C\n", 1)
+            .replacen("5\nA2\n330\n1F\n", "5\nA2\n330\n3C\n", 1);
+        assert!(sort_table_classes(&source).is_empty());
+        let with_fill = written(&source, |_| {
+            let mut edits = UnderlayEdits::default();
+            edits.added.push(fill(0.0));
+            edits
+        });
+        let with_line = written(&source, |_| {
+            let mut edits = UnderlayEdits::default();
+            edits.added.push(AddedObject::Drawn {
+                layer: "walls".to_owned(),
+                shape: DrawnShape::Polyline {
+                    points_mm: vec![[0.0, 0.0], [100.0, 100.0]],
+                    closed: false,
+                },
+            });
+            edits
+        });
+        for text in [with_fill, with_line] {
+            assert_eq!(sort_table_classes(&text).len(), 1, "{version}: {text}");
+            for handle in ["A0", "A1", "A2"] {
+                let entity = record_of(&text, handle);
+                assert_eq!(owner(&entity), Some("1F"), "{version} {handle}: {text}");
+            }
+            assert_eq!(owner(&record_of(&text, "A3")), Some("1E"), "{version}");
+            assert_eq!(draw_order(&text).1, ["F"], "{version}");
+        }
+    }
+}
+
+/// Review 2026-11-26 og DXF-1101: the class of a new sort table has its instance count
+/// (91) in a drawing of DXF 2004 or later, whether or not its classes are written with one.
+#[test]
+fn a_sort_tables_class_is_counted_from_dxf_2004() {
+    let classes = "0\nSECTION\n2\nCLASSES\n0\nCLASS\n1\nGROUP\n2\nAcDbGroup\n3\nObjectDBX Classes\n\
+                   90\n0\n280\n0\n281\n0\n0\nENDSEC\n";
+    for (version, counted) in [("AC1015", false), ("AC1018", true), ("AC1032", true)] {
+        let bare = plan(version, "", "");
+        let listed = bare.replacen(
+            "0\nSECTION\n2\nTABLES\n",
+            &format!("{classes}0\nSECTION\n2\nTABLES\n"),
+            1,
+        );
+        for source in [bare, listed] {
+            let text = written(&source, |_| {
+                let mut edits = UnderlayEdits::default();
+                edits.added.push(fill(0.0));
+                edits
+            });
+            let [class] = sort_table_classes(&text).try_into().unwrap();
+            assert_eq!(group(&class, 91).is_some(), counted, "{version}: {text}");
+        }
+    }
+}
