@@ -18,7 +18,9 @@ from happening:
    file there, and a reader built from `ketchup-model` of the tag (`release_reader.rs`)
    opens them: a file in a format and container schema the release reads, within its
    file size, must open; any other must be refused as newer or as larger; none may open
-   its `.recovery`. What the release reads is taken from its own source. `--files DIR`
+   its `.recovery`. A file it opens may hold no underlay blob in a version it does not
+   draw (review 2026-11-25 R1125og-DXF-1001). What the release reads is taken from its
+   own source. `--files DIR`
    opens the files a test run already saved in DIR (CI keeps them from its test step);
    without it the tests of `ketchup-model` run here to save them.
 3. Saving again. Snapshots are read without `deny_unknown_fields`, so a release opens a
@@ -284,9 +286,19 @@ def product(expression: str) -> int:
     return value
 
 
+def underlay_versions(tag: str) -> int:
+    """How many versions of an underlay's blob the release draws (0 before underlays): a
+    file it opens with a newer one shows the underlay blank (review 2026-11-25
+    R1125og-DXF-1001)."""
+    path = f"{tag}:crates/ketchup-model/src/underlay.rs"
+    listed = subprocess.run(["git", "cat-file", "-e", path], cwd=ROOT, capture_output=True, check=False)
+    return len(re.findall(r'b"KUNDRLY\d"', git("show", path))) if listed.returncode == 0 else 0
+
+
 def what_it_reads(tag: str) -> list[str]:
-    """The reader's arguments: the newest format, the container schemas and the file
-    size (0 for none) the release reads, from its own source."""
+    """The reader's arguments: the newest format, the container schemas, the file size
+    (0 for none) and the versions of an underlay's blob the release reads, from its own
+    source."""
     codec = git("show", f"{tag}:crates/ketchup-model/src/persistence/snapshot_codec.rs")
     persistence = git("show", f"{tag}:crates/ketchup-model/src/persistence.rs")
     newest = re.search(r"const SNAPSHOT_FORMAT: u16 = (\d+);", codec)
@@ -294,7 +306,12 @@ def what_it_reads(tag: str) -> list[str]:
     if not newest or not schemas:
         sys.exit(f"{tag}: no SNAPSHOT_FORMAT or CONTAINER_SCHEMA in its persistence")
     limit = re.search(r"const MAX_NATIVE_DOCUMENT_BYTES: usize = ([\d_ *]+);", persistence)
-    return [newest.group(1), ",".join(schemas), str(product(limit.group(1))) if limit else "0"]
+    return [
+        newest.group(1),
+        ",".join(schemas),
+        str(product(limit.group(1))) if limit else "0",
+        str(underlay_versions(tag)),
+    ]
 
 
 PATH_DEPENDENCY = re.compile(r'path\s*=\s*"\.\./([\w-]+)"')
