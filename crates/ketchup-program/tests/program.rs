@@ -640,7 +640,9 @@ back = board(\"back\", (4, 4, 600), at = (10, 280, 0))
 ";
     assert_eq!(kinds(source), Vec::<&str>::new());
     let unseated = source.replace("offset = 280", "offset = 200");
-    assert_eq!(kinds(&unseated), vec!["collision_unverified"]);
+    // The groove lies 80 mm off the back, so it removes none of the
+    // 4 x 4 x 600 mm the boxes share (R1126og-PG-1102).
+    assert_eq!(kinds(&unseated), vec!["collision"]);
 }
 
 /// PRG-4 (review 2026-10-15): the groove of a part turned 45° is a thin
@@ -2275,7 +2277,9 @@ fn split_halves_only_touch_but_trims_that_overlap_still_collide() {
     let overlapping = kinds(&format!(
         "{block}b = copy(a, \"b\")\ntrim(a, point=[60, 0, 0], normal=[1, 0, 0])\ntrim(b, point=[30, 0, 0], normal=[-1, 0, 0])"
     ));
-    assert_eq!(overlapping, [COLLISION_UNVERIFIED]);
+    // The trims remove 40 and 30 of the 100 mm the copies share, which
+    // leaves 30 x 60 x 40 mm certainly in both (R1126og-PG-1102).
+    assert_eq!(overlapping, ["collision"]);
 }
 
 #[test]

@@ -47,12 +47,73 @@ fn drilled_boards_sharing_more_than_their_holes_remove_collide() {
     assert_eq!(report.exit_code(), 1);
 }
 
+fn assert_certain_collision(source: &str, a: &str, b: &str) {
+    let (_, report) =
+        run("t.star", source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "collision" && issue.parts == [a, b]),
+        "{:#?}",
+        report.issues
+    );
+    assert_eq!(status(&report, a, b), Some(OverlapStatus::Collision));
+    assert_eq!(report.exit_code(), 1);
+}
+
+/// R1126og-PG-1102 `beams.star`: six through holes far from where a second
+/// beam runs through the first were counted whole (about 3.7 M mm³) against
+/// the 3.456 M mm³ the beams share, so the pair passed as unverified.
+#[test]
+fn holes_away_from_the_overlap_do_not_excuse_it() {
+    let holes: String = [300, 900, 1500, 2500, 3100, 3700]
+        .iter()
+        .map(|x| {
+            format!(
+                "hole(a, \"y-\", world = ({x}, 0, 120), diameter = 14, depth = 120, \
+                 through = True, id = \"h{x}\")\n"
+            )
+        })
+        .collect();
+    let source = format!(
+        "a = box(\"a\", (4000, 120, 240))\n{holes}\
+         b = box(\"b\", (120, 2000, 240), at = (1940, -940, 0))\n"
+    );
+    assert_certain_collision(&source, "a", "b");
+}
+
+/// R1126og-PG-1102 `throughpocket.star`: a 360 x 200 cutout milled 1 000 mm
+/// deep far from the shelf counted its whole depth against the 90 720 mm³
+/// the shelf sits in the side.
+#[test]
+fn a_deep_pocket_away_from_the_overlap_does_not_excuse_it() {
+    let source = "side = box(\"side\", (18, 560, 720))\n\
+                  pocket(side, \"x+\", rect = (200, 400, 560, 600), depth = 1000, id = \"cutout\")\n\
+                  shelf = box(\"shelf\", (400, 560, 18), at = (9, 0, 0))\n";
+    assert_certain_collision(source, "side", "shelf");
+}
+
+/// R1126og-PG-1102 `trimmed.star`: the tool of a trim is a cube far larger
+/// than the leg, so its whole box excused a second leg lying entirely in
+/// the part the trim keeps (a bolt hole at the foot sends the pair to the
+/// exact solids at all).
+#[test]
+fn a_trim_away_from_the_overlap_does_not_excuse_it() {
+    let source = "leg = box(\"leg\", (100, 100, 800))\n\
+                  hole(leg, \"x-\", world = (0, 50, 40), diameter = 10, depth = 100, \
+                  through = True, id = \"bolt\")\n\
+                  trim(leg, (0, 0, 700), (0, 0, 1))\n\
+                  inner = box(\"inner\", (50, 50, 400), at = (25, 25, 100))\n";
+    assert_certain_collision(source, "leg", "inner");
+}
+
 /// Holes that could remove all the volume the boxes share leave the
 /// question to the exact solids.
 #[test]
 fn boards_whose_holes_could_remove_the_shared_volume_stay_unverified() {
     let source = "a = board(\"a\", (100, 100, 18))\n\
-                  hole(a, \"z+\", world = (75, 50, 18), diameter = 90, depth = 18, id = \"h\")\n\
+                  hole(a, \"z+\", world = (75, 50, 18), diameter = 150, depth = 18, id = \"h\")\n\
                   b = board(\"b\", (100, 100, 18), at = (50, 0, 0))\n";
     let (_, report) =
         run("drilled.star", source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
