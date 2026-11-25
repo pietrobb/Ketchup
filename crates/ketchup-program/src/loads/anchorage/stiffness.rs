@@ -27,8 +27,9 @@ pub(super) enum Tie {
     /// Two grounded parts, both fixed to the ground: nothing gives between
     /// them.
     Rigid,
-    /// One fastener: it slips, and the parts turn about it freely.
-    Pin,
+    /// One fastener in a contact facing `normal` (None where the parts share
+    /// no face): it slips, and the parts turn about it freely.
+    Pin { normal: Option<[f64; 3]> },
     /// `count` fasteners spread about their middle by `spread` = the sum of
     /// r rᵀ over their offsets r from it (mm²), in a contact facing `normal`
     /// (None where the parts share no face): they slip, and turn against

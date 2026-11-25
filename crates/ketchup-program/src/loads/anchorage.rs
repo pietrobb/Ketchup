@@ -949,7 +949,9 @@ impl<'a> Footing<'a> {
         let listed = self.joined.get(&(a.min(b), a.max(b)))?;
         Some(match listed.len() {
             0 => self.fitting(a, b),
-            1 => Tie::Pin,
+            1 => Tie::Pin {
+                normal: self.contact_normal(a, b),
+            },
             _ => Tie::fasteners(listed, self.contact_normal(a, b)),
         })
     }
@@ -1010,7 +1012,7 @@ impl<'a> Footing<'a> {
             .flat_map(|p| corners.iter().map(move |q| (*p, *q)))
             .max_by(|(p, q), (r, s)| length(sub(*p, *q)).total_cmp(&length(sub(*r, *s))))
         else {
-            return Tie::Pin;
+            return Tie::Pin { normal: None };
         };
         let long = length(sub(q, p));
         let thin = least_side(&first).min(least_side(&second));
@@ -1023,7 +1025,9 @@ impl<'a> Footing<'a> {
                 self.contact_normal(a, b),
             )
         } else {
-            Tie::Pin
+            Tie::Pin {
+                normal: self.contact_normal(a, b),
+            }
         }
     }
 
