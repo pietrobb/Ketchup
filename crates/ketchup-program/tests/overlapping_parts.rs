@@ -89,6 +89,41 @@ fn a_collision_past_the_listed_unverified_pairs_is_still_found() {
     assert_eq!(report.exit_code(), 1);
 }
 
+/// Review 2026-11-26 R1126og-PG-1101 (`past_limit.star`): past the 2 000
+/// listed unverified pairs a pair only the exact solids settle was skipped
+/// before the boxes could prove it a collision, so `p` and `q`, one drilled
+/// with an 8 mm hole and overlapping by 50 x 100 x 18 mm, passed with exit 0.
+#[test]
+fn a_certain_overlap_past_the_listed_unverified_pairs_is_still_a_collision() {
+    let source = "for i in range(70):\n    \
+                  b = board(\"b/%d\" % i, (100, 100, 18), at = (0, 0, 0))\n    \
+                  hole(b, \"z+\", world = (50, 50, 18), diameter = 90, depth = 18, id = \"h\")\n\
+                  board(\"p\", (100, 100, 18), at = (1000, 0, 0))\n\
+                  q = board(\"q\", (100, 100, 18), at = (1050, 0, 0))\n\
+                  hole(q, \"z+\", world = (1100, 50, 18), diameter = 8, depth = 18, id = \"h\")\n";
+    let (_, report) =
+        run("past_limit.star", source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));
+    let unverified = report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == ketchup_program::COLLISION_UNVERIFIED)
+        .count();
+    assert_eq!(unverified, 2_001, "the pair p, q lies past the listed ones");
+    let collision = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "collision")
+        .unwrap_or_else(|| panic!("p and q overlap: {:?}", report.exit_code()));
+    assert_eq!(collision.parts, ["p", "q"], "{collision:?}");
+    let status = report
+        .relations
+        .iter()
+        .find(|relation| relation.parts == ["p", "q"])
+        .and_then(|relation| relation.status);
+    assert_eq!(status, Some(OverlapStatus::Collision));
+    assert_eq!(report.exit_code(), 1);
+}
+
 /// Review 2026-11-24 R1124og-PG-904 (`crowd15.star`): past the first 100
 /// collisions the check stops, and `x` and `y`, which it never reached, were
 /// related as `boxes_only`, "the exact solids do not overlap".
