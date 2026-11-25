@@ -177,6 +177,9 @@ impl Anchorage {
             stiffness_n_mm: thousandths(self.stiffness_n_mm.min(1.0e12)),
             capacity_n: buckles.then(|| thousandths(self.capacity_n)),
             buckling_in: buckles.then(|| parts[self.buckling].name.clone()),
+            combination: None,
+            k_mod: None,
+            force_n: None,
         }
     }
 }

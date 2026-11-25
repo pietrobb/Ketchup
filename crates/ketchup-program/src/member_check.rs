@@ -224,10 +224,10 @@ pub struct BracingDemand {
     /// (9.34), N/mm; none when the edge is held all along.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stiffness_n_mm: Option<f64>,
-    /// The load-duration class of the combination governing N_d, whose k_mod
-    /// the braces buckle at (R1124og-PG-902).
+    /// F_d of each ultimate combination, at whose k_mod a brace buckles
+    /// (R1124og-PG-902, R1125og-PG-1001).
     #[serde(skip)]
-    duration: usize,
+    by_combination: Vec<braces::CombinationForce>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -1871,7 +1871,7 @@ fn beam_checks(
         lateral_buckling(load, shape, design, uls, &zones, &segments, &kinds);
     checks.extend(buckling);
     unchecked.extend(not_verified);
-    let bracing = bracing_demand(load, shape, design, uls, &zones, &segments, &kinds);
+    let bracing = braces::demand(load, shape, design, uls, &zones, &segments, &kinds);
     (checks, spans_checked, unchecked, bracing)
 }
 
@@ -2057,93 +2057,6 @@ fn lateral_buckling(
         worst.utilization
     );
     (None, Some(reason))
-}
-
-/// What the braces of the compressed edge must give (EN 1995-1-1 9.2.5.2,
-/// review 2026-11-08 PG-242): over each stretch between the bearings, the
-/// compression N_d = (1 - kcrit) M_d / h of the edge as if nothing braced it
-/// (9.2.5.2(4)), the force N_d / k_f at a brace and the stiffness k_s N_d / a
-/// it needs, k_s = 2 (1 + cos(pi / m)) taken at its bound 4, for each edge
-/// something braces where it is compressed.
-fn bracing_demand(
-    load: &MemberLoad,
-    shape: &Shape,
-    design: &Design,
-    uls: &[Combination],
-    zones: &[Zone],
-    segments: &[(Segment, Vec<Option<Bending>>)],
-    kinds: &[usize],
-) -> Vec<BracingDemand> {
-    const K_S: f64 = 4.0;
-    let class = design.class;
-    let h = shape.h;
-    let b = shape.b.min(shape.area / h);
-    let mut demands = Vec::new();
-    for top in [true, false] {
-        let edge = if top { "top" } else { "bottom" };
-        let mut by: Vec<String> = load
-            .braced_by
-            .iter()
-            .filter(|brace| brace.edge == edge)
-            .map(|brace| brace.part.clone())
-            .collect();
-        by.sort();
-        by.dedup();
-        if by.is_empty() {
-            continue;
-        }
-        let (mut axial, mut duration) = (0.0_f64, 0);
-        for (lo, hi) in free_stretches(load, &[], zones, top) {
-            let length = (hi - lo) * shape.arc;
-            let lef = if top { length + 2.0 * h } else { length };
-            if lef <= 1.0 {
-                continue;
-            }
-            let sigma_crit = 0.78 * b * b * class.e0_05 / (h * lef);
-            let k = kcrit((class.fm_k / sigma_crit).sqrt());
-            let (mut moment, mut governing) = (0.0_f64, 0);
-            for (seg, sections) in segments {
-                for (j, x) in seg.xs.iter().enumerate() {
-                    if sections[j].is_none() || *x < lo || *x > hi {
-                        continue;
-                    }
-                    let components: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
-                    for combination in uls {
-                        let (sagging, hogging) = extremes(
-                            &combination.factors,
-                            kinds,
-                            &components,
-                            Some(GAMMA_G_FAVOURABLE),
-                        );
-                        let this = if top { sagging } else { -hogging };
-                        if this > moment {
-                            (moment, governing) = (this, combination.duration);
-                        }
-                    }
-                }
-            }
-            if (1.0 - k) * moment / h > axial {
-                (axial, duration) = ((1.0 - k) * moment / h, governing);
-            }
-        }
-        if axial <= 0.0 {
-            continue;
-        }
-        let longest = free_stretches(load, &load.braced_by, zones, top)
-            .into_iter()
-            .map(|(lo, hi)| (hi - lo) * shape.arc)
-            .fold(0.0, f64::max);
-        let k_f = if class.glulam { 80.0 } else { 60.0 };
-        demands.push(BracingDemand {
-            edge: edge.to_owned(),
-            by,
-            axial_n: round3(axial),
-            force_n: round3(axial / k_f),
-            stiffness_n_mm: (longest > 1.0).then(|| round3(K_S * axial / longest)),
-            duration,
-        });
-    }
-    demands
 }
 
 /// Shear at notched bearings (6.5.2) and compression perpendicular to the
@@ -2755,14 +2668,19 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 // to the ground is less stiff or buckles sooner than EN 1995-1-1
                 // 9.2.5.3 asks of it holds nothing, and the beam is checked
                 // without it.
-                let share = |part: &str, duration: usize| {
-                    let class = parts
-                        .get(part)
-                        .and_then(|p| p.material.as_ref())
-                        .and_then(|m| model.strength_classes.get(m));
-                    braces::design_share(class, design.class.service_class, duration)
+                let class_of = |part: &str| {
+                    let material = parts.get(part)?.material.as_ref()?;
+                    model
+                        .strength_classes
+                        .get_key_value(material)
+                        .map(|(m, class)| (m.as_str(), class))
                 };
-                let designed = braces::designed(&load.braced_by, &bracing, share);
+                let factors = |part: &str, duration: usize| {
+                    let class = class_of(part).map(|(_, class)| class);
+                    braces::design_factors(class, design.class.service_class, duration)
+                };
+                missing.extend(braces::unknown_products(&load.braced_by, class_of));
+                let designed = braces::designed(&load.braced_by, &bracing, factors);
                 let weak = braces::weak(&designed, &bracing);
                 check.held_by.clone_from(&designed);
                 if !weak.is_empty() {
