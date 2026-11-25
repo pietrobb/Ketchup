@@ -103,8 +103,10 @@ fn draw_order(text: &str) -> (Vec<String>, Vec<String>) {
     let hex = |value: &str| u64::from_str_radix(value, 16).unwrap();
     let mut entities: Vec<(u64, usize, String)> = records
         .iter()
-        .filter(|(section, record)| section == "ENTITIES" && record[0].1 != "ENDSEC")
-        .filter(|(_, record)| owner(record) == Some("1F"))
+        .filter(|(section, record)| section == "ENTITIES" && group(record, 5).is_some())
+        // Paper space's are owned by its block record or marked by 67; an export before
+        // DXF-1000 gave a model space entity a group's handle for its owner.
+        .filter(|(_, record)| owner(record) != Some("1E") && group(record, 67) != Some("1"))
         .enumerate()
         .map(|(at, (_, record))| {
             let handle = group(record, 5).unwrap().to_owned();
@@ -139,6 +141,16 @@ fn sort_table_named(text: &str) -> String {
         .position(|(code, value)| *code == 3 && value == "ACAD_SORTENTS")
         .expect("ACAD_SORTENTS");
     dictionary[entry + 1].1.clone()
+}
+
+/// The CLASS records of SORTENTSTABLE in the CLASSES section of `text`.
+fn sort_table_classes(text: &str) -> Vec<Vec<(i32, String)>> {
+    records(text)
+        .into_iter()
+        .filter(|(section, record)| section == "CLASSES" && record[0].1 == "CLASS")
+        .filter(|(_, record)| group(record, 1) == Some("SORTENTSTABLE"))
+        .map(|(_, record)| record)
+        .collect()
 }
 
 fn written(source: &str, edits: impl FnOnce(&UnderlayLines) -> UnderlayEdits) -> String {
@@ -219,6 +231,14 @@ fn fills_drawn_into_a_drawing_lie_under_its_lines_in_the_order_autocad_draws() {
         );
         assert_eq!(tables.len(), 1, "{version}: one sort table");
         assert_eq!(sort_table_named(&text), tables[0], "{version}");
+        // Its class listed, in a CLASSES section before TABLES (DXF-1004).
+        assert_eq!(sort_table_classes(&text).len(), 1, "{text}");
+        let sections: Vec<_> = records(&text)
+            .into_iter()
+            .filter(|(_, record)| record[0].1 == "SECTION")
+            .filter_map(|(_, record)| group(&record, 2).map(str::to_owned))
+            .collect();
+        assert_eq!(sections[..3], ["HEADER", "CLASSES", "TABLES"], "{version}");
         // Paper space is not in model space's table.
         let table = record_of(&text, &tables[0]);
         assert!(
@@ -252,6 +272,7 @@ fn fills_drawn_into_a_drawing_lie_under_its_lines_in_the_order_autocad_draws() {
         );
         assert_eq!(tables.len(), 1, "{version}: {again}");
         assert_eq!(again.matches("ACAD_SORTENTS").count(), 1, "{version}");
+        assert_eq!(sort_table_classes(&again).len(), 1, "{version}");
     }
 }
 
@@ -295,4 +316,77 @@ fn a_drawings_own_draw_order_is_kept_over_the_fills() {
     assert_eq!(sort_table_named(&text), tables[0]);
     assert_eq!(owner(&record_of(&text, &tables[0])), Some("E"));
     assert_eq!(text.matches("{ACAD_XDICTIONARY").count(), 1);
+}
+
+/// Review 2026-11-25 og DXF-1000: when the first entity of model space is in a group (its
+/// reactor names the GROUP), the entities added are still owned by model space, so a second
+/// export keeps the earlier fill in model space's table under the lines.
+#[test]
+fn entities_added_are_owned_by_model_space_when_the_first_entity_is_in_a_group() {
+    let group = "0\nGROUP\n5\n3C\n102\n{ACAD_REACTORS\n330\nD\n102\n}\n330\nD\n100\nAcDbGroup\n\
+                 300\n\n70\n0\n71\n1\n340\nA0\n";
+    let classes = "0\nSECTION\n2\nCLASSES\n0\nCLASS\n1\nGROUP\n2\nAcDbGroup\n3\nObjectDBX Classes\n\
+                   90\n0\n91\n1\n280\n0\n281\n0\n0\nENDSEC\n";
+    for version in ["AC1015", "AC1032"] {
+        let source = plan(version, "", group)
+            .replacen(
+                "5\nA0\n330\n1F\n",
+                "5\nA0\n102\n{ACAD_REACTORS\n330\n3C\n102\n}\n330\n1F\n",
+                1,
+            )
+            .replacen(
+                "0\nSECTION\n2\nTABLES\n",
+                &format!("{classes}0\nSECTION\n2\nTABLES\n"),
+                1,
+            );
+        assert_eq!(draw_order(&source).0, ["A0", "A1", "A2"]);
+        let text = written(&source, |_| {
+            let mut edits = UnderlayEdits::default();
+            edits.added.push(fill(0.0));
+            edits
+        });
+        // The class of the new sort table added to the drawing's classes, counted as they are
+        // (DXF-1004).
+        let class = [
+            (0, "CLASS"),
+            (1, "SORTENTSTABLE"),
+            (2, "AcDbSortentsTable"),
+            (3, "ObjectDBX Classes"),
+            (90, "0"),
+            (91, "1"),
+            (280, "0"),
+            (281, "0"),
+        ]
+        .map(|(code, value)| (code, value.to_owned()));
+        assert_eq!(sort_table_classes(&text), [class.to_vec()], "{text}");
+        assert_eq!(text.matches("CLASSES").count(), 1, "{text}");
+        let [hatch] = hatches(&text).try_into().unwrap();
+        assert_eq!(
+            owner(&record_of(&text, &hatch)),
+            Some("1F"),
+            "{version}: {text}"
+        );
+        // Also over an export before the fix, whose fill is owned by the group.
+        let before = text.replacen(
+            &format!("5\n{hatch}\n330\n1F\n"),
+            &format!("5\n{hatch}\n330\n3C\n"),
+            1,
+        );
+        assert_ne!(before, text);
+        for earlier in [text, before] {
+            let again = written(&earlier, |_| {
+                let mut edits = UnderlayEdits::default();
+                edits.added.push(fill(1000.0));
+                edits
+            });
+            let all = hatches(&again);
+            let newer = all.iter().find(|h| **h != hatch).unwrap();
+            assert_eq!(owner(&record_of(&again, newer)), Some("1F"), "{version}");
+            assert_eq!(
+                draw_order(&again).0,
+                [newer.as_str(), hatch.as_str(), "A0", "A1", "A2"],
+                "{version}: both fills under the lines"
+            );
+        }
+    }
 }
