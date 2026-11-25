@@ -100,6 +100,27 @@ fn a_brace_buckles_under_every_combination_at_its_own_k_mod() {
     assert!(html.contains("<td>0,60 (1.35 permanent)</td>"), "{html}");
 }
 
+/// R1126og-PG-1104: under G 400 + Q 106 kN/m² strips 20 x 20 hold, buckling at
+/// 0.207 kN (k_mod 0.6, 1.35 permanent) against the 0.169 kN that combination
+/// asks; the calculation printed only the largest F_d, 0.219 kN of 1.35 G +
+/// 1.5 Q, so the brace looked too weak for what the check accepted.
+#[test]
+fn the_calculation_prints_the_force_of_the_combination_a_brace_buckles_in() {
+    let checked = report(&braced_beam(400.0, 106.0, 20.0, "C24"));
+    let beam = member(&checked, "beam");
+    assert_eq!(beam.status, "pass", "{beam:?}");
+    assert_eq!(beam.held_by.len(), 6, "{beam:?}");
+    let html = ketchup_program::calculation::document(
+        "design.star",
+        &checked,
+        ketchup_program::calculation::Language::Slovak,
+    );
+    let row =
+        "<td class=\"n\">0,207 kN</td><td class=\"n\">0,169 kN</td><td>0,60 (1.35 permanent)</td>";
+    assert_eq!(html.matches(row).count(), 6, "{html}");
+    assert!(html.contains("<th>F_d (tej kombinácie)</th>"), "{html}");
+}
+
 /// R1125og-PG-1004: a brace of a material naming no product took the k_mod and
 /// gamma_M of solid timber, though a member of it is not verified for that.
 #[test]
