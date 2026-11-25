@@ -193,6 +193,14 @@ fn read_dxf(dxf: &[u8]) -> Result<CadDocument, DwgError> {
         DxfReader::from_reader(Cursor::new(source))?.read()
     })?;
     document.version = DxfVersion::AC1032;
+    // Metric when its units are and it does not say otherwise, so that line types and
+    // hatch patterns loaded later come from `acadiso.*` (review 2026-11-25 og DXF-1003).
+    const METRIC_UNITS: [i16; 10] = [4, 5, 6, 7, 12, 13, 14, 15, 16, 17];
+    if METRIC_UNITS.contains(&document.header.insertion_units)
+        && !dxf.windows(12).any(|name| name == b"$MEASUREMENT")
+    {
+        document.header.measurement = 1;
+    }
     for handle in mtexts_without_width(dxf) {
         if let Some(EntityType::MText(text)) = document.get_entity_mut(Handle::new(handle)) {
             text.rectangle_width = 0.0;

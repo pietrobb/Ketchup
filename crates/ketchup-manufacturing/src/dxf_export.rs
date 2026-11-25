@@ -632,7 +632,7 @@ fn encode_dxf(profiles: &[ExportProfile], annotations: &PlanAnnotations) -> Vec<
         layers.insert("0");
     }
     let mut output = format!(
-        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n9\n$MEASUREMENT\n70\n1\n0\nENDSEC\n\
          0\nSECTION\n2\nTABLES\n\
          0\nTABLE\n2\nLTYPE\n70\n1\n0\nLTYPE\n2\nCONTINUOUS\n70\n0\n3\nSolid line\n72\n65\n73\n0\n40\n0\n0\nENDTAB\n\
          0\nTABLE\n2\nLAYER\n70\n{}\n",
