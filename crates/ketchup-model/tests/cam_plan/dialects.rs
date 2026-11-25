@@ -536,6 +536,41 @@ fn an_unwritable_arc_is_refused_with_its_place() {
     assert!(refused > 0, "no dialect refused an arc of radius 0.002 mm");
 }
 
+/// R1125og-CAM-1000: a word whose meaning depends on the controller or the machine (G28 is the
+/// reference return only on FANUC-style controls, a mirror image on Heidenhain ISO; G53 Z0 is the
+/// top of Z only where Z homes to 0 at the top; G43 H is FANUC's tool length) is used only by a
+/// dialect whose sources say what it assumes of the machine, so the user can tell before running it.
+#[test]
+fn every_machine_dependent_word_a_dialect_writes_has_its_assumption_in_the_sources() {
+    let mut checked = 0;
+    for dialect in CamGCodeDialect::library().unwrap() {
+        let id = dialect.id().to_owned();
+        let text = library_text(&id);
+        let lines = text.lines().map(words).collect::<Vec<_>>();
+        for word in ["G28", "G53", "G43"] {
+            let used = lines.iter().flatten().any(|w| {
+                w.strip_prefix('G')
+                    .is_some_and(|n| n.trim_start_matches('0') == &word[1..])
+            });
+            if !used {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                dialect.sources().iter().any(|source| {
+                    source.contains(word) && source.to_ascii_lowercase().contains("assumes")
+                }),
+                "{id} writes {word} but no source says what it assumes of the machine: {:?}",
+                dialect.sources()
+            );
+        }
+    }
+    assert!(
+        checked >= 6,
+        "only {checked} machine-dependent words checked"
+    );
+}
+
 #[test]
 fn no_controller_is_named_in_the_postprocessor_code() {
     for source in [
