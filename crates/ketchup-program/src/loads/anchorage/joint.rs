@@ -40,39 +40,43 @@ impl Hold {
 /// about the contact's normal, by their distances across it; a moment about
 /// an axis in the contact would pull them out of it, and the parts turn
 /// freely about that axis (R1121ac-PG-1001: two screws along the axis of the
-/// moment fixed a hanger's top).
+/// moment fixed a hanger's top). Fasteners in one spot, one alike, hold
+/// nothing about the normal either: only friction would (review 2026-11-25
+/// R1125og-PG-1000: a plate 80 thick on one screw 75 mm off the force's line
+/// was fixed there and held the member five times too stiffly).
 pub(super) fn hold(tie: Tie, at: [f64; 3], held: [f64; 3], sideways: [f64; 3], thin: f64) -> Hold {
     let moment = moment(held, at, sideways);
     let lever = length(moment);
     let slip = |count: f64| 1.0 / (count * SLIP_PER_FASTENER);
-    let short = lever <= thin;
+    // The moment about the contact's normal and the one about an axis in it.
+    let split = |normal: Option<[f64; 3]>| {
+        normal.map_or((0.0, lever), |normal| {
+            let about = dot(moment, normal);
+            (about, length(sub(moment, scale(normal, about))))
+        })
+    };
+    let in_one_spot = |count: f64, (about, beside): (f64, f64)| {
+        if beside <= thin && about.abs() <= ALONG_AXIS_NEGLIGIBLE * lever {
+            Hold::Fixed(slip(count))
+        } else {
+            Hold::Turning(slip(count))
+        }
+    };
     match tie {
         Tie::Rigid => Hold::Fixed(0.0),
-        Tie::Pin if short => Hold::Fixed(slip(1.0)),
-        Tie::Pin => Hold::Turning(slip(1.0)),
+        Tie::Pin { normal } => in_one_spot(1.0, split(normal)),
         Tie::Fasteners {
             count,
             spread,
             normal,
         } => {
-            let (about, beside, turning) = normal.map_or((0.0, lever, 0.0), |normal| {
-                let about = dot(moment, normal);
-                (
-                    about,
-                    length(sub(moment, scale(normal, about))),
-                    turning_about(&spread, normal),
-                )
-            });
+            let (about, beside) = split(normal);
             if beside > thin {
                 return Hold::Turning(slip(count));
             }
-            // Fasteners in one spot turn like one.
+            let turning = normal.map_or(0.0, |normal| turning_about(&spread, normal));
             if turning < thin * thin / 4.0 {
-                return if short {
-                    Hold::Fixed(slip(count))
-                } else {
-                    Hold::Turning(slip(count))
-                };
+                return in_one_spot(count, (about, beside));
             }
             Hold::Fixed(slip(count) + about * about / (SLIP_PER_FASTENER * turning))
         }
@@ -226,12 +230,23 @@ mod tests {
         let (held, sideways) = ([0.0, 0.0, 2400.0], [0.0, 1.0, 0.0]);
         let foot = [0.0, 0.0, 10.0];
         let slip = 1.0 / SLIP_PER_FASTENER;
+        let pin = Tie::Pin { normal: None };
+        assert_eq!(hold(pin, foot, held, sideways, 50.0), Hold::Turning(slip));
         assert_eq!(
-            hold(Tie::Pin, foot, held, sideways, 50.0),
+            hold(pin, [0.0, 0.0, 2390.0], held, sideways, 50.0),
+            Hold::Fixed(slip)
+        );
+        // R1125og-PG-1000: in a contact facing z, a force along y 10 mm off
+        // the screw turns the parts about z, which nothing holds.
+        let facing_z = Tie::Pin {
+            normal: Some([0.0, 0.0, 1.0]),
+        };
+        assert_eq!(
+            hold(facing_z, [10.0, 0.0, 2400.0], held, sideways, 50.0),
             Hold::Turning(slip)
         );
         assert_eq!(
-            hold(Tie::Pin, [0.0, 0.0, 2390.0], held, sideways, 50.0),
+            hold(facing_z, [0.0, 0.0, 2390.0], held, sideways, 50.0),
             Hold::Fixed(slip)
         );
         // The moment turns about x: two fasteners 50 apart across it in a
