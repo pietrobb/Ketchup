@@ -123,6 +123,15 @@ fn profiles_export_as_r12_polylines_and_a_slovak_name_becomes_an_ascii_layer() {
         text.contains("$INSUNITS\n70\n4\n9\n$MEASUREMENT\n70\n1\n"),
         "{text}"
     );
+    // Which DXF R12 does not define: the report does not say every reader takes them (review
+    // 2026-11-26 og DXF-1102).
+    assert!(
+        exported.loss_report.contains(
+            "\nunit_header=$INSUNITS 4 and $MEASUREMENT 1, which DXF R12 does not define:"
+        ),
+        "{}",
+        exported.loss_report
+    );
     assert!(text.contains("0\nTABLE\n2\nLAYER\n"));
     assert!(
         !text.contains("BLOCK") && !text.contains("INSERT"),
