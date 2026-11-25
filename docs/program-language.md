@@ -89,7 +89,9 @@ Full report fields:
   with `cut_in` naming the part that holds the socket and `depth_mm` how far
   the other reaches in at its deepest; `removed`, `pocket`, `joint`,
   `collision`, `unverified`, `boxes_only`, `purchased_assembly`, `unchecked`
-  when the collision check stopped listing pairs before this one) or `gap`
+  when the collision check stopped listing pairs before this one,
+  `alternatives` for two parts of `alternatives()`, of which only one is
+  built) or `gap`
   (`gap_mm`); `direction`
   is the world unit vector from the first part towards the second; `joint`
   names a declared joint; `approx` marks a pair measured on the box of a
@@ -682,7 +684,7 @@ outside it.
 | `production_tag_unused` | error / warning | no part carries a tag of `production(tags=…)`; an error when therefore nothing is made, a warning when another tag still makes parts |
 | `production_leaves_out_ordered_parts` | warning | bought parts (`designation`) or bars (`cut_length_mm`) carry none of the `production()` tags, so they reach no hardware list or bar schedule; `tag()` them to order them |
 | `expectation_failed` | error | a stated condition (`expect*`) does not hold; the message gives the measured and the required value |
-| `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured; past the first 2 000 such pairs one issue says more were left unlisted, and the search for collisions goes on past them |
+| `collision_unverified` | warning | the boxes of two parts overlap, a part is not its box, and the exact solids were not measured; two boxes of one orientation that share more than their holes, pockets and subtracted tools can remove are a `collision` instead; past the first 2 000 such pairs one issue says more were left unlisted, and the search for collisions goes on past them |
 | `relations_truncated` | warning | more than 20 000 pairs of parts overlap; `relations` lists the first 20 000 and leaves the rest out |
 | `purchased_assembly_contact` | warning | the solids of two different parts of one STEP assembly file overlap where that file places them (both `part=` of the same file, placed from the same frame): the maker assembled them so, and it is no collision |
 | `expectation_unverified` | warning | a condition needs the distance of two solids that are apart, but that distance was not measured |

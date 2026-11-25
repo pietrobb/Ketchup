@@ -66,7 +66,7 @@ fn perf_five_thousand_boards_on_one_spot_are_checked_in_seconds() {
 fn a_collision_past_the_listed_unverified_pairs_is_still_found() {
     let source = "for i in range(70):\n    \
                   b = board(\"b/%d\" % i, (100, 100, 18), at = (0, 0, 0))\n    \
-                  hole(b, \"z+\", world = (50, 50, 18), diameter = 8, depth = 10, id = \"h\")\n\
+                  hole(b, \"z+\", world = (50, 50, 18), diameter = 90, depth = 18, id = \"h\")\n\
                   board(\"p\", (100, 100, 18), at = (1000, 0, 0))\n\
                   board(\"q\", (100, 100, 18), at = (1050, 0, 0))\n";
     let (_, report) =
@@ -162,7 +162,7 @@ fn relations_left_out_past_their_limit_are_reported() {
 fn perf_a_thousand_drilled_boards_on_one_spot_are_checked_in_seconds() {
     let source = "for i in range(1000):\n    \
                   b = board(\"b/%d\" % i, (100, 100, 18), at = (0, 0, 0))\n    \
-                  hole(b, \"z+\", world = (50, 50, 18), diameter = 8, depth = 10, id = \"h\")\n";
+                  hole(b, \"z+\", world = (50, 50, 18), diameter = 90, depth = 18, id = \"h\")\n";
     let started = Instant::now();
     let (_, report) =
         run("drilled.star", source, &BTreeMap::new()).unwrap_or_else(|error| panic!("{error}"));

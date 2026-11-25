@@ -2,7 +2,7 @@ use super::*;
 use crate::ViewFlag;
 use ketchup_model::document::ProfileSegment;
 #[path = "program_exact_tests.rs"]
-mod exact_assemblies;
+pub(super) mod exact_assemblies;
 #[path = "program_hole_tests.rs"]
 mod opposing_holes;
 #[path = "program_provenance_tests.rs"]

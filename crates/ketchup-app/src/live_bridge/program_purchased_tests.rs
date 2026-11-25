@@ -517,6 +517,22 @@ fn perf_twenty_two_parts_of_one_file_reapply_within_a_second() {
     }
 }
 
+/// The apply answer with the exact verdict and issues of its check once that
+/// has ended. Under load the answer can come before the exact check ends
+/// (`exact_check_running`), and its issues then list no exact collision yet
+/// (R1125lo-4).
+fn settled(wire: &mut Wire, applied: Value) -> Value {
+    if applied["exact_collisions"]["not_evaluated"][0]["reason"] != "exact_check_running" {
+        return applied;
+    }
+    let (exact, issues) =
+        super::program_edit::exact_assemblies::settled_exact_check(wire, &applied);
+    let mut settled = applied;
+    settled["exact_collisions"] = exact;
+    settled["report"]["issues"] = Value::Array(issues);
+    settled
+}
+
 /// The pairs of parts the apply answer reports as colliding, sorted.
 fn collisions(applied: &Value) -> Vec<Vec<String>> {
     let mut pairs = applied["report"]["issues"]
@@ -559,10 +575,11 @@ board('floor', (200, 200, 100), at = (-100, 400, -50))\n\
 board('near', (20, 100, 100), at = (56, 450, 100))\n\
 board('touch', (20, 60, 30), at = (55, 470, 60))\n\
 board('far', (100, 18, 100), at = (5000, 5000, 5000))\n";
-    let applied = wire
+    let answer = wire
         .call_within(apply(source, None, 2000.0), Duration::from_secs(120))
         .result
         .unwrap();
+    let applied = settled(&mut wire, answer);
     assert_eq!(
         collisions(&applied),
         [
@@ -592,12 +609,14 @@ fn bought_parts_collide_with_boards_and_export_with_them() {
     let mut wire = Wire::connect(app);
     let folder = folder();
     let mut applied = |source: &str| {
-        wire.call_within(
-            apply(source, Some(folder.path()), 2000.0),
-            Duration::from_secs(120),
-        )
-        .result
-        .unwrap()
+        let answer = wire
+            .call_within(
+                apply(source, Some(folder.path()), 2000.0),
+                Duration::from_secs(120),
+            )
+            .result
+            .unwrap();
+        settled(&mut wire, answer)
     };
     // The box is 10 x 20 x 30 mm, its 30 mm along -x from x = 18: 18 x 18 x
     // 10 mm of it lie in the door.
