@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: a `"{}".format(x)` refused as too deep is not folded at compile time. See PATCH.md.
 
 //! Evaluation of an expression.
 
@@ -154,7 +155,9 @@ impl Builtin1 {
             Builtin1::Not => Some(Value::new_bool(!v.to_value().to_bool())),
             Builtin1::TypeIs(t) => Some(Value::new_bool(v.to_value().get_type_value() == *t)),
             Builtin1::FormatOne(before, after) => {
-                Some(format_one(before, v.to_value(), after, ctx.heap()).to_value())
+                format_one(before, v.to_value(), after, ctx.heap())
+                    .map(|s| s.to_value())
+                    .ok()
             }
             Builtin1::PercentSOne(before, after) => {
                 percent_s_one(before, v.to_value(), after, ctx.heap())
@@ -691,9 +694,10 @@ impl ExprCompiled {
         ctx: &mut OptCtx,
     ) -> ExprCompiled {
         if let Some(arg) = arg.as_value() {
-            let value = format_one(&before, arg.to_value(), &after, ctx.heap());
-            let value = ctx.frozen_heap().alloc_str_intern(value.as_str());
-            return ExprCompiled::Value(value.to_frozen_value());
+            if let Ok(value) = format_one(&before, arg.to_value(), &after, ctx.heap()) {
+                let value = ctx.frozen_heap().alloc_str_intern(value.as_str());
+                return ExprCompiled::Value(value.to_frozen_value());
+            }
         }
 
         ExprCompiled::Builtin1(Builtin1::FormatOne(before, after), Box::new(arg))

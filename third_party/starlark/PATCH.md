@@ -58,7 +58,10 @@ A garbage collection copies a value and traces the values it holds by recursion;
 until it is back at the roots, so any nesting is copied on a bounded stack.
 `str()`, `repr()` and the messages built from them (`fail`, a missing key) still recursed
 without bound (review 2026-11-25 R1125og-PG-1002, R1125lo-2): a value nested more than
-`MAX_JSON_DEPTH` deep is written `...` there (`repr_stack_push`). Hashing a value (a dict
+`MAX_JSON_DEPTH` deep is written `...` there (`repr_stack_push`). Two values differing past
+that depth then got the same text (review 2026-11-26 R1126og-PG-1105), so where the text
+becomes a value (`str()`, `repr()`, `%`, `str.format`, an f-string) `whole_text` refuses it
+with an error; messages (`fail`, a missing key) and printed lines keep the `...`. Hashing a value (a dict
 key) recursed too; it now takes the stack guard `==` and `<` already take, and fails past
 it. `enumerate`, `reversed` and `sorted` check the list they build against the heap bound
 like `list(iterable)` (R1125lo-3): `enumerate(range(10**9))` panicked past `u32::MAX` bytes.
@@ -73,7 +76,7 @@ tuples it builds.
 code (`deprecated`, `mismatched_lifetime_syntaxes`), so the build stays quiet.
 
 Changed files, each marked with a "Modified for Kecup" line under its license header
-(Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`, `src/eval/compiler/stmt.rs`,
+(Apache-2.0 §4(b)): `src/lib.rs`, `src/eval/bc/writer.rs`, `src/eval/compiler/stmt.rs`, `src/eval/compiler/expr.rs`,
 `src/values/layout/heap/heap_type.rs`, `src/values/layout/heap/arena.rs`,
 `src/values/layout/avalue.rs`, `src/values/layout/value.rs`,
 `src/values/recursive_repr_or_json_guard.rs`,

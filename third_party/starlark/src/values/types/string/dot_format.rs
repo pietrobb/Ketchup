@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: str.format checks the text it builds against the heap bound (Heap::set_allocation_limit). See PATCH.md.
+// Modified for Kecup (Ketchup) in 2026 from starlark 0.13.0: str.format checks the text it builds against the heap bound (Heap::set_allocation_limit) and refuses a value too deep to write whole (whole_text). See PATCH.md.
 
 use std::str::FromStr;
 
@@ -25,6 +25,7 @@ use starlark_syntax::dot_format_parser::FormatToken;
 
 use crate::collections::string_pool::StringPool;
 use crate::values::dict::Dict;
+use crate::values::recursive_repr_or_json_guard::whole_text;
 use crate::values::Heap;
 use crate::values::StringValue;
 use crate::values::Value;
@@ -67,15 +68,15 @@ pub(crate) fn format_one<'v>(
     arg: Value<'v>,
     after: &str,
     heap: &'v Heap,
-) -> StringValue<'v> {
+) -> crate::Result<StringValue<'v>> {
     match StringValue::new(arg) {
-        Some(arg) => heap.alloc_str_concat3(before, &arg, after),
+        Some(arg) => Ok(heap.alloc_str_concat3(before, &arg, after)),
         None => {
             let mut result = String::with_capacity(before.len() + after.len() + 10);
             result.push_str(before);
-            arg.collect_repr(&mut result);
+            whole_text(|| arg.collect_repr(&mut result))?;
             result.push_str(after);
-            heap.alloc_str(&result)
+            Ok(heap.alloc_str(&result))
         }
     }
 }
@@ -152,7 +153,8 @@ pub(crate) fn format<'v>(
                 capture,
                 conv,
                 pos: _,
-            } => format_capture(capture, conv, &mut args, &kwargs, &mut result)?,
+            } => whole_text(|| format_capture(capture, conv, &mut args, &kwargs, &mut result))
+                .map_err(crate::Error::into_anyhow)??,
         }
         // One capture repeated many times (`"{0}" * n`) multiplies its argument.
         heap.check_allocation(result.len(), 1)
