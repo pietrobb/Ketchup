@@ -365,11 +365,25 @@ fn a_client_image_with_overwrite_replaces_a_file_once_the_user_agrees() {
     {
         *overwrite = true;
     }
-    assert_eq!(
-        bridge.execute(&mut app, request.clone(), false),
-        Err("export_declined")
-    );
-    assert_eq!(std::fs::read(&existing).unwrap(), b"the user's picture");
+    // The window asks once the request is answered (VRAT-8c), never while it waits.
+    for _ in 0..2 {
+        let before = probe.high_risk_prompts().len();
+        assert_eq!(
+            bridge.execute(&mut app, request.clone(), false),
+            Err("awaiting_user_confirmation")
+        );
+        assert_eq!(probe.high_risk_prompts().len(), before);
+        assert_eq!(std::fs::read(&existing).unwrap(), b"the user's picture");
+        app.ask_client_replace();
+        if before == 0 {
+            // Declined: the user's picture is kept.
+            assert_eq!(
+                bridge.execute(&mut app, request.clone(), false),
+                Err("export_declined")
+            );
+            assert_eq!(std::fs::read(&existing).unwrap(), b"the user's picture");
+        }
+    }
     let answer = bridge
         .execute(&mut app, request, false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));

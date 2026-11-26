@@ -172,6 +172,9 @@ fn a_variant_export_writes_numbers_as_the_request_names_them() {
 
 /// Owner decision R1.2 (review 2026-11-19 og): a file there is replaced only with
 /// replace and once the user agrees in the window, as every export asks.
+/// Vratimov VRAT-8c: asked while the request waited, a user away from the window
+/// held it until the client got response_timeout after 15 minutes; the request
+/// is answered at once that the window asks, and the window asks after.
 #[test]
 fn an_export_replaces_a_file_once_the_user_agrees_and_needs_variants() {
     let (app, mut bridge) = cabinet_with_variants();
@@ -189,22 +192,42 @@ fn an_export_replaces_a_file_once_the_user_agrees_and_needs_variants() {
     );
     let reason = take_error_details().unwrap().to_string();
     assert!(reason.contains("replace: true"), "{reason}");
+    let request = export_replacing(&app, &target);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("awaiting_user_confirmation")
+    );
+    let answer = take_error_details().unwrap().to_string();
+    for said in [
+        "cabinet.takeoff.xlsx",
+        "asks the user",
+        "\"asked_in_window\":true",
+    ] {
+        assert!(answer.contains(said), "{said:?} missing: {answer}");
+    }
     assert!(
         asked.high_risk_prompts().is_empty(),
-        "without replace no one is asked"
+        "not asked while the request waits"
     );
+    app.ask_client_replace();
+    assert_eq!(asked.high_risk_prompts().len(), 1);
     let request = export_replacing(&app, &target);
     assert_eq!(
         bridge.execute(&mut app, request, false),
         Err("export_replace_declined")
     );
-    assert_eq!(asked.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&takeoff).unwrap(), b"user file");
     assert!(!target.exists(), "neither table is written");
 
     let agreeing = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
     let probe = agreeing.clone();
     let mut app = app.with_dialogs(Box::new(agreeing));
+    let request = export_replacing(&app, &target);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("awaiting_user_confirmation")
+    );
+    app.ask_client_replace();
     let request = export_replacing(&app, &target);
     let result = run(&mut bridge, &mut app, request);
     assert_eq!(result["exported"], 2, "{result}");

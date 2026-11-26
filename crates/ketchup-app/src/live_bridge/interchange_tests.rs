@@ -56,6 +56,32 @@ fn export_over(path: &Path, export_format: &str) -> Request {
     request
 }
 
+/// Vratimov VRAT-8c: `request` is answered at once that the window asks the
+/// user whether to replace `file`, with nobody asked while it waits; the window
+/// then asks, as it does once the request was answered.
+fn asked_after(
+    (bridge, app): (&mut LiveBridge, &mut KetchupApp),
+    dialogs: &ScriptedFileDialogs,
+    request: Request,
+    file: &str,
+) {
+    let before = dialogs.high_risk_prompts().len();
+    assert_eq!(
+        bridge.execute(app, request, false),
+        Err("awaiting_user_confirmation")
+    );
+    let answer = take_error_details().unwrap_or_default().to_string();
+    for said in [file, "asks the user"] {
+        assert!(answer.contains(said), "{said:?} missing: {answer}");
+    }
+    assert_eq!(
+        dialogs.high_risk_prompts().len(),
+        before,
+        "not asked while the request waits"
+    );
+    app.ask_client_replace();
+}
+
 /// The entities of the ENTITIES section of a DXF text, each as its type and its
 /// trimmed group pairs.
 fn dxf_entities(dxf: &str) -> Vec<(String, Vec<(i32, String)>)> {
@@ -395,15 +421,20 @@ fn overwrite_asks_before_replacing_a_file_kecup_did_not_write_or_that_was_change
         Err("export_failed")
     );
     assert!(dialogs.high_risk_prompts().is_empty());
-    // With overwrite the user is asked; declined, it is kept.
+    // With overwrite the window asks the user once the request is answered;
+    // declined, it is kept.
+    let over = export_over(&foreign, "glb");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "foreign.glb");
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
     assert_eq!(
         bridge.execute(&mut app, export_over(&foreign, "glb"), false),
         Err("export_declined")
     );
-    assert_eq!(dialogs.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&foreign).unwrap(), b"someone's model");
     assert!(!foreign.with_extension("glb.loss.txt").exists());
     // Agreed, the export replaces it and writes its loss report beside it.
+    let over = export_over(&foreign, "glb");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "foreign.glb");
     bridge
         .execute(&mut app, export_over(&foreign, "glb"), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
@@ -419,30 +450,34 @@ fn overwrite_asks_before_replacing_a_file_kecup_did_not_write_or_that_was_change
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     std::fs::write(&edited, b"edited in Blender").unwrap();
     let report = std::fs::read(edited.with_extension("glb.loss.txt")).unwrap();
+    let over = export_over(&edited, "glb");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "edited.glb");
+    assert_eq!(dialogs.high_risk_prompts().len(), 4, "both asked at once");
     assert_eq!(
         bridge.execute(&mut app, export_over(&edited, "glb"), false),
         Err("export_declined")
     );
-    assert_eq!(dialogs.high_risk_prompts().len(), 4);
     assert_eq!(std::fs::read(&edited).unwrap(), b"edited in Blender");
     assert_eq!(
         std::fs::read(edited.with_extension("glb.loss.txt")).unwrap(),
         report
     );
 
-    // A file changed while the user was being asked is not replaced.
+    // A file changed while the user was being asked is not replaced: the user is
+    // asked again about it as it is now.
     let older = directory.path().join("older.glb");
     std::fs::write(&older, b"older export").unwrap();
-    app.dialogs = Box::new(
-        ScriptedFileDialogs::new().queue_high_risk_approval_after_write(
-            7,
-            &older,
-            b"saved meanwhile".to_vec(),
-        ),
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval_after_write(
+        7,
+        &older,
+        b"saved meanwhile".to_vec(),
     );
+    app.dialogs = Box::new(dialogs.clone());
+    let over = export_over(&older, "glb");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "older.glb");
     assert_eq!(
         bridge.execute(&mut app, export_over(&older, "glb"), false),
-        Err("export_failed")
+        Err("awaiting_user_confirmation")
     );
     assert_eq!(std::fs::read(&older).unwrap(), b"saved meanwhile");
 }
@@ -467,6 +502,8 @@ fn a_plan_replaces_an_existing_dxf_or_dwg_once_the_user_agrees() {
     std::fs::write(&plan, b"architect's plan").unwrap();
 
     // Declined, the architect's plan is kept.
+    let over = export_over(&plan, "dxf");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "plan.dxf");
     assert_eq!(
         bridge.execute(&mut app, export_over(&plan, "dxf"), false),
         Err("export_declined")
@@ -476,6 +513,8 @@ fn a_plan_replaces_an_existing_dxf_or_dwg_once_the_user_agrees() {
     assert!(!plan.with_extension("dxf.loss.txt").exists());
 
     // Agreed, it is the plan; a DWG likewise.
+    let over = export_over(&plan, "dxf");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "plan.dxf");
     bridge
         .execute(&mut app, export_over(&plan, "dxf"), false)
         .unwrap_or_else(|code| panic!("dxf {code}: {}", app.action_digest()));
@@ -485,6 +524,8 @@ fn a_plan_replaces_an_existing_dxf_or_dwg_once_the_user_agrees() {
     assert!(plan.with_extension("dxf.loss.txt").is_file());
     let dwg = directory.path().join("plan.dwg");
     std::fs::write(&dwg, b"architect's plan").unwrap();
+    let over = export_over(&dwg, "dwg");
+    asked_after((&mut bridge, &mut app), &dialogs, over, "plan.dwg");
     bridge
         .execute(&mut app, export_over(&dwg, "dwg"), false)
         .unwrap_or_else(|code| panic!("dwg {code}: {}", app.action_digest()));

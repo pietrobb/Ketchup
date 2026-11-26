@@ -342,6 +342,9 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
                     }
                     match cause.downcast_ref::<Rejection>()?.code() {
                         "side_effect.declined" => Some("export_declined"),
+                        super::consent::replace_consent::AWAITING_USER => {
+                            Some("awaiting_user_confirmation")
+                        }
                         "fabrication.mesh_body"
                         | "presentation.material"
                         | "presentation.image" => Some("export_refused"),

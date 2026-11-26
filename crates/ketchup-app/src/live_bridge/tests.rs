@@ -421,7 +421,8 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
 
 /// Review 2026-10-17 P3: a client that disconnected while the user was asked
 /// still got its file written once the user confirmed. A release to
-/// manufacturing asks only to replace a file (owner decision R1).
+/// manufacturing asks only to replace a file (owner decision R1), and the
+/// window asks once the client was answered, so nothing waits on the answer.
 #[test]
 fn disconnect_during_a_release_confirmation_writes_no_file() {
     use ketchup_model::document::{
@@ -482,13 +483,36 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         .unwrap();
     stream.write_all(&bytes).unwrap();
 
-    // The prompt answers within the poll that shows it, so the export is over.
+    // The client is answered at once that the window asks (VRAT-8c), unasked.
+    let mut reader = stream.try_clone().unwrap();
+    let (sender, answers) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        sender
+            .send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !prompted.load(Ordering::Acquire) {
+    let answer = loop {
         assert!(Instant::now() < deadline, "{}", app.action_digest());
         app.poll_live_bridge(&context);
+        if let Ok(answer) = answers.try_recv() {
+            break answer;
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    };
+    assert_eq!(
+        answer.error.as_deref(),
+        Some("awaiting_user_confirmation"),
+        "{answer:?}"
+    );
+    assert!(!prompted.load(Ordering::Acquire), "asked while it waited");
+    // The window asks after, as its loop does; the client leaves while it asks.
+    app.ask_client_replace();
+    assert!(prompted.load(Ordering::Acquire));
 
     assert_eq!(
         std::fs::read(&path).unwrap(),
@@ -496,11 +520,6 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
         "the departed client's release was written"
     );
     assert!(!path.with_extension("btlx.support.txt").exists());
-    assert!(
-        app.action_digest().contains("disconnected"),
-        "{}",
-        app.action_digest()
-    );
 }
 
 #[test]

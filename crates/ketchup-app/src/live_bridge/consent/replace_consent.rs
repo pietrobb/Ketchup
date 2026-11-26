@@ -7,7 +7,7 @@
 //! long as the file is unchanged since.
 
 use crate::KetchupApp;
-use ketchup_rejection::Rejection;
+use ketchup_rejection::{Rejection, RejectionPhase};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -15,6 +15,10 @@ use std::{
 
 /// How long the user's answer waits for the client to send its export again.
 pub(in crate::live_bridge) const ANSWER_HOLDS: Duration = Duration::from_secs(10 * 60);
+
+/// The code of the rejection telling a client's export that the window asks
+/// the user whether to replace a file (VRAT-8c).
+pub(crate) const AWAITING_USER: &str = "side_effect.awaiting_user";
 
 /// What a client asks the user to agree to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +110,32 @@ impl KetchupApp {
             asks.waiting.push(Asked { replacing, sha256 });
         }
         Consent::Asking
+    }
+
+    /// The user's agreement to a client's export replacing the file at `path`,
+    /// as a rejection when there is none yet: `side_effect.awaiting_user` while
+    /// the window asks, once the request is answered, and `side_effect.declined`
+    /// when the user did not agree (VRAT-8c: the export waited on the dialog
+    /// until the client gave up after 15 minutes).
+    pub(crate) fn client_overwrite_consent(&mut self, path: &Path) -> Result<(), Rejection> {
+        match self.client_replace_consent(Replacing::File(path.to_path_buf())) {
+            Consent::Agreed => Ok(()),
+            Consent::Asking => {
+                let minutes = ANSWER_HOLDS.as_secs() / 60;
+                Err(Rejection::new(AWAITING_USER, RejectionPhase::Validation).reason(format!(
+                    "{} is not replaced yet: the window now asks the user whether to, and nothing was written. Tell the user to answer in the Kečup window, then send the same export again within {minutes} minutes; their answer holds for the file as it is now.",
+                    path.display()
+                )))
+            }
+            Consent::Declined(reason) => Err(Rejection::new(
+                "side_effect.declined",
+                RejectionPhase::Validation,
+            )
+            .reason(format!(
+                "{reason} {} was not replaced and nothing was written; export to another path, or ask the user again.",
+                path.display()
+            ))),
+        }
     }
 
     /// Asks the user the questions clients' requests left, after those
