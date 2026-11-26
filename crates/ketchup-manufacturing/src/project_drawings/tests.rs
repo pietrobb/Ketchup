@@ -2515,6 +2515,73 @@ fn the_caller_names_the_number_and_title_of_a_sheet() {
     assert!(titled[2].1.contains(&"3 / 3"));
 }
 
+/// Vratimov VRAT-12: the office draws its coordination site plan "C.1 Koordinační
+/// situace" as the plan titled so, and "D.1 Půdorys" as the plan. "Půdorys, řez ve
+/// výšce 1200 mm" belongs under the plan alone: not under the site plan, nor under
+/// a plan the caller titles as another drawing, on paper or in the CAD drawing.
+#[test]
+fn only_a_plan_sheet_is_captioned_as_a_plan_cut_at_a_height() {
+    let hall = [cuboid(
+        "hall",
+        [0.0, 0.0, 0.0],
+        [56_600.0, 37_200.0, 10_000.0],
+    )];
+    let cut = "Půdorys, řez ve výšce 1200 mm";
+    let label = |number: &str, title: &str| SheetLabel {
+        number: number.to_owned(),
+        title: title.to_owned(),
+    };
+    let drawn = |plan: SheetLabel| {
+        let options = DrawingSetOptions {
+            format: Some(SheetFormat::A3),
+            scale: Some(250),
+            situation: Some(SituationSheet {
+                title: "Situace".to_owned(),
+                view_title: "Situace stavby".to_owned(),
+                to_grid_mm: [[1.0, 0.0, -742_000_000.0], [0.0, 1.0, -1_045_000_000.0]],
+            }),
+            plans: vec![PlanSheet {
+                storey: Storey {
+                    floor_mm: None,
+                    cut_mm: 1200.0,
+                },
+                view_title: cut.to_owned(),
+                sheet_title: "Půdorys".to_owned(),
+            }],
+            sheet_labels: vec![SheetLabel::default(), plan],
+            ..options(&hall, Some(1200.0))
+        };
+        drawing_set(&hall, &options).unwrap()
+    };
+    let plan = SheetKind::Plan { storey: 0 };
+
+    let set = drawn(label("C.1", "Koordinační situace"));
+    let site = sheet_of(&set, SheetKind::Situation);
+    assert!(texts(&site.page).contains(&"Situace stavby"));
+    assert!(!texts(&site.page).contains(&cut), "{:?}", texts(&site.page));
+    let coordination = sheet_of(&set, plan);
+    for page in [&coordination.page, &coordination.lines] {
+        let written = texts(page);
+        assert!(written.contains(&"C.1"), "{written:?}");
+        assert!(!written.contains(&cut), "{written:?}");
+    }
+    assert_eq!(coordination.views[0].title, "Koordinační situace");
+
+    // The plan titled as itself, or left its own title, keeps the height of its cut.
+    for kept in [label("D.1", "Půdorys"), label("D.1", " ")] {
+        let set = drawn(kept);
+        assert!(!texts(&sheet_of(&set, SheetKind::Situation).page).contains(&cut));
+        let floor = sheet_of(&set, plan);
+        assert!(
+            texts(&floor.page).contains(&cut),
+            "{:?}",
+            texts(&floor.page)
+        );
+        assert!(texts(&floor.lines).contains(&cut));
+        assert_eq!(floor.views[0].title, cut);
+    }
+}
+
 /// The marks of `page` outside its frame, or reaching into its title block from
 /// outside it (the title block's own lie wholly in it).
 fn marks_in_the_title_block_corner(page: &Page) -> Vec<String> {

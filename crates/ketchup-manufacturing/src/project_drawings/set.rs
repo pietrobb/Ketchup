@@ -631,12 +631,18 @@ pub fn drawing_set_until(
         values
     };
     let mut sheets = Vec::with_capacity(count);
-    for (index, ((sheet, format), sheet_scale)) in
+    for (index, ((mut sheet, format), sheet_scale)) in
         planned.into_iter().zip(formats).zip(scales).enumerate()
     {
         let number = index + 1;
         let scale = sheet_scale;
         let title = titled(sheet.title.clone(), number);
+        // A plan the caller titles as another drawing, a coordination site plan
+        // drawn over it, is captioned by that title and not as a plan cut at a
+        // height (Vratimov VRAT-12).
+        if matches!(sheet.kind, SheetKind::Plan { .. }) && title != sheet.title {
+            sheet.titles.fill(title.clone());
+        }
         let values = title_values(&title, format!("1:{scale}"), format, number);
         let blank = || Page {
             size_mm: format.size_mm(),
