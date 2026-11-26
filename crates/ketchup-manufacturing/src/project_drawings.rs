@@ -18,10 +18,11 @@ use crate::title_block::{
     SheetFormat, StoreyLevels, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area,
 };
 use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
-use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetImage, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 mod annotations;
@@ -33,6 +34,7 @@ mod plan_overlap;
 mod section_marks;
 mod set;
 mod shop;
+mod situation;
 mod storey_table;
 mod table;
 mod threads;
@@ -50,6 +52,9 @@ pub use set::{
     drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
+pub use situation::{
+    SITUATION_SCALES, SituationCross, SituationSheet, SituationSummary, UnderlayImage,
+};
 pub use storey_table::{
     MAX_BUILD_UP_MM, ModelFloors, NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem,
     sheet_numbers,
@@ -88,6 +93,8 @@ pub enum ProjectView {
     Right,
     /// A shop drawing: its parts seen square on, along their own z.
     Shop,
+    /// The site plan: the model from above on its underlay, with grid crosses.
+    Situation,
 }
 
 impl ProjectView {
@@ -501,6 +508,15 @@ enum Item {
     },
 }
 
+/// An image underlay as a view lays it: its name, its pixels (none in a DXF or
+/// DWG set, which leaves it out) and its upper-left, upper-right and lower-left
+/// corners in view millimetres.
+struct LaidImage {
+    name: String,
+    image: Option<Arc<SheetImage>>,
+    corners: [[f64; 2]; 3],
+}
+
 struct DrawnView {
     view: ProjectView,
     /// The frame it was projected in: a plan's right and up give its world axes.
@@ -519,6 +535,8 @@ struct DrawnView {
     annotations: Option<PlanAnnotations>,
     /// The underlay lines a plan draws beneath the model, cut at its extent.
     underlay: Vec<[[f64; 2]; 2]>,
+    /// The image underlays a site plan or a plan lays beneath everything.
+    images: Vec<LaidImage>,
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
@@ -530,6 +548,8 @@ struct DrawnView {
     facing: Option<CompassSide>,
     /// Where the sections cut a plan of the whole set.
     sections: Vec<section_marks::SectionMark>,
+    /// The grid crosses of a site plan.
+    grid: Vec<situation::GridCross>,
     cut_at_mm: Option<f64>,
 }
 
@@ -557,6 +577,39 @@ impl DrawnView {
                 clip_to_box(frame.project(*a), frame.project(*b), self.min, self.max)
             })
             .collect();
+    }
+
+    /// Lays the `images` beneath this view, those that reach into what it draws.
+    fn lay_images(&mut self, frame: &ViewFrame, images: &[situation::UnderlayImage]) {
+        if !self.min[0].is_finite() {
+            return;
+        }
+        self.images = images
+            .iter()
+            .map(|image| (image, image.corners.map(|corner| frame.project(corner))))
+            .filter(|(_, [upper_left, upper_right, lower_left])| {
+                let lower_right =
+                    [0, 1].map(|axis| upper_right[axis] + lower_left[axis] - upper_left[axis]);
+                let corners = [*upper_left, *upper_right, *lower_left, lower_right];
+                (0..2).all(|axis| {
+                    corners.iter().any(|corner| corner[axis] >= self.min[axis])
+                        && corners.iter().any(|corner| corner[axis] <= self.max[axis])
+                })
+            })
+            .map(|(image, corners)| LaidImage {
+                name: image.name.clone(),
+                image: image.image.clone(),
+                corners,
+            })
+            .collect();
+    }
+
+    /// The names of the image underlays this view lays, with whether it prints
+    /// their pixels.
+    fn laid_images(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.images
+            .iter()
+            .map(|laid| (laid.name.as_str(), laid.image.is_some()))
     }
 
     /// Marks the windows and doors standing at `points` in this view.
@@ -687,11 +740,13 @@ fn draw_view(
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
         underlay: Vec::new(),
+        images: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
         north: None,
         facing: None,
         sections: Vec::new(),
+        grid: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {

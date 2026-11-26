@@ -277,6 +277,7 @@ impl KetchupApp {
                 underlay_lines: RefCell::new(BTreeMap::new()),
                 underlay_decoded: RefCell::new(BTreeMap::new()),
                 underlay_object_trees: RefCell::new(BTreeMap::new()),
+                underlay_rasters: BTreeMap::new(),
                 underlay_frame: Vec::new(),
                 wgpu_target_format: None,
                 wgpu_device: None,
@@ -1642,6 +1643,7 @@ impl KetchupApp {
         self.show_stale_ai_clients(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
+        self.show_sheet_preview_window(context);
         self.finish_live_image_frame(context);
         self.finish_file_activity_frame(context);
         self.show_close_guard(context);

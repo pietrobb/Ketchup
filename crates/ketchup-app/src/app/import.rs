@@ -165,7 +165,7 @@ impl KetchupApp {
             }
         }
         Err(ImportError {
-            format: ImportFormat::Dxf,
+            format: ImportFormat::Dxf.into(),
             failure: last_error.map_or(ImportFailure::ReviewIncomplete, |error| {
                 ImportFailure::Failed(error.into())
             }),

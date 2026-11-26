@@ -11,7 +11,6 @@ use super::interchange::{ImportTarget, ReadAlready};
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
-use crate::ImportFormat;
 use crate::app::dwg_import::{DwgRead, is_dwg_path, read_dwg_file};
 use crate::app::exact_import_activity::{ExactImportRead, read_exact_import};
 use crate::app::import_file::import_format;
@@ -19,6 +18,7 @@ use crate::app::skp_import::{SkpRead, is_skp_path, read_skp_file};
 use crate::app::underlay::revision::RevisionOverlayError;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
 use crate::delivery::Deliver;
+use crate::{ImportFormat, ImportKind};
 use ketchup_model::import::RevisionComparison;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_program::CancelToken;
@@ -75,20 +75,28 @@ pub(super) struct DwgImportJob {
 /// The name of the thread reading a file of `format` (or a drawing
 /// `as_underlay`) and the busy reason naming it (review 2026-11-02 MCP-123).
 pub(super) fn import_job_names(
-    format: ImportFormat,
+    format: ImportKind,
     as_underlay: bool,
 ) -> (&'static str, &'static str) {
-    if as_underlay {
-        return (
+    match format {
+        ImportKind::Image(_) => (
+            "ketchup-image-underlay-import",
+            "An image is being read as an underlay.",
+        ),
+        _ if as_underlay => (
             "ketchup-underlay-import",
             "A drawing is being read as an underlay.",
-        );
-    }
-    match format {
-        ImportFormat::Step => ("ketchup-step-import", "A STEP file is being imported."),
-        ImportFormat::Iges => ("ketchup-iges-import", "An IGES file is being imported."),
-        ImportFormat::Glb => ("ketchup-skp-import", "A SketchUp file is being imported."),
-        _ => ("ketchup-dwg-import", "A DWG file is being imported."),
+        ),
+        ImportKind::File(ImportFormat::Step) => {
+            ("ketchup-step-import", "A STEP file is being imported.")
+        }
+        ImportKind::File(ImportFormat::Iges) => {
+            ("ketchup-iges-import", "An IGES file is being imported.")
+        }
+        ImportKind::File(ImportFormat::Glb) => {
+            ("ketchup-skp-import", "A SketchUp file is being imported.")
+        }
+        ImportKind::File(_) => ("ketchup-dwg-import", "A DWG file is being imported."),
     }
 }
 
@@ -160,8 +168,12 @@ impl LiveBridge {
             } => app.earlier_revision(UnderlayId(*of)).ok(),
             _ => None,
         };
-        let exact = (!as_underlay && matches!(format, ImportFormat::Step | ImportFormat::Iges))
-            .then(|| app.exact_worker_executable());
+        let exact = match format {
+            ImportKind::File(exact @ (ImportFormat::Step | ImportFormat::Iges)) if !as_underlay => {
+                Some((exact, app.exact_worker_executable()))
+            }
+            _ => None,
+        };
         let (thread, reason) = import_job_names(format, as_underlay);
         let cancel = CancelToken::default();
         let worker_cancel = cancel.clone();
@@ -170,7 +182,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name(thread.into())
             .spawn(move || {
-                let read = if let Some(executable) = exact {
+                let read = if let Some((format, executable)) = exact {
                     JobRead::Exact(read_exact_import(
                         format,
                         &path,

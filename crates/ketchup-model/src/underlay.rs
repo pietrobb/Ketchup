@@ -19,6 +19,7 @@ pub mod line_edit;
 pub mod object_query;
 pub mod objects;
 pub mod placement;
+pub mod raster;
 pub mod regions;
 pub mod snap;
 pub mod style;
@@ -73,6 +74,10 @@ pub struct Underlay {
     /// is written back in it (review 2026-11-09 UL-303).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_page: Option<crate::import::DxfCodePage>,
+    /// The image it shows under its lines, an orthophoto or a scanned map; none for a
+    /// drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<raster::UnderlayRaster>,
 }
 
 impl Underlay {
@@ -93,6 +98,12 @@ impl Underlay {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    /// The container blobs it reads: its lines and, for an image, its file.
+    pub fn blobs(&self) -> impl Iterator<Item = String> {
+        std::iter::once(self.lines_blob())
+            .chain(self.raster.as_ref().map(raster::UnderlayRaster::image_blob))
     }
 }
 
@@ -1467,7 +1478,27 @@ pub fn plan_underlay(
         placement::geo_placement(snapshot, offset_mm),
         view::UnderlayView::default(),
     );
-    plan_placed(snapshot, name, lines, placed, code_page)
+    plan_placed(snapshot, name, lines, placed, (code_page, None))
+}
+
+/// One batch, so one Undo step, that adds the image `raster` as an underlay named `name`
+/// with a tag of its own and no layers, its lines the empty container blob
+/// `lines_sha256` ([`UnderlayLines::encode`] of none), moved by `offset_mm` from its own
+/// coordinates and placed beside the first underlay that was moved too, as
+/// [`plan_underlay`] places a drawing.
+pub fn plan_raster_underlay(
+    snapshot: &Snapshot,
+    name: &str,
+    raster: raster::UnderlayRaster,
+    lines_sha256: [u8; 32],
+    offset_mm: [f64; 2],
+) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
+    let lines = (&[][..], &[][..], lines_sha256, offset_mm);
+    let placed = (
+        placement::geo_placement(snapshot, offset_mm),
+        view::UnderlayView::default(),
+    );
+    plan_placed(snapshot, name, lines, placed, (None, Some(raster)))
 }
 
 /// [`plan_underlay`] of lines in the coordinates of a later revision of the drawing of
@@ -1494,7 +1525,7 @@ pub fn plan_underlay_over(
         name,
         lines,
         (placement, under.view),
-        under.code_page,
+        (under.code_page, None),
     )
 }
 
@@ -1508,7 +1539,10 @@ fn plan_placed(
         [f64; 2],
     ),
     (placement, view): (Transform, view::UnderlayView),
-    code_page: Option<crate::import::DxfCodePage>,
+    (code_page, raster): (
+        Option<crate::import::DxfCodePage>,
+        Option<raster::UnderlayRaster>,
+    ),
 ) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
     let next = |ids: &mut dyn Iterator<Item = u64>| {
         ids.max()
@@ -1551,6 +1585,7 @@ fn plan_placed(
         edits: edits::UnderlayEdits::default(),
         view,
         code_page,
+        raster,
     }));
     Ok((CommandBatch::new(commands), id))
 }

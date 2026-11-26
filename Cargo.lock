@@ -2184,6 +2184,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2353,6 +2355,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "getrandom 0.3.4",
+ "image",
  "indexmap",
  "ketchup-analysis",
  "ketchup-app",

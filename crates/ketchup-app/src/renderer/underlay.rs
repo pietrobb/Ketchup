@@ -8,6 +8,7 @@
 //! changes which segment ranges are drawn and which layers' letters the GPU keeps.
 
 mod letters;
+pub(crate) mod raster;
 pub(crate) mod text;
 
 use super::{linear_rgba, single_precision};
@@ -259,12 +260,13 @@ fn vertex_index(count: usize) -> u32 {
 
 /// One underlay of the frame, the indices of its visible layers (none while it or all its
 /// layers are hidden: its upload is kept for when it is shown again) and its placement
-/// from its lines to the world.
+/// from its lines to the world; and its image while it shows one.
 #[derive(Clone, Debug)]
 pub struct UnderlayDraw {
     pub geometry: Arc<UnderlayGeometry>,
     pub visible: Vec<usize>,
     pub placement: Transform,
+    pub raster: Option<raster::RasterDraw>,
 }
 
 /// How a frame draws an underlay's lines: from its lines to clip space, column-major, in
@@ -432,6 +434,7 @@ pub struct GpuUnderlayRenderer {
     draws: Vec<UnderlayDraw>,
     /// How many underlays were uploaded: once per underlay, not per frame.
     uploads: u64,
+    rasters: raster::GpuRasters,
 }
 
 impl GpuUnderlayRenderer {
@@ -585,6 +588,7 @@ impl GpuUnderlayRenderer {
             wgpu::PrimitiveTopology::LineList,
             &[instance_buffer],
         );
+        let rasters = raster::GpuRasters::new(device, target_format, &placement_layout);
         Self {
             fills_pipeline,
             lines_pipeline,
@@ -598,6 +602,7 @@ impl GpuUnderlayRenderer {
             uploaded: BTreeMap::new(),
             draws: Vec::new(),
             uploads: 0,
+            rasters,
         }
     }
 
@@ -644,6 +649,11 @@ impl GpuUnderlayRenderer {
         for (view, (buffer, _)) in views.iter().zip(&self.placements) {
             queue.write_buffer(buffer, 0, &view.bytes());
         }
+        let rasters = draws
+            .iter()
+            .map(|draw| draw.raster.as_ref())
+            .collect::<Vec<_>>();
+        self.rasters.prepare(device, queue, &rasters);
         self.uploaded.retain(|key, _| {
             draws
                 .iter()
@@ -768,7 +778,18 @@ impl GpuUnderlayRenderer {
                     Some((draw, placement, self.uploaded.get(&draw.geometry.key)?))
                 })
         };
-        // Fills first, under the lines.
+        // Images first, under everything a drawing draws.
+        self.rasters.draw(
+            pass,
+            self.draws
+                .iter()
+                .zip(&self.placements)
+                .enumerate()
+                .filter_map(|(index, (draw, (_, placement)))| {
+                    Some((index, draw.raster.as_ref()?, placement))
+                }),
+        );
+        // Fills, under the lines.
         pass.set_pipeline(&self.fills_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         for (draw, placement, uploaded) in drawn() {
@@ -845,6 +866,12 @@ impl GpuUnderlayRenderer {
     #[must_use]
     pub fn uploads(&self) -> u64 {
         self.uploads
+    }
+
+    /// How many images of raster underlays were uploaded: once per image, not per frame.
+    #[must_use]
+    pub fn raster_uploads(&self) -> u64 {
+        self.rasters.uploads()
     }
 }
 

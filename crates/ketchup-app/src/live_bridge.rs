@@ -410,8 +410,8 @@ pub enum Request {
     /// a drawing sheet of the document as DXF or DWG.
     ExportDrawings(drawings::ExportDrawingsRequest),
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
-    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead, read
-    /// in `code_page`; with `revision_of` it adds only what changed since that underlay's.
+    /// `as_underlay` keeps a DXF/DWG drawing (read in `code_page`) or a PNG/JPEG image (by
+    /// its world file) under the model; with `revision_of`, only what changed since then.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
