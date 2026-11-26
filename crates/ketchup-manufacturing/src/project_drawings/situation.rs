@@ -14,8 +14,10 @@ use std::sync::Arc;
 
 /// The scales of a site plan, finest first.
 pub const SITUATION_SCALES: [u32; 2] = [250, 500];
-/// Paper between two grid crosses, and around the model.
+/// Paper between two grid crosses, and around the model at most.
 const GRID_PAPER_MM: f64 = 100.0;
+/// The least paper around the model, which a format asked for may leave.
+const MIN_MARGIN_PAPER_MM: f64 = 20.0;
 /// Half the length of a cross arm on the paper.
 const CROSS_ARM_MM: f64 = 5.0;
 // not a tolerance: the pen width of a grid cross.
@@ -69,12 +71,16 @@ pub(super) struct GridCross {
     pub(super) coordinates_m: [f64; 2],
 }
 
-/// The view of the site plan, its format and its scale: the finest of
-/// [`SITUATION_SCALES`] at which it fits the requested format, else the smallest
-/// format that holds it; `None` when no solid is drawn.
+/// The view of the site plan, its format and its scale; `None` when no solid is drawn.
+/// Without a format asked for, [`GRID_PAPER_MM`] of paper around the model on the
+/// smallest format that holds it at the finest of [`SITUATION_SCALES`]; with one, the
+/// finest scale at which it fits that format with the most paper around the model up to
+/// that, [`MIN_MARGIN_PAPER_MM`] at least (Vratimov VRAT-9: an A3 never held 100 mm,
+/// so the site plan took an A1 of a set asked on A3).
 ///
 /// # Errors
-/// [`ProjectDrawingError::DoesNotFit`] when it fits no format at any.
+/// [`ProjectDrawingError::DoesNotFit`] when it fits the format asked for at no scale
+/// with the least paper around it, or no format at any without one.
 pub(super) fn plan(
     site: &SituationSheet,
     solids: &[DrawingSolid],
@@ -91,31 +97,41 @@ pub(super) fn plan(
     let Some(inverse) = invert(site.to_grid_mm) else {
         return Ok(None);
     };
-    // The requested format first; the 100 mm of paper around the model never fit
-    // some (A3 at any scale), so then the smallest that holds the site plan.
-    for wanted in std::iter::once(requested).chain(requested.map(|_| None)) {
-        for scale in SITUATION_SCALES {
-            let mut view = draw_view(ProjectView::Situation, frame, solids, edges);
-            if !view.min[0].is_finite() {
-                return Ok(None);
-            }
-            let step_mm = GRID_PAPER_MM * f64::from(scale);
-            let [[a, b, _], [c, d, _]] = site.to_grid_mm;
-            let margin = step_mm / (a * d - b * c).abs().sqrt();
+    let view = draw_view(ProjectView::Situation, frame, solids, edges);
+    if !view.min[0].is_finite() {
+        return Ok(None);
+    }
+    let (min, max) = (view.min, view.max);
+    let mut sheet = SheetViews {
+        views: vec![view],
+        rows: vec![vec![0]],
+    };
+    let [[a, b, _], [c, d, _]] = site.to_grid_mm;
+    // Model millimetres a millimetre of the grid's is.
+    let model_per_grid_mm = 1.0 / (a * d - b * c).abs().sqrt();
+    let least = if requested.is_some() {
+        MIN_MARGIN_PAPER_MM
+    } else {
+        GRID_PAPER_MM
+    };
+    for scale in SITUATION_SCALES {
+        let mut margin_paper_mm = GRID_PAPER_MM;
+        while margin_paper_mm >= least {
+            let margin = margin_paper_mm * f64::from(scale) * model_per_grid_mm;
+            let view = &mut sheet.views[0];
             for axis in 0..2 {
-                view.min[axis] -= margin;
-                view.max[axis] += margin;
+                view.min[axis] = min[axis] - margin;
+                view.max[axis] = max[axis] + margin;
             }
-            view.lay_underlay(&frame, underlay);
-            view.lay_images(&frame, images);
-            view.grid = crosses(&view, site.to_grid_mm, inverse, step_mm);
-            let sheet = SheetViews {
-                views: vec![view],
-                rows: vec![vec![0]],
-            };
-            if let Ok(format) = format_at_scale(&sheet, wanted, scale) {
+            if let Ok(format) = format_at_scale(&sheet, requested, scale) {
+                let view = &mut sheet.views[0];
+                view.lay_underlay(&frame, underlay);
+                view.lay_images(&frame, images);
+                let step_mm = GRID_PAPER_MM * f64::from(scale);
+                view.grid = crosses(&*view, site.to_grid_mm, inverse, step_mm);
                 return Ok(Some((sheet, format, scale)));
             }
+            margin_paper_mm -= 1.0;
         }
     }
     Err(ProjectDrawingError::DoesNotFit {

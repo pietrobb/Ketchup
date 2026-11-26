@@ -690,6 +690,46 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
 /// once and the document keeps it, `auto` gives the sheets back the window's
 /// language, and a language without sheet texts is refused by name.
 #[test]
+fn a_client_numbers_and_titles_the_sheets_of_one_export() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        source_folder: None,
+        expected: None,
+        source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let request = |path: &Path, labelled: bool| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": path.display().to_string(),
+            "plan_only": true,
+            "drawing_scale": 250,
+        });
+        if labelled {
+            request["sheet_numbers"] = json!(["D.1"]);
+            request["sheet_titles"] = json!(["Půdorys 1.NP"]);
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let labelled = directory.path().join("labelled.pdf");
+    let written = bridge
+        .execute(&mut app, request(&labelled, true), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["sheets"][0]["title"], "Půdorys 1.NP", "{written}");
+    // For that export alone.
+    let plain = directory.path().join("plain.pdf");
+    let written = bridge
+        .execute(&mut app, request(&plain, false), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_ne!(written["sheets"][0]["title"], "Půdorys 1.NP", "{written}");
+}
+
+#[test]
 fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
@@ -720,6 +760,7 @@ fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps
             .project_drawings_job_for(crate::app::project_drawings::SheetRequest {
                 plan_only: true,
                 scale: Some(250),
+                labels: Vec::new(),
             })
             .unwrap()
             .render(
@@ -1034,6 +1075,8 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 zero_altitude_mm: None,
                 north_deg: None,
                 revisions: None,
+                sheet_numbers: Vec::new(),
+                sheet_titles: Vec::new(),
             })
         };
 
@@ -1053,6 +1096,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         .project_drawings_job_for(crate::app::project_drawings::SheetRequest {
             plan_only: true,
             scale: Some(250),
+            labels: Vec::new(),
         })
         .unwrap()
         .render(
@@ -1151,6 +1195,8 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 zero_altitude_mm: None,
                 north_deg: None,
                 revisions: None,
+                sheet_numbers: Vec::new(),
+                sheet_titles: Vec::new(),
             }),
             false,
         )

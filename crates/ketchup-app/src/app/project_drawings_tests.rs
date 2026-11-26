@@ -2156,14 +2156,15 @@ fn a_site_plan_sheet_draws_the_georeferenced_underlay_with_labelled_grid_crosses
     }
 
     // A3, kept in the document, never holds 100 mm of paper around the model: the
-    // site plan takes the smallest sheet that does, the other sheets stay on A3.
+    // site plan keeps to A3 at 1:250 with less around it (Vratimov VRAT-9), as the
+    // other sheets do.
     let mut settings = app.sheet_settings();
     settings.format = Some(SheetFormat::A3);
     app.store_sheet_settings(settings);
     let set = app.project_drawings().unwrap();
     assert_eq!(set.sheets[0].kind, SheetKind::Situation);
-    assert_eq!(set.sheets[0].format, SheetFormat::A2);
-    for sheet in &set.sheets[1..] {
+    assert_eq!(set.sheets[0].situation.as_ref().unwrap().scale, 250);
+    for sheet in &set.sheets {
         assert_eq!(sheet.format, SheetFormat::A3, "{:?}", sheet.kind);
     }
 

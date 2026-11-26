@@ -48,8 +48,8 @@ pub use cutting::{CuttingPiece, CuttingSheet, CuttingStock, CuttingSummary};
 use ketchup_model::annotation::Annotation;
 pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
 pub use set::{
-    DrawingSet, DrawingSetOptions, PlanSheet, SetSheet, SheetKind, SheetTitles, drawing_set,
-    drawing_set_until,
+    DrawingSet, DrawingSetOptions, PlanSheet, SetSheet, SheetKind, SheetLabel, SheetTitles,
+    drawing_set, drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
 pub use situation::{
@@ -874,6 +874,10 @@ const SUNKEN_GROUND_FLOOR_MM: f64 = 1000.0;
 const FACE_JOINT_MM: f64 = 20.0;
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
+/// How far below a view its overall width is drawn, and its title below that.
+const DIMENSION_GAP_MM: f64 = 8.0;
+/// The paper a view draws on below itself: its overall width and its title.
+const BELOW_VIEW_MM: f64 = 2.0 * DIMENSION_GAP_MM + VIEW_TITLE_MM;
 pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
 
 // not a tolerance: the pen width of a visible edge on the sheet.
@@ -906,33 +910,92 @@ fn choose_scale(sheet: &SheetViews, format: SheetFormat) -> Option<u32> {
 
 /// Whether every row fits the drawing area of `format` at 1:`scale`.
 fn fits(SheetViews { views, rows }: &SheetViews, format: SheetFormat, scale: u32) -> bool {
-    let [[left, top], [right, bottom]] = drawing_area(format);
-    let usable_width = right - left;
-    let usable_height = bottom - top - TITLE_BLOCK_MM[1];
-    let scale = f64::from(scale);
-    let widths_fit = rows.iter().all(|row| {
-        row.iter()
-            .map(|index| extent(&views[*index])[0] / scale + 2.0 * VIEW_PAD_MM)
-            .sum::<f64>()
-            <= usable_width
-    });
-    let height = rows
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|index| extent(&views[*index])[1] / scale + 2.0 * VIEW_PAD_MM)
-                .fold(0.0, f64::max)
-        })
-        .sum::<f64>();
-    widths_fit && height <= usable_height
+    rows_fit(views, rows, format, scale)
 }
 
-/// The scale of the requested format, or of the smallest format that holds the
-/// views at `preferred` or finer (A0 at whatever fits when none does).
+/// Whether `rows` of `views` fit the drawing area of `format` above its title block at
+/// 1:`scale`: each across, each view with its pad on both sides, and all down, each its
+/// tallest view with its pad above and below, the last only down to what it draws
+/// beneath its views, as all its pad below keeps from is a next row (Vratimov VRAT-9).
+fn rows_fit(views: &[DrawnView], rows: &[Vec<usize>], format: SheetFormat, scale: u32) -> bool {
+    let [[left, top], [right, bottom]] = drawing_area(format);
+    let scale = f64::from(scale);
+    let size =
+        |index: &usize, axis: usize| extent(&views[*index])[axis] / scale + 2.0 * VIEW_PAD_MM;
+    let widths_fit = rows
+        .iter()
+        .all(|row| row.iter().map(|index| size(index, 0)).sum::<f64>() <= right - left);
+    let height = rows
+        .iter()
+        .map(|row| row.iter().map(|index| size(index, 1)).fold(0.0, f64::max))
+        .sum::<f64>();
+    let spare_below = if rows.is_empty() {
+        0.0
+    } else {
+        1.5 * VIEW_PAD_MM - BELOW_VIEW_MM
+    };
+    widths_fit && height - spare_below <= bottom - top - TITLE_BLOCK_MM[1]
+}
+
+/// `rows` with each broken where it runs past the width of `format` at 1:`scale`: as
+/// many of its views on a line as fit, one at least.
+fn wrapped_rows(
+    views: &[DrawnView],
+    rows: &[Vec<usize>],
+    format: SheetFormat,
+    scale: u32,
+) -> Vec<Vec<usize>> {
+    let mut wrapped = Vec::new();
+    for row in rows {
+        let mut line: Vec<usize> = Vec::new();
+        for &index in row {
+            line.push(index);
+            if line.len() > 1 && !rows_fit(views, &[line.clone()], format, scale) {
+                line.pop();
+                wrapped.push(std::mem::replace(&mut line, vec![index]));
+            }
+        }
+        wrapped.extend((!line.is_empty()).then_some(line));
+    }
+    wrapped
+}
+
+/// The rows of `sheet` wrapped to `format` at 1:`scale` ([`wrapped_rows`]) and parted
+/// onto as few sheets of it as hold them, top to bottom; `None` when a row alone does
+/// not fit.
+fn paged_rows(sheet: &SheetViews, format: SheetFormat, scale: u32) -> Option<Vec<Vec<Vec<usize>>>> {
+    let views = &sheet.views;
+    let mut pages = Vec::new();
+    let mut page: Vec<Vec<usize>> = Vec::new();
+    for row in wrapped_rows(views, &sheet.rows, format, scale) {
+        let mut longer = page.clone();
+        longer.push(row.clone());
+        if rows_fit(views, &longer, format, scale) {
+            page = longer;
+        } else if rows_fit(views, std::slice::from_ref(&row), format, scale) {
+            pages.push(std::mem::replace(&mut page, vec![row]));
+        } else {
+            return None;
+        }
+    }
+    pages.extend((!page.is_empty()).then_some(page));
+    Some(pages)
+}
+
+/// The scale of the requested format, its rows wrapped where they run past it, or of
+/// the smallest format that holds the views at `preferred` or finer (A0 at whatever
+/// fits when none does).
 fn choose_layout_scale(sheet: &SheetViews, requested: Option<SheetFormat>, preferred: u32) -> u32 {
     let coarsest = SCALES[SCALES.len() - 1];
     if let Some(format) = requested {
-        return choose_scale(sheet, format).unwrap_or(coarsest);
+        let views = &sheet.views;
+        return SCALES
+            .into_iter()
+            .find(|scale| {
+                let rows = wrapped_rows(views, &sheet.rows, format, *scale);
+                rows_fit(views, &rows, format, *scale)
+            })
+            .unwrap_or(coarsest);
     }
     SheetFormat::ALL
         .into_iter()

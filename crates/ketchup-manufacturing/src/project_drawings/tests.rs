@@ -2309,3 +2309,152 @@ fn a_strip_of_the_sheathing_is_not_a_member() {
     );
     assert_eq!(shop.summary.up, [0.0, 60.0, 2440.0, 2500.0]);
 }
+
+/// Vratimov VRAT-9: the office wants every sheet of a 56,6 × 37,2 × 10 m hall on A3.
+/// With A3 fixed, 1:200 and 1:250 drew no set (its sections and elevations side by side
+/// ran off the sheet), and 1:400 put the site plan on an A1, as 100 mm of paper around
+/// the model never fit an A3.
+#[test]
+fn a_hall_with_a_site_plan_is_drawn_all_on_a_fixed_a3() {
+    let hall = [cuboid(
+        "hall",
+        [0.0, 0.0, 0.0],
+        [56_600.0, 37_200.0, 10_000.0],
+    )];
+    for scale in [200, 250] {
+        let options = DrawingSetOptions {
+            format: Some(SheetFormat::A3),
+            scale: Some(scale),
+            situation: Some(SituationSheet {
+                title: "Site plan".to_owned(),
+                view_title: "Site plan".to_owned(),
+                to_grid_mm: [[1.0, 0.0, -742_000_000.0], [0.0, 1.0, -1_045_000_000.0]],
+            }),
+            ..options(&hall, Some(1200.0))
+        };
+        let set = drawing_set(&hall, &options).unwrap_or_else(|error| panic!("1:{scale}: {error}"));
+        let sheets = set
+            .sheets
+            .iter()
+            .map(|sheet| (sheet.kind, sheet.format))
+            .collect::<Vec<_>>();
+        assert!(
+            sheets.iter().all(|(_, format)| *format == SheetFormat::A3),
+            "1:{scale}: {sheets:?}"
+        );
+        let site = sheet_of(&set, SheetKind::Situation);
+        assert_eq!(site.situation.as_ref().unwrap().scale, 250, "1:{scale}");
+        assert!(texts(&site.page).contains(&"1:250"));
+        // The two sections one under the other; the four elevations, one or two in a
+        // row, on two sheets.
+        let count = |kind: SheetKind| sheets.iter().filter(|(drawn, _)| *drawn == kind).count();
+        assert_eq!(count(SheetKind::Sections), 1, "1:{scale}: {sheets:?}");
+        assert_eq!(count(SheetKind::Elevations), 2, "1:{scale}: {sheets:?}");
+        for sheet in &set.sheets {
+            assert_eq!(
+                marks_in_the_title_block_corner(&sheet.page),
+                Vec::<String>::new(),
+                "1:{scale} {:?}",
+                sheet.kind
+            );
+        }
+        let views = set
+            .sheets
+            .iter()
+            .flat_map(|sheet| sheet.views.iter().map(|view| view.view))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(views.len(), 8, "every view is drawn once: {views:?}");
+    }
+
+    // A site that an A3 holds at no scale with 20 mm around it is refused on A3,
+    // not put on a larger sheet; without a format it takes one.
+    let site = [cuboid(
+        "site",
+        [0.0, 0.0, 0.0],
+        [190_000.0, 100_000.0, 10_000.0],
+    )];
+    let options = DrawingSetOptions {
+        format: Some(SheetFormat::A3),
+        scale: Some(1000),
+        situation: Some(SituationSheet {
+            title: "Site plan".to_owned(),
+            view_title: "Site plan".to_owned(),
+            to_grid_mm: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        }),
+        ..options(&site, Some(1200.0))
+    };
+    assert_eq!(
+        drawing_set(&site, &options),
+        Err(ProjectDrawingError::DoesNotFit {
+            scale: 500,
+            format: Some(SheetFormat::A3)
+        })
+    );
+    let auto = DrawingSetOptions {
+        format: None,
+        ..options
+    };
+    let set = drawing_set(&site, &auto).unwrap();
+    let site = sheet_of(&set, SheetKind::Situation);
+    assert_eq!(site.format, SheetFormat::A0);
+    assert_eq!(site.situation.as_ref().unwrap().scale, 250);
+}
+
+/// Vratimov VRAT-9: the office's sheets are numbered as the documentation is ("D.1
+/// Půdorys"); the caller names each sheet's number and title, a blank one keeps its own.
+#[test]
+fn the_caller_names_the_number_and_title_of_a_sheet() {
+    let label = |number: &str, title: &str| SheetLabel {
+        number: number.to_owned(),
+        title: title.to_owned(),
+    };
+    let options = DrawingSetOptions {
+        sheet_labels: vec![label("D.1", "Půdorys"), label(" ", "")],
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &options).unwrap();
+    let titled = set
+        .sheets
+        .iter()
+        .map(|sheet| (sheet.title.as_str(), texts(&sheet.page)))
+        .collect::<Vec<_>>();
+    assert_eq!(titled[0].0, "Půdorys");
+    assert!(titled[0].1.contains(&"D.1") && titled[0].1.contains(&"Půdorys"));
+    assert!(!titled[0].1.contains(&"1 / 3"));
+    assert_eq!(titled[1].0, "Sections");
+    assert!(titled[1].1.contains(&"2 / 3"));
+    assert_eq!(titled[2].0, "Elevations");
+    assert!(titled[2].1.contains(&"3 / 3"));
+}
+
+/// The marks of `page` outside its frame, or reaching into its title block from
+/// outside it (the title block's own lie wholly in it).
+fn marks_in_the_title_block_corner(page: &Page) -> Vec<String> {
+    use crate::title_block::{FRAME_LEFT_MM, FRAME_MM, TITLE_BLOCK_MM};
+    let [width, height] = page.size_mm;
+    let [right, bottom] = [width - FRAME_MM, height - FRAME_MM];
+    // Strictly inside with `within` > 0, else on its edge too.
+    let in_block = |[x, y]: [f64; 2], within: f64| {
+        (right - TITLE_BLOCK_MM[0] + within..=right - within).contains(&x)
+            && (bottom - TITLE_BLOCK_MM[1] + within..=bottom - within).contains(&y)
+    };
+    let in_frame = |[x, y]: [f64; 2]| {
+        (FRAME_LEFT_MM - 1e-6..=right + 1e-6).contains(&x)
+            && (FRAME_MM - 1e-6..=bottom + 1e-6).contains(&y)
+    };
+    page.marks
+        .iter()
+        .filter_map(|mark| {
+            let points = match mark {
+                Mark::Fill { loops, .. } => loops.concat(),
+                Mark::Line { points, .. } => points.clone(),
+                Mark::Text { at, .. } => vec![*at],
+                Mark::Image { clip, .. } => clip.map_or_else(Vec::new, |clip| clip.to_vec()),
+            };
+            let reaches_in = points.iter().any(|point| in_block(*point, 1e-6))
+                && !points.iter().all(|point| in_block(*point, -1e-6));
+            let astray = !points.iter().all(|point| in_frame(*point)) || reaches_in;
+            astray.then(|| format!("{mark:?}").chars().take(200).collect())
+        })
+        .collect()
+}

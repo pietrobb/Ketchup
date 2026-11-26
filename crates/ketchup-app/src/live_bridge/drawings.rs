@@ -18,7 +18,7 @@ use crate::app::project_drawings::{
 use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
-use ketchup_manufacturing::project_drawings::{DrawingSet, StoreyTableProblem};
+use ketchup_manufacturing::project_drawings::{DrawingSet, SheetLabel, StoreyTableProblem};
 use ketchup_manufacturing::revision_table::SheetRevision;
 use ketchup_manufacturing::title_block::{
     SheetFormat, SheetLanguage, SheetSettings, StoreyLevels, TitleField,
@@ -89,6 +89,13 @@ pub struct ExportDrawingsRequest {
     /// of its own; absent keeps the document's (review 2026-11-08 §5.3).
     #[serde(default)]
     pub revisions: Option<Vec<SheetRevision>>,
+    /// The number each sheet's title block writes in place of "n / N" ("C.1"), in
+    /// the set's order, for this export alone; a blank one keeps the sheet's own.
+    #[serde(default)]
+    pub sheet_numbers: Vec<String>,
+    /// The title of each sheet in place of what it shows, as `sheet_numbers`.
+    #[serde(default)]
+    pub sheet_titles: Vec<String>,
 }
 
 fn sheet_format(name: &str) -> Result<Option<SheetFormat>, &'static str> {
@@ -144,6 +151,8 @@ impl LiveBridge {
             zero_altitude_mm,
             north_deg,
             revisions,
+            sheet_numbers,
+            sheet_titles,
         }) = request
         else {
             return Err(failure(
@@ -165,10 +174,12 @@ impl LiveBridge {
             || zero_altitude_mm.is_some()
             || north_deg.is_some()
             || revisions.is_some()
+            || !sheet_numbers.is_empty()
+            || !sheet_titles.is_empty()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg, revisions and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg, revisions, sheet_numbers, sheet_titles and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -628,6 +639,27 @@ fn storey_problem(problem: StoreyTableProblem) -> Value {
     }
 }
 
+/// The number and title of each sheet a client names, in the set's order.
+fn sheet_labels(numbers: Vec<String>, titles: Vec<String>) -> Vec<SheetLabel> {
+    let mut labels = numbers
+        .into_iter()
+        .map(|number| SheetLabel {
+            number,
+            title: String::new(),
+        })
+        .collect::<Vec<_>>();
+    for (index, title) in titles.into_iter().enumerate() {
+        match labels.get_mut(index) {
+            Some(label) => label.title = title,
+            None => labels.push(SheetLabel {
+                number: String::new(),
+                title,
+            }),
+        }
+    }
+    labels
+}
+
 /// The table of storeys as an answer names it, and where its storeys came from.
 fn storeys_answer(settings: &SheetSettings) -> Value {
     if settings.storeys.is_empty() {
@@ -661,6 +693,8 @@ pub(super) fn start_export(
         zero_altitude_mm,
         north_deg,
         revisions,
+        sheet_numbers,
+        sheet_titles,
     }) = request
     else {
         return Err("invalid_request");
@@ -670,6 +704,7 @@ pub(super) fn start_export(
     let request = SheetRequest {
         plan_only,
         scale: drawing_scale.map(sheet_scale).transpose()?,
+        labels: sheet_labels(sheet_numbers, sheet_titles),
     };
     let path = path.as_str();
     let target = Path::new(path);
@@ -1127,6 +1162,8 @@ mod tests {
                 zero_altitude_mm: None,
                 north_deg: None,
                 revisions: None,
+                sheet_numbers: Vec::new(),
+                sheet_titles: Vec::new(),
             }),
             false,
         )
@@ -1206,6 +1243,8 @@ mod tests {
             zero_altitude_mm: None,
             north_deg: None,
             revisions: None,
+            sheet_numbers: Vec::new(),
+            sheet_titles: Vec::new(),
         });
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked.clone(), false),
