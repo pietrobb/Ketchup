@@ -70,6 +70,7 @@ impl KetchupApp {
                 write_log: Default::default(),
                 client_export: None,
                 client_overwrite: false,
+                replace_asks: Default::default(),
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),
@@ -1528,6 +1529,7 @@ impl KetchupApp {
         self.file.activity.context = Some(context.clone());
         self.poll_live_consent(context);
         self.poll_live_bridge(context);
+        self.ask_client_replace();
         self.poll_window_plugin(context);
         self.poll_window_variant(context);
         self.poll_window_edit(context);

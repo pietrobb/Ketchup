@@ -100,6 +100,7 @@ mod program_variants;
 mod project_drawings_job;
 mod rejection_records;
 use rejection_records::{failed_because, failure, planning_failure, record_rejection};
+pub(crate) mod replace_consent;
 mod room_areas;
 mod running_programs;
 mod saved_views;

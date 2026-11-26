@@ -341,10 +341,15 @@ fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
         ("survey.dwg", json!({"sheet_id": id})),
     ] {
         let path = file(name);
-        let mut export =
-            |extra: &Value| bridge.execute(&mut app, export_drawings(&path, extra.clone()), false);
+        let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, extra: &Value| {
+            bridge.execute(app, export_drawings(&path, extra.clone()), false)
+        };
         std::fs::write(&path, b"the user's own").unwrap();
-        assert_eq!(export(&extra), Err("drawings_target_exists"), "{name}");
+        assert_eq!(
+            export(&mut app, &mut bridge, &extra),
+            Err("drawings_target_exists"),
+            "{name}"
+        );
         let answer = take_error_details().unwrap_or_default().to_string();
         for said in [name, "replace: true"] {
             assert!(answer.contains(said), "{said:?} missing: {answer}");
@@ -353,12 +358,18 @@ fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
 
         let mut asked = extra.clone();
         asked["replace"] = json!(true);
-        export(&asked).unwrap_or_else(|code| panic!("{code} {name}: {:?}", take_error_details()));
+        once_the_user_answered(&mut app, &mut bridge, export_drawings(&path, asked))
+            .unwrap_or_else(|code| panic!("{code} {name}: {:?}", take_error_details()));
         assert_ne!(std::fs::read(&path).unwrap(), b"the user's own");
         // Its own file is replaced again without asking, until it changes.
-        export(&extra).unwrap_or_else(|code| panic!("{code} {name}: {:?}", take_error_details()));
+        export(&mut app, &mut bridge, &extra)
+            .unwrap_or_else(|code| panic!("{code} {name}: {:?}", take_error_details()));
         std::fs::write(&path, b"edited since").unwrap();
-        assert_eq!(export(&extra), Err("drawings_target_exists"), "{name}");
+        assert_eq!(
+            export(&mut app, &mut bridge, &extra),
+            Err("drawings_target_exists"),
+            "{name}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"edited since");
     }
     assert_eq!(probe.high_risk_prompts().len(), 2, "one per replace: true");
@@ -403,12 +414,9 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
     );
     let answer = take_error_details().unwrap_or_default().to_string();
     assert!(answer.contains("asks the user"), "{answer}");
-    export(
-        &mut app,
-        &mut bridge,
-        &targets[0].0,
-        &json!({"replace": true}),
-    );
+    let replace = export_drawings(&targets[0].0, json!({"replace": true}));
+    once_the_user_answered(&mut app, &mut bridge, replace)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
 
     let document = directory.path().join("plan.ketchup");
     app.remember_recent_file(&document);
@@ -841,7 +849,7 @@ fn a_clients_sheet_export_runs_off_the_windows_thread() {
     let dwg = directory.path().join("Block.dwg");
     std::fs::write(&dwg, b"the user's own").unwrap();
     let context = egui::Context::default();
-    let mut export = |app: &mut KetchupApp, extra: Value| {
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, extra: Value| {
         let (reply, answers) = mpsc::sync_channel(1);
         let queued = QueuedReply {
             id: 1,
@@ -872,18 +880,25 @@ fn a_clients_sheet_export_runs_off_the_windows_thread() {
             }
         }
     };
-    let kept = export(&mut app, json!({"sheet_id": id}));
+    let kept = export(&mut app, &mut bridge, json!({"sheet_id": id}));
     assert_eq!(
         kept.error.as_deref(),
         Some("drawings_target_exists"),
         "{kept:?}"
     );
     assert_eq!(std::fs::read(&dwg).unwrap(), b"the user's own");
-    let asked = export(&mut app, json!({"sheet_id": id, "replace": true}));
+    let replace = json!({"sheet_id": id, "replace": true});
+    // Answered at once that the window asks the user (VRAT-8b).
+    assert_eq!(
+        bridge.execute(&mut app, export_drawings(&dwg, replace.clone()), false),
+        Err("awaiting_user_confirmation")
+    );
+    app.ask_client_replace();
+    let asked = export(&mut app, &mut bridge, replace);
     assert!(asked.ok, "{asked:?}");
     assert_eq!(asked.result.unwrap()["sheet"], "Block");
     assert!(std::fs::read(&dwg).unwrap().starts_with(b"AC1032"));
-    let again = export(&mut app, json!({"sheet_id": id}));
+    let again = export(&mut app, &mut bridge, json!({"sheet_id": id}));
     assert!(again.ok, "its own file is replaced unasked: {again:?}");
 }
 
@@ -909,10 +924,10 @@ fn a_drawing_held_open_elsewhere_is_named_and_kept() {
         .open(&pdf)
         .unwrap();
     assert_eq!(
-        bridge.execute(
+        once_the_user_answered(
             &mut app,
-            export_drawings(&pdf, json!({"replace": true})),
-            false
+            &mut bridge,
+            export_drawings(&pdf, json!({"replace": true}))
         ),
         Err("drawings_target_in_use")
     );
@@ -921,6 +936,69 @@ fn a_drawing_held_open_elsewhere_is_named_and_kept() {
     drop(viewer);
     assert_eq!(std::fs::read(&pdf).unwrap(), b"open in a viewer");
     assert_eq!(names_in(directory.path()), ["house.pdf"]);
+}
+
+/// Vratimov VRAT-8b: export_drawings with replace: true for a PDF the document
+/// does not know as its own asked the user in a modal dialog while the request
+/// waited, so with nobody at the window the client got response_timeout after
+/// 15 minutes, which said nothing of the question. The request is answered at
+/// once that the window asks, naming the file; the window asks once it was
+/// answered, and the user's answer holds for one request for the file as it
+/// was asked about.
+#[test]
+fn a_replace_the_user_is_asked_about_is_answered_at_once() {
+    let (app, mut bridge) = setup();
+    let dialogs = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = dialogs.clone();
+    let mut app = app.with_dialogs(Box::new(dialogs));
+    evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("house.pdf");
+    let replace = || export_drawings(&pdf, json!({"replace": true}));
+    std::fs::write(&pdf, b"the user's own").unwrap();
+
+    for _ in 0..2 {
+        assert_eq!(
+            bridge.execute(&mut app, replace(), false),
+            Err("awaiting_user_confirmation")
+        );
+        let answer = take_error_details().unwrap_or_default().to_string();
+        for said in ["house.pdf", "asks the user", "\"asked_in_window\":true"] {
+            assert!(answer.contains(said), "{said:?} missing: {answer}");
+        }
+    }
+    assert!(
+        probe.high_risk_prompts().is_empty(),
+        "not asked while the request waits"
+    );
+    assert_eq!(std::fs::read(&pdf).unwrap(), b"the user's own");
+    app.ask_client_replace();
+    let prompts = probe.high_risk_prompts();
+    assert_eq!(prompts.len(), 1, "asked once for both requests");
+    assert!(prompts[0].contains("house.pdf"), "{prompts:?}");
+
+    // The file changed since the user agreed: they are asked again.
+    std::fs::write(&pdf, b"edited since").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, replace(), false),
+        Err("awaiting_user_confirmation")
+    );
+    assert_eq!(std::fs::read(&pdf).unwrap(), b"edited since");
+    app.ask_client_replace();
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    bridge
+        .execute(&mut app, replace(), false)
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-"));
+
+    // The answer was taken by that export; another file there is asked about anew.
+    std::fs::write(&pdf, b"the user's own").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, replace(), false),
+        Err("awaiting_user_confirmation")
+    );
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_eq!(std::fs::read(&pdf).unwrap(), b"the user's own");
 }
 
 /// MECH-2 (operator 2026-11-03): a set replaces only the sheets this
@@ -1046,8 +1124,15 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
         assert!(answer.contains(said), "{said:?} missing: {answer}");
     }
     assert!(!answer.contains("1 sheets"), "{answer}");
-    // take_over asks the user in the window (review 2026-11-08 SEC-182).
-    let (code, _) = export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap_err();
+    // take_over asks the user in the window (review 2026-11-08 SEC-182), once
+    // the request is answered (VRAT-8b).
+    let take_over = |other: &mut KetchupApp, bridge: &mut LiveBridge| {
+        let (code, _) = export(other, bridge, json!({"take_over": true})).unwrap_err();
+        assert_eq!(code, "awaiting_user_confirmation");
+        other.ask_client_replace();
+        export(other, bridge, json!({"take_over": true}))
+    };
+    let (code, _) = take_over(&mut other, &mut other_bridge).unwrap_err();
     assert_eq!(code, "drawings_replace_declined");
     let dialogs = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
     let probe = dialogs.clone();
@@ -1058,7 +1143,7 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
         .filter(|name| name.starts_with("house-") && name.ends_with(".dxf"))
         .collect();
     assert!(!sheets.is_empty());
-    export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
+    take_over(&mut other, &mut other_bridge).unwrap();
     assert_eq!(probe.high_risk_prompts().len(), 1);
     // The user is shown every sheet the take-over replaces, not only the list
     // (review 2026-11-09 SEC-304).

@@ -59,6 +59,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Re-read status to see whether the edit was published before sending it again.",
     ),
     entry(
+        "awaiting_user_confirmation",
+        Validation,
+        "path",
+        "The export was sent with replace or take_over for a file it did not write, and the window now asks the user whether to replace it; the reason names the file. Nothing was written.",
+        "Tell the user to answer the question in the Kečup window, then send the same export again within 10 minutes; drawings_replace_declined answers it if they did not agree.",
+    ),
+    entry(
         "batch_cancelled",
         Commit,
         "job_handle",

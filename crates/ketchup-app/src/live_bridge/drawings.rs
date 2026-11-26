@@ -4,6 +4,7 @@
 //! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
 use super::project_drawings_job::exports_project_drawings;
+use super::replace_consent::{ANSWER_HOLDS, Consent, Replacing};
 use super::{LiveBridge, Request, Stamp, failed_because, failure, record_rejection, rejected};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{
@@ -258,46 +259,72 @@ fn not_its_own(path: &Path) -> &'static str {
 }
 
 /// The code refusing a client's `replace` or `take_over` of the file at
-/// `path`, which the export did not write, unless the user agrees in the
+/// `path`, which the export did not write, unless the user agreed in the
 /// window (review 2026-11-08 SEC-182). Before, the schema told the AI to ask
-/// and the flag alone replaced the file.
+/// and the flag alone replaced the file. The window asks once this request is
+/// answered, so the client hears at once that it asks (VRAT-8b).
 pub(super) fn replace_declined(app: &mut KetchupApp, path: &Path) -> Option<&'static str> {
-    app.authorize_overwrite(path, path.to_string_lossy().as_bytes())
-        .map_err(|rejection| {
-            failure(
-                "drawings_replace_declined",
-                format!(
-                    "{} {} was not replaced and nothing was written; export to another path, or ask the user again.",
-                    rejection.reason_text(),
-                    path.display()
-                ),
-                json!({"path": path.display().to_string()}),
-            )
-        })
-        .err()
+    let details = json!({"path": path.display().to_string()});
+    match app.client_replace_consent(Replacing::File(path.to_path_buf())) {
+        Consent::Agreed => None,
+        Consent::Asking => Some(asking(
+            format!("{} is not replaced yet", path.display()),
+            details,
+        )),
+        Consent::Declined(reason) => Some(failure(
+            "drawings_replace_declined",
+            format!(
+                "{reason} {} was not replaced and nothing was written; export to another path, or ask the user again.",
+                path.display()
+            ),
+            details,
+        )),
+    }
 }
 
 /// The code refusing a client's `take_over` of the set listed at `list` unless
-/// the user, shown every file of it the export replaces, agrees in the window.
+/// the user, shown every file of it the export replaces, agreed in the window.
 fn take_over_declined(
     app: &mut KetchupApp,
     list: &Path,
     taken: &SetTargets,
 ) -> Option<&'static str> {
-    let replaced: Vec<&Path> = taken.keys().map(PathBuf::as_path).collect();
-    app.authorize_set_take_over(list, &replaced)
-        .map_err(|rejection| {
-            failure(
-                "drawings_replace_declined",
-                format!(
-                    "{} The set listed in {} was not taken over and nothing was written; export to another path, or ask the user again.",
-                    rejection.reason_text(),
-                    list.display()
-                ),
-                json!({"path": list.display().to_string(), "files": replaced.len()}),
-            )
-        })
-        .err()
+    let files: Vec<PathBuf> = taken.keys().cloned().collect();
+    let details = json!({"path": list.display().to_string(), "files": files.len()});
+    let replacing = Replacing::Set {
+        list: list.to_path_buf(),
+        files,
+    };
+    match app.client_replace_consent(replacing) {
+        Consent::Agreed => None,
+        Consent::Asking => Some(asking(
+            format!("The set listed in {} is not taken over yet", list.display()),
+            details,
+        )),
+        Consent::Declined(reason) => Some(failure(
+            "drawings_replace_declined",
+            format!(
+                "{reason} The set listed in {} was not taken over and nothing was written; export to another path, or ask the user again.",
+                list.display()
+            ),
+            details,
+        )),
+    }
+}
+
+/// The answer to a replace the window now asks the user about: `what` is not
+/// done yet.
+fn asking(what: String, mut details: Value) -> &'static str {
+    let minutes = ANSWER_HOLDS.as_secs() / 60;
+    details["asked_in_window"] = json!(true);
+    details["answer_holds_minutes"] = json!(minutes);
+    failure(
+        "awaiting_user_confirmation",
+        format!(
+            "{what}: the window now asks the user whether to, and nothing was written. Tell the user to answer in the Kečup window, then send the same export again within {minutes} minutes; their answer holds for the file as it is now."
+        ),
+        details,
+    )
 }
 
 /// The export transaction's own reason within `error`.
@@ -1246,15 +1273,18 @@ mod tests {
             sheet_numbers: Vec::new(),
             sheet_titles: Vec::new(),
         });
-        assert_eq!(
-            LiveBridge::export_drawings(&mut app, asked.clone(), false),
-            Err("drawings_replace_declined")
-        );
+        // The window asks once the request is answered (VRAT-8b).
+        let answered = |app: &mut KetchupApp| {
+            assert_eq!(
+                LiveBridge::export_drawings(app, asked.clone(), false),
+                Err("awaiting_user_confirmation")
+            );
+            app.ask_client_replace();
+            LiveBridge::export_drawings(app, asked.clone(), false)
+        };
+        assert_eq!(answered(&mut app), Err("drawings_replace_declined"));
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
-        assert_eq!(
-            LiveBridge::export_drawings(&mut app, asked, false),
-            Err("drawings_unavailable")
-        );
+        assert_eq!(answered(&mut app), Err("drawings_unavailable"));
         assert_eq!(probe.high_risk_prompts().len(), 2);
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
         assert_eq!(app.stored_sheet_settings().unwrap(), before);
