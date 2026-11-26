@@ -6,18 +6,19 @@
 //! asks, and the user's answer holds for its next request for that file, as
 //! long as the file is unchanged since.
 
-use super::KetchupApp;
+use crate::KetchupApp;
+use ketchup_rejection::Rejection;
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 /// How long the user's answer waits for the client to send its export again.
-pub(super) const ANSWER_HOLDS: Duration = Duration::from_secs(10 * 60);
+pub(in crate::live_bridge) const ANSWER_HOLDS: Duration = Duration::from_secs(10 * 60);
 
 /// What a client asks the user to agree to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Replacing {
+pub(in crate::live_bridge) enum Replacing {
     /// Replace the file at the path.
     File(PathBuf),
     /// Take over another project's set listed at `list`, replacing `files`.
@@ -36,7 +37,7 @@ impl Replacing {
 
 /// Where the user's agreement to a client's replace stands.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Consent {
+pub(in crate::live_bridge) enum Consent {
     /// The user agreed to replacing the file as it is now.
     Agreed,
     /// The window asks the user once this request is answered.
@@ -54,7 +55,7 @@ struct Asked {
 
 struct Answer {
     asked: Asked,
-    agreed: Result<(), String>,
+    agreed: Result<(), Rejection>,
     at: Instant,
 }
 
@@ -75,7 +76,10 @@ impl KetchupApp {
     /// The user's answer to `replacing`, given for the file as it is now and
     /// taken by this request; without one, the window asks once the request is
     /// answered.
-    pub(super) fn client_replace_consent(&mut self, replacing: Replacing) -> Consent {
+    pub(in crate::live_bridge) fn client_replace_consent(
+        &mut self,
+        replacing: Replacing,
+    ) -> Consent {
         let sha256 = file_sha256(replacing.path());
         let asks = &mut self.live.replace_asks;
         asks.answers
@@ -90,7 +94,7 @@ impl KetchupApp {
             if answer.asked.sha256 == sha256 {
                 return match answer.agreed {
                     Ok(()) => Consent::Agreed,
-                    Err(reason) => Consent::Declined(reason),
+                    Err(declined) => Consent::Declined(declined.reason_text().to_owned()),
                 };
             }
         }
@@ -116,8 +120,7 @@ impl KetchupApp {
                     let files: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
                     self.authorize_set_take_over(list, &files)
                 }
-            }
-            .map_err(|rejection| rejection.reason_text().to_string());
+            };
             self.live.replace_asks.answers.push(Answer {
                 asked,
                 agreed,

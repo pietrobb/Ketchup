@@ -3,6 +3,7 @@
 //! Attach requires a random bootstrap from the OS-protected per-user registry.
 //! Only authenticated requests reach the UI. No manual token entry is needed;
 //! the last AI to attach takes the window over unasked (owner decision R2).
+pub(crate) mod replace_consent;
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
 use crate::delivery::Deliver;

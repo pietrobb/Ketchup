@@ -3,8 +3,8 @@
 //! or a DXF or DWG per sheet, with the title block and format kept in the
 //! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
+use super::consent::replace_consent::{ANSWER_HOLDS, Consent, Replacing};
 use super::project_drawings_job::exports_project_drawings;
-use super::replace_consent::{ANSWER_HOLDS, Consent, Replacing};
 use super::{LiveBridge, Request, Stamp, failed_because, failure, record_rejection, rejected};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{
