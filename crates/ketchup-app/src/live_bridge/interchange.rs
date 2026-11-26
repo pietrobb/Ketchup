@@ -10,7 +10,7 @@ use super::{LiveBridge, Request, Stamp, drawings::local_absolute_path, failure, 
 use crate::app::import_file::{import_format, parse_unit};
 use crate::app::presentation_export::PresentationRequest;
 use crate::export_bundle::{ExportError, Written};
-use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
+use crate::{ImportError, ImportFormat, ImportKind, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::presentation::{
@@ -46,7 +46,7 @@ pub(super) enum ReadAlready {
 /// and the code page an underlay drawing is read in.
 pub(super) struct ImportTarget {
     pub(super) path: String,
-    pub(super) format: ImportFormat,
+    pub(super) format: ImportKind,
     pub(super) unit: Option<ImportLengthUnit>,
     pub(super) code_page: Option<DxfCodePage>,
     /// `code_page` is that of the underlay the drawing is a revision of.
@@ -428,6 +428,10 @@ impl LiveBridge {
             .map_err(|error| import_failed(&path, error))?;
             return Self::add_underlay(app, request, ui_busy, cancelled, read);
         }
+        // An image imports only as an underlay, which returned above.
+        let ImportKind::File(format) = format else {
+            return Err("invalid_request");
+        };
         Self::require_request_authority(cancelled)?;
         let summary = match read {
             ReadAlready::Nothing => app.import_file(format, Path::new(&path), unit),
@@ -470,21 +474,40 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        let format = import_format(Path::new(path)).ok_or_else(|| {
-            failure(
-                "unsupported_format",
-                "Import reads .step/.stp, .iges/.igs, .stl, .dxf, .dwg, .glb and .kscene files.",
-                json!({"path": path}),
+        // An image imports as an underlay only, as an image, not a drawing (MECH-10(a)).
+        let image = crate::app::raster_underlay::raster_format(Path::new(path))
+            .filter(|_| *as_underlay)
+            .map(ImportKind::Image);
+        let format = image
+            .or_else(|| import_format(Path::new(path)).map(ImportKind::File))
+            .ok_or_else(|| {
+                failure(
+                    "unsupported_format",
+                    "Import reads .step/.stp, .iges/.igs, .stl, .dxf, .dwg, .glb and .kscene \
+                     files, and .png and .jpg images as an underlay.",
+                    json!({"path": path}),
+                )
+            })?;
+        if *as_underlay
+            && !matches!(
+                format,
+                ImportKind::File(ImportFormat::Dxf) | ImportKind::Image(_)
             )
-        })?;
-        if *as_underlay && format != ImportFormat::Dxf {
+        {
             return Err(failure(
                 "invalid_params",
-                "as_underlay imports a .dxf or .dwg drawing.",
+                "as_underlay imports a .dxf or .dwg drawing or a .png or .jpg image.",
                 json!({"path": path}),
             ));
         }
         if let Some(of) = revision_of {
+            if matches!(format, ImportKind::Image(_)) {
+                return Err(failure(
+                    "invalid_params",
+                    "revision_of compares two drawings; an image has no entities to compare.",
+                    json!({"revision_of": of}),
+                ));
+            }
             if !*as_underlay {
                 return Err(failure(
                     "invalid_params",

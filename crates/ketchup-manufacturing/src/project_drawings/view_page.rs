@@ -4,12 +4,14 @@
 
 use std::ops::Range;
 
+use std::sync::Arc;
+
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 
 use super::{
     CUT_STROKE_MM, DrawnView, EDGE_COLOR, EDGE_STROKE_MM, Item, ProjectView, UNDERLAY_COLOR,
     UNDERLAY_STROKE_MM, VIEW_PAD_MM, VIEW_TITLE_MM, compass, levels, openings, overall_dimensions,
-    section_marks, visible,
+    section_marks, situation, visible,
 };
 
 /// What a run of a view's marks shows.
@@ -113,8 +115,24 @@ pub(super) fn draw_view_on_page(
         page,
         runs: Vec::new(),
     };
-    // First, so the model is drawn over it.
+    // First, so the model is drawn over it; a DXF holds no pixels.
     runs.draw(MarkRole::Underlay, |page| {
+        let [corner, opposite] = [view.min, view.max].map(at);
+        for (image, corners) in view
+            .images
+            .iter()
+            .filter(|_| visible.is_none())
+            .filter_map(|laid| Some((laid.image.as_ref()?, &laid.corners)))
+        {
+            page.marks.push(Mark::Image {
+                image: Arc::clone(image),
+                corners: corners.map(at),
+                clip: Some([
+                    [corner[0].min(opposite[0]), corner[1].min(opposite[1])],
+                    [corner[0].max(opposite[0]), corner[1].max(opposite[1])],
+                ]),
+            });
+        }
         for [a, b] in &view.underlay {
             page.line(
                 vec![at(*a), at(*b)],
@@ -176,6 +194,9 @@ pub(super) fn draw_view_on_page(
     runs.draw(MarkRole::Mark, |page| {
         for (point, mark) in &view.marks {
             openings::draw_mark(page, at(*point), mark, visible.is_none());
+        }
+        for cross in &view.grid {
+            situation::draw_cross(page, cross, at(cross.at));
         }
     });
     runs.draw(MarkRole::Level, |page| {

@@ -11,6 +11,7 @@ drawings-sheet-decimal-separator = ,
 drawings-sheet-zero-altitude = = { $metres } m n. m. Bpv
 drawings-sheet-date = { $day }. { $month }. { $year }
 drawings-sheet-elevations = Pohledy
+drawings-sheet-situation = Situace
 drawings-sheet-openings = Okna a dveře
 drawings-openings-mark = Značka
 drawings-openings-designation = Označení
@@ -43,6 +44,7 @@ drawings-sheet-north-letter = S
 drawings-sheet-revision-index = Index
 drawings-sheet-revision-date = Datum
 drawings-sheet-revision-change = Popis změny
+drawings-view-situation = Situace stavby
 drawings-default-sheet = Projektová dokumentace
 title-field-office = Zpracovatel
 title-field-designer = Zodpovědný projektant

@@ -70,6 +70,8 @@ mod program_edit;
 mod program_purchased;
 #[path = "project_drawings_job_tests.rs"]
 mod project_drawings_job;
+#[path = "raster_underlay_tests.rs"]
+mod raster_underlay;
 #[path = "room_areas_tests.rs"]
 mod room_areas;
 #[path = "sheet_annotations_tests.rs"]

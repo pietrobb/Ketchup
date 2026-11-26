@@ -83,6 +83,7 @@ mod project_drawings_tests;
 #[cfg(test)]
 #[path = "app/push_pull_house_tests.rs"]
 mod push_pull_house_tests;
+pub(crate) mod raster_underlay;
 pub(crate) mod received_comments;
 mod revision_rows;
 mod save_activity;
@@ -97,6 +98,7 @@ mod sheet_annotations;
 #[cfg(test)]
 mod sheet_annotations_tests;
 mod sheet_annotations_ui;
+pub(crate) mod sheet_preview;
 mod shell;
 pub(crate) mod skp_import;
 pub(crate) mod spaces_ui;

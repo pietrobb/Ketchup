@@ -592,7 +592,7 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
 }
 
 /// The blobs `snapshot` reads: the sources of imported bodies, the pictures of meshes
-/// and the lines of underlays.
+/// and the lines and images of underlays.
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
     snapshot
         .features()
@@ -600,7 +600,7 @@ fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
         .chain(
             snapshot
                 .underlays()
-                .map(crate::underlay::Underlay::lines_blob),
+                .flat_map(crate::underlay::Underlay::blobs),
         )
         .collect()
 }
@@ -2850,11 +2850,11 @@ fn load_document(
         }
         Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
     }
-    // An underlay's lines, like an imported source, leave the file with the last
-    // revision that names them.
+    // An underlay's lines and image, like an imported source, leave the file with the
+    // last revision that names them.
     for hash in loaded_snapshot
         .underlays()
-        .map(crate::underlay::Underlay::lines_blob)
+        .flat_map(crate::underlay::Underlay::blobs)
     {
         if !container_data.blobs.contains_key(&hash) {
             return Err(PersistenceError::InvalidBlobHash);

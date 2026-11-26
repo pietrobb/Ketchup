@@ -238,8 +238,14 @@ impl KetchupApp {
         let (batch, id) =
             plan_underlay_over(&snapshot, of, &name, &layers, key, read.read.offset_mm)
                 .map_err(RevisionOverlayError::Plan)?;
-        self.keep_underlay_lines(batch, bytes, &lines, snaps, geometry)
-            .map_err(RevisionOverlayError::Import)?;
+        self.keep_underlay_lines(
+            (batch, ImportFormat::Dxf.into()),
+            bytes,
+            &lines,
+            (snaps, geometry),
+            None,
+        )
+        .map_err(RevisionOverlayError::Import)?;
         self.digest = self.catalog.format("digest-underlay-revision", &counts);
         Ok((Some(id), comparison))
     }

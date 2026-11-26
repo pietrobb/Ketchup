@@ -277,6 +277,7 @@ fn mark_points(mark: &Mark) -> Vec<[f64; 2]> {
     match mark {
         Mark::Fill { loops, .. } => loops.iter().flatten().copied().collect(),
         Mark::Line { points, .. } => points.clone(),
+        Mark::Image { corners, .. } => corners.to_vec(),
         Mark::Text {
             at,
             text,
@@ -410,6 +411,9 @@ fn entities(
                 down += step;
             }
         }
+        // A CAD drawing of the sheet keeps to lines: the image stays in the PDF, and the
+        // export names the images it left out.
+        Mark::Image { .. } => {}
     }
 }
 

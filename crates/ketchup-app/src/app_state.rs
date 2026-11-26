@@ -375,6 +375,8 @@ pub(crate) struct DrawingsState {
     /// shown in the window, which asks every frame; found on a worker.
     pub(crate) found_zero:
         std::cell::RefCell<Option<(ExactCacheKey, crate::app::project_drawings::FoundZero)>>,
+    /// The set previewed beside the window.
+    pub(crate) preview: crate::app::sheet_preview::SheetPreviewState,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.
@@ -464,6 +466,10 @@ pub(crate) struct RenderState {
     /// picking and painting picked objects does not work them out each frame (UI-62).
     pub(crate) underlay_object_trees:
         RefCell<BTreeMap<[u8; 32], Arc<ketchup_model::underlay::object_query::ObjectTree>>>,
+    /// The decoded images of the raster underlays, by the SHA-256 of their file; none for
+    /// one that cannot be decoded, so it is not decoded again each frame.
+    pub(crate) underlay_rasters:
+        BTreeMap<[u8; 32], Option<Arc<crate::renderer::underlay::raster::RasterImage>>>,
     /// What the viewport paints of them this frame.
     pub(crate) underlay_frame: Vec<crate::renderer::underlay::UnderlayDraw>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,

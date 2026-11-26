@@ -77,6 +77,14 @@ impl Underlay {
             self.edits = super::edits::UnderlayEdits::default();
             reset.push("its drawing edits could not be kept, so it shows the drawing as read");
         }
+        if self
+            .raster
+            .as_ref()
+            .is_some_and(|raster| !raster.is_valid())
+        {
+            self.raster = None;
+            reset.push("its image could not be laid out, so it is not shown");
+        }
         reset
     }
 

@@ -845,6 +845,70 @@ fn a_textured_mesh_needs_format_112() {
     assert_eq!(format(&document), 112);
 }
 
+/// The file of an image underlay. Persistence keeps the bytes as they are and never
+/// decodes them, so a PNG signature and a few bytes stand for it.
+const ORTHOPHOTO: &[u8] = b"\x89PNG\r\n\x1a\nformat 122 image underlay";
+
+/// Format 122 adds the image of an underlay, an orthophoto laid out by its world file
+/// (Měchenice MECH-10(a)): a Kečup writing 121 would drop it and keep an underlay with
+/// no lines. The golden stays 112 until a 2 × 2 pixel orthophoto of one metre a pixel is
+/// added; then the file is 122, keeps the image beside the snapshot and saves the same
+/// bytes again after it is reopened.
+#[test]
+fn an_image_underlay_needs_format_122_and_keeps_its_file() {
+    use ketchup_model::graph::sha256_bytes;
+    use ketchup_model::underlay::raster::{RasterFormat, UnderlayRaster};
+    use ketchup_model::underlay::{UnderlayLines, plan_raster_underlay};
+    let (mut document, mut container) = opened(GOLDEN, 112, DIGEST_112);
+    let format = |bytes: &[u8]| u16::from_le_bytes([bytes[10], bytes[11]]);
+    assert_eq!(format(&persistence::save(&document.current())), 112);
+    let lines = UnderlayLines::default().encode();
+    let raster = UnderlayRaster {
+        image_sha256: sha256_bytes(ORTHOPHOTO),
+        format: RasterFormat::Png,
+        width_px: 2,
+        height_px: 2,
+        origin_mm: [0.0, 2000.0],
+        column_mm: [1000.0, 0.0],
+        row_mm: [0.0, -1000.0],
+    };
+    let (batch, id) = plan_raster_underlay(
+        &document.current(),
+        "ortofoto",
+        raster.clone(),
+        sha256_bytes(&lines),
+        [0.0, 0.0],
+    )
+    .unwrap();
+    container.insert_import_blob(lines).unwrap();
+    container.insert_import_blob(ORTHOPHOTO.to_vec()).unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(format(&persistence::save(&document.current())), 122);
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    let LoadOutcome::Editable {
+        document: reopened,
+        audit,
+        container_data,
+        ..
+    } = persistence::load(&saved).unwrap()
+    else {
+        panic!("the saved file is editable")
+    };
+    assert_eq!(audit.source_schema, 122);
+    assert_eq!(
+        reopened.current().underlay(id).unwrap().raster.as_ref(),
+        Some(&raster)
+    );
+    assert_eq!(
+        &container_data.blobs()[&raster.image_blob()][..],
+        ORTHOPHOTO
+    );
+    assert_eq!(
+        persistence::save_document_store_current_snapshot(&reopened, &container_data).unwrap(),
+        saved
+    );
+}
+
 /// Only a mesh sheet needs format 111: the format 110 file stays 110 until one is placed.
 #[test]
 fn a_mesh_sheet_needs_format_111() {
@@ -1034,6 +1098,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "underlay.rs: code_page",
     "underlay.rs: edits",
     "underlay.rs: placement",
+    "underlay.rs: raster", // Format 122.
     "underlay.rs: view",
     "underlay/edits.rs: added",
     "underlay/edits.rs: moved_objects",
