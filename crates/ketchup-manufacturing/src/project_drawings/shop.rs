@@ -477,7 +477,15 @@ impl PlannedShop {
         let titles = std::iter::once(&self.title).chain(self.layers.iter().map(|(title, _)| title));
         for (index, (view, title)) in views(&self.view, &self.layers).zip(titles).enumerate() {
             let lines = visible.map(|views| views[index].as_slice());
-            draw_view_on_page(page, view, title, origins[index], scale, lines);
+            draw_view_on_page(
+                page,
+                view,
+                title,
+                origins[index],
+                scale,
+                lines,
+                lines.is_none(),
+            );
         }
         let origin = origins[0];
         let min = self.view.min;

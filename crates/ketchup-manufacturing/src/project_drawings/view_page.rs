@@ -80,8 +80,10 @@ impl Runs<'_> {
 }
 
 /// Draws one view with its lower-left model corner at `origin` (page mm):
-/// painted far to near, or with `visible` its visible lines alone (no face
-/// fill), as a DXF carries it. Returns where the view lies and its runs of marks.
+/// painted far to near, or with `visible` its visible lines (no face fill).
+/// `on_paper` keeps what only paper shows, the pixels of an image underlay
+/// and the white behind a boxed mark; a DXF carries neither. Returns where
+/// the view lies and its runs of marks.
 pub(super) fn draw_view_on_page(
     page: &mut Page,
     view: &DrawnView,
@@ -89,6 +91,7 @@ pub(super) fn draw_view_on_page(
     origin: [f64; 2],
     scale: f64,
     visible: Option<&[visible::VisibleLine]>,
+    on_paper: bool,
 ) -> PlacedView {
     let at = |point: [f64; 2]| {
         [
@@ -121,7 +124,7 @@ pub(super) fn draw_view_on_page(
         for (image, corners) in view
             .images
             .iter()
-            .filter(|_| visible.is_none())
+            .filter(|_| on_paper)
             .filter_map(|laid| Some((laid.image.as_ref()?, &laid.corners)))
         {
             page.marks.push(Mark::Image {
@@ -193,7 +196,7 @@ pub(super) fn draw_view_on_page(
     });
     runs.draw(MarkRole::Mark, |page| {
         for (point, mark) in &view.marks {
-            openings::draw_mark(page, at(*point), mark, visible.is_none());
+            openings::draw_mark(page, at(*point), mark, on_paper);
         }
         for cross in &view.grid {
             situation::draw_cross(page, cross, at(cross.at));

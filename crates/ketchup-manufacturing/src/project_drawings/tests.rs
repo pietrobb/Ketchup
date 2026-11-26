@@ -1087,6 +1087,94 @@ fn a_ground_floor_just_below_zero_is_still_zero() {
     assert_eq!(ground_floor(&house), 200.0, "the basement");
 }
 
+/// Vratimov VRAT-11: an air-supported hall stands on the ground with no floor
+/// of its own; the flat crown of its membrane, the only level looking up as
+/// large as half the largest, was ±0,000, so the sections marked the crown
+/// ±0,000 and the ground -9,990. The top of a model that reaches more than a
+/// storey below it is its roof: ±0,000 is z = 0, the crown +9,990. A slab
+/// alone still has ±0,000 on its top.
+#[test]
+fn the_crown_of_a_hall_with_no_floor_is_not_its_zero() {
+    let hall = vec![
+        cuboid("membrane", [0.0, 0.0, 0.0], [52_800.0, 34_800.0, 9990.0]),
+        cuboid("burner", [-2600.0, 4600.0, 0.0], [-1000.0, 8050.0, 1600.0]),
+    ];
+    assert_eq!(ground_floor(&hall), 0.0);
+    assert_eq!(ModelFloors::of(&hall).unwrap().ground(), 0.0);
+    let options = DrawingSetOptions {
+        decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
+        ..options(&hall, None)
+    };
+    let set = drawing_set(&hall, &options).unwrap();
+    assert_eq!(set.zero_level_mm, 0.0);
+    let levels = &summary(&set, ProjectView::LongitudinalSection).levels;
+    assert_eq!(
+        levels.first().map(String::as_str),
+        Some("±0,000"),
+        "{levels:?}"
+    );
+    assert_eq!(
+        levels.last().map(String::as_str),
+        Some("+9,990"),
+        "{levels:?}"
+    );
+    assert!(
+        levels.iter().all(|level| !level.starts_with('-')),
+        "{levels:?}"
+    );
+    let slab = [cuboid("slab", [0.0, 0.0, 450.0], [6000.0, 3000.0, 650.0])];
+    assert_eq!(ground_floor(&slab), 650.0);
+}
+
+/// Vratimov VRAT-10: the views of a hall painted its membrane piece by piece
+/// of its mesh, 755 821 paths and 49 MB on the sections sheet alone. On paper
+/// a view is its visible lines over the cut fills: the faces of a finely
+/// meshed solid add no fill, and the sheet holds about as many marks as with
+/// a coarse mesh.
+#[test]
+fn a_fine_mesh_does_not_fill_the_views() {
+    fn finer(solid: &DrawingSolid) -> DrawingSolid {
+        let mid = |a: Point, b: Point| lerp(a, b, 0.5);
+        let (mut triangles, mut faces) = (Vec::new(), Vec::new());
+        for (&[a, b, c], &face) in solid.triangles.iter().zip(&solid.faces) {
+            let (ab, bc, ca) = (mid(a, b), mid(b, c), mid(c, a));
+            triangles.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]);
+            faces.extend([face; 4]);
+        }
+        DrawingSolid {
+            triangles,
+            faces,
+            ..solid.clone()
+        }
+    }
+    let coarse = vec![cuboid("hall", [0.0, 0.0, 0.0], [12_000.0, 8000.0, 6000.0])];
+    let fine = vec![(0..4).fold(coarse[0].clone(), |solid, _| finer(&solid))];
+    assert_eq!(fine[0].triangles.len(), 12 * 256);
+    let marks = |solids: &[DrawingSolid], kind: SheetKind| {
+        let set = drawing_set(solids, &options(solids, None)).unwrap();
+        let page = &sheet_of(&set, kind).page;
+        let faces = page
+            .marks
+            .iter()
+            .filter(|mark| matches!(mark, Mark::Fill { outline: Some(stroke), .. } if stroke.width_mm != CUT_STROKE_MM))
+            .count();
+        (page.marks.len(), faces)
+    };
+    for kind in [
+        SheetKind::Plan { storey: 0 },
+        SheetKind::Sections,
+        SheetKind::Elevations,
+    ] {
+        let (coarse_marks, _) = marks(&coarse, kind);
+        let (fine_marks, faces) = marks(&fine, kind);
+        assert_eq!(faces, 0, "{kind:?}");
+        assert!(
+            fine_marks <= coarse_marks + 10,
+            "{kind:?}: {fine_marks} > {coarse_marks}"
+        );
+    }
+}
+
 /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;
 /// the sections and elevations draw it where they show its true length, a
 /// section only beyond its cut. A horizontal one stays in the plan.

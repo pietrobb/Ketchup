@@ -14,6 +14,10 @@ use wgpu::util::DeviceExt as _;
 /// Bytes of one corner of a quad on the GPU: its point, split, and where in the image.
 const CORNER_STRIDE: u64 = 24;
 
+/// The JPEG quality an image goes on a sheet with: an orthophoto deflated was
+/// 13 MB of a 14 MB drawing set (Vratimov VRAT-10).
+const SHEET_JPEG_QUALITY: u8 = 85;
+
 /// The pixels of a raster underlay's file, decoded once.
 pub struct RasterImage {
     /// SHA-256 of the file: the same image uploads once.
@@ -87,16 +91,22 @@ impl RasterImage {
             let [channel, alpha] = [channel, alpha].map(u16::from);
             u8::try_from((channel * alpha + 255 * (255 - alpha) + 127) / 255).unwrap_or(u8::MAX)
         };
+        let rgb: Vec<u8> = pixels
+            .pixels()
+            .flat_map(|pixel| {
+                let [red, green, blue, alpha] = pixel.0;
+                [red, green, blue].map(|channel| on_paper(channel, alpha))
+            })
+            .collect();
+        let mut jpeg = Vec::new();
+        let encoded =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, SHEET_JPEG_QUALITY)
+                .encode(&rgb, width, height, image::ExtendedColorType::Rgb8);
         SheetImage {
             width_px: width,
             height_px: height,
-            rgb: pixels
-                .pixels()
-                .flat_map(|pixel| {
-                    let [red, green, blue, alpha] = pixel.0;
-                    [red, green, blue].map(|channel| on_paper(channel, alpha))
-                })
-                .collect(),
+            rgb,
+            jpeg: encoded.is_ok().then_some(jpeg),
         }
     }
 

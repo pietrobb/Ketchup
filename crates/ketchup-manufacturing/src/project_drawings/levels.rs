@@ -16,7 +16,7 @@ const LINE_MM: f64 = 14.0;
 const TRIANGLE_MM: f64 = 1.6;
 // Page millimetres: how far apart two marks stand at least (a triangle and its
 // text over the line), and each run of a line bent to a mark moved off it.
-const MARK_MM: f64 = 3.5;
+const MARK_MM: f64 = 4.0;
 const KINK_MM: f64 = 1.5;
 // not a tolerance: the pen width of a level mark on the sheet.
 const STROKE_MM: f64 = 0.25;
@@ -107,27 +107,34 @@ pub(super) fn draw_levels(page: &mut Page, right: f64, levels: &[(f64, String)])
 /// marks too near together is spaced [`MARK_MM`] apart about the mean of where
 /// its levels are, the runs merged until none crowds the next.
 fn spread(ys: &[f64]) -> Vec<f64> {
-    // Each run: its first level and how many, and where its lowest mark stands.
+    // Each run: its levels `ys[first..end]`, and where its lowest mark stands.
     let mut runs: Vec<(usize, usize, f64)> = Vec::new();
     for (index, y) in ys.iter().enumerate() {
-        runs.push((index, 1, *y));
-        while let [.., (first, count, low), (_, more, next)] = runs[..] {
-            let top = low - MARK_MM * (count - 1) as f64;
+        runs.push((index, index + 1, *y));
+        while let [.., (first, middle, low), (_, end, next)] = runs[..] {
+            let top = stacked(low, middle - first).last().unwrap_or(low);
             if top - next >= MARK_MM {
                 break;
             }
-            let together = count + more;
-            let low = (0..together)
-                .map(|step| ys[first + step] + MARK_MM * step as f64)
-                .sum::<f64>()
-                / together as f64;
+            // The mean of each level less the step its mark is above the lowest.
+            let (sum, count) = ys[first..end]
+                .iter()
+                .zip(stacked(0.0, end - first))
+                .fold((0.0, 0.0), |(sum, count), (y, step)| {
+                    (sum + y - step, count + 1.0)
+                });
             runs.truncate(runs.len() - 2);
-            runs.push((first, together, low));
+            runs.push((first, end, sum / count));
         }
     }
     runs.into_iter()
-        .flat_map(|(_, count, low)| (0..count).map(move |step| low - MARK_MM * step as f64))
+        .flat_map(|(first, end, low)| stacked(low, end - first))
         .collect()
+}
+
+/// `count` marks [`MARK_MM`] apart up the page from `low`.
+fn stacked(low: f64, count: usize) -> impl Iterator<Item = f64> {
+    std::iter::successors(Some(low), |y| Some(y - MARK_MM)).take(count)
 }
 
 #[cfg(test)]
@@ -247,5 +254,33 @@ mod tests {
         assert_eq!(starts, [100.0, 99.25, 98.5, 60.0]);
         // A mark far from the others stays on its own line.
         assert!(triangles.contains(&60.0), "{triangles:?}");
+    }
+
+    /// Vratimov VRAT-11: the levels of a hall at 1:400, from the ground to its
+    /// crown 25 mm above it, its doors, burner and tank between 0.1 mm and
+    /// 7 mm up; every mark stands at least 4 mm from the next.
+    #[test]
+    fn the_levels_of_a_hall_at_1_400_stand_4_mm_apart() {
+        let heights = [0.0, 40.0, 140.0, 1370.0, 1520.0, 2222.0, 2792.0, 9990.0];
+        let levels = heights.map(|height| (200.0 - height / 400.0, String::new()));
+        let mut page = Page::default();
+        draw_levels(&mut page, 10.0, &levels);
+        let mut tips = page
+            .marks
+            .iter()
+            .filter_map(|mark| match mark {
+                Mark::Line {
+                    points,
+                    closed: true,
+                    ..
+                } => Some(points[0][1]),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        tips.sort_by(f64::total_cmp);
+        assert_eq!(tips.len(), heights.len());
+        for pair in tips.windows(2) {
+            assert!(pair[1] - pair[0] >= 4.0 - 1e-9, "{tips:?}");
+        }
     }
 }

@@ -967,8 +967,8 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
     );
     let info = ketchup_model::sheet_pdf::PdfInfo::default();
     assert!(cosmetic.pdf(&info) == modeled.pdf(&info), "the PDFs differ");
-    // Drawn from the grooved bodies, the sheet would carry the helix: its
-    // edges and the facets of its flanks.
+    // Drawn from the grooved bodies, the sheet would carry the edges of the
+    // helix (the facets of its flanks no longer go on paper, VRAT-10).
     let options = DrawingSetOptions {
         plans: storeys(&drawn, 1200.0)
             .into_iter()
@@ -984,7 +984,7 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
     let [helix_edges, helix_faces] =
         edge_lines_and_faces(&drawing_set(&grooved, &options).unwrap());
     assert!(
-        helix_edges > plain_edges && helix_faces > 2 * plain_faces,
+        helix_edges > plain_edges,
         "edges {helix_edges} vs {plain_edges}, faces {helix_faces} vs {plain_faces}"
     );
 }
@@ -1437,6 +1437,7 @@ fn zero_is_set_from_the_floor_found_not_from_nothing() {
         .send(Ok(Some(ModelFloors {
             floors_mm: vec![650.0],
             storey_floors_mm: vec![650.0],
+            bottom_mm: 450.0,
             top_mm: 3000.0,
         })))
         .unwrap();
@@ -2229,6 +2230,17 @@ fn a_site_plan_prints_the_orthophoto_where_its_world_file_puts_it() {
     assert_eq!([image.width_px, image.height_px], [4, 2]);
     assert_eq!(&image.rgb[..3], &[255, 0, 0], "the top row first");
     assert_eq!(&image.rgb[21..], &[0, 0, 255]);
+    // As a JPEG of the same pixels, which the PDF embeds (Vratimov VRAT-10).
+    let jpeg = image::load_from_memory_with_format(
+        image
+            .jpeg
+            .as_deref()
+            .expect("the sheet image carries its JPEG"),
+        image::ImageFormat::Jpeg,
+    )
+    .unwrap()
+    .into_rgb8();
+    assert_eq!(jpeg.dimensions(), (4, 2));
     // 20 m west of the parcel's north-east corner and 10 m south of it, at 1:250.
     let expected = [
         [corner[0] - 80.0, corner[1]],
@@ -2254,6 +2266,10 @@ fn a_site_plan_prints_the_orthophoto_where_its_world_file_puts_it() {
     assert!(
         pdf.windows(15).any(|window| window == b"/Subtype /Image"),
         "the PDF carries the pixels"
+    );
+    assert!(
+        pdf.windows(10).any(|window| window == b"/DCTDecode"),
+        "as a JPEG"
     );
 }
 

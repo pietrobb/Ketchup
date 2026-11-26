@@ -27,8 +27,8 @@ use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, PlacedView, ProjectDrawingError, ProjectView, SheetViews, Storey,
     VIEW_PAD_MM, ViewFrame, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
-    draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
-    lerp, marked_floor_levels, paged_rows, solid_edges, table_ground_floor, view_frames,
+    draw_view_on_page, extent, finished_floors, format_at_scale, ground_floor, lerp,
+    marked_floor_levels, paged_rows, solid_edges, table_ground_floor, view_frames,
 };
 use super::{Point, SolidEdges, StoreyTableError};
 use crate::revision_table::{RevisionCaptions, SheetRevision, draw_revisions};
@@ -411,13 +411,15 @@ fn lowest(annotation: &Annotation) -> f64 {
 }
 
 /// Lays the views of `sheet` out on `page` at 1:`scale`, row under row, each
-/// left to right; with `visible`, as visible lines. Returns where each view lies.
+/// left to right; with `visible`, as visible lines, `on_paper` as
+/// [`draw_view_on_page`] takes it. Returns where each view lies.
 fn draw_views(
     page: &mut Page,
     sheet: &Planned,
     format: SheetFormat,
     scale: u32,
     visible: Option<&[Vec<VisibleLine>]>,
+    on_paper: bool,
 ) -> Vec<PlacedView> {
     let scale = f64::from(scale);
     let views = &sheet.views.views;
@@ -440,6 +442,7 @@ fn draw_views(
                 origin,
                 scale,
                 visible.map(|lines| lines[index].as_slice()),
+                on_paper,
             ));
             left += width / scale + 2.0 * VIEW_PAD_MM;
         }
@@ -639,10 +642,6 @@ pub fn drawing_set_until(
             size_mm: format.size_mm(),
             marks: Vec::new(),
         };
-        let mut page = blank();
-        let painted = draw_views(&mut page, &sheet, format, scale, None);
-        let situation = situation_summary(&sheet, &painted, scale);
-        draw_frame(&mut page, format, options, &values)?;
         let visible = sheet
             .views
             .views
@@ -650,8 +649,16 @@ pub fn drawing_set_until(
             .map(|view| visible_lines(view, stop))
             .collect::<Vec<_>>();
         stopped()?;
+        // A view goes on paper as its visible lines over its cut fills, as in
+        // the DXF: painted far to near in depth slabs, the membrane of a hall
+        // was 755 821 shaded pieces of its mesh on one sheet, 49 MB, and its
+        // plan and site plan 15 MB more (Vratimov VRAT-10).
+        let mut page = blank();
+        let painted = draw_views(&mut page, &sheet, format, scale, Some(&visible), true);
+        let situation = situation_summary(&sheet, &painted, scale);
+        draw_frame(&mut page, format, options, &values)?;
         let mut lines = blank();
-        let placed = draw_views(&mut lines, &sheet, format, scale, Some(&visible));
+        let placed = draw_views(&mut lines, &sheet, format, scale, Some(&visible), false);
         draw_frame(&mut lines, format, options, &values)?;
         let views = sheet
             .views
@@ -1100,7 +1107,7 @@ fn named_elevation(
 fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
     options.zero_level_mm.unwrap_or_else(|| {
         if options.storeys.is_empty() {
-            ground_floor_of(&floor_levels(solids))
+            ground_floor(solids)
         } else {
             table_ground_floor(&options.storeys)
         }
