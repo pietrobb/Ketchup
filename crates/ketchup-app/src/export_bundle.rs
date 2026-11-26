@@ -5,6 +5,7 @@
 
 use super::*;
 use import_source::BoxedCause;
+use live_bridge::consent::replace_consent::AWAITING_USER;
 
 const EXPORT_BUNDLE_JOURNAL_SCHEMA_V1: &str = "ketchup.export-bundle-journal.v1";
 const MAX_EXPORT_BUNDLE_JOURNAL_BYTES: u64 = 16 * 1024;
@@ -318,22 +319,29 @@ impl KetchupApp {
             (primary_path, &precondition.primary_sha256),
             (report_path, &precondition.report_sha256),
         ];
+        // A client hears of every file the window asks about at once, not one per request.
+        let mut awaiting = None;
         for ((path, existing), operation) in replaced.into_iter().zip(consent.overwrite_operations)
         {
             if existing.is_some() {
                 let title = self.catalog.text(consent.overwrite_title_key);
                 let risk = self.catalog.text("dialog-export-overwrite-risk");
-                self.authorize_path_side_effect(
+                match self.authorize_path_side_effect(
                     HighRiskClass::Overwrite,
                     operation,
                     &title,
                     &risk,
                     path,
                     evidence,
-                )?;
+                ) {
+                    Err(error) if error.code() == AWAITING_USER => {
+                        awaiting.get_or_insert(error);
+                    }
+                    result => result?,
+                }
             }
         }
-        Ok(())
+        awaiting.map_or(Ok(()), |error| Err(error.into()))
     }
 
     /// Reports one finished export under its catalog key (`digest-exported-<key>` or

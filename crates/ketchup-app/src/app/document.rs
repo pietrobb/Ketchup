@@ -506,6 +506,11 @@ impl KetchupApp {
         {
             return Ok(());
         }
+        // Asked while the client's request waited, a user away from the window held it
+        // until the client gave up after 15 minutes; the window asks once it is answered.
+        if self.live.client_export.is_some() && class == HighRiskClass::Overwrite {
+            return self.client_overwrite_consent(path);
+        }
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| failed("side_effect.scope", error))?;
         let proposal = self

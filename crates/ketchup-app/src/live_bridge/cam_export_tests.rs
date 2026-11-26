@@ -300,8 +300,20 @@ fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
         request
     };
 
+    // The window asks once the request is answered (VRAT-8c), never while it waits.
+    let asked_after = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        let before = dialogs.high_risk_prompts().len();
+        assert_eq!(
+            bridge.execute(app, over(), false),
+            Err("awaiting_user_confirmation")
+        );
+        assert_eq!(dialogs.high_risk_prompts().len(), before);
+        app.ask_client_replace();
+    };
+
     // The replacement declined: the user's file is kept.
     std::fs::write(&target, b"user program").unwrap();
+    asked_after(&mut app, &mut bridge);
     assert_eq!(
         bridge.execute(&mut app, over(), false),
         Err("export_declined")
@@ -309,13 +321,11 @@ fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
     assert_eq!(dialogs.high_risk_prompts().len(), 1);
     assert_eq!(std::fs::read(&target).unwrap(), b"user program");
 
-    // Changed while the user was asked: not replaced.
-    assert_eq!(
-        bridge.execute(&mut app, over(), false),
-        Err("export_failed")
-    );
+    // Changed while the user was asked: not replaced, and asked about again.
+    asked_after(&mut app, &mut bridge);
     assert_eq!(dialogs.high_risk_prompts().len(), 2);
     assert_eq!(std::fs::read(&target).unwrap(), b"saved meanwhile");
+    asked_after(&mut app, &mut bridge);
 
     // Agreed: the program replaces it.
     bridge

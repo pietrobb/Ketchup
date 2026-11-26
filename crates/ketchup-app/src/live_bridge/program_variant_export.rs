@@ -5,6 +5,7 @@
 #[path = "program_variant_export_tests.rs"]
 mod tests;
 
+use super::consent::replace_consent::AWAITING_USER;
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::program_variants::owned_program;
@@ -242,7 +243,10 @@ impl LiveBridge {
         }
         // A file there is replaced once the user agrees in the window, as every export
         // asks (owner decision R1.2, review 2026-11-19 og); `replacing` holds its SHA-256.
+        // The window asks once this request is answered, so the client hears at once of
+        // every file it asks about (VRAT-8c).
         let mut replacing = [None, None];
+        let mut awaiting = None;
         for (existing, sha256) in [target, takeoff.as_path()].into_iter().zip(&mut replacing) {
             if std::fs::symlink_metadata(existing).is_err() {
                 continue;
@@ -256,18 +260,26 @@ impl LiveBridge {
             }
             *sha256 = crate::export_bundle::export_target_sha256(existing)
                 .map_err(|error| failed_because("export_write_failed", error))?;
-            app.authorize_overwrite(existing, existing.to_string_lossy().as_bytes())
-                .map_err(|rejection| {
-                    failure(
+            match app.client_overwrite_consent(existing) {
+                Ok(()) => {}
+                Err(asking) if asking.code() == AWAITING_USER => {
+                    awaiting.get_or_insert((asking, existing.to_path_buf()));
+                }
+                Err(declined) => {
+                    return Err(failure(
                         "export_replace_declined",
-                        format!(
-                            "{} {} was not replaced and nothing was written; export to another path, or ask the user again.",
-                            rejection.reason_text(),
-                            existing.display()
-                        ),
+                        declined.reason_text(),
                         json!({"path": existing}),
-                    )
-                })?;
+                    ));
+                }
+            }
+        }
+        if let Some((asking, path)) = awaiting {
+            return Err(failure(
+                "awaiting_user_confirmation",
+                asking.reason_text(),
+                json!({"path": path, "asked_in_window": true}),
+            ));
         }
         let [cut_list_replacing, takeoff_replacing] = replacing;
         let targets = Targets {
