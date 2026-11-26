@@ -280,7 +280,8 @@ pub struct ModelFloors {
     /// lining under the next layer is not the floor of the storey above, the
     /// top of the last layer is (capability review of PR #54).
     pub storey_floors_mm: Vec<f64>,
-    /// The top of the model.
+    /// The bottom and the top of the model.
+    pub bottom_mm: f64,
     pub top_mm: f64,
 }
 
@@ -288,10 +289,10 @@ impl ModelFloors {
     /// The floors of `solids`; none with no solid.
     #[must_use]
     pub fn of(solids: &[DrawingSolid]) -> Option<Self> {
-        let (_, high) = bounds(solids)?;
+        let (low, high) = bounds(solids)?;
         // Nothing stops it: it is found once, on a worker, for the window.
         let standing = standing_levels(solids, &AtomicBool::new(false))?;
-        Some(Self::on(solids, high[2], &standing))
+        Some(Self::on(solids, [low[2], high[2]], &standing))
     }
 
     /// [`Self::of`], on the worker of an export.
@@ -302,19 +303,25 @@ impl ModelFloors {
         solids: &[DrawingSolid],
         stop: &AtomicBool,
     ) -> Result<Option<Self>, super::ProjectDrawingError> {
-        let Some((_, high)) = bounds(solids) else {
+        let Some((low, high)) = bounds(solids) else {
             return Ok(None);
         };
         let standing =
             standing_levels(solids, stop).ok_or(super::ProjectDrawingError::Cancelled)?;
-        Ok(Some(Self::on(solids, high[2], &standing)))
+        Ok(Some(Self::on(solids, [low[2], high[2]], &standing)))
     }
 
-    /// The floors of `solids`, up to `top_mm`, with the levels found standing.
-    fn on(solids: &[DrawingSolid], top_mm: f64, standing: &[StandingLevel]) -> Self {
+    /// The floors of `solids`, from `bottom_mm` up to `top_mm`, with the
+    /// levels found standing.
+    fn on(
+        solids: &[DrawingSolid],
+        [bottom_mm, top_mm]: [f64; 2],
+        standing: &[StandingLevel],
+    ) -> Self {
         Self {
             floors_mm: floor_levels(solids),
             storey_floors_mm: storey_floors(standing),
+            bottom_mm,
             top_mm,
         }
     }
@@ -322,7 +329,7 @@ impl ModelFloors {
     /// Where ±0,000 is by default (see [`super::ground_floor`]).
     #[must_use]
     pub fn ground(&self) -> f64 {
-        ground_floor_of(&self.floors_mm)
+        ground_floor_of(&self.floors_mm, Some((self.bottom_mm, self.top_mm)))
     }
 
     /// The storeys found, cut `above_floor_mm` above their floors, as rows of

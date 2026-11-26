@@ -869,6 +869,9 @@ const UNDER_SHARE_OF_TOP: f64 = 0.25;
 /// floor of a basement is a storey below (not a tolerance: a depth, review
 /// 2026-11-06 P3).
 const SUNKEN_GROUND_FLOOR_MM: f64 = 1000.0;
+/// The step the upward levels are found to (not a tolerance: a level is
+/// the whole millimetre its faces round to).
+const LEVEL_STEP_MM: f64 = 1.0;
 /// The widest joint between the strips of one floor, a deck of
 /// planks laid apart (not a tolerance: a gap, review 2026-11-06 P3).
 const FACE_JOINT_MM: f64 = 20.0;
@@ -1357,16 +1360,36 @@ fn marked_floor_levels(solids: &[DrawingSolid], stop: &AtomicBool) -> Option<Vec
 /// model with no floor (review 2026-11-04 MF-141).
 #[must_use]
 pub fn ground_floor<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> f64 {
-    ground_floor_of(&floor_levels(solids))
+    let solids = solids.into_iter().collect::<Vec<_>>();
+    let extent = solids
+        .iter()
+        .filter_map(|solid| bounds(std::slice::from_ref(*solid)))
+        .map(|(low, high)| (low[2], high[2]))
+        .reduce(|(low, high), (other_low, other_high)| (low.min(other_low), high.max(other_high)));
+    ground_floor_of(&floor_levels(solids), extent)
 }
 
-/// [`ground_floor`] among `floors`, lowest first: the one nearest z = 0 of
+/// [`ground_floor`] among `floors`, lowest first, of a model from `extent`
+/// (its bottom and its top) when it is known: the one nearest z = 0 of
 /// those less than [`SUNKEN_GROUND_FLOOR_MM`] below it, so a ground floor
 /// modelled 1 mm or 150 mm under z = 0 is still ±0,000, not the floor above
 /// (review 2026-11-06 P3). A floor at or above z = 0 by less than that comes
 /// first, so with the model's origin on the ground a terrace 150 mm below it
-/// is not ±0,000 under a floor at +450 (r23 MF-203).
-fn ground_floor_of(floors: &[f64]) -> f64 {
+/// is not ±0,000 under a floor at +450 (r23 MF-203). The top of a model that
+/// reaches more than that below it is its top, not its ground floor: the
+/// flat crown of a hall on the ground with no floor was ±0,000 and the
+/// ground -9,990 (Vratimov VRAT-11).
+fn ground_floor_of(floors: &[f64], extent: Option<(f64, f64)>) -> f64 {
+    let model_top = |floor: &f64| {
+        extent.is_some_and(|(bottom, top)| {
+            top - floor < LEVEL_STEP_MM && floor - bottom > SUNKEN_GROUND_FLOOR_MM
+        })
+    };
+    let floors = floors
+        .iter()
+        .copied()
+        .filter(|floor| !model_top(floor))
+        .collect::<Vec<_>>();
     floors
         .iter()
         .copied()
@@ -1466,7 +1489,7 @@ fn finished_floors(table: &[StoreyLevels]) -> Vec<f64> {
 /// chosen among its floors as [`ground_floor`] chooses among those found.
 #[must_use]
 pub fn table_ground_floor(table: &[StoreyLevels]) -> f64 {
-    ground_floor_of(&finished_floors(table))
+    ground_floor_of(&finished_floors(table), None)
 }
 
 /// The storeys of a table of storeys, lowest first, each cut `above_floor_mm`

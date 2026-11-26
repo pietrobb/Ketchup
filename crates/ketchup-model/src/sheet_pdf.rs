@@ -73,6 +73,9 @@ pub struct SheetImage {
     pub width_px: u32,
     pub height_px: u32,
     pub rgb: Vec<u8>,
+    /// The same pixels as a JPEG file, which a PDF embeds in their place: an
+    /// orthophoto deflated was 13 MB of a 14 MB drawing set (Vratimov VRAT-10).
+    pub jpeg: Option<Vec<u8>>,
 }
 
 impl std::fmt::Debug for SheetImage {
@@ -494,6 +497,17 @@ fn stream(dictionary: &str, data: &[u8]) -> Vec<u8> {
     object
 }
 
+fn jpeg_stream(dictionary: &str, jpeg: &[u8]) -> Vec<u8> {
+    let mut object = format!(
+        "<< {dictionary} /Filter /DCTDecode /Length {} >>\nstream\n",
+        jpeg.len()
+    )
+    .into_bytes();
+    object.extend_from_slice(jpeg);
+    object.extend_from_slice(b"\nendstream");
+    object
+}
+
 fn to_unicode(glyphs: &BTreeMap<u16, char>) -> String {
     let mut cmap = String::from(
         "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
@@ -678,13 +692,14 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
         objects.push(stream("", content.as_bytes()));
     }
     for image in &images {
-        objects.push(stream(
-            &format!(
-                "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8",
-                image.width_px, image.height_px
-            ),
-            &image.rgb,
-        ));
+        let dictionary = format!(
+            "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8",
+            image.width_px, image.height_px
+        );
+        objects.push(match &image.jpeg {
+            Some(jpeg) => jpeg_stream(&dictionary, jpeg),
+            None => stream(&dictionary, &image.rgb),
+        });
     }
     let mut pdf = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
@@ -737,6 +752,7 @@ mod tests {
             width_px: 2,
             height_px: 1,
             rgb: vec![255, 0, 0, 0, 0, 255],
+            jpeg: None,
         });
         let mut page = Page {
             size_mm: [210.0, 100.0],
@@ -769,6 +785,37 @@ mod tests {
             2,
             "{text}"
         );
+    }
+
+    /// Vratimov VRAT-10: an image with its JPEG embeds that file as it is, not
+    /// its pixels deflated.
+    #[test]
+    fn an_image_with_its_jpeg_embeds_the_jpeg() {
+        let jpeg = b"\xFF\xD8 not really a JPEG \xFF\xD9".to_vec();
+        let mut page = Page {
+            size_mm: [210.0, 100.0],
+            marks: Vec::new(),
+        };
+        page.marks.push(Mark::Image {
+            image: Arc::new(SheetImage {
+                width_px: 2,
+                height_px: 1,
+                rgb: vec![7; 6],
+                jpeg: Some(jpeg.clone()),
+            }),
+            corners: [[10.0, 20.0], [50.0, 20.0], [10.0, 40.0]],
+            clip: None,
+        });
+        let pdf = pages_pdf(&[&page], &PdfInfo::default());
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(
+            text.contains(&format!(
+                "/Filter /DCTDecode /Length {} >>\nstream\n",
+                jpeg.len()
+            )),
+            "{text}"
+        );
+        assert!(pdf.windows(jpeg.len()).any(|window| window == jpeg));
     }
 
     /// P3-V: a character the font lacks is drawn with its "?" glyph, and the
