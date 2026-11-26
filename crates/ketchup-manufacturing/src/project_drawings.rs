@@ -1376,11 +1376,11 @@ pub fn ground_floor<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> f
 /// (review 2026-11-06 P3). A floor at or above z = 0 by less than that comes
 /// first, so with the model's origin on the ground a terrace 150 mm below it
 /// is not ±0,000 under a floor at +450 (r23 MF-203). The top of a model that
-/// reaches more than that below it is its roof, not its ground floor: the
+/// reaches more than that below it is its top, not its ground floor: the
 /// flat crown of a hall on the ground with no floor was ±0,000 and the
 /// ground -9,990 (Vratimov VRAT-11).
 fn ground_floor_of(floors: &[f64], extent: Option<(f64, f64)>) -> f64 {
-    let roof = |floor: &f64| {
+    let model_top = |floor: &f64| {
         extent.is_some_and(|(bottom, top)| {
             top - floor < LEVEL_STEP_MM && floor - bottom > SUNKEN_GROUND_FLOOR_MM
         })
@@ -1388,7 +1388,7 @@ fn ground_floor_of(floors: &[f64], extent: Option<(f64, f64)>) -> f64 {
     let floors = floors
         .iter()
         .copied()
-        .filter(|floor| !roof(floor))
+        .filter(|floor| !model_top(floor))
         .collect::<Vec<_>>();
     floors
         .iter()
