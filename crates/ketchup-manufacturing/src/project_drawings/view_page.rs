@@ -9,9 +9,9 @@ use std::sync::Arc;
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 
 use super::{
-    CUT_STROKE_MM, DrawnView, EDGE_COLOR, EDGE_STROKE_MM, Item, ProjectView, UNDERLAY_COLOR,
-    UNDERLAY_STROKE_MM, VIEW_PAD_MM, VIEW_TITLE_MM, compass, levels, openings, overall_dimensions,
-    section_marks, situation, visible,
+    CUT_STROKE_MM, DIMENSION_GAP_MM, DrawnView, EDGE_COLOR, EDGE_STROKE_MM, Item, ProjectView,
+    UNDERLAY_COLOR, UNDERLAY_STROKE_MM, VIEW_PAD_MM, VIEW_TITLE_MM, compass, levels, openings,
+    overall_dimensions, section_marks, situation, visible,
 };
 
 /// What a run of a view's marks shows.
@@ -220,20 +220,20 @@ pub(super) fn draw_view_on_page(
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
     // whatever the view draws.
-    let below = outer_bottom + 8.0;
+    let below = outer_bottom + DIMENSION_GAP_MM;
     runs.draw(MarkRole::Dimension, |page| {
         if let Some((low, high)) = view.solids {
             overall_dimensions(
                 page,
                 [at(low), at(high)],
                 [high[0] - low[0], high[1] - low[1]],
-                [below, outer_left - 8.0],
+                [below, outer_left - DIMENSION_GAP_MM],
             );
         }
     });
     runs.draw(MarkRole::Title, |page| {
         page.marks.push(Mark::Text {
-            at: [outer_left, below + 8.0],
+            at: [outer_left, below + DIMENSION_GAP_MM],
             text: title.to_owned(),
             height_mm: VIEW_TITLE_MM,
             anchor: Anchor::Start,

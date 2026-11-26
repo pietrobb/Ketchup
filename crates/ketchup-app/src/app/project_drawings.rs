@@ -17,9 +17,9 @@ use ketchup_application::threads::{
 use ketchup_manufacturing::project_drawings::{
     CompassSide, CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet,
     DrawingSetOptions, DrawingSolid, DrawingThread, ModelFloors, OpeningSchedule, PlanSheet,
-    ProjectDrawingError, ProjectView, SCALES, SITUATION_SCALES, SheetTitles, ShopDrawings,
-    ShopPosition, ShopSheet, SituationSheet, Storey, UnderlayImage, drawing_set_until,
-    ground_floor, storeys_until, table_ground_floor, table_storeys,
+    ProjectDrawingError, ProjectView, SCALES, SITUATION_SCALES, SheetLabel, SheetTitles,
+    ShopDrawings, ShopPosition, ShopSheet, SituationSheet, Storey, UnderlayImage,
+    drawing_set_until, ground_floor, storeys_until, table_ground_floor, table_storeys,
 };
 use ketchup_manufacturing::revision_table::RevisionCaptions;
 use ketchup_manufacturing::title_block::{
@@ -132,11 +132,12 @@ pub(crate) fn underlay_unreadable_reason(
 }
 
 /// What a client asks of the set beyond the settings the document keeps: the
-/// plans alone, and a fixed scale 1:N.
-#[derive(Clone, Copy, Debug, Default)]
+/// plans alone, a fixed scale 1:N, and the numbers and titles of its sheets.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct SheetRequest {
     pub(crate) plan_only: bool,
     pub(crate) scale: Option<u32>,
+    pub(crate) labels: Vec<SheetLabel>,
 }
 
 /// What the set is written as: one PDF of all sheets, or a DXF or a DWG
@@ -2128,6 +2129,7 @@ impl KetchupApp {
                     change: catalog.text("drawings-sheet-revision-change"),
                 },
                 situation,
+                sheet_labels: request.labels,
             },
             images,
             info,

@@ -49,6 +49,8 @@ fn export(path: &Path) -> Request {
         zero_altitude_mm: None,
         north_deg: None,
         revisions: None,
+        sheet_numbers: Vec::new(),
+        sheet_titles: Vec::new(),
     })
 }
 

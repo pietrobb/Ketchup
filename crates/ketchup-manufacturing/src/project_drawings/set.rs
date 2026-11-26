@@ -1,7 +1,9 @@
 //! The project drawings as a set of sheets: a floor plan of each storey, a
 //! sheet of the longitudinal and the cross section and a sheet of the four
 //! elevations, all at one scale, each sheet on the smallest ISO A format that
-//! holds it (or the format the caller fixes) with its frame and title block.
+//! holds it (or the format the caller fixes, on which views that do not fit side
+//! by side go one under the other and the rest onto a further sheet of the same
+//! kind) with its frame and title block.
 //! The title block of every sheet says what the sheet shows and its number in
 //! the set, "n / N". After the elevations comes a shop drawing of each group
 //! of parts the caller names, at its own scale (see [`super::shop`]), then the
@@ -26,7 +28,7 @@ use super::{
     DrawingSolid, DrawnView, PlacedView, ProjectDrawingError, ProjectView, SheetViews, Storey,
     VIEW_PAD_MM, ViewFrame, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
     draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
-    lerp, marked_floor_levels, solid_edges, table_ground_floor, view_frames,
+    lerp, marked_floor_levels, paged_rows, solid_edges, table_ground_floor, view_frames,
 };
 use super::{Point, SolidEdges, StoreyTableError};
 use crate::revision_table::{RevisionCaptions, SheetRevision, draw_revisions};
@@ -137,6 +139,17 @@ pub struct DrawingSetOptions {
     /// The site plan, the first sheet, when the underlay lies in a national grid;
     /// it draws every underlay line, of whatever storey.
     pub situation: Option<SituationSheet>,
+    /// What each sheet, in the set's order, is called in place of its own: its
+    /// number in the title block ("C.1") for "n / N" and its title; a blank or
+    /// missing one keeps the sheet's own (Vratimov VRAT-9).
+    pub sheet_labels: Vec<SheetLabel>,
+}
+
+/// A sheet's number and title as the caller names them, each blank to keep its own.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SheetLabel {
+    pub number: String,
+    pub title: String,
 }
 
 /// What a sheet of the set shows.
@@ -341,6 +354,53 @@ fn sheet_views(drawn: Vec<(DrawnView, String)>, per_row: usize) -> (SheetViews, 
     (SheetViews { views, rows }, titles)
 }
 
+/// The sheets of `planned` on `format` at 1:`scale`: the rows of each wrapped where
+/// they run past it, and those it does not hold on further sheets of the same kind
+/// (Vratimov VRAT-9: the four elevations of a 56,6 m hall at 1:200 on A3).
+///
+/// # Errors
+/// [`ProjectDrawingError::DoesNotFit`] when a view alone does not fit.
+fn paged(
+    planned: Vec<Planned>,
+    format: SheetFormat,
+    scale: u32,
+) -> Result<Vec<Planned>, ProjectDrawingError> {
+    let mut paged = Vec::with_capacity(planned.len());
+    for sheet in planned {
+        let pages =
+            paged_rows(&sheet.views, format, scale).ok_or(ProjectDrawingError::DoesNotFit {
+                scale,
+                format: Some(format),
+            })?;
+        let mut views = sheet.views.views.into_iter().map(Some).collect::<Vec<_>>();
+        for page in pages {
+            let (mut page_views, mut titles) = (Vec::new(), Vec::new());
+            let mut rows = Vec::with_capacity(page.len());
+            for row in page {
+                let mut indices = Vec::with_capacity(row.len());
+                for index in row {
+                    if let Some(view) = views[index].take() {
+                        indices.push(page_views.len());
+                        page_views.push(view);
+                        titles.push(sheet.titles[index].clone());
+                    }
+                }
+                rows.push(indices);
+            }
+            paged.push(Planned {
+                kind: sheet.kind,
+                title: sheet.title.clone(),
+                views: SheetViews {
+                    views: page_views,
+                    rows,
+                },
+                titles,
+            });
+        }
+    }
+    Ok(paged)
+}
+
 /// The lowest point of `annotation`, along z.
 fn lowest(annotation: &Annotation) -> f64 {
     annotation
@@ -472,6 +532,9 @@ pub fn drawing_set_until(
                 .unwrap_or(preferred)
         }
     };
+    if let Some(format) = options.format {
+        planned = paged(planned, format, scale)?;
+    }
     let mut formats = planned
         .iter()
         .map(|sheet| format_at_scale(&sheet.views, options.format, scale))
@@ -537,6 +600,14 @@ pub fn drawing_set_until(
         .get(&TitleField::Drawing)
         .map(|title| title.trim().to_owned())
         .filter(|title| !title.is_empty());
+    let label = |number: usize| options.sheet_labels.get(number - 1);
+    // The title of sheet `number`, `own` unless the caller names it.
+    let titled = |own: String, number: usize| {
+        label(number)
+            .map(|label| label.title.trim())
+            .filter(|title| !title.is_empty())
+            .map_or(own, str::to_owned)
+    };
     let title_values = |title: &str, scale: String, format: SheetFormat, number: usize| {
         let mut values = options.title_block.clone();
         values.insert(
@@ -547,7 +618,13 @@ pub fn drawing_set_until(
         );
         values.insert(TitleField::Scale, scale);
         values.insert(TitleField::Format, format.name().to_owned());
-        values.insert(TitleField::Sheet, format!("{number} / {count}"));
+        let named = label(number)
+            .map(|label| label.number.trim())
+            .filter(|named| !named.is_empty());
+        values.insert(
+            TitleField::Sheet,
+            named.map_or_else(|| format!("{number} / {count}"), str::to_owned),
+        );
         values
     };
     let mut sheets = Vec::with_capacity(count);
@@ -556,7 +633,8 @@ pub fn drawing_set_until(
     {
         let number = index + 1;
         let scale = sheet_scale;
-        let values = title_values(&sheet.title, format!("1:{scale}"), format, number);
+        let title = titled(sheet.title.clone(), number);
+        let values = title_values(&title, format!("1:{scale}"), format, number);
         let blank = || Page {
             size_mm: format.size_mm(),
             marks: Vec::new(),
@@ -620,7 +698,7 @@ pub fn drawing_set_until(
         sheets.push(SetSheet {
             kind: sheet.kind,
             number,
-            title: sheet.title,
+            title,
             format,
             page,
             lines,
@@ -643,13 +721,9 @@ pub fn drawing_set_until(
     }
     for (drawing, shop) in shops {
         let number = sheets.len() + 1;
-        let values = title_values(
-            &shop.title,
-            format!("1:{}", shop.scale),
-            shop.format,
-            number,
-        );
-        sheets.push(shop_sheet(
+        let title = titled(shop.title.clone(), number);
+        let values = title_values(&title, format!("1:{}", shop.scale), shop.format, number);
+        let mut sheet = shop_sheet(
             drawing,
             shop,
             number,
@@ -657,7 +731,9 @@ pub fn drawing_set_until(
             options,
             &values,
             stop,
-        )?);
+        )?;
+        sheet.title = title;
+        sheets.push(sheet);
         stopped()?;
     }
     let mut page_of_plan = 0;
@@ -666,8 +742,9 @@ pub fn drawing_set_until(
             page_of_plan = 0;
         }
         let number = sheets.len() + 1;
+        let title = titled(cutting.title.clone(), number);
         let values = title_values(
-            &cutting.title,
+            &title,
             format!("1:{}", cutting.scale),
             cutting.format,
             number,
@@ -684,7 +761,7 @@ pub fn drawing_set_until(
                 page: page_of_plan,
             },
             number,
-            title: cutting.title.clone(),
+            title,
             format: cutting.format,
             lines: page.clone(),
             page,
@@ -702,11 +779,12 @@ pub fn drawing_set_until(
         page_of_plan += 1;
     }
     if let Some(format) = schedule_format {
-        let title = if options.openings.title.trim().is_empty() {
+        let own = if options.openings.title.trim().is_empty() {
             "Windows and doors".to_owned()
         } else {
             options.openings.title.clone()
         };
+        let title = titled(own, count);
         // A table has no scale.
         let values = title_values(&title, "–".to_owned(), format, count);
         let mut page = Page {
