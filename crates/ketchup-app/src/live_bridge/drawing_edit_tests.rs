@@ -936,9 +936,7 @@ fn a_client_replaces_another_file_with_the_drawing_once_the_user_agrees() {
     let asked = declining.clone();
     let mut app = app.with_dialogs(Box::new(declining));
     assert_eq!(
-        bridge
-            .execute(&mut app, replace(&other), false)
-            .unwrap_err(),
+        once_the_user_answered(&mut app, &mut bridge, replace(&other)).unwrap_err(),
         "drawings_replace_declined"
     );
     assert_eq!(asked.high_risk_prompts().len(), 1);
@@ -959,8 +957,7 @@ fn a_client_replaces_another_file_with_the_drawing_once_the_user_agrees() {
     );
     assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
 
-    bridge
-        .execute(&mut app, replace(&other), false)
+    once_the_user_answered(&mut app, &mut bridge, replace(&other))
         .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
     assert_eq!(probe.high_risk_prompts().len(), 1);
     let written = std::fs::read_to_string(&other).unwrap();

@@ -90,6 +90,21 @@ mod underlay_revision;
 mod underlay_views;
 #[path = "write_policy_tests.rs"]
 mod write_policy;
+
+/// A client's export that replaces a file it did not write: answered at once
+/// that the window asks the user (VRAT-8b), then sent again once they answered.
+fn once_the_user_answered(
+    app: &mut KetchupApp,
+    bridge: &mut LiveBridge,
+    request: Request,
+) -> Result<Value, &'static str> {
+    assert_eq!(
+        bridge.execute(app, request.clone(), false),
+        Err("awaiting_user_confirmation")
+    );
+    app.ask_client_replace();
+    bridge.execute(app, request, false)
+}
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();

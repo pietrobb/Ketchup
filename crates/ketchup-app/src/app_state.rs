@@ -60,6 +60,9 @@ pub(crate) struct LiveState {
     /// Holds the request's cancel flag, set once the client's connection ends.
     pub(crate) client_export: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) client_overwrite: bool,
+    /// Whether a client's export may replace a file it did not write: asked in
+    /// the window after the request is answered, not while it waits.
+    pub(crate) replace_asks: live_bridge::consent::replace_consent::ReplaceAsks,
     /// Plugins the user allowed in this window, each bound to its files' hashes
     /// and the permissions shown; nothing is kept after the window closes.
     pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,
