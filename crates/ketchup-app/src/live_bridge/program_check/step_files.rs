@@ -634,21 +634,37 @@ impl ImportFiles for StepFiles {
     }
 }
 
-/// The bytes of a bought part's file from `source`, as they are read today.
-fn read_step_bytes(mut source: impl Read, _limit: u64) -> Result<Vec<u8>, Rejection> {
+/// The bytes of a bought part's file from `source`, read no further than one
+/// byte past `limit`: a file that grew after its size was checked is refused,
+/// not read to its end (review 2026-11-27 R1127-STEP-1).
+fn read_step_bytes(source: impl Read, limit: u64) -> Result<Vec<u8>, Rejection> {
     let mut bytes = Vec::new();
     source
+        .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|io| unreadable("its bytes cannot be read").caused_by(io))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(unreadable(format!(
+            "it grew past the {limit} bytes a bought part's file may hold while it was read"
+        )));
+    }
     Ok(bytes)
 }
 
-/// Whether this request may read a file of `length` bytes more.
+/// Refuses a file of `length` bytes when it and the files this request
+/// already read would hold more than `limit` bytes together
+/// (R1127-STEP-1).
 fn within_request(
-    _read_now: &BTreeMap<PathBuf, CachedFile>,
-    _length: u64,
-    _limit: u64,
+    read_now: &BTreeMap<PathBuf, CachedFile>,
+    length: u64,
+    limit: u64,
 ) -> Result<(), Rejection> {
+    let held: u64 = read_now.values().map(|file| file.length).sum();
+    if held.saturating_add(length) > limit {
+        return Err(unreadable(format!(
+            "with the files read before it, it would hold more than the {limit} bytes one program's bought parts may"
+        )));
+    }
     Ok(())
 }
 
