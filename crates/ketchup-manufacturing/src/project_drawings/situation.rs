@@ -4,8 +4,8 @@
 //! coordinates lie on the underlay.
 
 use super::{
-    DrawingSolid, DrawnView, Point, ProjectDrawingError, ProjectView, SheetViews, SolidEdges,
-    ViewFrame, draw_view, format_at_scale,
+    DrawingSolid, Point, ProjectDrawingError, ProjectView, SheetViews, SolidEdges, ViewFrame,
+    draw_view, format_at_scale,
 };
 use crate::title_block::SheetFormat;
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetImage, Stroke};
@@ -16,6 +16,10 @@ use std::sync::Arc;
 pub const SITUATION_SCALES: [u32; 2] = [250, 500];
 /// Paper between two grid crosses, and around the model at most.
 const GRID_PAPER_MM: f64 = 100.0;
+/// The most grid crosses a site plan draws: a sheet holds a few dozen at
+/// [`GRID_PAPER_MM`] apart, but an underlay scaled far from the model's
+/// millimetres made millions (review 2026-11-27 R1127-SIT-1).
+const MAX_GRID_CROSSES: f64 = 1_000.0;
 /// The least paper around the model, which a format asked for may leave.
 const MIN_MARGIN_PAPER_MM: f64 = 20.0;
 /// Half the length of a cross arm on the paper.
@@ -128,7 +132,7 @@ pub(super) fn plan(
                 view.lay_underlay(&frame, underlay);
                 view.lay_images(&frame, images);
                 let step_mm = GRID_PAPER_MM * f64::from(scale);
-                view.grid = crosses(&*view, site.to_grid_mm, inverse, step_mm);
+                view.grid = crosses([view.min, view.max], site.to_grid_mm, inverse, step_mm);
                 return Ok(Some((sheet, format, scale)));
             }
             margin_paper_mm -= 1.0;
@@ -154,21 +158,18 @@ fn invert([[a, b, c], [d, e, f]]: [[f64; 3]; 2]) -> Option<[[f64; 3]; 2]> {
     Some([[ia, ib, -(ia * c + ib * f)], [id, ie, -(id * c + ie * f)]])
 }
 
-/// The crosses at every multiple of `step_mm` of the grid inside `view`.
+/// The crosses at every multiple of `step_mm` of the grid inside the view from
+/// `min` to `max`; ten times as far apart, as often as it takes, when more
+/// than [`MAX_GRID_CROSSES`] would stand there.
 fn crosses(
-    view: &DrawnView,
+    [min, max]: [[f64; 2]; 2],
     to_grid: [[f64; 3]; 2],
     from_grid: [[f64; 3]; 2],
-    step_mm: f64,
+    mut step_mm: f64,
 ) -> Vec<GridCross> {
-    let corners = [
-        view.min,
-        [view.max[0], view.min[1]],
-        [view.min[0], view.max[1]],
-        view.max,
-    ]
-    .map(|corner| apply(to_grid, corner));
-    let range = |axis: usize| {
+    let corners =
+        [min, [max[0], min[1]], [min[0], max[1]], max].map(|corner| apply(to_grid, corner));
+    let range = |axis: usize, step_mm: f64| {
         let low = corners
             .iter()
             .map(|corner| corner[axis])
@@ -179,15 +180,26 @@ fn crosses(
             .fold(f64::NEG_INFINITY, f64::max);
         ((low / step_mm).ceil(), (high / step_mm).floor())
     };
+    let count = |(first, last): (f64, f64)| (last - first + 1.0).max(0.0);
+    let crowded = |step_mm: f64| {
+        let crosses = count(range(0, step_mm)) * count(range(1, step_mm));
+        crosses.is_nan() || crosses > MAX_GRID_CROSSES
+    };
+    // A grid with no finite count of crosses is left out.
+    while crowded(step_mm) {
+        step_mm *= 10.0;
+        if !step_mm.is_finite() {
+            return Vec::new();
+        }
+    }
     let origin = apply(from_grid, [0.0, 0.0]);
     let along = apply(from_grid, [1.0, 0.0]);
     let angle_deg = (along[1] - origin[1])
         .atan2(along[0] - origin[0])
         .to_degrees();
-    let inside = |point: [f64; 2]| {
-        (0..2).all(|axis| view.min[axis] <= point[axis] && point[axis] <= view.max[axis])
-    };
-    let ((first_x, last_x), (first_y, last_y)) = (range(0), range(1));
+    let inside =
+        |point: [f64; 2]| (0..2).all(|axis| min[axis] <= point[axis] && point[axis] <= max[axis]);
+    let ((first_x, last_x), (first_y, last_y)) = (range(0, step_mm), range(1, step_mm));
     let mut crosses = Vec::new();
     let mut gx = first_x;
     while gx <= last_x {
@@ -290,5 +302,26 @@ mod tests {
         let back = apply(inverse, apply(map, [11.0, -5.0]));
         assert!((back[0] - 11.0).abs() < 1e-12 && (back[1] + 5.0).abs() < 1e-12);
         assert!(invert([[1.0, 2.0, 0.0], [2.0, 4.0, 0.0]]).is_none());
+    }
+
+    /// Review 2026-11-27 R1127-SIT-1: an underlay a thousand times too small
+    /// for the model gave a house of 50 × 50 m a cross every 25 mm at 1:250,
+    /// four million of them; the grid steps out tenfold until it holds no
+    /// more than [`MAX_GRID_CROSSES`].
+    #[test]
+    fn a_grid_far_finer_than_the_model_is_thinned_tenfold() {
+        let to_grid = [[1_000.0, 0.0, 0.0], [0.0, 1_000.0, 0.0]];
+        let from_grid = invert(to_grid).unwrap();
+        let house = [[0.0, 0.0], [50_000.0, 50_000.0]];
+        let step_mm = GRID_PAPER_MM * 250.0;
+        let grid = crosses(house, to_grid, from_grid, step_mm);
+        // 25 m of the grid 1 000 times over: 2 001 per side, then 201, then 21.
+        assert_eq!(grid.len(), 21 * 21);
+        // The model's own grid is as it was: a cross every 25 m.
+        let own = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert_eq!(crosses(house, own, own, step_mm).len(), 3 * 3);
+        // A map that sends the model nowhere finite draws no grid.
+        let wild = [[f64::MAX, 0.0, 0.0], [0.0, f64::MAX, 0.0]];
+        assert!(crosses(house, wild, invert(wild).unwrap_or(own), step_mm).is_empty());
     }
 }
