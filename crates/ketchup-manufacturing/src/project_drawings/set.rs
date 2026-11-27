@@ -150,6 +150,10 @@ pub struct DrawingSetOptions {
 pub struct SheetLabel {
     pub number: String,
     pub title: String,
+    /// The captions under the sheet's views in their order, each blank or
+    /// missing to keep its own: a plan drawn as a coordination site plan is
+    /// captioned so, not as a plan cut at a height (Vratimov VRAT-12).
+    pub view_titles: Vec<String>,
 }
 
 /// What a sheet of the set shows.
@@ -637,11 +641,13 @@ pub fn drawing_set_until(
         let number = index + 1;
         let scale = sheet_scale;
         let title = titled(sheet.title.clone(), number);
-        // A plan the caller titles as another drawing, a coordination site plan
-        // drawn over it, is captioned by that title and not as a plan cut at a
-        // height (Vratimov VRAT-12).
-        if matches!(sheet.kind, SheetKind::Plan { .. }) && title != sheet.title {
-            sheet.titles.fill(title.clone());
+        // The sheet's title names the sheet; each view keeps its caption unless
+        // the caller names that view's (review 2026-11-27 R1127-SH-1).
+        let captions = label(number).map_or(&[][..], |label| label.view_titles.as_slice());
+        for (own, named) in sheet.titles.iter_mut().zip(captions) {
+            if !named.trim().is_empty() {
+                named.trim().clone_into(own);
+            }
         }
         let values = title_values(&title, format!("1:{scale}"), format, number);
         let blank = || Page {

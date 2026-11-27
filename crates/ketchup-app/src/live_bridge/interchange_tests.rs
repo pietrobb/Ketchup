@@ -1118,6 +1118,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 revisions: None,
                 sheet_numbers: Vec::new(),
                 sheet_titles: Vec::new(),
+                sheet_view_titles: Vec::new(),
             })
         };
 
@@ -1238,6 +1239,7 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 revisions: None,
                 sheet_numbers: Vec::new(),
                 sheet_titles: Vec::new(),
+                sheet_view_titles: Vec::new(),
             }),
             false,
         )

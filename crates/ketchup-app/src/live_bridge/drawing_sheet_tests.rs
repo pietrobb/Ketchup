@@ -1237,6 +1237,7 @@ fn a_sheet_label_with_a_line_break_is_refused() {
         json!({"sheet_numbers": ["A.1", "A\t2"]}),
         json!({"sheet_numbers": ["A\r1"]}),
         json!({"sheet_titles": ["Plan\r\n0"]}),
+        json!({"sheet_view_titles": [[], ["Plan", "Plan\n0"]]}),
     ] {
         let code = bridge
             .execute(&mut app, export_drawings(&set, extra.clone()), false)
@@ -1249,7 +1250,10 @@ fn a_sheet_label_with_a_line_break_is_refused() {
     bridge
         .execute(
             &mut app,
-            export_drawings(&set, json!({"sheet_titles": ["Půdorys 1.NP"]})),
+            export_drawings(
+                &set,
+                json!({"sheet_titles": ["Půdorys 1.NP"], "sheet_view_titles": [["Půdorys 1.NP"]]}),
+            ),
             false,
         )
         .unwrap();

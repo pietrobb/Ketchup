@@ -51,6 +51,7 @@ fn export(path: &Path) -> Request {
         revisions: None,
         sheet_numbers: Vec::new(),
         sheet_titles: Vec::new(),
+        sheet_view_titles: Vec::new(),
     })
 }
 
