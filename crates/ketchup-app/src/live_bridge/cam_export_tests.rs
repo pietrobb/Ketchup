@@ -20,15 +20,18 @@ fn cam_window(dialogs: &ScriptedFileDialogs) -> (KetchupApp, LiveBridge, tempfil
             maximum_mm: [20.0, 10.0, 7.0],
         },
         None,
+        0.5,
     )
 }
 
-/// The window of [`cam_window`] with its plan cutting `stock`, the block placed once and,
-/// before the plan is made, tapped through its middle as `thread` (size, tap drill, thread depth) says.
+/// The window of [`cam_window`] with its plan cutting `stock` at `stepover_ratio` of its
+/// 2 mm cutter, the block placed once and, before the plan is made, tapped through its
+/// middle as `thread` (size, tap drill, thread depth) says.
 fn cam_window_over(
     dialogs: &ScriptedFileDialogs,
     stock: CamStock,
     thread: Option<(&str, f64, f64)>,
+    stepover_ratio: f64,
 ) -> (KetchupApp, LiveBridge, tempfile::TempDir) {
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs.clone()));
     let worker = ketchup_application::evaluation::exact_worker_candidates()
@@ -117,7 +120,7 @@ fn cam_window_over(
         },
         CamCutParameters {
             maximum_stepdown_mm: 2.0,
-            stepover_ratio: 0.5,
+            stepover_ratio,
             radial_allowance_mm: 0.0,
             axial_allowance_mm: 0.0,
         },
@@ -177,6 +180,7 @@ fn the_cam_program_names_the_threads_of_its_part_it_does_not_cut() {
             maximum_mm: [20.0, 10.0, 7.0],
         },
         Some(("M4", 3.3, 4.0)),
+        0.5,
     );
     let target = directory.path().join("facing.ngc");
     let exported = bridge
@@ -336,6 +340,205 @@ fn a_client_program_replaces_an_existing_file_only_once_the_user_agrees() {
     assert!(program.contains("G43 H1"), "{program}");
 }
 
+/// A client's cam_nc export of a facing at a 0.16 mm stepover, whose exact simulation takes
+/// seconds, sent to a window connected as the client's; its answer comes on the channel.
+struct FineClientExport {
+    wire: Wire,
+    answers: mpsc::Receiver<Response>,
+    reading: std::thread::JoinHandle<()>,
+    target: PathBuf,
+    dialogs: ScriptedFileDialogs,
+    _directory: tempfile::TempDir,
+}
+
+fn send_fine_client_export() -> FineClientExport {
+    let dialogs = ScriptedFileDialogs::new();
+    let (app, bridge, directory) = cam_window_over(
+        &dialogs,
+        CamStock {
+            minimum_mm: [0.0, 0.0, 0.0],
+            maximum_mm: [20.0, 10.0, 7.0],
+        },
+        None,
+        0.08,
+    );
+    drop(bridge);
+    let target = directory.path().join("fine.ngc");
+    let mut wire = Wire::connect(app);
+    wire.call(Request::Status {});
+    wire.send(cam_export(&target, "cam_nc", Some("linuxcnc")), false);
+    let mut reader = wire.stream.try_clone().unwrap();
+    reader
+        .set_read_timeout(Some(Duration::from_secs(120)))
+        .unwrap();
+    let (sender, answers) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        sender
+            .send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+    FineClientExport {
+        wire,
+        answers,
+        reading,
+        target,
+        dialogs,
+        _directory: directory,
+    }
+}
+
+impl FineClientExport {
+    fn bridge(&self) -> &LiveBridge {
+        self.wire.app.live.bridge.as_ref().unwrap()
+    }
+
+    fn poll(&mut self) {
+        self.wire.app.poll_live_bridge(&self.wire.context);
+    }
+
+    /// Polls the window until it names the export as the job it is busy with; an answer
+    /// before that means the window made the program on its own thread.
+    fn until_a_job(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while self.bridge().busy_jobs().is_empty() {
+            if let Ok(answer) = self.answers.recv_timeout(Duration::from_millis(2)) {
+                panic!(
+                    "answered without a job: the window made the CAM program itself: {answer:?}"
+                );
+            }
+            assert!(Instant::now() < deadline, "the export never became a job");
+            self.poll();
+        }
+        let busy = serde_json::to_value(self.bridge().busy_jobs()).unwrap();
+        assert_eq!(busy[0]["target"], "export", "{busy}");
+    }
+
+    /// Cancels the request as its client giving up does.
+    fn cancel(&self) {
+        self.bridge()
+            .program_check_job
+            .as_ref()
+            .expect("the export runs as a job")
+            .request_cancelled()
+            .store(true, Ordering::Release);
+    }
+
+    fn until_answered(&mut self) -> Response {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if let Ok(answer) = self.answers.recv_timeout(Duration::from_millis(2)) {
+                return answer;
+            }
+            assert!(Instant::now() < deadline, "the export was never answered");
+            self.poll();
+        }
+    }
+}
+
+/// Review 2026-11-27 R1127-CAM-2: a client's cam_nc export planned and simulated its program
+/// on the window thread, so the window stood still until the exact simulation ended (21 s
+/// in a debug build for this facing) and a client giving up could not stop it. The poll
+/// that takes the request starts a job and returns, the window names the export as busy,
+/// and a cancelled request is answered as such, ends its job and writes nothing.
+#[test]
+fn a_clients_cam_program_is_made_beside_the_window_and_a_cancelled_one_writes_nothing() {
+    let mut export = send_fine_client_export();
+    export.until_a_job();
+
+    export.cancel();
+    let answer = export.until_answered();
+    assert_eq!(
+        answer.error.as_deref(),
+        Some("request_cancelled"),
+        "{answer:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while export.bridge().program_check_job.is_some() {
+        assert!(Instant::now() < deadline, "the cancelled job never ended");
+        export.poll();
+    }
+    export.reading.join().unwrap();
+    assert!(!export.target.exists());
+    assert!(export.dialogs.high_risk_prompts().is_empty());
+}
+
+/// R1127-CAM-2 in release: while the client's program is planned and simulated no poll of
+/// the window takes a quarter of a second, and once the request is cancelled mid-simulation
+/// its exact worker stops and the job ends within half a second.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_cancelled_client_cam_program_stops_within_half_a_second() {
+    let mut export = send_fine_client_export();
+    let timed_poll = |export: &mut FineClientExport| {
+        let started = Instant::now();
+        export.poll();
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(250),
+            "the window waited {took:?} for the CAM program"
+        );
+    };
+    export.until_a_job();
+    // About 0.3 s of polls: the exact worker is simulating by then.
+    for _ in 0..150 {
+        assert!(
+            export
+                .answers
+                .recv_timeout(Duration::from_millis(2))
+                .is_err(),
+            "the program was made before it could be cancelled; make the fixture denser"
+        );
+        timed_poll(&mut export);
+    }
+
+    let cancelled_at = Instant::now();
+    export.cancel();
+    while export.bridge().program_check_job.is_some() {
+        assert!(
+            cancelled_at.elapsed() < Duration::from_millis(500),
+            "the cancelled program was still being made after {:?}",
+            cancelled_at.elapsed()
+        );
+        timed_poll(&mut export);
+    }
+    let answer = export.until_answered();
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert!(!export.target.exists());
+}
+
+/// The job of a client's cam_nc export writes the program it simulated and answers as the
+/// export always did, naming the controller and what the simulation found.
+#[test]
+fn a_clients_cam_program_made_beside_the_window_is_written_and_answered() {
+    let dialogs = ScriptedFileDialogs::new();
+    let (app, bridge, directory) = cam_window(&dialogs);
+    drop(bridge);
+    let target = directory.path().join("facing.ngc");
+    let mut wire = Wire::connect(app);
+    wire.call(Request::Status {});
+
+    let answer = wire.call(cam_export(&target, "cam_nc", Some("linuxcnc")));
+    let exported = answer.result.unwrap();
+    assert_eq!(exported["export_format"], "cam_nc", "{exported}");
+    assert_eq!(exported["machining"]["dialect"], dialect_name("linuxcnc"));
+    assert!((exported["machining"]["removed_stock_mm3"].as_f64().unwrap() - 400.0).abs() < 0.5);
+    assert!(std::fs::read_to_string(&target).unwrap().contains("G43 H1"));
+    assert!(
+        wire.app
+            .live
+            .bridge
+            .as_ref()
+            .unwrap()
+            .busy_jobs()
+            .is_empty()
+    );
+    assert!(dialogs.high_risk_prompts().is_empty());
+}
+
 #[test]
 fn an_unknown_dialect_or_one_given_to_another_format_is_refused_before_anything_runs() {
     let dialogs = ScriptedFileDialogs::new();
@@ -407,6 +610,7 @@ fn a_client_profiles_a_part_from_a_face_it_names_and_the_window_reads_the_outlin
             maximum_mm: [23.0, 13.0, 5.0],
         },
         None,
+        0.5,
     );
     let bottom = bottom_face(&mut app, &mut bridge);
     let before = app.canonical_digest();
