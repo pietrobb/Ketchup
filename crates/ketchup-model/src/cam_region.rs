@@ -2,7 +2,7 @@
 //! part, and the cutter-centre paths that clear or follow them.
 use crate::cam::{
     CamOperation, CamPath2d, CamPathSegment2d, CamPlan, CamPlannerError, CamSetup, CamTool,
-    CamToolKind, setup_bounds,
+    CamToolKind, MAX_CAM_MOTIONS, setup_bounds,
 };
 use crate::cam_offset::{
     LOOP_TOLERANCE_MM, Point, Segment, degenerate_lane, distance, intersections, lane_crossings,
@@ -699,6 +699,38 @@ fn on_or_inside(loops: &[Vec<Segment>], point: Point) -> bool {
         || inside(loops, point)
 }
 
+/// The segments of `loops` that can decide a lane or a move between heights
+/// `from_y` and `to_y`: those whose height range, an arc's whole circle, comes
+/// within a lane's nudge (16 tenths of the loop tolerance, [`clear_lane`]) and
+/// the loop tolerance of the band. Lanes, crossings and moves come out the same
+/// against them as against all of `loops`, and a lane meets only a few islands.
+fn loops_near(loops: &[Vec<Segment>], from_y: f64, to_y: f64) -> Vec<Vec<Segment>> {
+    let slack = 3.0 * LOOP_TOLERANCE_MM;
+    let low = from_y.min(to_y) - slack;
+    let high = from_y.max(to_y) + slack;
+    loops
+        .iter()
+        .map(|segments| {
+            segments
+                .iter()
+                .filter(|segment| {
+                    let [bottom, top] = match segment {
+                        Segment::Line { start, end } => {
+                            [start[1].min(end[1]), start[1].max(end[1])]
+                        }
+                        Segment::Arc { start, center, .. } => {
+                            let radius = distance(*start, *center);
+                            [center[1] - radius, center[1] + radius]
+                        }
+                    };
+                    top >= low && bottom <= high
+                })
+                .copied()
+                .collect()
+        })
+        .collect()
+}
+
 /// Whether a straight move between two allowed cutter centres stays allowed.
 fn move_stays_inside(loops: &[Vec<Segment>], from: Point, to: Point) -> bool {
     let link = Segment::Line {
@@ -780,8 +812,9 @@ pub(crate) fn pocket_paths(
     let mut rows: Vec<(f64, Vec<[f64; 2]>)> = Vec::new();
     for index in 0..=lanes {
         let nominal = minimum[1] + span * f64::from(index) / f64::from(lanes);
-        let y = clear_lane(&boundaries, nominal, middle);
-        let mut crossings: Vec<f64> = boundaries
+        let near = loops_near(&boundaries, nominal, nominal);
+        let y = clear_lane(&near, nominal, middle);
+        let mut crossings: Vec<f64> = near
             .iter()
             .flat_map(|segments| lane_crossings(segments, y))
             .collect();
@@ -791,14 +824,14 @@ pub(crate) fn pocket_paths(
             match spans.last_mut() {
                 // A lane that only grazes an island, never deeper than the loop
                 // tolerance, is one span and not two cuts a sliver apart.
-                Some(last) if grazes(&boundaries, y, last[1], pair[0]) => last[1] = pair[1],
+                Some(last) if grazes(&near, y, last[1], pair[0]) => last[1] = pair[1],
                 _ => spans.push([pair[0], pair[1]]),
             }
         }
         spans.retain(|span| span[1] - span[0] > LOOP_TOLERANCE_MM);
         rows.push((y, spans));
     }
-    let mut paths = zigzag(&boundaries, &mut rows);
+    let mut paths = zigzag(&boundaries, &mut rows)?;
     paths.extend(walls.iter().map(|boundary| path_of(boundary)));
     Ok(paths)
 }
@@ -815,8 +848,15 @@ fn grazes(boundaries: &[Vec<Segment>], y: f64, from_x: f64, to_x: f64) -> bool {
     })
 }
 
-fn zigzag(boundaries: &[Vec<Segment>], rows: &mut [(f64, Vec<[f64; 2]>)]) -> Vec<CamPath2d> {
+/// Joins the rows' spans into zig-zag paths. Refused as soon as the paths need
+/// more motions than one toolpath may hold, before the rest is joined: each path
+/// is at least a plunge, its cuts and a retract (R1127-CAM-1).
+fn zigzag(
+    boundaries: &[Vec<Segment>],
+    rows: &mut [(f64, Vec<[f64; 2]>)],
+) -> Result<Vec<CamPath2d>, CamPlannerError> {
     let mut paths = Vec::new();
+    let mut motions = 0_usize;
     for first_row in 0..rows.len() {
         while let Some(span) = rows[first_row].1.pop() {
             let y = rows[first_row].0;
@@ -829,17 +869,19 @@ fn zigzag(boundaries: &[Vec<Segment>], rows: &mut [(f64, Vec<[f64; 2]>)]) -> Vec
             let mut at_right = true;
             let mut tail = [span[1], y];
             for (next_y, spans) in rows[first_row + 1..].iter_mut() {
+                let near = loops_near(boundaries, tail[1], *next_y);
                 let side = usize::from(at_right);
-                let found = spans
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, span)| move_stays_inside(boundaries, tail, [span[side], *next_y]))
-                    .min_by(|(_, left), (_, right)| {
-                        (left[side] - tail[0])
-                            .abs()
-                            .total_cmp(&(right[side] - tail[0]).abs())
-                    })
-                    .map(|(index, _)| index);
+                // The nearest span whose link stays inside, nearer ones checked
+                // first; of equally near spans the earlier, as before.
+                let mut nearest: Vec<usize> = (0..spans.len()).collect();
+                nearest.sort_by(|&left, &right| {
+                    (spans[left][side] - tail[0])
+                        .abs()
+                        .total_cmp(&(spans[right][side] - tail[0]).abs())
+                });
+                let found = nearest
+                    .into_iter()
+                    .find(|&index| move_stays_inside(&near, tail, [spans[index][side], *next_y]));
                 let Some(index) = found else { break };
                 let span = spans.remove(index);
                 let entry = [span[side], *next_y];
@@ -849,10 +891,14 @@ fn zigzag(boundaries: &[Vec<Segment>], rows: &mut [(f64, Vec<[f64; 2]>)]) -> Vec
                 tail = exit;
                 at_right = !at_right;
             }
+            motions += path.segments.len() + 2;
+            if motions > MAX_CAM_MOTIONS {
+                return Err(CamPlannerError::InvalidOperations);
+            }
             paths.push(path);
         }
     }
-    paths
+    Ok(paths)
 }
 
 /// The closed cutter-centre loops of a contour `clearance_mm` off the region's
@@ -917,3 +963,6 @@ pub(crate) fn paths_bounds(paths: &[CamPath2d]) -> Result<[Point; 2], CamPlanner
     }
     Ok([minimum, maximum])
 }
+
+#[cfg(test)]
+mod tests;
