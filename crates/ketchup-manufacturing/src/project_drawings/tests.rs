@@ -2495,6 +2495,7 @@ fn the_caller_names_the_number_and_title_of_a_sheet() {
     let label = |number: &str, title: &str| SheetLabel {
         number: number.to_owned(),
         title: title.to_owned(),
+        ..SheetLabel::default()
     };
     let options = DrawingSetOptions {
         sheet_labels: vec![label("D.1", "Půdorys"), label(" ", "")],
@@ -2530,6 +2531,7 @@ fn only_a_plan_sheet_is_captioned_as_a_plan_cut_at_a_height() {
     let label = |number: &str, title: &str| SheetLabel {
         number: number.to_owned(),
         title: title.to_owned(),
+        ..SheetLabel::default()
     };
     let drawn = |plan: SheetLabel| {
         let options = DrawingSetOptions {
@@ -2555,7 +2557,10 @@ fn only_a_plan_sheet_is_captioned_as_a_plan_cut_at_a_height() {
     };
     let plan = SheetKind::Plan { storey: 0 };
 
-    let set = drawn(label("C.1", "Koordinační situace"));
+    let set = drawn(SheetLabel {
+        view_titles: vec!["Koordinační situace".to_owned()],
+        ..label("C.1", "Koordinační situace")
+    });
     let site = sheet_of(&set, SheetKind::Situation);
     assert!(texts(&site.page).contains(&"Situace stavby"));
     assert!(!texts(&site.page).contains(&cut), "{:?}", texts(&site.page));
@@ -2567,8 +2572,17 @@ fn only_a_plan_sheet_is_captioned_as_a_plan_cut_at_a_height() {
     }
     assert_eq!(coordination.views[0].title, "Koordinační situace");
 
-    // The plan titled as itself, or left its own title, keeps the height of its cut.
-    for kept in [label("D.1", "Půdorys"), label("D.1", " ")] {
+    // The plan titled as itself or as another drawing, or left its own title,
+    // keeps the height of its cut when no caption is named for its view.
+    for kept in [
+        label("D.1", "Půdorys"),
+        label("D.1", " "),
+        label("C.1", "Koordinační situace"),
+        SheetLabel {
+            view_titles: vec![" ".to_owned()],
+            ..label("D.1", "Půdorys")
+        },
+    ] {
         let set = drawn(kept);
         assert!(!texts(&sheet_of(&set, SheetKind::Situation).page).contains(&cut));
         let floor = sheet_of(&set, plan);
@@ -2579,6 +2593,38 @@ fn only_a_plan_sheet_is_captioned_as_a_plan_cut_at_a_height() {
         );
         assert!(texts(&floor.lines).contains(&cut));
         assert_eq!(floor.views[0].title, cut);
+    }
+}
+
+/// Review 2026-11-27 R1127-SH-1: a plan the caller retitles "Půdorys 1.NP" is still
+/// a plan cut at a height; the title names the sheet, and its view keeps its caption.
+#[test]
+fn a_retitled_plan_keeps_the_caption_of_its_cut() {
+    let cut = "Půdorys, řez ve výšce 1200 mm";
+    let options = DrawingSetOptions {
+        plans: vec![PlanSheet {
+            storey: Storey {
+                floor_mm: None,
+                cut_mm: 1200.0,
+            },
+            view_title: cut.to_owned(),
+            sheet_title: "Půdorys".to_owned(),
+        }],
+        sheet_labels: vec![SheetLabel {
+            number: "D.1".to_owned(),
+            title: "Půdorys 1.NP".to_owned(),
+            ..SheetLabel::default()
+        }],
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &options).unwrap();
+    let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+    assert_eq!(plan.title, "Půdorys 1.NP");
+    assert_eq!(plan.views[0].title, cut);
+    for page in [&plan.page, &plan.lines] {
+        let written = texts(page);
+        assert!(written.contains(&"Půdorys 1.NP"), "{written:?}");
+        assert!(written.contains(&cut), "{written:?}");
     }
 }
 
