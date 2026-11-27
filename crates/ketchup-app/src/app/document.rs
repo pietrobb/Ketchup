@@ -1196,6 +1196,7 @@ impl KetchupApp {
                                 .map_or_else(String::new, |(id, _)| id.clone()),
                             dialect_choices,
                             review: None,
+                            running: None,
                         });
                     }
                 }
