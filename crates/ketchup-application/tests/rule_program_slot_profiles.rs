@@ -1,24 +1,58 @@
-//! Supplier STEP-derived extrusion sections, including slot lips, radii and bore.
+//! Slot profiles: catalogue outer size on a caller-supplied section, never shipped supplier CAD.
 use crate::operations_support::{assert_volume, session, volume, worker};
 use ketchup_application::{DocumentSession, SaveOptions, SessionSettings};
 use ketchup_model::{exact_brep_graph::ExactBRepGraph, exact_product::ExactBodyPackage};
-use std::{collections::BTreeMap, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, f64::consts::PI, sync::atomic::AtomicBool};
 
-// Integral of the line/circle wires of Motedis P20_N5_I.stp, end face #2482.
-// Supplier STEP dated 2012-11-22, 1000 mm extrusion; not a rectangular envelope.
-const SECTION_AREA: f64 = 181.936_180_217;
+const BORE_RADIUS: f64 = 2.0;
+
+/// Synthetic notched square with a round bore for testing, NOT a claimed Motedis section.
+fn section(width: f64) -> String {
+    let h = width / 2.0;
+    let n = h / 4.0;
+    format!(
+        r#"
+section = [
+ ["bottom", (-{h},-{h}), ({h},-{h})], ["right_lower", ({h},-{h}), ({h},-{n})],
+ ["right_notch_a", ({h},-{n}), ({h}-{n},0)], ["right_notch_b", ({h}-{n},0), ({h},{n})],
+ ["right_upper", ({h},{n}), ({h},{h})], ["top", ({h},{h}), (-{h},{h})],
+ ["left", (-{h},{h}), (-{h},-{h})]
+]
+cavities = [[["bore", ({r},0), (-{r},0), {{"center": (0,0)}}], ["bore_back", (-{r},0), ({r},0), {{"center": (0,0)}}]]]
+source = "synthetic test section, not supplier geometry"
+"#,
+        r = BORE_RADIUS
+    )
+}
+
+fn area(width: f64) -> f64 {
+    let n = width / 8.0;
+    width * width - n * n - PI * BORE_RADIUS * BORE_RADIUS
+}
+
+fn profile(designation: &str, width: f64, length: f64, placement: &str) -> String {
+    format!(
+        "{}\np = slot_profile(\"bar\", \"{designation}\", {length}, section=section, section_source=source, cavities=cavities{placement})",
+        section(width)
+    )
+}
 
 #[test]
-fn slot_profile_catalogue_identifies_exact_supplier_section() {
-    let source = r#"
+fn slot_profile_keeps_catalogue_size_and_refuses_a_section_it_cannot_publish() {
+    let source = format!(
+        r#"
 d = slot_profile_dimensions("Motedis-20x20-I5")
-if d["width_mm"] != 20 or d["height_mm"] != 20 or d["bore_mm"] != 4.3:
-    fail("incorrect supplier section")
-if "motedis.com/shop/products_files/" not in d["source"]:
-    fail("missing supplier CAD citation")
-slot_profile("bar", "Motedis-20x20-I5", 125)
-"#;
-    let model = ketchup_program::run("profile.star", source, &BTreeMap::new())
+if d["width_mm"] != 20 or d["height_mm"] != 20:
+    fail("incorrect catalogue size")
+if d["section"] != None or d["bore_mm"] != None:
+    fail("Motedis terms forbid publishing the CAD section and its bore")
+if d["source"] != "https://www.motedis.com/en/Aluminium-Profile-20x20-I-Typ-slot-5":
+    fail("missing product page citation")
+{}
+"#,
+        profile("Motedis-20x20-I5", 20.0, 125.0, "")
+    );
+    let model = ketchup_program::run("profile.star", &source, &BTreeMap::new())
         .unwrap()
         .0
         .model;
@@ -27,111 +61,71 @@ slot_profile("bar", "Motedis-20x20-I5", 125)
     assert_eq!(bom.hardware.len(), 1);
     assert_eq!(bom.hardware[0].count, 1);
     assert!(bom.hardware[0].item.contains("Motedis-20x20-I5"));
-    assert_eq!(
-        bom.hardware[0].attributes["length_mm"]
-            .parse::<f64>()
-            .unwrap(),
-        125.0
-    );
-    assert!(bom.hardware[0].attributes["geometry_basis"].contains("supplier STEP"));
+    let attributes = &bom.hardware[0].attributes;
+    assert_eq!(attributes["length_mm"].parse::<f64>().unwrap(), 125.0);
+    assert!(attributes["geometry_basis"].contains("caller-supplied section"));
+    assert!(attributes["section_source"].contains("synthetic test section"));
+    let synthetic = section(20.0);
+    let wide = section(30.0);
     for call in [
-        "slot_profile_dimensions('generic-2020')",
-        "slot_profile_dimensions('Motedis-30x30-I5')",
-        "slot_profile('bar','Motedis-20x20-I5',0)",
-        "slot_profile('bar','Motedis-20x20-I5',-1)",
+        "slot_profile_dimensions('generic-2020')".to_owned(),
+        "slot_profile_dimensions('Motedis-30x30-I5')".to_owned(),
+        "slot_profile('bar','Motedis-20x20-I5',125)".to_owned(),
+        format!(
+            "{synthetic}\nslot_profile('bar','Motedis-20x20-I5',125,section=section,cavities=cavities)"
+        ),
+        format!(
+            "{synthetic}\nslot_profile('bar','Motedis-20x20-I5',125,section=section,section_source=' ',cavities=cavities)"
+        ),
+        format!(
+            "{synthetic}\nslot_profile('bar','Motedis-20x20-I5',125,section=section,section_source=source)"
+        ),
+        format!(
+            "{wide}\nslot_profile('bar','Motedis-20x20-I5',125,section=section,section_source=source,cavities=cavities)"
+        ),
+        format!(
+            "{synthetic}\nslot_profile('bar','Motedis-20x20-I5',0,section=section,section_source=source,cavities=cavities)"
+        ),
+        format!(
+            "{synthetic}\nslot_profile('bar','Motedis-20x20-I5',-1,section=section,section_source=source,cavities=cavities)"
+        ),
     ] {
         assert!(
-            ketchup_program::run("invalid.star", call, &BTreeMap::new()).is_err(),
+            ketchup_program::run("invalid.star", &call, &BTreeMap::new()).is_err(),
             "{call}"
         );
     }
 }
 
 #[test]
-fn slot_profile_exact_volume_retains_slots_and_bore_at_each_length() {
+fn slot_profile_exact_volume_keeps_the_supplied_section_and_cavities_at_each_length() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
-    for length in [25.0, 125.0, 1000.0] {
-        let source = format!("slot_profile('bar','Motedis-20x20-I5',{length})");
-        assert_volume(volume(&mut worker, &source, "bar"), SECTION_AREA * length);
+    for (designation, width) in [
+        ("Motedis-20x20-I5", 20.0),
+        ("Motedis-30x30L-I6", 30.0),
+        ("Motedis-40x40L-I8", 40.0),
+    ] {
+        for length in [25.0, 300.0] {
+            let source = profile(designation, width, length, "");
+            assert_volume(volume(&mut worker, &source, "bar"), area(width) * length);
+        }
     }
 }
 
 #[test]
 fn slot_profile_components_keep_bom_and_rotated_step_after_save_open() {
-    check_components("Motedis-20x20-I5", SECTION_AREA, 20.0);
+    check_components("Motedis-20x20-I5", 20.0);
+    check_components("Motedis-30x30L-I6", 30.0);
+    check_components("Motedis-40x40L-I8", 40.0);
 }
 
-#[test]
-fn slot_profile_30_retains_supplier_voids_and_exports_components() {
-    let source = r#"
-d = slot_profile_dimensions("Motedis-30x30L-I6")
-if d["width_mm"] != 30 or d["height_mm"] != 30 or d["bore_mm"] != 4.9:
-    fail("incorrect supplier section")
-if d["source"] != "https://www.motedis.com/shop/products_files/Motedis_019597.zip":
-    fail("missing supplier CAD citation")
-slot_profile("bar", "Motedis-30x30L-I6", 75)
-"#;
-    let model = ketchup_program::run("profile30.star", source, &BTreeMap::new())
-        .unwrap()
-        .0
-        .model;
-    let bom = ketchup_program::bom::bom(&model);
-    assert_eq!(bom.hardware.len(), 1);
-    assert!(bom.hardware[0].item.contains("Motedis-30x30L-I6"));
-    // Integral of all six wires on supplier STEP face #3143 (2026-04-22).
-    // Includes four corner cavities, not only the central circular bore.
-    let area = 335.186_232_766;
-    {
-        let _turn = crate::integration_support::file_turn();
-        let mut worker = worker();
-        for length in [10.0, 75.0, 300.0] {
-            let source = format!("slot_profile('bar','Motedis-30x30L-I6',{length})");
-            assert_volume(volume(&mut worker, &source, "bar"), area * length);
-        }
-    }
-    check_components("Motedis-30x30L-I6", area, 30.0);
-}
-
-#[test]
-fn slot_profile_40_retains_supplier_voids_and_exports_components() {
-    let source = r#"
-d = slot_profile_dimensions("Motedis-40x40L-I8")
-if d["width_mm"] != 40 or d["height_mm"] != 40 or d["bore_mm"] != 6.8:
-    fail("incorrect supplier section")
-if d["source"] != "https://www.motedis.com/shop/products_files/40x40L%20I-Type%20slot%208.zip":
-    fail("missing supplier CAD citation")
-slot_profile("bar", "Motedis-40x40L-I8", 60)
-"#;
-    let model = ketchup_program::run("profile40.star", source, &BTreeMap::new())
-        .unwrap()
-        .0
-        .model;
-    let bom = ketchup_program::bom::bom(&model);
-    assert_eq!(bom.hardware.len(), 1);
-    assert!(bom.hardware[0].item.contains("Motedis-40x40L-I8"));
-    // Integral of all six wires on supplier STEP P40L_N8_I.stp face #5037
-    // (2013-03-20): 112 outer edges, four 8-edge cavities and the bore.
-    let area = 657.097_170_981;
-    {
-        let _turn = crate::integration_support::file_turn();
-        let mut worker = worker();
-        for length in [10.0, 60.0, 300.0] {
-            let source = format!("slot_profile('bar','Motedis-40x40L-I8',{length})");
-            assert_volume(volume(&mut worker, &source, "bar"), area * length);
-        }
-    }
-    check_components("Motedis-40x40L-I8", area, 40.0);
-}
-
-fn check_components(designation: &str, section_area: f64, width: f64) {
+fn check_components(designation: &str, width: f64) {
     let _turn = crate::integration_support::file_turn();
-    let source = r#"
-p=slot_profile("bar","Motedis-20x20-I5",125,at=(10,20,30),axis=(1,0,0))
-c=component("frame member",[p])
-instance("second member",c,at=(0,0,50))
-"#
-    .replace("Motedis-20x20-I5", designation);
+    let source = format!(
+        "{}\nc=component(\"frame member\",[p])\ninstance(\"second member\",c,at=(0,0,50))\n",
+        profile(designation, width, 125.0, ",at=(10,20,30),axis=(1,0,0)")
+    );
     let source = source.as_str();
     let model = ketchup_program::run("frame.star", source, &BTreeMap::new())
         .unwrap()
@@ -178,7 +172,7 @@ instance("second member",c,at=(0,0,50))
         )
         .unwrap();
     assert_eq!(imported.solid_count, 2);
-    assert_volume(imported.volume_mm3, 2.0 * section_area * 125.0);
+    assert_volume(imported.volume_mm3, 2.0 * area(width) * 125.0);
     for (actual, expected) in imported.bounds_mm.into_iter().flatten().zip([
         10.0,
         20.0 - width / 2.0,
