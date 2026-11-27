@@ -1235,6 +1235,8 @@ fn a_sheet_label_with_a_line_break_is_refused() {
     for extra in [
         json!({"sheet_titles": ["Plan\n0\nEOF"]}),
         json!({"sheet_numbers": ["A.1", "A\t2"]}),
+        json!({"sheet_numbers": ["A\r1"]}),
+        json!({"sheet_titles": ["Plan\r\n0"]}),
     ] {
         let code = bridge
             .execute(&mut app, export_drawings(&set, extra.clone()), false)
