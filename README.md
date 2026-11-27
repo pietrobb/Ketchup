@@ -96,7 +96,7 @@ From the same model you get a numbered drawing set (**File → Drawings (PDF, DX
 
 Export a `.ketchup-view` package and send it. **Ketchup Viewer** opens it read-only: your customer can orbit the model, switch your saved scenes, pick a part to see its name, material, size and notes, show your dimensions, measure between points, and add comments with arrows and the camera position, then save them in a small file to send back to you, all without being able to change the geometry. The package carries geometry, materials and notes, not your design history or programs.
 
-On Windows the Viewer is installed with Ketchup; on a Mac it is its own download, `Ketchup-Viewer-0.3.3-macOS.dmg`. An Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
+On Windows the Viewer is installed with Ketchup; on a Mac it is its own download, `Ketchup-Viewer-0.4.0-macOS.dmg`. An Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
 
 ### Let your AI assistant model it
 
@@ -115,19 +115,19 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 
 ## Download and try it
 
-1. Download **`Ketchup-0.3.3-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.3-Portable.zip` from the same release.
-2. Download **`Ketchup-0.3.3-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
+1. Download **`Ketchup-0.4.0-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.4.0-Portable.zip` from the same release.
+2. Download **`Ketchup-0.4.0-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
 3. Optional: connect your AI harness (below) and ask it to *"model a 120 × 60 cm desk with two drawers"*.
 
 Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (only the older 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, 14.29 or later). The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
-**On a Mac** (since 0.3.3): download **`Ketchup-0.3.3-macOS.dmg`** from the same release, open it and drag **Ketchup** (the app `Kečup.app` in 0.3.3) into Applications. **`Ketchup-Viewer-0.3.3-macOS.dmg`** holds **Ketchup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`.
+**On a Mac** (since 0.3.3): download **`Ketchup-0.4.0-macOS.dmg`** from the same release, open it and drag **Ketchup** (the app `Ketchup.app`, named `Kečup.app` in 0.3.3) into Applications. **`Ketchup-Viewer-0.4.0-macOS.dmg`** holds **Ketchup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.4.0-Examples.zip`.
 
-**On Linux** (from the release after 0.3.3): download **`Ketchup-<version>-Linux-x86_64.tar.gz`** from the release, unpack it anywhere and run `ketchup-app` (Ketchup) or `ketchup-viewer` (Ketchup Viewer) in the folder; the workers and the OCCT libraries are beside them, nothing is installed. It needs an x86-64 Linux with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 or newer), Vulkan drivers and X11 or Wayland: on Ubuntu the packages in [`scripts/linux/runtime-packages.txt`](scripts/linux/runtime-packages.txt). `sha256sum -c SHA256SUMS.txt --ignore-missing` checks the download.
+**On Linux** (since 0.4.0): download **`Ketchup-<version>-Linux-x86_64.tar.gz`** from the release, unpack it anywhere and run `ketchup-app` (Ketchup) or `ketchup-viewer` (Ketchup Viewer) in the folder; the workers and the OCCT libraries are beside them, nothing is installed. It needs an x86-64 Linux with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 or newer), Vulkan drivers and X11 or Wayland: on Ubuntu the packages in [`scripts/linux/runtime-packages.txt`](scripts/linux/runtime-packages.txt). `sha256sum -c SHA256SUMS.txt --ignore-missing` checks the download.
 
 ## Examples you can open right away
 
-The examples are in `Ketchup-0.3.3-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
+The examples are in `Ketchup-0.4.0-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
 
 | Example | Try it for |
 |---|---|
@@ -171,13 +171,7 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
 
-On a Mac, with Ketchup in Applications, the command is the program inside the app. In 0.3.3, the release you can download now, the app is still named `Kečup.app`:
-
-```sh
-claude mcp add --scope user ketchup -- "/Applications/Kečup.app/Contents/MacOS/ketchup-app" --mcp
-```
-
-From the next release the app is named `Ketchup.app`, and the command is:
+On a Mac, with Ketchup in Applications, the command is the program inside the app (in 0.3.3 the app was named `Kečup.app`, so the path was `/Applications/Kečup.app/...`):
 
 ```sh
 claude mcp add --scope user ketchup -- "/Applications/Ketchup.app/Contents/MacOS/ketchup-app" --mcp
