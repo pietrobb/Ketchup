@@ -165,12 +165,10 @@ fn click(harness: &mut Shell, key: &str) {
 /// Paints the window until the CAM review it runs has finished, as a user waits for it.
 fn settle(harness: &mut Shell) {
     let running = harness.state().catalog.text("cam-review-running");
-    let started = std::time::Instant::now();
+    let mut frames = 0_u32;
     while harness.query_by_label(&running).is_some() {
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(600),
-            "the CAM review never finished"
-        );
+        frames += 1;
+        assert!(frames < 60_000, "the CAM review never finished");
         std::thread::sleep(std::time::Duration::from_millis(10));
         harness.step();
     }
