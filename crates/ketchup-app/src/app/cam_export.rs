@@ -175,11 +175,47 @@ pub(crate) fn cam_dialect_choices() -> Result<Vec<(String, String)>, CamGCodeDia
         .collect())
 }
 
+const fn new_cam_file() -> ExportError {
+    ExportError::Destination {
+        requirement: "a new file in an existing folder",
+    }
+}
+
 /// What a user is told the program is for: the dialect's name, or its id when it has none.
 pub(crate) fn cam_dialect_name(dialect: &CamPostprocessorDialect) -> String {
     match dialect {
         CamPostprocessorDialect::GCode(dialect) => dialect.name().to_owned(),
         CamPostprocessorDialect::ControllerNeutralJson => dialect.id().to_owned(),
+    }
+}
+
+/// A CAM program to write, made ready on the window thread: what is planned and simulated,
+/// on a thread for a client (review 2026-11-27 R1127-CAM-2), and what the window checks
+/// before it writes the result.
+pub(crate) struct CamProgramRun {
+    pub(crate) worker_path: PathBuf,
+    pub(crate) snapshot: Snapshot,
+    mutation_epoch: u64,
+    pub(crate) request: CamReviewRequest,
+    /// The threads of the part no operation cuts.
+    lost: Vec<String>,
+    /// The SHA-256 of the file the program replaces, if it replaces one.
+    replaced: Option<String>,
+}
+
+impl CamProgramRun {
+    /// Plans, simulates and writes the program for its controller, stopped when `cancelled`
+    /// is set.
+    pub(crate) fn compute(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<CamComputedReview, CamReviewError> {
+        CamComputedReview::compute(
+            Some(&self.worker_path),
+            &self.snapshot,
+            self.request.clone(),
+            cancelled,
+        )
     }
 }
 
@@ -195,21 +231,24 @@ impl KetchupApp {
         operations: Vec<CamOperation>,
         cancelled: &AtomicBool,
     ) -> Result<Written, ExportError> {
-        self.side_effect_receipts.clear();
-        let result = self.write_cam_program(path, dialect, operations, cancelled);
+        let result = self
+            .prepare_cam_program(path, dialect, operations)
+            .and_then(|run| {
+                let computed = run.compute(cancelled);
+                self.finish_cam_program(path, run, computed)
+            });
         self.report_export_outcome("cam-nc", path, result)
     }
 
-    fn write_cam_program(
+    /// What [`Self::export_current_cam_program_to`] plans and simulates; refused before it
+    /// runs when the program could not be written.
+    pub(crate) fn prepare_cam_program(
         &mut self,
         path: &Path,
         dialect: CamPostprocessorDialect,
         mut operations: Vec<CamOperation>,
-        cancelled: &AtomicBool,
-    ) -> Result<Written, ExportError> {
-        let new_file = || ExportError::Destination {
-            requirement: "a new file in an existing folder",
-        };
+    ) -> Result<CamProgramRun, ExportError> {
+        self.side_effect_receipts.clear();
         // Refused before the simulation and the prompt: a program replaces a file only for a
         // client that asked to with overwrite, and only once the user agrees in the window.
         let replaced = if path.exists() {
@@ -218,7 +257,7 @@ impl KetchupApp {
                     requirement: "a new file in an existing folder; a client's program replaces an existing file only with overwrite and once the user agrees",
                 });
             }
-            Some(export_target_sha256(path)?.ok_or_else(new_file)?)
+            Some(export_target_sha256(path)?.ok_or_else(new_cam_file)?)
         } else {
             None
         };
@@ -247,21 +286,55 @@ impl KetchupApp {
             );
         }
         let worker_path = self.exact_worker_executable()?;
-        self.reviews.cam_reviews.set_worker_path(worker_path);
+        self.reviews
+            .cam_reviews
+            .set_worker_path(worker_path.clone());
+        Ok(CamProgramRun {
+            worker_path,
+            snapshot,
+            mutation_epoch,
+            request: CamReviewRequest {
+                plan_id,
+                operations,
+                fixtures: Vec::new(),
+                dialect,
+            },
+            lost,
+            replaced,
+        })
+    }
+
+    /// Writes the program `run` planned and simulated as `computed`, once the user agreed
+    /// to what it asks; refused when the document changed meanwhile. The program is written
+    /// as it was simulated: nothing could be put in its place in between, so it is not
+    /// planned and simulated a second time.
+    pub(crate) fn finish_cam_program(
+        &mut self,
+        path: &Path,
+        run: CamProgramRun,
+        computed: Result<CamComputedReview, CamReviewError>,
+    ) -> Result<Written, ExportError> {
+        let CamProgramRun {
+            snapshot,
+            mutation_epoch,
+            request,
+            lost,
+            replaced,
+            ..
+        } = run;
+        let computed = computed.map_err(ExportError::failed)?;
+        let current = self.document.current();
+        if current.document_id() != snapshot.document_id()
+            || current.revision_id() != snapshot.revision_id()
+            || self.document.mutation_epoch() != mutation_epoch
+        {
+            return Err(ExportError::failed(CamReviewError::StaleReview));
+        }
+        let dialect = request.dialect;
         let review = self
             .reviews
             .cam_reviews
-            .preview(
-                &snapshot,
-                mutation_epoch,
-                CamReviewRequest {
-                    plan_id,
-                    operations,
-                    fixtures: Vec::new(),
-                    dialect: dialect.clone(),
-                },
-                cancelled,
-            )
+            .admit(&snapshot, mutation_epoch, computed.clone())
             .map_err(ExportError::failed)?;
         let title = self.catalog.text("dialog-export-cam-title");
         let mut risk = self.catalog.format(
@@ -303,19 +376,18 @@ impl KetchupApp {
         };
         self.reviews
             .cam_reviews
-            .export(
+            .export_computed(
                 &snapshot,
                 mutation_epoch,
                 &review.token,
                 path,
-                true,
                 replaced
                     .is_some()
                     .then_some(&still_same as &dyn Fn(&Path) -> bool),
-                cancelled,
+                &computed,
             )
             .map_err(|error| match error {
-                CamReviewError::FileExists | CamReviewError::InvalidPath => new_file(),
+                CamReviewError::FileExists | CamReviewError::InvalidPath => new_cam_file(),
                 CamReviewError::ReplacedFileChanged => ExportError::ChangedDuringConsent,
                 other => ExportError::failed(other),
             })?;
