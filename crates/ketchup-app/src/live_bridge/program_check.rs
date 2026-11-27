@@ -170,6 +170,7 @@ pub(super) enum ProgramCheckJob {
     VariantExport(super::program_variant_export::VariantExportJob),
     DwgImport(super::dwg_import::DwgImportJob),
     ExchangeExport(super::exchange_export::ExchangeExportJob),
+    CamExport(super::exchange_export::cam_nc_export::CamExportJob),
     Presentation(super::exchange_export::PresentationJob),
     DrawingExport(super::drawing_export::DrawingExportJob),
     ProjectDrawings(super::project_drawings_job::ProjectDrawingsExportJob),
@@ -191,6 +192,7 @@ impl ProgramCheckJob {
             Self::VariantExport(job) => &job.cancelled,
             Self::DwgImport(job) => &job.cancelled,
             Self::ExchangeExport(job) => &job.cancelled,
+            Self::CamExport(job) => &job.cancelled,
             Self::Presentation(job) => &job.cancelled,
             Self::DrawingExport(job) => &job.cancelled,
             Self::ProjectDrawings(job) => &job.cancelled,
@@ -795,6 +797,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::ExchangeExport(job) => {
                 self.poll_exchange_export(app, context, job);
+                return;
+            }
+            ProgramCheckJob::CamExport(job) => {
+                self.poll_cam_export(app, context, job);
                 return;
             }
             ProgramCheckJob::Presentation(job) => {
