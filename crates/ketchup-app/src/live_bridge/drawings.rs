@@ -666,27 +666,22 @@ fn storey_problem(problem: StoreyTableProblem) -> Value {
     }
 }
 
+/// The field and index of the first sheet number or title holding a control
+/// character. Each is one line of the title block and of a DXF/DWG TEXT, so a
+/// line break among them is refused (review 2026-11-27 LBL-1).
+fn label_with_control(numbers: &[String], titles: &[String]) -> Option<(&'static str, usize)> {
+    [("sheet_numbers", numbers), ("sheet_titles", titles)]
+        .into_iter()
+        .find_map(|(field, values)| {
+            let index = values
+                .iter()
+                .position(|value| value.chars().any(char::is_control))?;
+            Some((field, index))
+        })
+}
+
 /// The number and title of each sheet a client names, in the set's order.
-/// Each is one line of the title block and of a DXF/DWG TEXT, so a control
-/// character, a line break among them, is refused (review 2026-11-27 LBL-1).
-fn sheet_labels(
-    numbers: Vec<String>,
-    titles: Vec<String>,
-) -> Result<Vec<SheetLabel>, &'static str> {
-    for (field, values) in [("sheet_numbers", &numbers), ("sheet_titles", &titles)] {
-        if let Some(index) = values
-            .iter()
-            .position(|value| value.chars().any(char::is_control))
-        {
-            return Err(failure(
-                "invalid_params",
-                format!(
-                    "{field} are one line each, without a line break, tab or other control character."
-                ),
-                json!({"field": field, "index": index}),
-            ));
-        }
-    }
+fn sheet_labels(numbers: Vec<String>, titles: Vec<String>) -> Vec<SheetLabel> {
     let mut labels = numbers
         .into_iter()
         .map(|number| SheetLabel {
@@ -703,7 +698,7 @@ fn sheet_labels(
             }),
         }
     }
-    Ok(labels)
+    labels
 }
 
 /// The table of storeys as an answer names it, and where its storeys came from.
@@ -747,10 +742,19 @@ pub(super) fn start_export(
     };
     LiveBridge::guard(app, &expected)?;
     LiveBridge::available(app, ui_busy)?;
+    if let Some((field, index)) = label_with_control(&sheet_numbers, &sheet_titles) {
+        return Err(failure(
+            "invalid_params",
+            format!(
+                "{field} are one line each, without a line break, tab or other control character."
+            ),
+            json!({"field": field, "index": index}),
+        ));
+    }
     let request = SheetRequest {
         plan_only,
         scale: drawing_scale.map(sheet_scale).transpose()?,
-        labels: sheet_labels(sheet_numbers, sheet_titles)?,
+        labels: sheet_labels(sheet_numbers, sheet_titles),
     };
     let path = path.as_str();
     let target = Path::new(path);
