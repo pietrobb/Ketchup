@@ -111,6 +111,27 @@ fn perf_a_pocket_whose_estimated_cuts_pass_the_motion_cap_is_refused_before_any_
     );
 }
 
+/// Review 2026-11-27 CAM-1, follow-up: at 0.1 mm stepover the same plate's
+/// 37 522 cuts stay under half the cap, so neither estimate refuses it, but
+/// almost every cut is a path of its own and the paths need 108 056 motions.
+/// It was refused only once 33 012 paths had been joined, after 4.6 s.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_pocket_refused_at_one_tenth_mm_stepover_is_refused_within_half_a_second() {
+    let plate = plate_of_121_holes();
+    let started = std::time::Instant::now();
+    let refused = pocket_paths(&plate, 3.0, 0.1);
+    let elapsed = started.elapsed();
+    assert_eq!(
+        refused.as_ref().map(Vec::len).err(),
+        Some(&CamPlannerError::InvalidOperations)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "refused after {elapsed:.2?}"
+    );
+}
+
 /// The estimate a pocket is refused by never counts more cuts than its lanes
 /// make, so it refuses no pocket whose lanes fit the cap: here round, square
 /// and L-shaped islands at three stepovers.
