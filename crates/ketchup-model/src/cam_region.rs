@@ -758,6 +758,28 @@ fn move_stays_inside(loops: &[Vec<Segment>], from: Point, to: Point) -> bool {
     })
 }
 
+/// The loops of `near` whose whole loop, `across` it from left to right, comes
+/// within reach of a straight move from `from` to `to`. A loop wholly left or
+/// right of the move crosses it nowhere, comes nowhere near it and crosses the
+/// lanes through its points an even number of times to their right, so the move
+/// stays inside the rest as it does inside all of `near`, with a fraction of the
+/// work: a lane between many islands tries links past most of them.
+fn loops_beside(
+    near: &[Vec<Segment>],
+    across: &[[f64; 2]],
+    from: Point,
+    to: Point,
+) -> Vec<Vec<Segment>> {
+    let slack = 4.0 * LOOP_TOLERANCE_MM;
+    let low = from[0].min(to[0]) - slack;
+    let high = from[0].max(to[0]) + slack;
+    near.iter()
+        .zip(across)
+        .filter(|(_, [left, right])| *right >= low && *left <= high)
+        .map(|(segments, _)| segments.clone())
+        .collect()
+}
+
 /// The loops the cutter centre may not cross when it keeps `clearance_mm` off
 /// the region's walls and islands, each run with the wall on the cutter's right
 /// (climb milling with a clockwise spindle).
@@ -913,16 +935,30 @@ fn grazes(boundaries: &[Vec<Segment>], y: f64, from_x: f64, to_x: f64) -> bool {
 }
 
 /// Joins the rows' spans into zig-zag paths. Refused as soon as the paths need
-/// more motions than one toolpath may hold, before the rest is joined: each path
-/// is at least a plunge, its cuts and a retract (R1127-CAM-1).
+/// more motions than one toolpath may hold, before the rest is joined
+/// (R1127-CAM-1): a path of `n` cuts is a plunge, its cuts, `n - 1` links and a
+/// retract, so the cuts not yet joined need at least two motions each and one
+/// more for the path they start.
 fn zigzag(
     boundaries: &[Vec<Segment>],
     rows: &mut [(f64, Vec<[f64; 2]>)],
 ) -> Result<Vec<CamPath2d>, CamPlannerError> {
+    let across: Vec<[f64; 2]> = boundaries
+        .iter()
+        .map(|segments| {
+            let [low, high] = loop_bounds(std::slice::from_ref(segments));
+            [low[0], high[0]]
+        })
+        .collect();
+    let mut unjoined: usize = rows.iter().map(|(_, spans)| spans.len()).sum();
     let mut paths = Vec::new();
     let mut motions = 0_usize;
     for first_row in 0..rows.len() {
         while let Some(span) = rows[first_row].1.pop() {
+            if motions + 2 * unjoined + 1 > MAX_CAM_MOTIONS {
+                return Err(CamPlannerError::InvalidOperations);
+            }
+            unjoined -= 1;
             let y = rows[first_row].0;
             let mut path = CamPath2d {
                 start_mm: [span[0], y],
@@ -943,11 +979,13 @@ fn zigzag(
                         .abs()
                         .total_cmp(&(spans[right][side] - tail[0]).abs())
                 });
-                let found = nearest
-                    .into_iter()
-                    .find(|&index| move_stays_inside(&near, tail, [spans[index][side], *next_y]));
+                let found = nearest.into_iter().find(|&index| {
+                    let to = [spans[index][side], *next_y];
+                    move_stays_inside(&loops_beside(&near, &across, tail, to), tail, to)
+                });
                 let Some(index) = found else { break };
                 let span = spans.remove(index);
+                unjoined -= 1;
                 let entry = [span[side], *next_y];
                 let exit = [span[1 - side], *next_y];
                 path.segments.push(CamPathSegment2d::Line { to_mm: entry });
