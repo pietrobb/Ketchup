@@ -1164,6 +1164,95 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     assert_eq!(code, "drawings_set_of_another_project");
 }
 
+/// Review 2026-11-27 R1127-OW-2: the user's yes to take over another
+/// project's set is kept by the list's SHA-256 only. A sheet of that set
+/// changed after the answer is still not overwritten: only sheets whose
+/// SHA-256 the list holds belong to the set, so the set asked about differs
+/// and the window asks again; agreed again, the changed sheet is refused and
+/// nothing is written.
+#[test]
+fn a_sheet_changed_after_the_take_over_was_agreed_is_not_overwritten() {
+    let directory = tempfile::tempdir().unwrap();
+    let drawings = directory.path().join("drawings");
+    std::fs::create_dir_all(&drawings).unwrap();
+    let set = drawings.join("house.dxf");
+    let saved = directory.path().join("house.ketchup");
+    let store = directory.path().join("drawings.txt");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, extra: Value| {
+        let answer = bridge.execute(app, export_drawings(&set, extra), false);
+        answer.map_err(|code| (code, take_error_details().unwrap_or_default().to_string()))
+    };
+
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    evaluate_exact(&mut app);
+    app.remember_recent_file(&saved);
+    let save_as = json!({"method": "save_as", "path": saved});
+    let save_as = serde_json::from_value::<Request>(save_as).unwrap();
+    bridge.execute(&mut app, save_as, false).unwrap();
+    export(&mut app, &mut bridge, json!({})).unwrap();
+    let list_path = set.with_file_name("house.dxf.sheets.txt");
+    let list = std::fs::read(&list_path).unwrap();
+
+    let (other, mut other_bridge) = setup();
+    let dialogs = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = dialogs.clone();
+    let mut other = other
+        .with_written_drawings(&store)
+        .with_dialogs(Box::new(dialogs));
+    evaluate_exact(&mut other);
+    let take_over = json!({"take_over": true});
+    let (code, _) = export(&mut other, &mut other_bridge, take_over.clone()).unwrap_err();
+    assert_eq!(code, "awaiting_user_confirmation");
+    other.ask_client_replace();
+    assert_eq!(probe.high_risk_prompts().len(), 1);
+
+    let sheet = drawings.join("house-01.dxf");
+    assert!(sheet.is_file());
+    let edited = b"0\nEOF\n";
+    std::fs::write(&sheet, edited).unwrap();
+    // The changed sheet is no longer the set's, so the window asks again.
+    let (code, answer) = export(&mut other, &mut other_bridge, take_over.clone()).unwrap_err();
+    assert_eq!(code, "awaiting_user_confirmation", "{answer}");
+    assert_eq!(std::fs::read(&sheet).unwrap(), edited);
+    other.ask_client_replace();
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    let (code, answer) = export(&mut other, &mut other_bridge, take_over).unwrap_err();
+    assert_eq!(code, "drawings_target_exists", "{answer}");
+    assert_eq!(std::fs::read(&sheet).unwrap(), edited);
+    assert_eq!(std::fs::read(&list_path).unwrap(), list);
+}
+
+/// Review 2026-11-27 LBL-1: a sheet number or title is one line of the title
+/// block and of a DXF/DWG TEXT; one with a line break is refused before
+/// anything is written.
+#[test]
+fn a_sheet_label_with_a_line_break_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let set = directory.path().join("house.dxf");
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    for extra in [
+        json!({"sheet_titles": ["Plan\n0\nEOF"]}),
+        json!({"sheet_numbers": ["A.1", "A\t2"]}),
+    ] {
+        let code = bridge
+            .execute(&mut app, export_drawings(&set, extra.clone()), false)
+            .unwrap_err();
+        let details = take_error_details().unwrap_or_default().to_string();
+        assert_eq!(code, "invalid_params", "{extra}: {details}");
+        assert!(details.contains("control character"), "{details}");
+    }
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    bridge
+        .execute(
+            &mut app,
+            export_drawings(&set, json!({"sheet_titles": ["Půdorys 1.NP"]})),
+            false,
+        )
+        .unwrap();
+}
+
 /// Review 2026-11-06 MF-182: a project moved together with its drawings
 /// folder, `C:\Jobs\Dom\` to `D:\Archiv\Dom\` or a folder synced to a
 /// colleague, refused its own set as exported "from dom.ketchup, not this
