@@ -40,7 +40,7 @@ from happening:
    REL-404). This runs with the variants.
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
---depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2 tag v0.3.3` in a shallow clone). The old crates and their
+--depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2 tag v0.3.3 tag v0.4.0` in a shallow clone). The old crates and their
 build go to `<target>/release-<version>`; `--variants-only` skips the build.
 """
 
@@ -61,7 +61,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Not v0.1.0: it takes every newer format and a document with a program for damage,
 # so no file Save writes can be kept safe from it; the README warns against it
 # (review 2026-11-01 DOC-100: 46 of 148 saved files opened its `.recovery`).
-RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2", "v0.3.3")
+RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2", "v0.3.3", "v0.4.0")
 SAVED_CRATES = ("crates/ketchup-model", "crates/ketchup-geometry", "crates/ketchup-tolerance")
 # `ketchup-test-env` is a dev-dependency of the model: the workspace needs its manifest.
 OLD_CRATES = (*SAVED_CRATES, "crates/ketchup-test-env")
@@ -130,6 +130,7 @@ REVIEWED = {
         "SurfaceBodySpec": {"Boundary", "Blend", "ControlPoint"},
         "ExactBRepOperation": {"BoundarySurface", "SurfaceBlend", "SurfaceControlPoint"},
     },
+    "v0.4.0": {},
 }
 
 # Structs kept as JSON in container extensions and read without `deny_unknown_fields`: a
