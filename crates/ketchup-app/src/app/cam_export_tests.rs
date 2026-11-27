@@ -162,6 +162,20 @@ fn click(harness: &mut Shell, key: &str) {
     harness.run_steps(2);
 }
 
+/// Paints the window until the CAM review it runs has finished, as a user waits for it.
+fn settle(harness: &mut Shell) {
+    let running = harness.state().catalog.text("cam-review-running");
+    let started = std::time::Instant::now();
+    while harness.query_by_label(&running).is_some() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(600),
+            "the CAM review never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.step();
+    }
+}
+
 /// The X, Y, Z every motion of `program` reaches, the axes it leaves out kept from before.
 fn positions(program: &str) -> Vec<[f64; 3]> {
     let mut at = [f64::NAN; 3];
@@ -205,6 +219,7 @@ fn the_window_pockets_the_selected_floor_for_the_chosen_controller() {
     let drill = harness.state().catalog.text("cam-operation-drill");
     choose(&mut harness, "cam-review-operation", &drill);
     click(&mut harness, "cam-review-preview");
+    settle(&mut harness);
     let dialog = harness.state().reviews.cam_export_dialog.as_ref().unwrap();
     assert!(dialog.review.is_none(), "{}", harness.state().digest);
 
@@ -216,6 +231,7 @@ fn the_window_pockets_the_selected_floor_for_the_chosen_controller() {
     };
     choose(&mut harness, "cam-review-dialect", &grbl);
     click(&mut harness, "cam-review-preview");
+    settle(&mut harness);
     let review = harness
         .state()
         .reviews
@@ -234,6 +250,7 @@ fn the_window_pockets_the_selected_floor_for_the_chosen_controller() {
     assert!(review.gouge_mm3.abs() < 1e-6, "{}", review.gouge_mm3);
 
     click(&mut harness, "cam-review-confirm-export");
+    settle(&mut harness);
     let program = std::fs::read_to_string(&output)
         .unwrap_or_else(|error| panic!("{error}: {}", harness.state().digest));
     let cutting = positions(&program)
@@ -250,4 +267,43 @@ fn the_window_pockets_the_selected_floor_for_the_chosen_controller() {
     let deepest = cutting.iter().map(|at| at[2]).fold(f64::INFINITY, f64::min);
     assert!((deepest - 6.0).abs() < 1e-6, "{deepest}\n{program}");
     assert_eq!(harness.state().canonical_digest(), before);
+}
+
+/// Review 2026-11-27 R1127-CAM-2: Preview planned and simulated the program on the window
+/// thread, so a dense pocket froze the window for seconds and nothing could stop it. The
+/// window paints the running review, and Cancel stops it and writes nothing.
+#[test]
+fn the_window_paints_while_its_cam_review_runs_and_cancel_stops_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("pocket.gcode");
+    let dialogs = ScriptedFileDialogs::new().queue_export(&output);
+    let mut app = plate_with_a_pocket(&dialogs);
+    let floor = face_up_at(&app, 6.0);
+    select_face(&mut app, floor);
+    let mut harness = shell(app);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ReviewCamExport);
+    harness.run_steps(2);
+    let pocket = harness.state().catalog.text("cam-operation-pocket");
+    choose(&mut harness, "cam-review-operation", &pocket);
+
+    click(&mut harness, "cam-review-preview");
+    let running = harness.state().catalog.text("cam-review-running");
+    assert!(
+        harness.query_by_label(&running).is_some(),
+        "the review ran on the window thread: {}",
+        harness.state().digest
+    );
+    let dialog = harness.state().reviews.cam_export_dialog.as_ref().unwrap();
+    assert!(dialog.review.is_none());
+
+    click(&mut harness, "dialog-cancel");
+    assert!(harness.state().reviews.cam_export_dialog.is_none());
+    assert_eq!(
+        harness.state().digest,
+        harness.state().catalog.text("digest-cancelled")
+    );
+    harness.run_steps(2);
+    assert!(!output.exists());
 }
