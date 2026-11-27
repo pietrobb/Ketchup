@@ -162,16 +162,30 @@ fn click(harness: &mut Shell, key: &str) {
     harness.run_steps(2);
 }
 
-/// Paints the window until the CAM review it runs has finished, as a user waits for it.
+/// Paints the window once the CAM review it runs has finished, as a user waits for it;
+/// the test waits on the run's own result rather than guessing how long it takes.
 fn settle(harness: &mut Shell) {
     let running = harness.state().catalog.text("cam-review-running");
-    let mut frames = 0_u32;
-    while harness.query_by_label(&running).is_some() {
-        frames += 1;
-        assert!(frames < 60_000, "the CAM review never finished");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        harness.step();
+    if let Some(run) = harness
+        .state_mut()
+        .reviews
+        .cam_export_dialog
+        .as_mut()
+        .and_then(|dialog| dialog.running.as_mut())
+    {
+        let result = run
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(600))
+            .expect("the CAM review never finished");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(result).unwrap();
+        run.receiver = receiver;
     }
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label(&running).is_none(),
+        "the window still says the CAM review runs"
+    );
 }
 
 /// The X, Y, Z every motion of `program` reaches, the axes it leaves out kept from before.
