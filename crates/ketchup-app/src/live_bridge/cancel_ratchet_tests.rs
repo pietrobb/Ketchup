@@ -63,11 +63,6 @@ const NOT_WAITED_ON: &[(&str, &str, &str)] = &[
     ("app/skp_import.rs", "model_glb", "held conversion"),
     // Window dialogs the bridge never reaches; they run in the frame of their button.
     ("app/document.rs", "show_pdm_review_window", "window dialog"),
-    (
-        "app/cam_export.rs",
-        "show_cam_export_window",
-        "window dialog",
-    ),
 ];
 
 /// The function `lines[index]` is in, and whether it is compiled for tests only.
