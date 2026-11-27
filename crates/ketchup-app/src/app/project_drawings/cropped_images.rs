@@ -1,5 +1,5 @@
 //! The orthophotos of a printed set cut to what each view shows: an orthophoto of
-//! 8 192 × 8 192 px beneath a house of 20 × 20 m went whole into every PDF, though
+//! 8 192 × 8 192 px beneath a model of 20 × 20 m went whole into every PDF, though
 //! the plan's clip showed a hundredth of it (review 2026-11-27 R1127-IMG-1).
 
 use crate::renderer::underlay::raster::cropped_sheet_image;
@@ -35,11 +35,14 @@ pub(super) fn crop_to_clips(set: &mut DrawingSet) {
                 Some((_, _, part)) => Arc::clone(part),
                 None => {
                     let [column, row, end_column, end_row] = window;
-                    let part = Arc::new(cropped_sheet_image(
+                    let Some(part) = cropped_sheet_image(
                         image,
                         [column, row],
                         [end_column - column, end_row - row],
-                    ));
+                    ) else {
+                        continue;
+                    };
+                    let part = Arc::new(part);
                     cut.push((Arc::clone(image), window, Arc::clone(&part)));
                     part
                 }
@@ -98,7 +101,14 @@ fn shown_pixels(
         let [u, v] = [column / size[0], row / size[1]];
         [0, 1].map(|axis| upper_left[axis] + u * across[axis] + v * down[axis])
     };
-    let window = [first[0], first[1], end[0], end[1]].map(|value| value as u32);
+    // Whole pixels from 0 to the image's size, so written without a decimal they read back.
+    let whole = |value: f64| format!("{:.0}", value + 0.0).parse::<u32>().ok();
+    let window = [
+        whole(first[0])?,
+        whole(first[1])?,
+        whole(end[0])?,
+        whole(end[1])?,
+    ];
     Some((
         window,
         [
@@ -142,7 +152,7 @@ mod tests {
                 "{shown:?}"
             );
         }
-        let part = cropped_sheet_image(&image(), [2, 0], [4, 3]);
+        let part = cropped_sheet_image(&image(), [2, 0], [4, 3]).unwrap();
         assert_eq!([part.width_px, part.height_px], [4, 3]);
         assert_eq!(&part.rgb[..3], &[2, 0, 0]);
         assert_eq!(&part.rgb[part.rgb.len() - 3..], &[5, 2, 0]);

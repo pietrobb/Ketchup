@@ -111,24 +111,27 @@ impl RasterImage {
 }
 
 /// `width` × `height` pixels of `image` from `[column, row]`, the part of it a sheet
-/// shows (review 2026-11-27 R1127-IMG-1).
+/// shows (review 2026-11-27 R1127-IMG-1); `None` when `image` holds fewer pixels
+/// than it says or the part reaches past it.
 #[must_use]
 pub fn cropped_sheet_image(
     image: &SheetImage,
     [column, row]: [u32; 2],
     [width, height]: [u32; 2],
-) -> SheetImage {
-    let stride = image.width_px as usize * 3;
-    let (start, length) = (column as usize * 3, width as usize * 3);
-    let rgb = image
-        .rgb
-        .chunks_exact(stride)
-        .skip(row as usize)
-        .take(height as usize)
-        .flat_map(|line| &line[start..start + length])
-        .copied()
-        .collect();
-    sheet_image_of(rgb, width, height)
+) -> Option<SheetImage> {
+    let whole = image::ImageBuffer::<image::Rgb<u8>, &[u8]>::from_raw(
+        image.width_px,
+        image.height_px,
+        image.rgb.as_slice(),
+    )?;
+    let fits = |start: u32, length: u32, size: u32| start.checked_add(length) <= Some(size);
+    if !fits(column, width, image.width_px) || !fits(row, height, image.height_px) {
+        return None;
+    }
+    let part = image::ImageBuffer::from_fn(width, height, |x, y| {
+        *whole.get_pixel(column + x, row + y)
+    });
+    Some(sheet_image_of(part.into_raw(), width, height))
 }
 
 /// `rgb` as a sheet prints it, with the JPEG a PDF embeds in its place.
