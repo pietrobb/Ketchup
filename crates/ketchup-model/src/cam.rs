@@ -569,7 +569,7 @@ pub enum CamPlannerError {
     UnsupportedRegion,
     UnsupportedHole,
     /// A pocket's lanes meet so many walls and islands that planning them would
-    /// take needlessly long, past about two seconds (R1127-CAM-1).
+    /// take needlessly long, past about a second (R1127-CAM-1).
     PocketTooFine,
     /// A blind hole's floor is the drill's point; this drill's is not the floor's: the
     /// operation and the hole's centre ([`place_mm`]).

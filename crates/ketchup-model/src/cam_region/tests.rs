@@ -158,6 +158,20 @@ fn a_plate_of_121_holes_at_a_tenth_of_the_cutter_is_planned_within_half_the_work
     assert_eq!(pocket_paths(&plate, 3.0, 0.6), planned);
 }
 
+/// The same plate is planned within 0.5 s in release (0.3 s measured; 0.79 s
+/// before a move was tested only against the segments near it).
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_plate_of_121_holes_at_a_tenth_of_the_cutter_is_planned_within_half_a_second() {
+    let plate = plate_of_121_holes();
+    let (planned, elapsed) = timed(|| pocket_paths(&plate, 3.0, 0.6));
+    assert!(planned.is_ok(), "{:?}", planned.err());
+    assert!(
+        elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_millis(500)),
+        "planned in {elapsed:.2?}"
+    );
+}
+
 fn timed<T>(run: impl FnOnce() -> T) -> (T, std::time::Duration) {
     let started = std::time::Instant::now();
     let value = run();
@@ -166,11 +180,11 @@ fn timed<T>(run: impl FnOnce() -> T) -> (T, std::time::Duration) {
 
 /// The slowest pocket still planned: the finest of these stepovers the review
 /// plate is planned at, using nine tenths of the work limit or more, takes under
-/// 2.5 s in release (1.65 s measured), and the next finer one is refused within
-/// 2.5 s.
+/// a second in release (0.65 s measured), and the next finer one is refused
+/// within a second.
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
-fn perf_the_slowest_pocket_planned_within_the_work_limit_takes_under_two_and_a_half_seconds() {
+fn perf_the_slowest_pocket_planned_within_the_work_limit_takes_under_a_second() {
     let plate = plate_of_121_holes();
     let stepovers = [0.5, 0.4, 0.35, 0.3, 0.25, 0.2];
     let refused_at = stepovers
@@ -191,29 +205,42 @@ fn perf_the_slowest_pocket_planned_within_the_work_limit_takes_under_two_and_a_h
         work.used
     );
     assert!(
-        elapsed < std::time::Duration::from_millis(2500),
+        elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
         "stepover {slowest} planned in {elapsed:.2?}"
     );
     let finer = stepovers[refused_at];
     let (refused, elapsed) = timed(|| pocket_paths(&plate, 3.0, finer));
     assert_eq!(refused.err(), Some(CamPlannerError::PocketTooFine));
     assert!(
-        elapsed < std::time::Duration::from_millis(2500),
+        elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_secs(1)),
         "stepover {finer} refused after {elapsed:.2?}"
     );
 }
 
 /// Capability review 1083: at 0.1 mm the plate's cuts are under the motion cap
-/// until they are joined, and it was refused only after 4.6–10 s. The work limit
-/// refuses it within 2.5 s in release (about 1.8 s).
+/// until they are joined, and it was refused only after 4.6–10 s. Its spans
+/// alone pass the work limit, so it is refused before any is joined.
+#[test]
+fn a_pocket_whose_spans_pass_the_work_limit_is_refused_before_they_are_joined() {
+    let mut work = PocketWork {
+        used: 0,
+        limit: MAX_POCKET_WORK,
+    };
+    let refused = pocket_paths_within(&plate_of_121_holes(), 3.0, 0.1, &mut work);
+    assert_eq!(refused, Err(CamPlannerError::PocketTooFine));
+    // Refused while joining, the work would have passed the limit.
+    assert!(work.used <= MAX_POCKET_WORK, "used {}", work.used);
+}
+
+/// The same refusal within 0.5 s in release (0.09 s measured).
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
-fn perf_a_pocket_refused_at_one_tenth_mm_stepover_is_refused_within_two_and_a_half_seconds() {
+fn perf_a_pocket_refused_at_one_tenth_mm_stepover_is_refused_within_half_a_second() {
     let plate = plate_of_121_holes();
     let (refused, elapsed) = timed(|| pocket_paths(&plate, 3.0, 0.1));
     assert!(refused.is_err());
     assert!(
-        elapsed < std::time::Duration::from_millis(2500),
+        elapsed < ketchup_test_env::perf_budget(std::time::Duration::from_millis(500)),
         "refused after {elapsed:.2?}"
     );
 }
