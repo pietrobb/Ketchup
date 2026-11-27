@@ -2,7 +2,7 @@
 //! written for a controller of the dialect library, after the user confirms its release.
 
 use crate::*;
-use ketchup_application::cam_workflow::CamReviewError;
+use ketchup_application::cam_workflow::{CamComputedReview, CamReviewError};
 use ketchup_model::cam::{
     CamContourSide, CamGCodeDialect, CamGCodeDialectError, CamOperation, CamPlan,
 };
@@ -23,6 +23,61 @@ pub(crate) struct CamExportDialog {
     /// The library's controller dialects as (id, name).
     pub(crate) dialect_choices: Vec<(String, String)>,
     pub(crate) review: Option<CamReviewSummary>,
+    /// The preview or export planning and simulating now, if any.
+    pub(crate) running: Option<CamRun>,
+}
+
+/// A CAM review planning and simulating on a thread, so the window keeps painting; Cancel,
+/// closing the window or an edit of the document drops it, which stops its exact worker
+/// (review 2026-11-27 R1127-CAM-2).
+pub(crate) struct CamRun {
+    pub(crate) cancelled: Arc<AtomicBool>,
+    receiver: Receiver<Result<CamComputedReview, CamReviewError>>,
+    /// The document state it is computed on.
+    snapshot: Snapshot,
+    mutation_epoch: u64,
+    /// The review token and the new file a confirmed export writes; none for a preview.
+    export: Option<(String, PathBuf)>,
+}
+
+impl CamRun {
+    fn start(
+        worker_path: PathBuf,
+        snapshot: Snapshot,
+        mutation_epoch: u64,
+        request: CamReviewRequest,
+        export: Option<(String, PathBuf)>,
+        context: &egui::Context,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (thread_cancelled, repaint) = (Arc::clone(&cancelled), context.clone());
+        let thread_snapshot = snapshot.clone();
+        std::thread::spawn(move || {
+            let computed = CamComputedReview::compute(
+                Some(&worker_path),
+                &thread_snapshot,
+                request,
+                &thread_cancelled,
+            );
+            if sender.send(computed).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        Self {
+            cancelled,
+            receiver,
+            snapshot,
+            mutation_epoch,
+            export,
+        }
+    }
+}
+
+impl Drop for CamRun {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 /// What the window's program machines: the stock top, or the face the user selected,
@@ -319,14 +374,19 @@ impl KetchupApp {
         let Some(mut pending) = self.reviews.cam_export_dialog.take() else {
             return;
         };
+        if !self.poll_cam_run(&mut pending) {
+            return;
+        }
         // A review is of one operation on one face for one controller: another needs its own.
         let face = self.selected_cam_face(pending.plan_id);
         if face != pending.face {
             pending.face = face;
             if pending.operation != CamWindowOperation::Facing {
                 pending.review = None;
+                pending.running = None;
             }
         }
+        let idle = pending.running.is_none();
         let mut open = true;
         let mut preview = false;
         let mut confirm = false;
@@ -344,22 +404,24 @@ impl KetchupApp {
                 ));
                 let operation = pending.operation;
                 let label = self.catalog.text("cam-review-operation");
-                ui.horizontal(|ui| {
-                    ui.label(&label);
-                    let response = egui::ComboBox::from_id_salt("cam-review-operation")
-                        .selected_text(self.catalog.text(operation.label_key()))
-                        .show_ui(ui, |ui| {
-                            for choice in CamWindowOperation::ALL {
-                                ui.selectable_value(
-                                    &mut pending.operation,
-                                    choice,
-                                    self.catalog.text(choice.label_key()),
-                                );
-                            }
+                ui.add_enabled_ui(idle, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(&label);
+                        let response = egui::ComboBox::from_id_salt("cam-review-operation")
+                            .selected_text(self.catalog.text(operation.label_key()))
+                            .show_ui(ui, |ui| {
+                                for choice in CamWindowOperation::ALL {
+                                    ui.selectable_value(
+                                        &mut pending.operation,
+                                        choice,
+                                        self.catalog.text(choice.label_key()),
+                                    );
+                                }
+                            });
+                        response.response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
                         });
-                    response.response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
-                    });
+                    })
                 });
                 if pending.operation != operation {
                     pending.review = None;
@@ -376,23 +438,25 @@ impl KetchupApp {
                 let choices = std::mem::take(&mut pending.dialect_choices);
                 let chosen = pending.dialect_id.clone();
                 let label = self.catalog.text("cam-review-dialect");
-                ui.horizontal(|ui| {
-                    ui.label(&label);
-                    let response = egui::ComboBox::from_id_salt("cam-review-dialect")
-                        .selected_text(
-                            choices
-                                .iter()
-                                .find(|(id, _)| *id == chosen)
-                                .map_or(chosen.as_str(), |(_, name)| name.as_str()),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (id, name) in &choices {
-                                ui.selectable_value(&mut pending.dialect_id, id.clone(), name);
-                            }
+                ui.add_enabled_ui(idle, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(&label);
+                        let response = egui::ComboBox::from_id_salt("cam-review-dialect")
+                            .selected_text(
+                                choices
+                                    .iter()
+                                    .find(|(id, _)| *id == chosen)
+                                    .map_or(chosen.as_str(), |(_, name)| name.as_str()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (id, name) in &choices {
+                                    ui.selectable_value(&mut pending.dialect_id, id.clone(), name);
+                                }
+                            });
+                        response.response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
                         });
-                    response.response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, &label)
-                    });
+                    })
                 });
                 pending.dialect_choices = choices;
                 if pending.dialect_id != chosen {
@@ -416,13 +480,25 @@ impl KetchupApp {
                 } else {
                     ui.label(self.catalog.text("cam-review-not-previewed"));
                 }
+                if !idle {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(self.catalog.text("cam-review-running"));
+                    });
+                }
                 ui.horizontal(|ui| {
-                    if ui.button(self.catalog.text("cam-review-preview")).clicked() {
+                    if ui
+                        .add_enabled(
+                            idle,
+                            egui::Button::new(self.catalog.text("cam-review-preview")),
+                        )
+                        .clicked()
+                    {
                         preview = true;
                     }
                     if ui
                         .add_enabled(
-                            pending.review.is_some(),
+                            idle && pending.review.is_some(),
                             egui::Button::new(self.catalog.text("cam-review-confirm-export")),
                         )
                         .clicked()
@@ -434,8 +510,8 @@ impl KetchupApp {
                     }
                 });
             });
-        if preview {
-            let result = (|| {
+        if preview && idle {
+            let started = (|| {
                 let snapshot = self.document.current();
                 let mutation_epoch = self.document.mutation_epoch();
                 let plan = snapshot
@@ -445,58 +521,140 @@ impl KetchupApp {
                 let dialect = CamPostprocessorDialect::library(&pending.dialect_id)
                     .map_err(|error| failed("cam.dialect", error))?;
                 let worker_path = self.exact_worker_executable()?;
-                self.reviews.cam_reviews.set_worker_path(worker_path);
                 self.reviews
                     .cam_reviews
-                    .preview(
-                        &snapshot,
-                        mutation_epoch,
-                        CamReviewRequest {
-                            plan_id: pending.plan_id,
-                            operations: vec![operation],
-                            fixtures: Vec::new(),
-                            dialect,
-                        },
-                        &AtomicBool::new(false),
-                    )
-                    .map_err(|error| failed("cam.review", error))
+                    .set_worker_path(worker_path.clone());
+                let request = CamReviewRequest {
+                    plan_id: pending.plan_id,
+                    operations: vec![operation],
+                    fixtures: Vec::new(),
+                    dialect,
+                };
+                Ok::<_, Rejection>(CamRun::start(
+                    worker_path,
+                    snapshot,
+                    mutation_epoch,
+                    request,
+                    None,
+                    context,
+                ))
             })();
-            match result {
-                Ok(review) => {
-                    pending.review = Some(review);
-                    self.digest = self.catalog.text("cam-review-ready");
-                }
-                Err(error) => {
-                    pending.review = None;
-                    self.digest = error.reason_text().to_owned();
-                }
+            pending.review = None;
+            match started {
+                Ok(run) => pending.running = Some(run),
+                Err(error) => self.digest = error.reason_text().to_owned(),
             }
         }
+        // The program is planned and simulated again, and must come out as reviewed.
         if confirm
+            && idle
             && let Some(review) = &pending.review
             && let Some(path) = self.choose_export_path("nc")
         {
             let snapshot = self.document.current();
             let mutation_epoch = self.document.mutation_epoch();
-            let result = self.reviews.cam_reviews.export(
-                &snapshot,
-                mutation_epoch,
-                &review.token,
-                &path,
-                true,
-                None,
-                &AtomicBool::new(false),
-            );
-            match result {
-                Ok(_) => {
-                    self.digest = self.catalog.text("cam-review-exported");
-                    cancel = true;
+            let token = review.token.clone();
+            let request =
+                self.reviews
+                    .cam_reviews
+                    .reviewed_request(&snapshot, mutation_epoch, &token, true);
+            match (request, self.reviews.cam_reviews.worker_path()) {
+                (Ok(request), Some(worker_path)) => {
+                    pending.running = Some(CamRun::start(
+                        worker_path.to_path_buf(),
+                        snapshot,
+                        mutation_epoch,
+                        request,
+                        Some((token, path)),
+                        context,
+                    ));
                 }
-                Err(error) => self.digest = error.to_string(),
+                (Ok(_), None) => self.digest = CamReviewError::WorkerUnavailable.to_string(),
+                (Err(error), _) => self.digest = error.to_string(),
             }
         }
-        if open && !cancel {
-            self.reviews.cam_export_dialog = Some(pending);
+        if !open || cancel {
+            // Dropping the run stops its exact worker.
+            if pending.running.take().is_some() {
+                self.digest = self.catalog.text("digest-cancelled");
+            }
+            return;
+        }
+        self.reviews.cam_export_dialog = Some(pending);
+    }
+
+    /// Takes the running review's result when it has come: a preview is shown, an export
+    /// written. A run of a document state the user has left by an edit is dropped, so no
+    /// numbers of the model before it are shown. Whether the dialog stays open.
+    fn poll_cam_run(&mut self, pending: &mut CamExportDialog) -> bool {
+        let Some(run) = &pending.running else {
+            return true;
+        };
+        let current = self.document.current();
+        if run.snapshot.document_id() != current.document_id()
+            || run.snapshot.revision_id() != current.revision_id()
+            || run.mutation_epoch != self.document.mutation_epoch()
+        {
+            // Dropping the run stops its exact worker.
+            pending.running = None;
+            pending.review = None;
+            self.digest = self.catalog.text("cam-review-stale");
+            return true;
+        }
+        let computed = match run.receiver.try_recv() {
+            Ok(computed) => computed,
+            Err(TryRecvError::Empty) => return true,
+            Err(TryRecvError::Disconnected) => Err(CamReviewError::Simulation(
+                "the CAM review ended unexpectedly".to_owned(),
+            )),
+        };
+        let Some(run) = pending.running.take() else {
+            return true;
+        };
+        match (computed, &run.export) {
+            (Ok(computed), None) => {
+                match self
+                    .reviews
+                    .cam_reviews
+                    .admit(&run.snapshot, run.mutation_epoch, computed)
+                {
+                    Ok(review) => {
+                        pending.review = Some(review);
+                        self.digest = self.catalog.text("cam-review-ready");
+                    }
+                    Err(error) => {
+                        self.digest = failed("cam.review", error).reason_text().to_owned()
+                    }
+                }
+                true
+            }
+            (Ok(computed), Some((token, path))) => {
+                match self.reviews.cam_reviews.export_computed(
+                    &run.snapshot,
+                    run.mutation_epoch,
+                    token,
+                    path,
+                    None,
+                    &computed,
+                ) {
+                    Ok(_) => {
+                        self.digest = self.catalog.text("cam-review-exported");
+                        false
+                    }
+                    Err(error) => {
+                        self.digest = error.to_string();
+                        true
+                    }
+                }
+            }
+            (Err(error), None) => {
+                self.digest = failed("cam.review", error).reason_text().to_owned();
+                true
+            }
+            (Err(error), Some(_)) => {
+                self.digest = error.to_string();
+                true
+            }
         }
     }
 }

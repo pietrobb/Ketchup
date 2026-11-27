@@ -297,9 +297,14 @@ fn the_window_paints_while_its_cam_review_runs_and_cancel_stops_it() {
     );
     let dialog = harness.state().reviews.cam_export_dialog.as_ref().unwrap();
     assert!(dialog.review.is_none());
+    let cancelled = std::sync::Arc::clone(&dialog.running.as_ref().unwrap().cancelled);
 
     click(&mut harness, "dialog-cancel");
     assert!(harness.state().reviews.cam_export_dialog.is_none());
+    assert!(
+        cancelled.load(Ordering::Acquire),
+        "its exact worker is stopped"
+    );
     assert_eq!(
         harness.state().digest,
         harness.state().catalog.text("digest-cancelled")
