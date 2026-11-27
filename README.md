@@ -17,6 +17,18 @@ Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, 
 > [!NOTE]
 > Ketchup is young and changes quickly. It is usable for the jobs described below, but expect rough edges, and keep copies of important work: the file format can still change between versions. What it does not do yet is listed [near the end](#what-ketchup-does-not-do-yet).
 
+## What's new in 0.4.0
+
+- **Make metal and plastic parts on a CNC mill.** Select a face of the part (**File → Manufacturing**) and Ketchup writes a 2.5D program for it: an outside or inside contour, a pocket cleared around its islands, holes drilled to depth, or facing the stock. Every program is simulated against the exact part before you confirm it, the window keeps working while it plans, and **Cancel** stops it. [More below](#make-it-cut-lists-and-cnc-files).
+- **Check more than a single part.** The FEA now solves assemblies with rigid or spring joints, 3D frames, large models, natural frequencies and mode shapes, and steady heat conduction through a part (**Tools → Analysis**).
+- **Project drawings on the real site.** With a cadastral DXF/DWG underlay the drawing set starts with a site plan at 1:250 or 1:500; an orthophoto can be imported under it and is printed in the PDF. **Preview sheets** shows the drawings in the app before you export them, and mechanical sheets get hole and thread callouts, angular, radius and diameter dimensions, datums and GD&T frames.
+- **Bought parts in rule programs.** `purchased(...)` places a supplier's STEP part where your parameters say and lists it in the hardware list; a first set of standard machine parts (bearings, ball screws, linear guides, stepper motors) comes with catalogue dimensions.
+- **Freeform surfaces.** Fill a closed loop of curves, blend two surfaces, move a control point, or run a Loft along a rail.
+- **Linux.** `Ketchup-0.4.0-Linux-x86_64.tar.gz` runs on Ubuntu 24.04 or newer, beside the Windows and Mac downloads.
+- **Safer AI connections.** An AI may write new files where it is asked, but replacing a file you already have is asked in the window first, and the Connect tab lists every file it wrote.
+
+Files from 0.3.3 open in 0.4.0. Everything that changed, with the known issues, is in the [release notes](https://github.com/pietrobb/Ketchup/releases/tag/v0.4.0) and [CHANGELOG.md](CHANGELOG.md).
+
 ## What people make with it
 
 <p align="center">
