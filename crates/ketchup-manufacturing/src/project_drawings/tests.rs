@@ -2582,6 +2582,37 @@ fn only_a_plan_sheet_is_captioned_as_a_plan_cut_at_a_height() {
     }
 }
 
+/// Review 2026-11-27 R1127-SH-1: a plan the caller retitles "Půdorys 1.NP" is still
+/// a plan cut at a height; the title names the sheet, and its view keeps its caption.
+#[test]
+fn a_retitled_plan_keeps_the_caption_of_its_cut() {
+    let cut = "Půdorys, řez ve výšce 1200 mm";
+    let options = DrawingSetOptions {
+        plans: vec![PlanSheet {
+            storey: Storey {
+                floor_mm: None,
+                cut_mm: 1200.0,
+            },
+            view_title: cut.to_owned(),
+            sheet_title: "Půdorys".to_owned(),
+        }],
+        sheet_labels: vec![SheetLabel {
+            number: "D.1".to_owned(),
+            title: "Půdorys 1.NP".to_owned(),
+        }],
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &options).unwrap();
+    let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+    assert_eq!(plan.title, "Půdorys 1.NP");
+    assert_eq!(plan.views[0].title, cut);
+    for page in [&plan.page, &plan.lines] {
+        let written = texts(page);
+        assert!(written.contains(&"Půdorys 1.NP"), "{written:?}");
+        assert!(written.contains(&cut), "{written:?}");
+    }
+}
+
 /// The marks of `page` outside its frame, or reaching into its title block from
 /// outside it (the title block's own lie wholly in it).
 fn marks_in_the_title_block_corner(page: &Page) -> Vec<String> {
