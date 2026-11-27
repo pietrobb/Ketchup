@@ -13,7 +13,7 @@ use ketchup_program::imported::ImportedBody;
 use ketchup_rejection::Rejection;
 use ketchup_scheduler::ExactWorkerSupervisor;
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -264,8 +264,10 @@ impl StepFiles {
                 "it holds {length} bytes, more than the {MAX_STEP_BYTES} a bought part's file may"
             )));
         }
-        let bytes = std::fs::read(path)
+        within_request(&self.read_now, length, MAX_CACHED_BYTES)?;
+        let file = std::fs::File::open(path)
             .map_err(|io| unreadable("its bytes cannot be read").caused_by(io))?;
+        let bytes = read_step_bytes(file, MAX_STEP_BYTES)?;
         if bytes.is_empty() {
             return Err(unreadable("the file is empty"));
         }
@@ -629,5 +631,79 @@ impl ImportFiles for StepFiles {
             evidence,
             placement,
         }))
+    }
+}
+
+/// The bytes of a bought part's file from `source`, read no further than one
+/// byte past `limit`: a file that grew after its size was checked is refused,
+/// not read to its end (review 2026-11-27 R1127-STEP-1).
+fn read_step_bytes(source: impl Read, limit: u64) -> Result<Vec<u8>, Rejection> {
+    let mut bytes = Vec::new();
+    source
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|io| unreadable("its bytes cannot be read").caused_by(io))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(unreadable(format!(
+            "it grew past the {limit} bytes a bought part's file may hold while it was read"
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Refuses a file of `length` bytes when it and the files this request
+/// already read would hold more than `limit` bytes together
+/// (R1127-STEP-1).
+fn within_request(
+    read_now: &BTreeMap<PathBuf, CachedFile>,
+    length: u64,
+    limit: u64,
+) -> Result<(), Rejection> {
+    let held: u64 = read_now.values().map(|file| file.length).sum();
+    if held.saturating_add(length) > limit {
+        return Err(unreadable(format!(
+            "with the files read before it, it would hold more than the {limit} bytes one program's bought parts may"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review 2026-11-27 R1127-STEP-1: a file that grows after its size was
+    /// checked was read to its end.
+    #[test]
+    fn a_step_file_that_grows_past_its_cap_while_read_is_refused_at_the_cap() {
+        let limit = 4096;
+        let mut source = std::io::repeat(b'x').take(limit * 4);
+        assert!(read_step_bytes(&mut source, limit).is_err(), "read whole");
+        let mut rest = Vec::new();
+        source.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest.len(), 12_287, "it stops one byte past the cap");
+        let whole = read_step_bytes(std::io::repeat(b'x').take(limit), limit);
+        assert_eq!(whole.map(|bytes| bytes.len()).ok(), Some(4096));
+    }
+
+    fn read(length: u64) -> CachedFile {
+        CachedFile {
+            length,
+            sha: [0; 32],
+            bytes: Arc::new(Vec::new()),
+            whole: None,
+            assembly: None,
+        }
+    }
+
+    /// R1127-STEP-1: the files of one request had no cap together.
+    #[test]
+    fn a_request_whose_step_files_pass_the_cap_together_is_refused() {
+        let read_now = BTreeMap::from([
+            (PathBuf::from("a.step"), read(600)),
+            (PathBuf::from("b.step"), read(300)),
+        ]);
+        assert!(within_request(&read_now, 100, 1000).is_ok());
+        assert!(within_request(&read_now, 101, 1000).is_err());
     }
 }
