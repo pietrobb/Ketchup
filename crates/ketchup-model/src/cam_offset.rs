@@ -153,16 +153,27 @@ impl Segment {
                 (-slack..=1.0 + slack).contains(&t)
             }
             Self::Arc {
-                start, center, ccw, ..
+                start,
+                end,
+                center,
+                ccw,
             } => {
-                let radius = distance(*start, *center);
-                let angle = if *ccw {
-                    ccw_angle(*center, *start, point)
+                // As `ccw_angle` and `sweep`, the start's angle taken once.
+                let angle_of = |at: &Point| (at[1] - center[1]).atan2(at[0] - center[0]);
+                let [from, to, at] = [angle_of(start), angle_of(end), angle_of(&point)];
+                let (angle, turn) = if *ccw {
+                    ((at - from).rem_euclid(TAU), (to - from).rem_euclid(TAU))
                 } else {
-                    ccw_angle(*center, point, *start)
+                    ((from - at).rem_euclid(TAU), (from - to).rem_euclid(TAU))
+                };
+                let radius = distance(*start, *center);
+                let sweep = if turn <= LOOP_TOLERANCE_MM / radius {
+                    TAU
+                } else {
+                    turn
                 };
                 let slack = slack_mm / radius;
-                angle <= self.sweep() + slack || angle >= TAU - slack
+                angle <= sweep + slack || angle >= TAU - slack
             }
         }
     }
@@ -573,14 +584,21 @@ pub(crate) fn degenerate_lane(loops: &[Vec<Segment>], y: f64) -> bool {
 /// X coordinates where the horizontal line `y` crosses a loop. `y` must not
 /// be degenerate for the loop (see [`degenerate_lane`]).
 pub(crate) fn lane_crossings(segments: &[Segment], y: f64) -> Vec<f64> {
+    lane_crossings_past(segments, y, None)
+}
+
+/// [`lane_crossings`] right of `past` only, when given.
+pub(crate) fn lane_crossings_past(segments: &[Segment], y: f64, past: Option<f64>) -> Vec<f64> {
+    let kept = |x: f64| past.is_none_or(|past| x > past);
     let mut crossings = Vec::new();
     for segment in segments {
         match segment {
             Segment::Line { start, end } => {
                 if (start[1] - y) * (end[1] - y) < 0.0 {
-                    crossings.push(
-                        start[0] + (y - start[1]) * (end[0] - start[0]) / (end[1] - start[1]),
-                    );
+                    let x = start[0] + (y - start[1]) * (end[0] - start[0]) / (end[1] - start[1]);
+                    if kept(x) {
+                        crossings.push(x);
+                    }
                 }
             }
             Segment::Arc { start, center, .. } => {
@@ -590,7 +608,7 @@ pub(crate) fn lane_crossings(segments: &[Segment], y: f64) -> Vec<f64> {
                     let half = (radius * radius - rise * rise).sqrt();
                     for x in [center[0] - half, center[0] + half] {
                         // No slack: a lane just past where two arcs meet crosses only one.
-                        if segment.spans_with([x, y], 0.0) {
+                        if kept(x) && segment.spans_with([x, y], 0.0) {
                             crossings.push(x);
                         }
                     }

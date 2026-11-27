@@ -6,7 +6,7 @@ use crate::cam::{
 };
 use crate::cam_offset::{
     LOOP_TOLERANCE_MM, Point, Segment, degenerate_lane, distance, intersections, lane_crossings,
-    loops_meet, offset_right, oriented, reversed, signed_area,
+    lane_crossings_past, loops_meet, offset_right, oriented, reversed, signed_area,
 };
 use crate::exact_product::{ExactBRepGraphEdgeEvidence, ExactBRepGraphPackage};
 use crate::tolerance::ROUNDING;
@@ -24,10 +24,11 @@ const LANE_WALL_GAP_STEPOVERS: f64 = 0.1;
 /// lanes and links may be tested against. Planning time follows this count, not
 /// the toolpath's motions: a pocket whose lanes meet many islands is slow well
 /// under [`MAX_CAM_MOTIONS`] (a 600 mm plate with 121 holes took 4.7 s at 98 494
-/// motions), and it is planned where the user waits. Measured at 12–53 ns a
-/// segment in an optimised build, the most islands the slowest, so the slowest
-/// pocket planned or refused takes at most about 0.4 s (R1127-CAM-1).
-const MAX_POCKET_WORK: usize = 8_000_000;
+/// motions). Planning runs beside the window, so the limit only spares a
+/// needlessly long run: at about 15 ns a segment on the 121-hole plate in an
+/// optimised build, the slowest pocket planned or refused takes under a second,
+/// and the plate is planned at a tenth of the cutter with 22 M (R1127-CAM-1).
+const MAX_POCKET_WORK: usize = 48_000_000;
 
 /// Counts the boundary segments a pocket's planning tests against, and refuses
 /// the pocket once they pass `limit`.
@@ -719,21 +720,49 @@ fn clear_lane(loops: &[Vec<Segment>], y: f64, toward: f64) -> f64 {
 /// Even-odd containment of `point` in the area the loops bound together.
 fn inside(loops: &[Vec<Segment>], point: Point) -> bool {
     let lane = clear_lane(loops, point[1], point[1] + 1.0);
+    // A segment wholly left of the point crosses the lane only left of it.
     loops
         .iter()
-        .flat_map(|segments| lane_crossings(segments, lane))
-        .filter(|x| *x > point[0])
+        .flatten()
+        .filter(|segment| reach(segment)[1][0] > point[0])
+        .flat_map(|segment| {
+            lane_crossings_past(std::slice::from_ref(segment), lane, Some(point[0]))
+        })
         .count()
         % 2
         == 1
 }
 
 fn on_or_inside(loops: &[Vec<Segment>], point: Point) -> bool {
-    loops
-        .iter()
-        .flatten()
-        .any(|segment| segment.distance_to(point) <= LOOP_TOLERANCE_MM)
-        || inside(loops, point)
+    loops.iter().flatten().any(|segment| {
+        boxes_meet(reach(segment), [point, point], LOOP_TOLERANCE_MM)
+            && segment.distance_to(point) <= LOOP_TOLERANCE_MM
+    }) || inside(loops, point)
+}
+
+/// A box no point of `segment` lies outside, cheaper than [`Segment::bounds`]:
+/// a line's ends, an arc's whole circle.
+fn reach(segment: &Segment) -> [Point; 2] {
+    match segment {
+        Segment::Line { start, end } => [
+            [start[0].min(end[0]), start[1].min(end[1])],
+            [start[0].max(end[0]), start[1].max(end[1])],
+        ],
+        Segment::Arc { start, center, .. } => {
+            let radius = distance(*start, *center);
+            [
+                [center[0] - radius, center[1] - radius],
+                [center[0] + radius, center[1] + radius],
+            ]
+        }
+    }
+}
+
+/// Whether two boxes come within `margin` of each other on both axes.
+fn boxes_meet([low, high]: [Point; 2], [other_low, other_high]: [Point; 2], margin: f64) -> bool {
+    (0..2).all(|axis| {
+        low[axis] - margin <= other_high[axis] && other_low[axis] - margin <= high[axis]
+    })
 }
 
 /// The segments of `loops` that can decide a lane or a move between heights
@@ -763,8 +792,10 @@ fn loops_near(loops: &[Vec<Segment>], from_y: f64, to_y: f64) -> Vec<Vec<Segment
                     top >= low && bottom <= high
                 })
                 .copied()
-                .collect()
+                .collect::<Vec<_>>()
         })
+        // Loops are only ever read segment by segment, never as a whole.
+        .filter(|segments| !segments.is_empty())
         .collect()
 }
 
@@ -774,9 +805,13 @@ fn move_stays_inside(loops: &[Vec<Segment>], from: Point, to: Point) -> bool {
         start: from,
         end: to,
     };
+    // Segments meet the link only within a few loop tolerances of both their
+    // boxes, so those apart from the link's box are not tested.
+    let link_box = reach(&link);
     let mut stops: Vec<f64> = loops
         .iter()
         .flatten()
+        .filter(|segment| boxes_meet(reach(segment), link_box, 4.0 * LOOP_TOLERANCE_MM))
         .flat_map(|segment| intersections(&link, segment))
         .map(|point| distance(point, from))
         .chain([0.0, distance(from, to)])
@@ -898,6 +933,17 @@ fn pocket_paths_within(
             return Err(CamPlannerError::InvalidOperations);
         }
         rows.push((y, spans));
+    }
+    // Joining tests every span but the last row's against the next row, each
+    // look charging all the boundary segments: a pocket whose spans alone pass
+    // the work limit is refused before any is joined.
+    let looked_on = cut_spans - rows.last().map_or(0, |(_, spans)| spans.len());
+    if work
+        .used
+        .saturating_add(looked_on.saturating_mul(all_segments))
+        > work.limit
+    {
+        return Err(CamPlannerError::PocketTooFine);
     }
     let mut paths = zigzag(&boundaries, &mut rows, work)?;
     paths.extend(walls.iter().map(|boundary| path_of(boundary)));
