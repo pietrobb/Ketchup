@@ -98,16 +98,7 @@ impl RasterImage {
                 [red, green, blue].map(|channel| on_paper(channel, alpha))
             })
             .collect();
-        let mut jpeg = Vec::new();
-        let encoded =
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, SHEET_JPEG_QUALITY)
-                .encode(&rgb, width, height, image::ExtendedColorType::Rgb8);
-        SheetImage {
-            width_px: width,
-            height_px: height,
-            rgb,
-            jpeg: encoded.is_ok().then_some(jpeg),
-        }
+        sheet_image_of(rgb, width, height)
     }
 
     /// The colour of the pixel `[column, row]`, sRGB and alpha.
@@ -116,6 +107,40 @@ impl RasterImage {
         self.pixels
             .get_pixel_checked(column, row)
             .map(|pixel| pixel.0)
+    }
+}
+
+/// `width` × `height` pixels of `image` from `[column, row]`, the part of it a sheet
+/// shows (review 2026-11-27 R1127-IMG-1).
+#[must_use]
+pub fn cropped_sheet_image(
+    image: &SheetImage,
+    [column, row]: [u32; 2],
+    [width, height]: [u32; 2],
+) -> SheetImage {
+    let stride = image.width_px as usize * 3;
+    let (start, length) = (column as usize * 3, width as usize * 3);
+    let rgb = image
+        .rgb
+        .chunks_exact(stride)
+        .skip(row as usize)
+        .take(height as usize)
+        .flat_map(|line| &line[start..start + length])
+        .copied()
+        .collect();
+    sheet_image_of(rgb, width, height)
+}
+
+/// `rgb` as a sheet prints it, with the JPEG a PDF embeds in its place.
+fn sheet_image_of(rgb: Vec<u8>, width: u32, height: u32) -> SheetImage {
+    let mut jpeg = Vec::new();
+    let encoded = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, SHEET_JPEG_QUALITY)
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8);
+    SheetImage {
+        width_px: width,
+        height_px: height,
+        rgb,
+        jpeg: encoded.is_ok().then_some(jpeg),
     }
 }
 

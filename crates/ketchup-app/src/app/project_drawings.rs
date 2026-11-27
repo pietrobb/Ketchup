@@ -439,8 +439,11 @@ impl ProjectDrawingsJob {
                 .collect::<Vec<_>>();
             options.zero_level_mm = Some(ground_floor(solids.iter().chain(&hidden)));
         }
-        let set = drawing_set_until(&solids, &options, cancelled)
+        let mut set = drawing_set_until(&solids, &options, cancelled)
             .map_err(ProjectDrawingsError::Drawing)?;
+        if printed_images {
+            cropped_images::crop_to_clips(&mut set);
+        }
         Ok((set, info))
     }
 
@@ -2656,5 +2659,6 @@ impl KetchupApp {
     }
 }
 
+mod cropped_images;
 #[cfg(test)]
 mod publish_tests;
