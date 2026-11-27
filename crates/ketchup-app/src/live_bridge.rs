@@ -1447,15 +1447,13 @@ impl KetchupApp {
         }
     }
 
-    /// Ends every connection because another client takes the window over;
-    /// each one gets a last frame saying so instead of a bare end of stream,
-    /// and a client whose request was running is told whether the document
-    /// changed while it ran (MCP 16a), after its job put back what it kept
-    /// (review 2026-11-04 MCP-141).
-    pub(crate) fn supersede_live_bridge(&mut self) {
-        let Some(mut bridge) = self.live.bridge.take() else {
-            return;
-        };
+    /// Ends every connection of `bridge`, which the window already let go of,
+    /// because another client takes the window over; each one gets a last
+    /// frame saying so instead of a bare end of stream, and a client whose
+    /// request was running is told whether the document changed while it ran
+    /// (MCP 16a), after its job put back what it kept (review 2026-11-04
+    /// MCP-141).
+    pub(crate) fn supersede_bridge(&mut self, mut bridge: LiveBridge) {
         bridge.abandon_jobs(self);
         bridge.supersede(self.live_bridge_stamp(), &self.file.container_data);
     }
