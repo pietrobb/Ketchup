@@ -90,3 +90,23 @@ fn perf_a_pocket_whose_cuts_pass_the_motion_cap_is_refused_within_half_a_second(
         "refused after {elapsed:.2?}"
     );
 }
+
+/// Operator 2026-11-27: the plate's cuts are known from its size, the cutter
+/// and the stepover before any lane is built. Counting them lane by lane still
+/// took 0.14 s; refused from that estimate it takes a few milliseconds.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_pocket_whose_estimated_cuts_pass_the_motion_cap_is_refused_before_any_lane_is_built() {
+    let plate = plate_of_121_holes();
+    let started = std::time::Instant::now();
+    let refused = pocket_paths(&plate, 3.0, 0.06);
+    let elapsed = started.elapsed();
+    assert_eq!(
+        refused.as_ref().map(Vec::len).err(),
+        Some(&CamPlannerError::InvalidOperations)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "refused after {elapsed:.2?}"
+    );
+}
