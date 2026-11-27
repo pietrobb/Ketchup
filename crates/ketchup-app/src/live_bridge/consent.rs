@@ -1453,6 +1453,89 @@ mod tests {
         app.disconnect_ai();
     }
 
+    /// Review 2026-11-27 R1127-CON-1: the AI holding the window is cut off
+    /// within the takeover itself, before the window runs any request of the
+    /// next one: its request the window had not begun never runs, and its
+    /// token opens nothing on the next AI's bridge.
+    #[test]
+    fn a_takeover_cuts_the_previous_ai_off_before_any_request_of_the_next_one_runs() {
+        use std::io::Write;
+        use std::net::TcpStream;
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        let attach = |app: &mut KetchupApp, client: &str| {
+            let (decision, receiver) = mpsc::sync_channel(1);
+            let pending = PendingConsent {
+                decision,
+                abandoned: Arc::new(Mutex::new(false)),
+                client: Some(client.to_owned()),
+            };
+            app.answer_live_consent(&context, pending);
+            match receiver.try_recv() {
+                Ok(ConsentDecision::Allow { address, token }) => (address, token),
+                _ => panic!("{client} was not let in"),
+            }
+        };
+        let send = |stream: &mut TcpStream, id: u64, token: &str, method: &str| {
+            let body = serde_json::to_vec(&serde_json::json!(
+                {"version": 1, "id": id, "token": token, "request": {"method": method}}
+            ))
+            .unwrap();
+            stream
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(&body).unwrap();
+        };
+        let frame = |stream: &mut TcpStream| -> serde_json::Value {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).unwrap();
+            let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+            stream.read_exact(&mut bytes).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+
+        let (old_address, old_token) = attach(&mut app, "Claude Code");
+        let mut old = TcpStream::connect(old_address).unwrap();
+        // The transport answers an unknown method itself, authenticating it.
+        send(&mut old, 1, &old_token, "no_such_method");
+        assert_eq!(frame(&mut old)["error"], "invalid_params");
+        send(&mut old, 5, &old_token, "status");
+        let queued = app
+            .live
+            .bridge
+            .as_ref()
+            .unwrap()
+            .queue
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(queued.id, 5, "the request waits for the window's thread");
+
+        // No frame of the window runs between the takeover and these checks.
+        let (new_address, new_token) = attach(&mut app, "Codex");
+        assert_ne!(new_token, old_token);
+        let last = frame(&mut old);
+        assert_eq!(last["id"], 5, "{last}");
+        assert_eq!(
+            last["error"],
+            ketchup_mcp::SUPERSEDED_BY_ANOTHER_CLIENT,
+            "{last}"
+        );
+        assert_eq!(last["result"]["document_changed"], false, "{last}");
+        let mut rest = [0];
+        assert_eq!(old.read(&mut rest).unwrap(), 0, "then its connection ends");
+        drop(queued);
+
+        let mut stale = TcpStream::connect(new_address).unwrap();
+        send(&mut stale, 1, &old_token, "status");
+        assert_eq!(frame(&mut stale)["error"], "unauthorized");
+        assert_eq!(app.live.client_name.as_deref(), Some("Codex"));
+        assert_eq!(app.live.previous_client.as_deref(), Some("Claude Code"));
+        app.disconnect_ai();
+    }
+
     #[test]
     fn a_client_name_is_shown_printable_and_short_or_not_at_all() {
         assert_eq!(shown_client_name("codex"), Some("codex".to_owned()));
