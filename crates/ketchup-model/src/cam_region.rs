@@ -24,10 +24,11 @@ const LANE_WALL_GAP_STEPOVERS: f64 = 0.1;
 /// lanes and links may be tested against. Planning time follows this count, not
 /// the toolpath's motions: a pocket whose lanes meet many islands is slow well
 /// under [`MAX_CAM_MOTIONS`] (a 600 mm plate with 121 holes took 4.7 s at 98 494
-/// motions), and it is planned where the user waits. Measured at 12–53 ns a
-/// segment in an optimised build, the most islands the slowest, so the slowest
-/// pocket planned or refused takes at most about 0.4 s (R1127-CAM-1).
-const MAX_POCKET_WORK: usize = 8_000_000;
+/// motions). Planning runs beside the window, so the limit only spares a
+/// needlessly long run: at about 38 ns a segment on the 121-hole plate in an
+/// optimised build, the slowest pocket planned or refused takes about 1.8 s, and
+/// the plate is planned at a tenth of the cutter with 22 M (R1127-CAM-1).
+const MAX_POCKET_WORK: usize = 48_000_000;
 
 /// Counts the boundary segments a pocket's planning tests against, and refuses
 /// the pocket once they pass `limit`.

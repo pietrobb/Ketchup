@@ -569,7 +569,7 @@ pub enum CamPlannerError {
     UnsupportedRegion,
     UnsupportedHole,
     /// A pocket's lanes meet so many walls and islands that planning them would
-    /// hold the user for seconds (R1127-CAM-1).
+    /// take needlessly long, past about two seconds (R1127-CAM-1).
     PocketTooFine,
     /// A blind hole's floor is the drill's point; this drill's is not the floor's: the
     /// operation and the hole's centre ([`place_mm`]).
@@ -612,8 +612,8 @@ impl std::fmt::Display for CamPlannerError {
                  or the drill is not its diameter",
             ),
             Self::PocketTooFine => formatter.write_str(
-                "CAM pocket stepover is too fine for its walls and islands to be planned \
-                 in time: raise the stepover ratio or split the pocket",
+                "CAM pocket stepover is so fine for its walls and islands that planning \
+                 it would take needlessly long: raise the stepover ratio or split the pocket",
             ),
             Self::DrillPointDoesNotFitFloor { operation, center } => write!(
                 formatter,

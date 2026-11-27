@@ -138,15 +138,24 @@ fn a_pocket_is_refused_once_its_lanes_and_links_pass_the_work_limit() {
     );
 }
 
-/// The review plate at a tenth of the Ø6 cutter: 18 585 motions, far under the
-/// motion cap, but 0.88 s of planning in an optimised build. Refused as too fine.
+/// Operator 2026-11-27: the review plate at a tenth of the Ø6 cutter, 18 585
+/// motions and 0.9 s of planning in an optimised build, was planned by 0.3.3;
+/// refusing it is a regression. It is planned within half the work limit.
 #[test]
-fn a_plate_of_121_holes_at_a_tenth_of_the_cutter_is_refused_as_too_fine() {
-    assert_eq!(
-        pocket_paths(&plate_of_121_holes(), 3.0, 0.6).err(),
-        Some(CamPlannerError::PocketTooFine)
+fn a_plate_of_121_holes_at_a_tenth_of_the_cutter_is_planned_within_half_the_work_limit() {
+    let plate = plate_of_121_holes();
+    let mut work = PocketWork {
+        used: 0,
+        limit: usize::MAX,
+    };
+    let planned = pocket_paths_within(&plate, 3.0, 0.6, &mut work);
+    assert!(planned.is_ok());
+    assert!(
+        work.used <= MAX_POCKET_WORK / 2,
+        "used {} of {MAX_POCKET_WORK}",
+        work.used
     );
-    assert!(pocket_paths(&plate_of_121_holes(), 3.0, 1.8).is_ok());
+    assert_eq!(pocket_paths(&plate, 3.0, 0.6), planned);
 }
 
 fn timed<T>(run: impl FnOnce() -> T) -> (T, std::time::Duration) {
@@ -157,12 +166,13 @@ fn timed<T>(run: impl FnOnce() -> T) -> (T, std::time::Duration) {
 
 /// The slowest pocket still planned: the finest of these stepovers the review
 /// plate is planned at, using nine tenths of the work limit or more, takes under
-/// 0.5 s in release, and the next finer one is refused within 0.5 s.
+/// 2.5 s in release (1.65 s measured), and the next finer one is refused within
+/// 2.5 s.
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
-fn perf_the_slowest_pocket_planned_within_the_work_limit_takes_under_half_a_second() {
+fn perf_the_slowest_pocket_planned_within_the_work_limit_takes_under_two_and_a_half_seconds() {
     let plate = plate_of_121_holes();
-    let stepovers = [2.0, 1.9, 1.8, 1.75, 1.7, 1.65, 1.6, 1.5];
+    let stepovers = [0.5, 0.4, 0.35, 0.3, 0.25, 0.2];
     let refused_at = stepovers
         .iter()
         .position(|&stepover| pocket_paths(&plate, 3.0, stepover).is_err())
@@ -181,29 +191,29 @@ fn perf_the_slowest_pocket_planned_within_the_work_limit_takes_under_half_a_seco
         work.used
     );
     assert!(
-        elapsed < std::time::Duration::from_millis(500),
+        elapsed < std::time::Duration::from_millis(2500),
         "stepover {slowest} planned in {elapsed:.2?}"
     );
     let finer = stepovers[refused_at];
     let (refused, elapsed) = timed(|| pocket_paths(&plate, 3.0, finer));
     assert_eq!(refused.err(), Some(CamPlannerError::PocketTooFine));
     assert!(
-        elapsed < std::time::Duration::from_millis(500),
+        elapsed < std::time::Duration::from_millis(2500),
         "stepover {finer} refused after {elapsed:.2?}"
     );
 }
 
 /// Capability review 1083: at 0.1 mm the plate's cuts are under the motion cap
 /// until they are joined, and it was refused only after 4.6–10 s. The work limit
-/// refuses it within 0.5 s in release.
+/// refuses it within 2.5 s in release (about 1.8 s).
 #[test]
 #[ignore = "perf: release timing budget, runs nightly"]
-fn perf_a_pocket_refused_at_one_tenth_mm_stepover_is_refused_within_half_a_second() {
+fn perf_a_pocket_refused_at_one_tenth_mm_stepover_is_refused_within_two_and_a_half_seconds() {
     let plate = plate_of_121_holes();
     let (refused, elapsed) = timed(|| pocket_paths(&plate, 3.0, 0.1));
     assert!(refused.is_err());
     assert!(
-        elapsed < std::time::Duration::from_millis(500),
+        elapsed < std::time::Duration::from_millis(2500),
         "refused after {elapsed:.2?}"
     );
 }
