@@ -4,7 +4,10 @@
 //! with. A cancelled request stops the worker; the window then publishes the
 //! file as a client's export. A presentation image runs as such a job too (review 2026-11-12
 //! R1112-IMG-502): it is made on a thread, as from the window, and a cancelled request stops
-//! it within a row of samples.
+//! it within a row of samples. So does a CAM program ([`cam_nc_export`]).
+
+#[path = "cam_nc_export.rs"]
+pub(super) mod cam_nc_export;
 
 use super::interchange::{ExportTarget, InvalidImage, presentation_request};
 use super::program_check::ProgramCheckJob;
@@ -26,7 +29,9 @@ pub(super) struct ExchangeExportJob {
 
 /// Whether `request` is an export that runs as a job.
 pub(super) fn runs_as_job(request: &Request) -> bool {
-    exchange_format(request).is_some() || presents(request)
+    exchange_format(request).is_some()
+        || presents(request)
+        || cam_nc_export::exports_cam_program(request)
 }
 
 /// The exact format `request` exports to, which runs as a job.
@@ -63,6 +68,15 @@ impl LiveBridge {
                 cancelled,
             };
             self.start_presentation(app, context, queued, request, ui_busy);
+            return;
+        }
+        if cam_nc_export::exports_cam_program(&request) {
+            let queued = QueuedReply {
+                id,
+                reply,
+                cancelled,
+            };
+            self.start_cam_export(app, context, queued, request, ui_busy);
             return;
         }
         take_error_details();
