@@ -128,9 +128,8 @@ pub fn cropped_sheet_image(
     if !fits(column, width, image.width_px) || !fits(row, height, image.height_px) {
         return None;
     }
-    let part = image::ImageBuffer::from_fn(width, height, |x, y| {
-        *whole.get_pixel(column + x, row + y)
-    });
+    let part =
+        image::ImageBuffer::from_fn(width, height, |x, y| *whole.get_pixel(column + x, row + y));
     Some(sheet_image_of(part.into_raw(), width, height))
 }
 
