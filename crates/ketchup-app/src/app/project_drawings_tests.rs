@@ -2324,6 +2324,31 @@ fn a_plan_prints_the_orthophoto_and_a_dxf_names_it_left_out() {
         1,
         "the orthophoto beneath the shed"
     );
+    // The plan, 1 m across, shows the western 5 m column of the 20 m orthophoto: only
+    // that and a pixel of margin go into the PDF, not all of it (R1127-IMG-1).
+    let printed = plan
+        .page
+        .marks
+        .iter()
+        .find_map(|mark| match mark {
+            Mark::Image { image, .. } => Some(image),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!([printed.width_px, printed.height_px], [2, 2], "{printed:?}");
+    assert_eq!(
+        &printed.rgb[..3],
+        &[255, 0, 0],
+        "from its north-west corner"
+    );
+    let site = &set.sheets[0];
+    assert!(
+        site.page.marks.iter().any(|mark| matches!(
+            mark,
+            Mark::Image { image, .. } if [image.width_px, image.height_px] == [4, 2]
+        )),
+        "the site plan shows it whole"
+    );
     assert_eq!(plan.underlay_images.len(), 1);
     assert!(plan.underlay_images[0].starts_with("ortofoto"));
     for sheet in &set.sheets {

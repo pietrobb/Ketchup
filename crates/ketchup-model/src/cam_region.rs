@@ -20,6 +20,43 @@ const MAX_POCKET_LANES: u32 = 50_000;
 /// at most the cutter diameter, so the gap stays within the band the wall
 /// pass sweeps.
 const LANE_WALL_GAP_STEPOVERS: f64 = 0.1;
+/// Most boundary segments, an arc counted as [`ARC_WORK`] lines, one pocket's
+/// lanes and links may be tested against. Planning time follows this count, not
+/// the toolpath's motions: a pocket whose lanes meet many islands is slow well
+/// under [`MAX_CAM_MOTIONS`] (a 600 mm plate with 121 holes took 4.7 s at 98 494
+/// motions), and it is planned where the user waits. Measured at 12–53 ns a
+/// segment in an optimised build, the most islands the slowest, so the slowest
+/// pocket planned or refused takes at most about 0.4 s (R1127-CAM-1).
+const MAX_POCKET_WORK: usize = 8_000_000;
+
+/// Counts the boundary segments a pocket's planning tests against, and refuses
+/// the pocket once they pass `limit`.
+struct PocketWork {
+    used: usize,
+    limit: usize,
+}
+
+impl PocketWork {
+    fn charge(&mut self, segments: usize) -> Result<(), CamPlannerError> {
+        self.used = self.used.saturating_add(segments);
+        if self.used > self.limit {
+            return Err(CamPlannerError::PocketTooFine);
+        }
+        Ok(())
+    }
+}
+
+/// How many lines one arc counts as in [`PocketWork`]: testing a move against an
+/// arc took about seven times as long as against a line when measured.
+const ARC_WORK: usize = 7;
+
+fn segment_count(loops: &[Vec<Segment>]) -> usize {
+    loops
+        .iter()
+        .flatten()
+        .map(|segment| if is_line(segment) { 1 } else { ARC_WORK })
+        .sum()
+}
 
 /// A closed region in the setup's XY plane: the outer boundary and the islands
 /// inside it that the cutter must leave standing.
@@ -792,6 +829,19 @@ pub(crate) fn pocket_paths(
     clearance_mm: f64,
     stepover_mm: f64,
 ) -> Result<Vec<CamPath2d>, CamPlannerError> {
+    let mut work = PocketWork {
+        used: 0,
+        limit: MAX_POCKET_WORK,
+    };
+    pocket_paths_within(region, clearance_mm, stepover_mm, &mut work)
+}
+
+fn pocket_paths_within(
+    region: &CamRegion2d,
+    clearance_mm: f64,
+    stepover_mm: f64,
+    work: &mut PocketWork,
+) -> Result<Vec<CamPath2d>, CamPlannerError> {
     let walls = pocket_boundaries(region, clearance_mm)?;
     // Lanes stop short of the walls, whose own pass finishes them: a lane
     // ending on a wall's offset leaves its cutter touching a curved wall
@@ -818,8 +868,10 @@ pub(crate) fn pocket_paths(
     let middle = (minimum[1] + maximum[1]) * 0.5;
     let mut rows: Vec<(f64, Vec<[f64; 2]>)> = Vec::new();
     let mut cut_spans = 0_usize;
+    let all_segments = segment_count(&boundaries);
     for index in 0..=lanes {
         let nominal = minimum[1] + span * f64::from(index) / f64::from(lanes);
+        work.charge(all_segments)?;
         let near = loops_near(&boundaries, nominal, nominal);
         let y = clear_lane(&near, nominal, middle);
         let mut crossings: Vec<f64> = near
@@ -847,7 +899,7 @@ pub(crate) fn pocket_paths(
         }
         rows.push((y, spans));
     }
-    let mut paths = zigzag(&boundaries, &mut rows)?;
+    let mut paths = zigzag(&boundaries, &mut rows, work)?;
     paths.extend(walls.iter().map(|boundary| path_of(boundary)));
     Ok(paths)
 }
@@ -914,11 +966,14 @@ fn grazes(boundaries: &[Vec<Segment>], y: f64, from_x: f64, to_x: f64) -> bool {
 
 /// Joins the rows' spans into zig-zag paths. Refused as soon as the paths need
 /// more motions than one toolpath may hold, before the rest is joined: each path
-/// is at least a plunge, its cuts and a retract (R1127-CAM-1).
+/// is at least a plunge, its cuts and a retract (R1127-CAM-1). Refused, too, once
+/// its links have been tested against more boundary segments than `work` allows.
 fn zigzag(
     boundaries: &[Vec<Segment>],
     rows: &mut [(f64, Vec<[f64; 2]>)],
+    work: &mut PocketWork,
 ) -> Result<Vec<CamPath2d>, CamPlannerError> {
+    let all_segments = segment_count(boundaries);
     let mut paths = Vec::new();
     let mut motions = 0_usize;
     for first_row in 0..rows.len() {
@@ -933,7 +988,9 @@ fn zigzag(
             let mut at_right = true;
             let mut tail = [span[1], y];
             for (next_y, spans) in rows[first_row + 1..].iter_mut() {
+                work.charge(all_segments)?;
                 let near = loops_near(boundaries, tail[1], *next_y);
+                let near_segments = segment_count(&near);
                 let side = usize::from(at_right);
                 // The nearest span whose link stays inside, nearer ones checked
                 // first; of equally near spans the earlier, as before.
@@ -943,9 +1000,14 @@ fn zigzag(
                         .abs()
                         .total_cmp(&(spans[right][side] - tail[0]).abs())
                 });
-                let found = nearest
-                    .into_iter()
-                    .find(|&index| move_stays_inside(&near, tail, [spans[index][side], *next_y]));
+                let mut found = None;
+                for index in nearest {
+                    work.charge(near_segments)?;
+                    if move_stays_inside(&near, tail, [spans[index][side], *next_y]) {
+                        found = Some(index);
+                        break;
+                    }
+                }
                 let Some(index) = found else { break };
                 let span = spans.remove(index);
                 let entry = [span[side], *next_y];

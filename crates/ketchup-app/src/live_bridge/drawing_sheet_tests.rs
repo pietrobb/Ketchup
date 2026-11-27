@@ -1237,6 +1237,7 @@ fn a_sheet_label_with_a_line_break_is_refused() {
         json!({"sheet_numbers": ["A.1", "A\t2"]}),
         json!({"sheet_numbers": ["A\r1"]}),
         json!({"sheet_titles": ["Plan\r\n0"]}),
+        json!({"sheet_view_titles": [[], ["Plan", "Plan\n0"]]}),
     ] {
         let code = bridge
             .execute(&mut app, export_drawings(&set, extra.clone()), false)
@@ -1249,10 +1250,45 @@ fn a_sheet_label_with_a_line_break_is_refused() {
     bridge
         .execute(
             &mut app,
-            export_drawings(&set, json!({"sheet_titles": ["Půdorys 1.NP"]})),
+            export_drawings(
+                &set,
+                json!({"sheet_titles": ["Půdorys 1.NP"], "sheet_view_titles": [["Půdorys 1.NP"]]}),
+            ),
             false,
         )
         .unwrap();
+}
+
+/// Review 2026-11-27 R1127-SH-1: a client that knows only `sheet_titles`, as
+/// before `sheet_view_titles`, retitles the plan's sheet and leaves its view
+/// captioned as the plan cut at a height; only `sheet_view_titles` replaces
+/// that caption.
+#[test]
+fn a_client_without_sheet_view_titles_keeps_the_caption_of_the_plan_cut() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let plan_of = |app: &mut KetchupApp, bridge: &mut LiveBridge, extra: Value| {
+        let directory = tempfile::tempdir().unwrap();
+        let set = directory.path().join("house.dxf");
+        bridge
+            .execute(app, export_drawings(&set, extra.clone()), false)
+            .unwrap_or_else(|code| panic!("{extra}: {code}: {:?}", take_error_details()));
+        std::fs::read_to_string(directory.path().join("house-01.dxf")).unwrap()
+    };
+    let old_client = plan_of(
+        &mut app,
+        &mut bridge,
+        json!({"sheet_titles": ["Pudorys 1.NP"]}),
+    );
+    assert!(old_client.contains("Pudorys 1.NP"));
+    assert!(old_client.contains("Floor plan, cut at "));
+    let captioned = plan_of(
+        &mut app,
+        &mut bridge,
+        json!({"sheet_titles": ["Pudorys 1.NP"], "sheet_view_titles": [["Situace"]]}),
+    );
+    assert!(captioned.contains("Situace"));
+    assert!(!captioned.contains("Floor plan, cut at "));
 }
 
 /// Review 2026-11-06 MF-182: a project moved together with its drawings

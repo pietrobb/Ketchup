@@ -97,6 +97,10 @@ pub struct ExportDrawingsRequest {
     /// The title of each sheet in place of what it shows, as `sheet_numbers`.
     #[serde(default)]
     pub sheet_titles: Vec<String>,
+    /// The captions under each sheet's views in their order, as `sheet_numbers`
+    /// (review 2026-11-27 R1127-SH-1).
+    #[serde(default)]
+    pub sheet_view_titles: Vec<Vec<String>>,
 }
 
 fn sheet_format(name: &str) -> Result<Option<SheetFormat>, &'static str> {
@@ -154,6 +158,7 @@ impl LiveBridge {
             revisions,
             sheet_numbers,
             sheet_titles,
+            sheet_view_titles,
         }) = request
         else {
             return Err(failure(
@@ -177,10 +182,11 @@ impl LiveBridge {
             || revisions.is_some()
             || !sheet_numbers.is_empty()
             || !sheet_titles.is_empty()
+            || !sheet_view_titles.is_empty()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg, revisions, sheet_numbers, sheet_titles and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg, revisions, sheet_numbers, sheet_titles, sheet_view_titles and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -666,37 +672,42 @@ fn storey_problem(problem: StoreyTableProblem) -> Value {
     }
 }
 
-/// The field and index of the first sheet number or title holding a control
-/// character. Each is one line of the title block and of a DXF/DWG TEXT, so a
-/// line break among them is refused (review 2026-11-27 LBL-1).
-fn label_with_control(numbers: &[String], titles: &[String]) -> Option<(&'static str, usize)> {
-    [("sheet_numbers", numbers), ("sheet_titles", titles)]
-        .into_iter()
-        .find_map(|(field, values)| {
-            let index = values
+/// The field and sheet index of the first sheet number, title or view caption
+/// holding a control character. Each is one line of the title block or of a
+/// DXF/DWG TEXT, so a line break among them is refused (review 2026-11-27 LBL-1).
+fn label_with_control(
+    numbers: &[String],
+    titles: &[String],
+    view_titles: &[Vec<String>],
+) -> Option<(&'static str, usize)> {
+    let control = |value: &String| value.chars().any(char::is_control);
+    let single = |field, values: &[String]| Some((field, values.iter().position(control)?));
+    single("sheet_numbers", numbers)
+        .or_else(|| single("sheet_titles", titles))
+        .or_else(|| {
+            let index = view_titles
                 .iter()
-                .position(|value| value.chars().any(char::is_control))?;
-            Some((field, index))
+                .position(|captions| captions.iter().any(control))?;
+            Some(("sheet_view_titles", index))
         })
 }
 
-/// The number and title of each sheet a client names, in the set's order.
-fn sheet_labels(numbers: Vec<String>, titles: Vec<String>) -> Vec<SheetLabel> {
-    let mut labels = numbers
-        .into_iter()
-        .map(|number| SheetLabel {
-            number,
-            title: String::new(),
-        })
-        .collect::<Vec<_>>();
-    for (index, title) in titles.into_iter().enumerate() {
-        match labels.get_mut(index) {
-            Some(label) => label.title = title,
-            None => labels.push(SheetLabel {
-                number: String::new(),
-                title,
-            }),
-        }
+/// The number, title and view captions of each sheet a client names, in the set's order.
+fn sheet_labels(
+    numbers: Vec<String>,
+    titles: Vec<String>,
+    view_titles: Vec<Vec<String>>,
+) -> Vec<SheetLabel> {
+    let count = numbers.len().max(titles.len()).max(view_titles.len());
+    let mut labels = vec![SheetLabel::default(); count];
+    for (label, number) in labels.iter_mut().zip(numbers) {
+        label.number = number;
+    }
+    for (label, title) in labels.iter_mut().zip(titles) {
+        label.title = title;
+    }
+    for (label, captions) in labels.iter_mut().zip(view_titles) {
+        label.view_titles = captions;
     }
     labels
 }
@@ -736,13 +747,16 @@ pub(super) fn start_export(
         revisions,
         sheet_numbers,
         sheet_titles,
+        sheet_view_titles,
     }) = request
     else {
         return Err("invalid_request");
     };
     LiveBridge::guard(app, &expected)?;
     LiveBridge::available(app, ui_busy)?;
-    if let Some((field, index)) = label_with_control(&sheet_numbers, &sheet_titles) {
+    if let Some((field, index)) =
+        label_with_control(&sheet_numbers, &sheet_titles, &sheet_view_titles)
+    {
         return Err(failure(
             "invalid_params",
             format!(
@@ -754,7 +768,7 @@ pub(super) fn start_export(
     let request = SheetRequest {
         plan_only,
         scale: drawing_scale.map(sheet_scale).transpose()?,
-        labels: sheet_labels(sheet_numbers, sheet_titles),
+        labels: sheet_labels(sheet_numbers, sheet_titles, sheet_view_titles),
     };
     let path = path.as_str();
     let target = Path::new(path);
@@ -1214,6 +1228,7 @@ mod tests {
                 revisions: None,
                 sheet_numbers: Vec::new(),
                 sheet_titles: Vec::new(),
+                sheet_view_titles: Vec::new(),
             }),
             false,
         )
@@ -1295,6 +1310,7 @@ mod tests {
             revisions: None,
             sheet_numbers: Vec::new(),
             sheet_titles: Vec::new(),
+            sheet_view_titles: Vec::new(),
         });
         // The window asks once the request is answered (VRAT-8b).
         let answered = |app: &mut KetchupApp| {
