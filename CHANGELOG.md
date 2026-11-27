@@ -5,6 +5,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 
 ## Unreleased
 
+- Fixed: when an AI took the window over from another, the window let go of the AI holding it before the new one had its credential, so if the new connection could not be opened, or the new AI was gone by then, the window was left with no AI and the status line did not say from whom it had been taken. The AI holding the window now keeps it until the new one has its credential.
 - Fixed: an AI export that replaces two existing files, such as a cut list and its takeoff, could ask the user about them in turn for ever when one of them changed after the user agreed: the agreement for one file was used up by a request that then stopped to ask about the other and wrote nothing. The user's agreement now holds for that file until it changes or 10 minutes pass; a refusal is still told once.
 - Fixed: a site plan over an underlay read in the wrong unit and scaled back could draw millions of grid crosses with labels and stall the export. Past a cap of crosses the grid step widens tenfold, its labels still on round coordinates.
 - Fixed: a sheet number or title sent by an AI (`sheet_numbers`, `sheet_titles`) could carry a line break into the title block and into the TEXT of a DXF or DWG sheet. One with a line break, tab or other control character is now refused before anything is written.
