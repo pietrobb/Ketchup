@@ -172,10 +172,10 @@ fn a_takeover_or_disconnect_puts_back_what_a_running_export_kept() {
         let (answers, cancelled) = started_export(&mut bridge, &mut app, &pdf);
         assert!(exporting(&bridge));
         assert_ne!(app.stored_sheet_settings().unwrap(), settings);
-        app.live.bridge = Some(bridge);
         if takeover {
-            app.supersede_live_bridge();
+            app.supersede_bridge(bridge);
         } else {
+            app.live.bridge = Some(bridge);
             app.revoke_live_consent();
         }
         assert!(app.live.bridge.is_none());
