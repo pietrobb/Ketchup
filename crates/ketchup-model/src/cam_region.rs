@@ -810,6 +810,7 @@ pub(crate) fn pocket_paths(
         .ok_or_else(refused)?;
     let middle = (minimum[1] + maximum[1]) * 0.5;
     let mut rows: Vec<(f64, Vec<[f64; 2]>)> = Vec::new();
+    let mut cut_spans = 0_usize;
     for index in 0..=lanes {
         let nominal = minimum[1] + span * f64::from(index) / f64::from(lanes);
         let near = loops_near(&boundaries, nominal, nominal);
@@ -829,6 +830,14 @@ pub(crate) fn pocket_paths(
             }
         }
         spans.retain(|span| span[1] - span[0] > LOOP_TOLERANCE_MM);
+        cut_spans += spans.len();
+        // However the spans are joined, each costs at least two motions: a
+        // path's first span is a plunge and a cut (its retract aside), every
+        // later one a link and a cut. Past the cap, joining them could only
+        // be refused, so it is refused before it starts (R1127-CAM-1).
+        if cut_spans.saturating_mul(2) > MAX_CAM_MOTIONS {
+            return Err(CamPlannerError::InvalidOperations);
+        }
         rows.push((y, spans));
     }
     let mut paths = zigzag(&boundaries, &mut rows)?;

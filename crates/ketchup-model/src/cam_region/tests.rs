@@ -38,3 +38,45 @@ fn a_pocket_whose_lanes_pass_the_motion_cap_is_refused_while_they_are_joined() {
         refused.as_ref().map_or(0, Vec::len)
     );
 }
+
+/// Review 2026-11-27 CAM-1: a 600 mm plate with 121 R10 holes, cleared by a
+/// Ø6 cutter at 1 % stepover, was refused only after its lanes had been built
+/// and joined: 4.45 s on the window thread in an optimised build. Its lanes'
+/// cuts already pass the cap, so it is refused while they are built.
+#[test]
+fn a_pocket_whose_cuts_pass_the_motion_cap_is_refused_before_its_lanes_are_joined() {
+    let hole = |center: [f64; 2]| {
+        let start_mm = [center[0] + 10.0, center[1]];
+        let arc = |to_mm| CamPathSegment2d::Arc {
+            to_mm,
+            center_mm: center,
+            clockwise: true,
+        };
+        CamPath2d {
+            start_mm,
+            segments: vec![arc([center[0] - 10.0, center[1]]), arc(start_mm)],
+        }
+    };
+    let plate = CamRegion2d {
+        outer: rectangle([[0.0, 0.0], [600.0, 600.0]], false),
+        islands: (1..12)
+            .flat_map(|row| {
+                (1..12).map(move |column| hole([50.0 * f64::from(column), 50.0 * f64::from(row)]))
+            })
+            .collect(),
+    };
+    let started = std::time::Instant::now();
+    let refused = pocket_paths(&plate, 3.0, 0.06);
+    let elapsed = started.elapsed();
+    assert_eq!(
+        refused.as_ref().map(Vec::len).err(),
+        Some(&CamPlannerError::InvalidOperations)
+    );
+    // Debug builds, as CI runs the tests, are too slow to time.
+    if !cfg!(debug_assertions) {
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "refused after {elapsed:.2?}"
+        );
+    }
+}
