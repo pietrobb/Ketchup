@@ -110,3 +110,58 @@ fn perf_a_pocket_whose_estimated_cuts_pass_the_motion_cap_is_refused_before_any_
         "refused after {elapsed:.2?}"
     );
 }
+
+/// The estimate a pocket is refused by never counts more cuts than its lanes
+/// make, so it refuses no pocket whose lanes fit the cap: here round, square
+/// and L-shaped islands at three stepovers.
+#[test]
+fn the_fewest_pocket_cuts_never_exceed_the_cuts_its_lanes_make() {
+    let center = [90.0, 110.0];
+    let arc = |to_mm| CamPathSegment2d::Arc {
+        to_mm,
+        center_mm: center,
+        clockwise: true,
+    };
+    let circle = CamPath2d {
+        start_mm: [105.0, 110.0],
+        segments: vec![arc([75.0, 110.0]), arc([105.0, 110.0])],
+    };
+    let l_shape = CamPath2d {
+        start_mm: [130.0, 20.0],
+        segments: [
+            [130.0, 140.0],
+            [150.0, 140.0],
+            [150.0, 40.0],
+            [180.0, 40.0],
+            [180.0, 20.0],
+            [130.0, 20.0],
+        ]
+        .into_iter()
+        .map(|to_mm| CamPathSegment2d::Line { to_mm })
+        .collect(),
+    };
+    let region = CamRegion2d {
+        outer: rectangle([[0.0, 0.0], [200.0, 160.0]], false),
+        islands: vec![
+            rectangle([[20.0, 20.0], [60.0, 140.0]], true),
+            circle,
+            l_shape,
+        ],
+    };
+    for stepover in [0.5, 1.0, 2.5] {
+        let boundaries = pocket_boundaries(&region, 3.0 + stepover * LANE_WALL_GAP_STEPOVERS)
+            .expect("the lanes' boundaries");
+        let fewest = fewest_pocket_cuts(&boundaries, stepover);
+        let paths = pocket_paths(&region, 3.0, stepover).expect("the pocket is planned");
+        // The walls' passes, one per loop, follow the lanes.
+        let lanes = &paths[..paths.len() - 1 - region.islands.len()];
+        let cuts: usize = lanes
+            .iter()
+            .map(|path| path.segments.len().div_ceil(2))
+            .sum();
+        assert!(
+            fewest > 0 && fewest <= cuts,
+            "{fewest} cuts estimated, {cuts} made at {stepover} mm"
+        );
+    }
+}
