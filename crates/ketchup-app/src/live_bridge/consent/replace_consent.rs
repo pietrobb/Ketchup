@@ -3,8 +3,8 @@
 //! VRAT-8b). Asked while the request waited, a user away from the window held
 //! it until the client gave up after 15 minutes with `response_timeout`, which
 //! said nothing of the question. The client now hears at once that the window
-//! asks, and the user's answer holds for its next request for that file, as
-//! long as the file is unchanged since.
+//! asks, and the user's agreement holds for its requests for that file, as
+//! long as the file is unchanged since and for [`ANSWER_HOLDS`] at most.
 
 use crate::KetchupApp;
 use ketchup_rejection::{Rejection, RejectionPhase};
@@ -77,29 +77,34 @@ fn file_sha256(path: &Path) -> Option<String> {
 }
 
 impl KetchupApp {
-    /// The user's answer to `replacing`, given for the file as it is now and
-    /// taken by this request; without one, the window asks once the request is
-    /// answered.
+    /// The user's answer to `replacing`, given for the file as it is now;
+    /// without one, the window asks once the request is answered. An agreement
+    /// holds until the file changes or [`ANSWER_HOLDS`] passes, so a request that
+    /// also waits on the question of another file, and writes nothing, finds it
+    /// again when it comes back (review 2026-11-27 R1127-OW-1: it was taken by
+    /// the first request, and two files out of step were asked about in turn
+    /// for ever). A refusal is told once.
     pub(in crate::live_bridge) fn client_replace_consent(
         &mut self,
         replacing: Replacing,
     ) -> Consent {
         let sha256 = file_sha256(replacing.path());
         let asks = &mut self.live.replace_asks;
-        asks.answers
-            .retain(|answer| answer.at.elapsed() < ANSWER_HOLDS);
+        // A file changed since the user answered is asked about again.
+        asks.answers.retain(|answer| {
+            answer.at.elapsed() < ANSWER_HOLDS
+                && (answer.asked.replacing != replacing || answer.asked.sha256 == sha256)
+        });
         if let Some(at) = asks
             .answers
             .iter()
             .position(|answer| answer.asked.replacing == replacing)
         {
-            let answer = asks.answers.remove(at);
-            // A file changed since the user answered is asked about again.
-            if answer.asked.sha256 == sha256 {
-                return match answer.agreed {
-                    Ok(()) => Consent::Agreed,
-                    Err(declined) => Consent::Declined(declined.reason_text().to_owned()),
-                };
+            if asks.answers[at].agreed.is_ok() {
+                return Consent::Agreed;
+            }
+            if let Err(declined) = asks.answers.remove(at).agreed {
+                return Consent::Declined(declined.reason_text().to_owned());
             }
         }
         if !asks
@@ -151,7 +156,10 @@ impl KetchupApp {
                     self.authorize_set_take_over(list, &files)
                 }
             };
-            self.live.replace_asks.answers.push(Answer {
+            // The newest answer to a question is the one that holds.
+            let answers = &mut self.live.replace_asks.answers;
+            answers.retain(|answer| answer.asked.replacing != asked.replacing);
+            answers.push(Answer {
                 asked,
                 agreed,
                 at: Instant::now(),
