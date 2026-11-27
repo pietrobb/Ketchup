@@ -234,6 +234,16 @@ impl KetchupApp {
     /// in the way. The status line and the Connect tab name the AI the window
     /// was taken from.
     fn answer_live_consent(&mut self, context: &egui::Context, request: PendingConsent) {
+        self.answer_live_consent_with(context, request, transport::start);
+    }
+
+    /// Answers `request` on a bridge `start` opens when the window needs one.
+    fn answer_live_consent_with(
+        &mut self,
+        context: &egui::Context,
+        request: PendingConsent,
+        start: impl FnOnce(egui::Context) -> io::Result<super::LiveBridge>,
+    ) {
         let abandoned = Arc::clone(&request.abandoned);
         let Ok(abandoned) = abandoned.lock() else {
             return;
@@ -257,15 +267,11 @@ impl KetchupApp {
             None
         };
         let client = request.client.clone();
-        self.allow_live_consent(context, request);
+        self.allow_live_consent_with(context, request, start);
         if self.live.consent_attached {
             self.live.client_name = client;
             self.live.previous_client = previous;
         }
-    }
-
-    fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {
-        self.allow_live_consent_with(context, pending, transport::start);
     }
 
     /// Grants `pending` on a bridge `start` opens when the window has none.
@@ -1377,6 +1383,60 @@ mod tests {
         assert_eq!(app.live.client_name, None);
         assert_eq!(app.live.previous_client, None);
         assert!(app.live_bridge_credentials().is_none());
+    }
+
+    /// Review 2026-11-27 R1127-CON-1: the window let go of the AI holding it
+    /// before the next one had its credential, so a takeover that failed left
+    /// the window with neither.
+    #[test]
+    fn a_takeover_that_fails_leaves_the_window_with_the_ai_holding_it() {
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        let request = |client: &str| {
+            let (decision, receiver) = mpsc::sync_channel(1);
+            let pending = PendingConsent {
+                decision,
+                abandoned: Arc::new(Mutex::new(false)),
+                client: Some(client.to_owned()),
+            };
+            (pending, receiver)
+        };
+        let (first, granted) = request("Claude Code");
+        app.answer_live_consent(&context, first);
+        assert!(matches!(
+            granted.try_recv(),
+            Ok(ConsentDecision::Allow { .. })
+        ));
+        let held = app.live_bridge_credentials().unwrap();
+        let holds_the_window = |app: &KetchupApp| {
+            assert!(app.ai_attached());
+            assert_eq!(app.live_bridge_credentials().unwrap().token, held.token);
+            assert_eq!(app.live.client_name.as_deref(), Some("Claude Code"));
+            assert_eq!(app.live.previous_client, None);
+        };
+
+        // The next AI's grant cannot reach it.
+        let (next, gone) = request("Codex");
+        drop(gone);
+        app.answer_live_consent(&context, next);
+        holds_the_window(&app);
+
+        // The next AI's bridge cannot be opened.
+        let (next, answer) = request("Codex");
+        app.answer_live_consent_with(&context, next, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "no loopback port left",
+            ))
+        });
+        assert!(matches!(answer.try_recv(), Ok(ConsentDecision::Failed)));
+        holds_the_window(&app);
+        assert!(
+            app.digest.contains("no loopback port left"),
+            "the window must say why: {}",
+            app.digest
+        );
+        app.disconnect_ai();
     }
 
     #[test]
