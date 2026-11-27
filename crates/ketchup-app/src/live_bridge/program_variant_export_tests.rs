@@ -282,3 +282,49 @@ fn an_export_replaces_a_file_once_the_user_agrees_and_needs_variants() {
     let reason = take_error_details().unwrap().to_string();
     assert!(reason.contains("save_variant"), "{reason}");
 }
+
+/// Review 2026-11-27 R1127-OW-1: the user's agreement for one table was taken
+/// by a request that then waited on the other's question and wrote nothing, so
+/// with the cut list changed after the user agreed, each request asked about
+/// one table and spent the other's agreement, for ever.
+#[test]
+fn an_agreement_holds_while_the_other_file_is_asked_about_again() {
+    let (app, mut bridge) = cabinet_with_variants();
+    let agreeing = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = agreeing.clone();
+    let mut app = app.with_dialogs(Box::new(agreeing));
+    let folder = tempfile::tempdir().unwrap();
+    let target = folder.path().join("cabinet.xlsx");
+    let takeoff = folder.path().join("cabinet.takeoff.xlsx");
+    std::fs::write(&target, b"user cut list").unwrap();
+    std::fs::write(&takeoff, b"user takeoff").unwrap();
+    let request = export_replacing(&app, &target);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("awaiting_user_confirmation")
+    );
+    app.ask_client_replace();
+    assert_eq!(
+        probe.high_risk_prompts().len(),
+        2,
+        "both tables are asked about"
+    );
+    std::fs::write(&target, b"user cut list, changed").unwrap();
+    let request = export_replacing(&app, &target);
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("awaiting_user_confirmation"),
+        "the changed cut list is asked about again"
+    );
+    app.ask_client_replace();
+    assert_eq!(
+        probe.high_risk_prompts().len(),
+        3,
+        "the takeoff is not asked again"
+    );
+    let request = export_replacing(&app, &target);
+    let result = run(&mut bridge, &mut app, request);
+    assert_eq!(result["exported"], 2, "{result}");
+    assert!(std::fs::read(&target).unwrap().starts_with(b"PK"));
+    assert!(std::fs::read(&takeoff).unwrap().starts_with(b"PK"));
+}
