@@ -808,6 +808,13 @@ pub(crate) fn pocket_paths(
     let lanes = (1..=MAX_POCKET_LANES)
         .find(|&lanes| f64::from(lanes) * stepover_mm >= span)
         .ok_or_else(refused)?;
+    // Each cut costs at least two motions however the lanes are joined (a
+    // path's first cut a plunge and the cut, every later one a link and the
+    // cut), so a pocket whose fewest cuts already pass the cap is refused
+    // before any lane is built (R1127-CAM-1).
+    if fewest_pocket_cuts(&boundaries, stepover_mm).saturating_mul(2) > MAX_CAM_MOTIONS {
+        return Err(CamPlannerError::InvalidOperations);
+    }
     let middle = (minimum[1] + maximum[1]) * 0.5;
     let mut rows: Vec<(f64, Vec<[f64; 2]>)> = Vec::new();
     let mut cut_spans = 0_usize;
@@ -843,6 +850,54 @@ pub(crate) fn pocket_paths(
     let mut paths = zigzag(&boundaries, &mut rows)?;
     paths.extend(walls.iter().map(|boundary| path_of(boundary)));
     Ok(paths)
+}
+
+/// A lower bound on the cuts the lanes of [`pocket_paths`] make, from the
+/// islands' heights and the stepover alone, before any lane is built.
+///
+/// Lanes are at most `stepover_mm` apart, so at least `height / stepover` of
+/// them cross an island, and each leaves a cut just right of it: the lane is
+/// then inside the outer loop and outside every island until its next
+/// crossing. That cut is kept when the island's segments' boxes stay a few
+/// loop tolerances off every other loop's, so the cut is longer than a sliver,
+/// and the lane does not only graze the island. A lane grazes only within the
+/// loop tolerance of a height where the island's boundary turns up or down
+/// (the boundary is the island grown by the cutter, never thinner than the
+/// cutter there); such heights are at most each vertex and two per arc, and the
+/// lanes near them are not counted.
+fn fewest_pocket_cuts(boundaries: &[Vec<Segment>], stepover_mm: f64) -> usize {
+    let margin = 4.0 * LOOP_TOLERANCE_MM;
+    let boxes: Vec<Vec<[Point; 2]>> = boundaries
+        .iter()
+        .map(|segments| segments.iter().map(Segment::bounds).collect())
+        .collect();
+    let apart = |left: &[[Point; 2]], right: &[[Point; 2]]| {
+        left.iter().all(|[low, high]| {
+            right.iter().all(|[other_low, other_high]| {
+                (0..2).any(|axis| {
+                    low[axis] - margin > other_high[axis] || other_low[axis] - margin > high[axis]
+                })
+            })
+        })
+    };
+    // Lanes within the margin either side of a turn, however the lanes fall.
+    let near_turn = crate::whole_count((2.0 * margin / stepover_mm).ceil()).saturating_add(1);
+    (1..boundaries.len())
+        .filter(|&island| {
+            (0..boundaries.len())
+                .all(|other| other == island || apart(&boxes[island], &boxes[other]))
+        })
+        .map(|island| {
+            let [low, high] = loop_bounds(std::slice::from_ref(&boundaries[island]));
+            let crossing = crate::whole_count(((high[1] - low[1]) / stepover_mm).floor());
+            let arcs = boundaries[island]
+                .iter()
+                .filter(|segment| matches!(segment, Segment::Arc { .. }))
+                .count();
+            let turns = boundaries[island].len() + 2 * arcs;
+            crossing.saturating_sub(turns.saturating_mul(near_turn))
+        })
+        .fold(0, usize::saturating_add)
 }
 
 /// Whether the stretch of lane `y` from `from_x` to `to_x` stays within the
