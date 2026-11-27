@@ -23,7 +23,7 @@ const MAX_RPM: u32 = 200_000;
 const MAX_FEED_MM_PER_MIN: f64 = 1.0e6;
 const MAX_CAM_OPERATIONS: usize = 1_024;
 /// Most motions one toolpath holds.
-const MAX_CAM_MOTIONS: usize = 100_000;
+pub(crate) const MAX_CAM_MOTIONS: usize = 100_000;
 const MAX_PATH_SEGMENTS: usize = 4_096;
 const MAX_DRILL_POINTS: usize = 4_096;
 const GEOMETRY_TOLERANCE_MM: f64 = ROUNDING;
