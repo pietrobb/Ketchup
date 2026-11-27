@@ -599,17 +599,20 @@ class Document:
 
     def export_production(self, destination, adapters, *, machine_adapters=(),
                           vertical_pocket_tool_number=None, timeout_ms=30000,
-                          confirmed=False, setup_codes=None):
-        """Export a fresh job; optional part -> setup -> code mapping is saved in its manifest."""
+                          confirmed=False, setup_codes=None, edges=None):
+        """Export a fresh job; optional part -> setup -> code mapping and
+        part -> side -> edge key banding (assign_edges) are saved in its manifest."""
         if confirmed is not True:
             raise ValueError("production export requires confirmed=True")
-        from .manufacturing import export_job, assign_setup_codes
+        from .manufacturing import export_job, assign_edges, assign_setup_codes
         with self._session._lock:
             job = self.production_job(machine_adapters=machine_adapters,
                                       vertical_pocket_tool_number=vertical_pocket_tool_number,
                                       timeout_ms=timeout_ms)
             if setup_codes is not None:
                 job = assign_setup_codes(job, setup_codes)
+            if edges is not None:
+                job = assign_edges(job, edges)
             return export_job(job, destination, adapters, confirmed=True)
 
     def cam_setup(self, plan_id, name, target_definition_id, target_feature_id, *,

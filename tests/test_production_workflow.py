@@ -60,13 +60,16 @@ def test_saved_codes_drive_excel_and_mpr_via_optional_plugins(tmp_path):
         assert neutral["outputs"] == {}
         assert len(neutral["parts"]) == 2
         material = neutral["parts"][0]["material_key"]
-        adapters = [JafWebCutAdapter({material: "TEST BOARD"}, allow_rotation=False),
+        adapters = [JafWebCutAdapter({material: "TEST BOARD"}, allow_rotation=False,
+                                     edge_mapping={"veneer": "25386/0051"}),
                     HomagWoodwopAdapter()]
+        edges = {assignments[0]["code"]: {"front": "veneer", "back": "veneer"}}
         with pytest.raises(ValueError, match="confirmed"):
             doc.export_production(tmp_path / "order", adapters,
                                   machine_adapters=["homag-woodwop4"])
         result = doc.export_production(tmp_path / "order", adapters,
-                                      machine_adapters=["homag-woodwop4"], confirmed=True)
+                                      machine_adapters=["homag-woodwop4"], confirmed=True,
+                                      edges=edges)
         assert result["job"]["source_digest"] == doc.state["canonical_digest"]
         programs = list((tmp_path / "order").glob("*.mpr"))
         assert [p.name for p in programs] == ["000000004201.mpr"]
@@ -79,6 +82,15 @@ def test_saved_codes_drive_excel_and_mpr_via_optional_plugins(tmp_path):
                 assert workbook["všeobecný"].cell(row, 20).value == (assignment["code"] if row == 18 else None)
                 assert workbook["Export"].cell(row - 16, 15).value == (assignment["code"] if row == 18 else None)
                 assert workbook["všeobecný"].cell(row, 9).value == 1
+                # allow_rotation=False: L blank (template: blank = no turning), Export H = 1.
+                assert workbook["všeobecný"].cell(row, 12).value is None
+                assert workbook["Export"].cell(row - 16, 8).value == 1
+                banded = row == 18
+                assert [workbook["všeobecný"].cell(row, c).value for c in range(14, 18)] == (
+                    [1, 1, None, None] if banded else [None] * 4)
+                assert [workbook["Export"].cell(row - 16, c).value for c in range(9, 13)] == (
+                    ["25386/0051", "25386/0051", None, None] if banded else [None] * 4)
+            assert workbook["všeobecný"]["F10"].value == "25386/0051"
         finally:
             workbook.close()
         # The same saved job can target another workflow without any HOMAG output.

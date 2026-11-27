@@ -13,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk" / "python"))
 from ketchup.manufacturing import (
-    export_job, HomagWoodwopAdapter, JafWebCutAdapter, ManufacturingError,
+    assign_edges, EDGE_SIDES, export_job, HomagWoodwopAdapter, JafWebCutAdapter,
+    ManufacturingError,
 )
 
 
@@ -226,7 +227,9 @@ def test_excel_physical_rows_text_codes_formulas_and_fractional_mm(tmp_path, rot
             for cell in (ws.cell(18+i, 20), ex.cell(2+i, 15)):
                 assert cell.value == (code if i == 0 else None)
             assert ws.cell(18+i, 9).value == ex.cell(2+i, 5).value == 1
-            assert ex.cell(2+i, 8).value == int(rotation)
+            # Template L17: blank = may NOT turn; Export H =IF(ISBLANK(L),1,0).
+            assert ws.cell(18+i, 12).value == ("x" if rotation else None)
+            assert ex.cell(2+i, 8).value == (0 if rotation else 1)
             assert ws.cell(18+i, 8).data_type == "s"
             assert ex.cell(2+i, 4).data_type == "s"
         assert ws["F18"].data_type == ex["C2"].data_type == "s"
@@ -236,6 +239,55 @@ def test_excel_physical_rows_text_codes_formulas_and_fractional_mm(tmp_path, rot
         if not data_only:
             assert ws["C18"].data_type == "f"
         wb.close()
+
+
+def test_jaf_edges_become_template_edge_types_and_export_articles(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    source = assign_edges(job(3), {
+        "000000000000": {"front": "veneer", "back": "veneer", "left": "abs"},
+        "000000000002": {"right": "abs"}})
+    assert "edges" not in source["parts"][1]
+    adapter = JafWebCutAdapter({"oak": "DUB CHARISMO"}, allow_rotation=False,
+                               edge_mapping={"veneer": "25386/0051", "abs": "=ABS 2"})
+    result = export_job(source, tmp_path / "new", [adapter, HomagWoodwopAdapter()], confirmed=True)
+    assert result["job"]["parts"][0]["edges"]["front"] == "veneer"
+    wb = openpyxl.load_workbook(tmp_path / "new" / adapter.filename)
+    ws, ex = wb["všeobecný"], wb["Export"]
+    assert [ws.cell(r, 6).value for r in range(10, 14)] == ["25386/0051", "=ABS 2", None, None]
+    assert [ws.cell(r, 9).value for r in range(10, 14)] == [None] * 4
+    assert ws["F11"].data_type == "s"
+    assert [ws.cell(18, c).value for c in range(14, 18)] == [1, 1, 2, None]
+    assert [ws.cell(19, c).value for c in range(14, 18)] == [None] * 4
+    assert [ws.cell(20, c).value for c in range(14, 18)] == [None, None, None, 2]
+    assert [ex.cell(2, c).value for c in range(9, 13)] == ["25386/0051", "25386/0051", "=ABS 2", None]
+    assert [ex.cell(3, c).value for c in range(9, 13)] == [None] * 4
+    assert [ex.cell(4, c).value for c in range(9, 13)] == [None, None, None, "=ABS 2"]
+    # Finished sizes include the edges: nothing is subtracted.
+    assert ws["J18"].value == ex["F2"].value == 600 and ws["K18"].value == 400
+    wb.close()
+
+
+def test_jaf_edges_without_mapping_or_beyond_template_are_refused():
+    pytest.importorskip("openpyxl")
+    banded = assign_edges(job(), {"000000000000": {"front": "veneer"}})
+    with pytest.raises(ManufacturingError, match="missing JAF edge mapping: veneer"):
+        JafWebCutAdapter({"oak": "DTDL"}, allow_rotation=False).render(banded)
+    with pytest.raises(ManufacturingError, match="missing JAF edge mapping: veneer"):
+        JafWebCutAdapter({"oak": "DTDL"}, allow_rotation=False,
+                         edge_mapping={"abs": "ABS"}).render(banded)
+    many = assign_edges(job(3), {f"{i:012d}": dict(zip(EDGE_SIDES, (f"e{i}{s}" for s in range(4))))
+                                 for i in range(3)})
+    mapping = {key: key.upper() for part in many["parts"] for key in part["edges"].values()}
+    with pytest.raises(ManufacturingError, match="at most 8 edge types"):
+        JafWebCutAdapter({"oak": "DTDL"}, allow_rotation=False, edge_mapping=mapping).render(many)
+    with pytest.raises(ManufacturingError, match="front/back/left/right"):
+        assign_edges(job(), {"000000000000": {"top": "veneer"}})
+    with pytest.raises(ManufacturingError, match="unknown part"):
+        assign_edges(job(), {"MISSING": {"front": "veneer"}})
+    with pytest.raises(ManufacturingError, match="edge key"):
+        assign_edges(job(), {"000000000000": {"front": ""}})
+    with pytest.raises(ManufacturingError, match="edge_mapping"):
+        JafWebCutAdapter({"oak": "DTDL"}, allow_rotation=False, edge_mapping=["veneer"])
 
 
 def test_jaf_configuration_limits_and_capacity():

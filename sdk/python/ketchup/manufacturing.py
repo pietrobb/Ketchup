@@ -33,6 +33,11 @@ class ManufacturingAdapter(Protocol):
     def render(self, job: dict) -> Mapping[str, bytes]: ...
 
 
+# Edge-banded sides of a rectangular part: front and back run along its length,
+# left and right along its width. A side left out has no edge.
+EDGE_SIDES = ("front", "back", "left", "right")
+
+
 def _text(value, label):
     if not isinstance(value, str) or not value.strip():
         raise ManufacturingError(f"{label} must be a nonempty string")
@@ -150,6 +155,12 @@ def _validate_job(job):
                        for d in dims)):
             raise ManufacturingError("dimensions_mm must contain positive finite length, width, thickness")
         _validate_setups(part, program_codes)
+        edges = part.get("edges")
+        if edges is not None:
+            if not isinstance(edges, dict) or not set(edges) <= set(EDGE_SIDES):
+                raise ManufacturingError("part edges must map front/back/left/right to an edge key")
+            for side, key in edges.items():
+                _text(key, f"{side} edge key")
     if not isinstance(job.get("outputs"), dict):
         raise ManufacturingError("outputs must be an object keyed by adapter id")
     for adapter_id in job["outputs"]:
@@ -189,6 +200,30 @@ def assign_setup_codes(job: dict, assignments: Mapping[str, Mapping[str, str]]) 
             output["code"] = setup["code"]
             output["filename"] = setup["code"] + ".mpr"
         _homag_outputs(result)
+    return result
+
+
+def assign_edges(job: dict, edges: Mapping[str, Mapping[str, str]]) -> dict:
+    """Return a copy of job whose parts carry edge banding.
+
+    edges maps persistent part code -> side (front/back/left/right) -> edge key;
+    an empty side mapping removes the part's edges. Edge keys are resolved to a
+    destination article only by the adapter (e.g. JafWebCutAdapter edge_mapping).
+    Dimensions stay as given: they are finished sizes including the edges.
+    """
+    _validate_job(job)
+    if not isinstance(edges, Mapping):
+        raise ManufacturingError("edge assignments must be a mapping")
+    result = deepcopy(job)
+    parts = {part["code"]: part for part in result["parts"]}
+    for part_code, sides in edges.items():
+        if part_code not in parts or not isinstance(sides, Mapping):
+            raise ManufacturingError("unknown part or invalid edge mapping")
+        if sides:
+            parts[part_code]["edges"] = dict(sides)
+        else:
+            parts[part_code].pop("edges", None)
+    _validate_job(result)
     return result
 
 
@@ -353,20 +388,36 @@ class JafWebCutAdapter:
     names other than A/B are not silently flattened. Cut-only rows have no
     machining barcode. This adapter neither plans nor transforms toolpaths.
     Export formulas are materialized as values, preserving leading zeroes.
+
+    Rotation follows the template (L17): L blank = the piece may NOT be turned
+    (its length stays along the stock sheet's length), L filled = it may; Export H
+    is 1 when L is blank.
+    Part edges (see assign_edges) become template edge types 1..8 in F10:F13 and
+    I10:I13, numbered in order of first use, with N/O/P/Q = front/back/left/right
+    per row and the edge article in Export I..L. An edge key without an entry in
+    edge_mapping is refused, never left blank.
     """
     id = "jaf-webcut"
     filename = "JAF_WebCut_v50.xlsx"
+    edge_type_cells = ((10, 6), (11, 6), (12, 6), (13, 6), (10, 9), (11, 9), (12, 9), (13, 9))
 
     def __init__(self, material_mapping: Mapping[str, str], *, allow_rotation: bool,
-                 second_barcode_confirmed: bool = False):
+                 second_barcode_confirmed: bool = False,
+                 edge_mapping: Mapping[str, str] | None = None):
         if not isinstance(material_mapping, Mapping) or type(allow_rotation) is not bool:
             raise ManufacturingError("explicit material mapping and boolean allow_rotation required")
         if type(second_barcode_confirmed) is not bool:
             raise ManufacturingError("second_barcode_confirmed must be a boolean")
+        if edge_mapping is not None and not isinstance(edge_mapping, Mapping):
+            raise ManufacturingError("edge_mapping must map edge keys to JAF edge articles")
         self.material_mapping = dict(material_mapping)
         for key, value in self.material_mapping.items():
             _text(key, "material key")
             _text(value, "JAF material")
+        self.edge_mapping = dict(edge_mapping or {})
+        for key, value in self.edge_mapping.items():
+            _text(key, "edge key")
+            _text(value, "JAF edge article")
         self.allow_rotation = allow_rotation
         self.second_barcode_confirmed = second_barcode_confirmed
 
@@ -394,6 +445,20 @@ class JafWebCutAdapter:
             for row in export.iter_rows(min_row=2, max_col=16):
                 for cell in row:
                     cell.value = None
+            edge_types = {}
+            for part in job["parts"]:
+                for side in EDGE_SIDES:
+                    key = part.get("edges", {}).get(side)
+                    if key is None or key in edge_types:
+                        continue
+                    if key not in self.edge_mapping:
+                        raise ManufacturingError(f"missing JAF edge mapping: {key}")
+                    edge_types[key] = len(edge_types) + 1
+            if len(edge_types) > len(self.edge_type_cells):
+                raise ManufacturingError("JAF template holds at most 8 edge types")
+            articles = [self.edge_mapping[key] for key in edge_types]
+            for index, (row, column) in enumerate(self.edge_type_cells):
+                self._cell(sheet.cell(row, column), articles[index] if index < len(articles) else None)
             group, position, last_group = 0, 0, None
             for offset, part in enumerate(job["parts"]):
                 code = part["code"]
@@ -415,17 +480,21 @@ class JafWebCutAdapter:
                     group, position, last_group = group + 1, 0, key
                 position += 1
                 r = 18 + offset
+                edges = [part.get("edges", {}).get(side) for side in EDGE_SIDES]
                 values = {4: group, 5: str(position), 6: material, 7: thickness,
                           8: part["name"], 9: 1, 10: length, 11: width,
-                          12: None if self.allow_rotation else "x", 19: code,
+                          12: "x" if self.allow_rotation else None, 19: code,
                           20: setups.get("A"), 21: setups.get("B")}
+                for column, key in enumerate(edges, 14):
+                    values[column] = None if key is None else edge_types[key]
                 for column, value in values.items():
                     self._cell(sheet.cell(r, column), value)
                 # Exact equivalents of the original Export A..P formulas for these inputs.
                 combined = material + " " + format(thickness, ".15g")
                 out = [group, str(position), combined, part["name"], 1, length, width,
-                       int(self.allow_rotation), None, None, None, None, None,
-                       code, setups.get("A"), setups.get("B")]
+                       0 if self.allow_rotation else 1,
+                       *(None if key is None else self.edge_mapping[key] for key in edges),
+                       None, code, setups.get("A"), setups.get("B")]
                 for column, value in enumerate(out, 1):
                     self._cell(export.cell(offset + 2, column), value)
             buffer = io.BytesIO()
