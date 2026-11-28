@@ -17,6 +17,18 @@ Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, 
 > [!NOTE]
 > Ketchup is young and changes quickly. It is usable for the jobs described below, but expect rough edges, and keep copies of important work: the file format can still change between versions. What it does not do yet is listed [near the end](#what-ketchup-does-not-do-yet).
 
+## What's new in 0.4.0
+
+- **Make metal and plastic parts on a CNC mill.** Select a face of the part (**File → Manufacturing**) and Ketchup writes a 2.5D program for it: an outside or inside contour, a pocket cleared around its islands, holes drilled to depth, or facing the stock. Every program is simulated against the exact part before you confirm it, the window keeps working while it plans, and **Cancel** stops it. [More below](#make-it-cut-lists-and-cnc-files).
+- **Check more than a single part.** The FEA now solves assemblies with rigid or spring joints, 3D frames, large models, natural frequencies and mode shapes, and steady heat conduction through a part (**Tools → Analysis**).
+- **Project drawings on the real site.** With a cadastral DXF/DWG underlay the drawing set starts with a site plan at 1:250 or 1:500; an orthophoto can be imported under it and is printed in the PDF. **Preview sheets** shows the drawings in the app before you export them, and mechanical sheets get hole and thread callouts, angular, radius and diameter dimensions, datums and GD&T frames.
+- **Bought parts in rule programs.** `purchased(...)` places a supplier's STEP part where your parameters say and lists it in the hardware list; a first set of standard machine parts (bearings, ball screws, linear guides, stepper motors) comes with catalogue dimensions.
+- **Freeform surfaces.** Fill a closed loop of curves, blend two surfaces, move a control point, or run a Loft along a rail.
+- **Linux.** `Ketchup-0.4.0-Linux-x86_64.tar.gz` runs on Ubuntu 24.04 or newer, beside the Windows downloads. The 0.4.0 Mac files are added to the release once they are built on a Mac; until then 0.3.3 is the Mac version.
+- **Safer AI connections.** An AI may write new files where it is asked, but replacing a file you already have is asked in the window first, and the Connect tab lists every file it wrote.
+
+Files from 0.3.3 open in 0.4.0. Everything that changed, with the known issues, is in the [release notes](https://github.com/pietrobb/Ketchup/releases/tag/v0.4.0) and [CHANGELOG.md](CHANGELOG.md).
+
 ## What people make with it
 
 <p align="center">
@@ -96,7 +108,7 @@ From the same model you get a numbered drawing set (**File → Drawings (PDF, DX
 
 Export a `.ketchup-view` package and send it. **Ketchup Viewer** opens it read-only: your customer can orbit the model, switch your saved scenes, pick a part to see its name, material, size and notes, show your dimensions, measure between points, and add comments with arrows and the camera position, then save them in a small file to send back to you, all without being able to change the geometry. The package carries geometry, materials and notes, not your design history or programs.
 
-On Windows the Viewer is installed with Ketchup; on a Mac it is its own download, `Ketchup-Viewer-0.4.0-macOS.dmg`. An Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
+On Windows the Viewer is installed with Ketchup; on a Mac it is its own download, `Ketchup-Viewer-<version>-macOS.dmg`. An Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
 
 ### Let your AI assistant model it
 
@@ -121,7 +133,7 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 
 Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (only the older 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, 14.29 or later). The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
-**On a Mac** (since 0.3.3): download **`Ketchup-0.4.0-macOS.dmg`** from the same release, open it and drag **Ketchup** (the app `Ketchup.app`, named `Kečup.app` in 0.3.3) into Applications. **`Ketchup-Viewer-0.4.0-macOS.dmg`** holds **Ketchup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.4.0-Examples.zip`.
+**On a Mac** (since 0.3.3): the Mac version is [0.3.3](https://github.com/pietrobb/Ketchup/releases/tag/v0.3.3) until `Ketchup-0.4.0-macOS.dmg` is added to the 0.4.0 release. Download **`Ketchup-0.3.3-macOS.dmg`** from that release, open it and drag **Ketchup** (the app, named `Kečup.app` in 0.3.3) into Applications. **`Ketchup-Viewer-0.3.3-macOS.dmg`** holds **Ketchup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are `Ketchup-0.3.3-Examples.zip` from the same release.
 
 **On Linux** (since 0.4.0): download **`Ketchup-<version>-Linux-x86_64.tar.gz`** from the release, unpack it anywhere and run `ketchup-app` (Ketchup) or `ketchup-viewer` (Ketchup Viewer) in the folder; the workers and the OCCT libraries are beside them, nothing is installed. It needs an x86-64 Linux with glibc 2.39 or later (Ubuntu 24.04, Debian 13, Fedora 40 or newer), Vulkan drivers and X11 or Wayland: on Ubuntu the packages in [`scripts/linux/runtime-packages.txt`](scripts/linux/runtime-packages.txt). `sha256sum -c SHA256SUMS.txt --ignore-missing` checks the download.
 
